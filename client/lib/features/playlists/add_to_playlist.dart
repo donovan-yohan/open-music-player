@@ -28,15 +28,43 @@ Future<void> showAddToPlaylistSheet(
   String addFailureMessage = 'Failed to add to playlist',
 }) async {
   final messenger = ScaffoldMessenger.of(context);
+  final playlist = await pickPlaylist(
+    context,
+    playlistService: playlistService,
+    title: title,
+  );
+  if (playlist == null) return;
+  await addTracksToPlaylist(
+    messenger,
+    playlistService: playlistService,
+    playlist: playlist,
+    trackIds: trackIds,
+    addFailureMessage: addFailureMessage,
+  );
+}
+
+/// Asks which playlist, creating one on the spot when the user chooses to.
+///
+/// Split out of [showAddToPlaylistSheet] for callers that cannot add yet —
+/// a Discover result has no library track until its import finishes, so it
+/// captures the choice now and adds once the id exists. Returns null when the
+/// user dismisses the picker or the load/create failed, having already
+/// reported that failure.
+Future<Playlist?> pickPlaylist(
+  BuildContext context, {
+  required PlaylistService playlistService,
+  String title = 'Add to playlist',
+}) async {
+  final messenger = ScaffoldMessenger.of(context);
 
   List<Playlist> playlists;
   try {
     playlists = (await playlistService.getPlaylists()).playlists;
   } catch (_) {
     _showFailure(messenger, 'Failed to load playlists');
-    return;
+    return null;
   }
-  if (!context.mounted) return;
+  if (!context.mounted) return null;
 
   // [PlaylistPickerSheet] pops a `Playlist?`; "New playlist" reports itself out
   // of band so that contract stays unchanged for the sheet's other callers.
@@ -58,40 +86,16 @@ Future<void> showAddToPlaylistSheet(
       ),
     ),
   );
-  if (!context.mounted) return;
+  if (!context.mounted) return null;
+  if (!createNew) return selected;
 
-  if (createNew) {
-    await _createThenAdd(
-      context,
-      messenger,
-      playlistService,
-      trackIds,
-      addFailureMessage,
-    );
-    return;
-  }
-  if (selected == null) return;
-  await _addTracks(
-    messenger,
-    playlistService,
-    selected,
-    trackIds,
-    addFailureMessage,
-  );
-}
-
-Future<void> _createThenAdd(
-  BuildContext context,
-  ScaffoldMessengerState messenger,
-  PlaylistService playlistService,
-  List<int> trackIds,
-  String addFailureMessage,
-) {
-  return showDialog<void>(
+  // [PlaylistEditDialog] pops itself after `onSave`, so the created playlist
+  // comes back out of band the same way the "New playlist" choice does.
+  Playlist? created;
+  await showDialog<void>(
     context: context,
     builder: (_) => PlaylistEditDialog(
       onSave: (result) async {
-        Playlist created;
         try {
           created = await playlistService.createPlaylist(
             name: result.name,
@@ -101,29 +105,28 @@ Future<void> _createThenAdd(
           );
         } catch (_) {
           _showFailure(messenger, 'Failed to create playlist');
-          return;
         }
-        await _addTracks(
-          messenger,
-          playlistService,
-          created,
-          trackIds,
-          addFailureMessage,
-        );
       },
     ),
   );
+  return created;
 }
 
+/// Adds [trackIds] to an already-chosen [playlist] and reports the outcome.
+///
+/// Takes a messenger rather than a context so a caller that has been waiting on
+/// something slow — an import finishing, say — can still report even though the
+/// widget it started from may be gone.
+///
 /// Duplicate handling is the backend's: [AddTracksResult] reports what was
 /// added versus already present, and that report is what the user is told.
-Future<void> _addTracks(
-  ScaffoldMessengerState messenger,
-  PlaylistService playlistService,
-  Playlist playlist,
-  List<int> trackIds,
-  String addFailureMessage,
-) async {
+Future<void> addTracksToPlaylist(
+  ScaffoldMessengerState messenger, {
+  required PlaylistService playlistService,
+  required Playlist playlist,
+  required List<int> trackIds,
+  String addFailureMessage = 'Failed to add to playlist',
+}) async {
   try {
     final result = await playlistService.addTracks(playlist.id, trackIds);
     messenger.showSnackBar(

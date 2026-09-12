@@ -15,6 +15,7 @@ import '../../core/discovery/discovery_service.dart';
 import '../../core/services/playlist_service.dart';
 import '../../models/track.dart';
 import '../../providers/queue_provider.dart';
+import '../../shared/models/playlist.dart';
 import '../playlists/add_to_playlist.dart';
 import 'search_local_logic.dart';
 
@@ -30,12 +31,17 @@ class SearchScreen extends StatefulWidget {
   /// Injectable for tests; production builds one from the provided client.
   final PlaylistService? playlistService;
 
+  /// Queue polls a deferred playlist add waits for its import to show up in
+  /// the queue before giving up. Injectable so tests need not poll for real.
+  final int importWaitPolls;
+
   const SearchScreen({
     super.key,
     this.researchService,
     this.commandFocusController,
     this.externalUrlLauncher,
     this.playlistService,
+    this.importWaitPolls = 30,
     this.researchPollDelays = const [
       Duration(seconds: 1),
       Duration(seconds: 2),
@@ -51,6 +57,10 @@ class _SearchScreenState extends State<SearchScreen> {
   final TextEditingController _queryController = TextEditingController();
   final FocusNode _queryFocusNode = FocusNode();
   final Set<String> _pendingCandidateKeys = <String>{};
+
+  /// Playlist choices captured before their candidate had a track id, keyed by
+  /// candidate. Resolved by the queue poll once the import produces one.
+  final Map<String, _PendingPlaylistAdd> _pendingPlaylistAdds = {};
   Timer? _debounceTimer;
   Timer? _pollTimer;
   Timer? _researchPollTimer;
@@ -799,6 +809,7 @@ class _SearchScreenState extends State<SearchScreen> {
     } finally {
       _isPollingQueue = false;
       if (mounted) {
+        _resolvePendingPlaylistAdds();
         _ensurePolling();
       } else {
         _pollTimer?.cancel();
@@ -829,6 +840,9 @@ class _SearchScreenState extends State<SearchScreen> {
   bool _queueHasActiveWork(QueueProvider provider) {
     if (provider.queueServiceDisabled) return false;
     if (_pendingCandidateKeys.isNotEmpty) return true;
+    // A deferred playlist add is waiting on an import, and the poll is what
+    // notices the track id arriving.
+    if (_pendingPlaylistAdds.isNotEmpty) return true;
     return provider.queue.tracks.any(
       (track) =>
           track.queueStatus == TrackQueueStatus.pending ||
@@ -2027,7 +2041,12 @@ class _SearchScreenState extends State<SearchScreen> {
         IconButton(
           key: ValueKey('discover_result_more_${_candidateKey(candidate)}'),
           tooltip: 'More actions',
-          onPressed: () => _showCandidateActions(candidate, queuedTrack),
+          onPressed: () => _showCandidateActions(
+            candidate,
+            queuedTrack,
+            selection: selection,
+            onChoose: onChoose,
+          ),
           visualDensity: VisualDensity.compact,
           constraints: const BoxConstraints.tightFor(width: 40, height: 40),
           padding: EdgeInsets.zero,
@@ -2041,14 +2060,15 @@ class _SearchScreenState extends State<SearchScreen> {
   /// Row overflow for a Discover result.
   ///
   /// Playlists hold library tracks, and a catalog candidate only becomes one
-  /// once it has been imported. The action therefore states that precondition
-  /// rather than disappearing, so the affordance is where the user expects it
-  /// on every row.
+  /// once its import has finished. The action stays enabled regardless and
+  /// sequences that import itself, so the affordance means the same thing on
+  /// every row.
   void _showCandidateActions(
     DiscoveryCandidate candidate,
-    QueueTrack? queuedTrack,
-  ) {
-    final trackId = _libraryTrackId(queuedTrack);
+    QueueTrack? queuedTrack, {
+    DiscoverySelectionSession? selection,
+    VoidCallback? onChoose,
+  }) {
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -2071,18 +2091,20 @@ class _SearchScreenState extends State<SearchScreen> {
                 'discover_add_to_playlist_${_candidateKey(candidate)}',
               ),
               contentPadding: EdgeInsets.zero,
-              enabled: trackId != null,
               leading: const Icon(Icons.playlist_add),
               title: const Text('Add to playlist'),
-              subtitle: trackId == null
-                  ? const Text('Import this result to add it to a playlist')
+              subtitle: _libraryTrackId(queuedTrack) == null
+                  ? const Text('Imports this result first')
                   : null,
-              onTap: trackId == null
-                  ? null
-                  : () {
-                      Navigator.of(sheetContext).pop();
-                      _addToPlaylist(trackId);
-                    },
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _addCandidateToPlaylist(
+                  candidate,
+                  queuedTrack,
+                  selection: selection,
+                  onChoose: onChoose,
+                );
+              },
             ),
           ],
         ),
@@ -2098,13 +2120,168 @@ class _SearchScreenState extends State<SearchScreen> {
     return int.tryParse(queuedTrack.playbackTrackId ?? queuedTrack.id);
   }
 
-  Future<void> _addToPlaylist(int trackId) {
-    return showAddToPlaylistSheet(
+  PlaylistService get _playlistService =>
+      widget.playlistService ?? PlaylistService(api: context.read<ApiClient>());
+
+  /// Adds a Discover result to a playlist, importing it first when it is still
+  /// a catalog entry.
+  ///
+  /// A download job only gains its track id once the download completes, which
+  /// can take minutes, so the playlist is chosen up front and the add is
+  /// deferred rather than holding the user behind a spinner.
+  Future<void> _addCandidateToPlaylist(
+    DiscoveryCandidate candidate,
+    QueueTrack? queuedTrack, {
+    DiscoverySelectionSession? selection,
+    VoidCallback? onChoose,
+  }) async {
+    final trackId = _libraryTrackId(queuedTrack);
+    if (trackId != null) {
+      await showAddToPlaylistSheet(
+        context,
+        playlistService: _playlistService,
+        trackIds: [trackId],
+      );
+      return;
+    }
+
+    final key = _candidateKey(candidate);
+    if (_pendingPlaylistAdds.containsKey(key)) {
+      _showPlaylistSequenceMessage(
+        'Already waiting on this import to finish.',
+      );
+      return;
+    }
+
+    final messenger = ScaffoldMessenger.of(context);
+    final playlistService = _playlistService;
+    final playlist = await pickPlaylist(
       context,
-      playlistService: widget.playlistService ??
-          PlaylistService(api: context.read<ApiClient>()),
-      trackIds: [trackId],
+      playlistService: playlistService,
+      title: 'Add to playlist after import',
     );
+    if (playlist == null || !mounted) return;
+
+    setState(() {
+      _pendingPlaylistAdds[key] = _PendingPlaylistAdd(
+        playlist: playlist,
+        playlistService: playlistService,
+        candidateTitle: candidate.title,
+      );
+    });
+
+    // Only import when the row has not already been queued; a candidate that is
+    // mid-download just needs watching.
+    if (queuedTrack == null && !_pendingCandidateKeys.contains(key)) {
+      try {
+        // The research row hands down a plain callback, so this cannot be
+        // awaited — whether the import actually queued is settled by the poll
+        // below rather than here.
+        if (onChoose != null) {
+          onChoose();
+        } else {
+          await _chooseCandidate(candidate, selection);
+        }
+      } catch (_) {
+        if (!mounted) return;
+        setState(() => _pendingPlaylistAdds.remove(key));
+        messenger.showSnackBar(
+          SnackBar(
+            key: const ValueKey('discover_playlist_import_failed'),
+            content: Text('Could not import "${candidate.title}".'),
+          ),
+        );
+        return;
+      }
+      if (!mounted) return;
+    }
+
+    _showPlaylistSequenceMessage(
+      'Importing "${candidate.title}". It will be added to '
+      '"${playlist.name}" when the import finishes.',
+    );
+    _ensurePolling();
+    _resolvePendingPlaylistAdds();
+  }
+
+  void _showPlaylistSequenceMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        key: const ValueKey('discover_playlist_sequence_notice'),
+        content: Text(message),
+      ),
+    );
+  }
+
+  /// Completes any deferred playlist add whose import has produced a track id.
+  ///
+  /// Driven by the queue poll that already runs while imports are in flight, so
+  /// this owns no timer of its own and stops when the screen goes away.
+  void _resolvePendingPlaylistAdds() {
+    if (!mounted || _pendingPlaylistAdds.isEmpty) return;
+    final provider = context.read<QueueProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+    for (final entry in _pendingPlaylistAdds.entries.toList()) {
+      final track = _queuedTrackForKey(provider, entry.key);
+      if (track == null) {
+        // An import that never reaches the queue would otherwise leave the
+        // choice waiting forever, so give up after a bounded number of polls
+        // and say so rather than dropping it quietly.
+        if (entry.value.missedPolls + 1 < widget.importWaitPolls) {
+          entry.value.missedPolls += 1;
+          continue;
+        }
+        setState(() => _pendingPlaylistAdds.remove(entry.key));
+        messenger.showSnackBar(
+          SnackBar(
+            key: const ValueKey('discover_playlist_import_failed'),
+            content: Text(
+              'Could not import "${entry.value.candidateTitle}", so it was '
+              'not added to "${entry.value.playlist.name}".',
+            ),
+          ),
+        );
+        continue;
+      }
+      if (track.queueStatus == TrackQueueStatus.failed) {
+        setState(() => _pendingPlaylistAdds.remove(entry.key));
+        messenger.showSnackBar(
+          SnackBar(
+            key: const ValueKey('discover_playlist_import_failed'),
+            content: Text(
+              'Import of "${entry.value.candidateTitle}" failed, so it was '
+              'not added to "${entry.value.playlist.name}".',
+            ),
+          ),
+        );
+        continue;
+      }
+      final trackId = _libraryTrackId(track);
+      if (trackId == null) continue;
+      setState(() => _pendingPlaylistAdds.remove(entry.key));
+      unawaited(
+        addTracksToPlaylist(
+          messenger,
+          playlistService: entry.value.playlistService,
+          playlist: entry.value.playlist,
+          trackIds: [trackId],
+          addFailureMessage:
+              'Imported "${entry.value.candidateTitle}" but could not add it '
+              'to "${entry.value.playlist.name}".',
+        ),
+      );
+    }
+  }
+
+  QueueTrack? _queuedTrackForKey(QueueProvider provider, String key) {
+    for (final track in provider.queue.tracks) {
+      if (track.sourceCandidateId != null && track.sourceCandidateId == key) {
+        return track;
+      }
+      if (track.sourceUrl != null && track.sourceUrl == key) return track;
+    }
+    return null;
   }
 
   Future<void> _previewSource(DiscoveryCandidate candidate) async {
@@ -2532,3 +2709,20 @@ class _SearchScreenState extends State<SearchScreen> {
 /// Tone for an assist status banner: an informational disabled state versus a
 /// recoverable error. Both keep the search-directly fallback.
 enum _AssistTone { info, error }
+
+/// A playlist the user picked for a Discover result whose import had not yet
+/// produced a track id.
+class _PendingPlaylistAdd {
+  _PendingPlaylistAdd({
+    required this.playlist,
+    required this.playlistService,
+    required this.candidateTitle,
+  });
+
+  final Playlist playlist;
+  final PlaylistService playlistService;
+  final String candidateTitle;
+
+  /// Polls seen without the candidate appearing in the queue at all.
+  int missedPolls = 0;
+}
