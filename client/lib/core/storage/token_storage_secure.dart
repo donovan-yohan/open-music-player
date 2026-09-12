@@ -4,8 +4,7 @@ import 'token_storage_backend.dart';
 
 TokenStorageBackend createTokenStorageBackend({FlutterSecureStorage? storage}) {
   return SecureTokenStorage(
-    storage:
-        storage ??
+    storage: storage ??
         const FlutterSecureStorage(
           aOptions: AndroidOptions(encryptedSharedPreferences: true),
           iOptions: IOSOptions(
@@ -23,7 +22,7 @@ class SecureTokenStorage implements TokenStorageBackend {
   final FlutterSecureStorage _storage;
 
   SecureTokenStorage({required FlutterSecureStorage storage})
-    : _storage = storage;
+      : _storage = storage;
 
   @override
   Future<void> saveTokens({

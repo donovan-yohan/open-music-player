@@ -193,8 +193,7 @@ void main() {
       // Drag scale == paint scale.
       expect(emitted, [(dragPx * windowMs / paintedWidth).round()]);
       // And decisively not the scale of the box the old code measured.
-      expect(emitted.single,
-          isNot((dragPx * windowMs / hostWidth).round()));
+      expect(emitted.single, isNot((dragPx * windowMs / hostWidth).round()));
     });
   });
 }

@@ -3,7 +3,8 @@ import '../../../models/track_analysis.dart';
 
 /// Memoises one ruler per analysis object. Weak keys, so a superseded analysis
 /// snapshot is collected with its ruler and no eviction policy is needed.
-final Expando<DjBeatRuler> _rulerByAnalysis = Expando<DjBeatRuler>('DjBeatRuler');
+final Expando<DjBeatRuler> _rulerByAnalysis =
+    Expando<DjBeatRuler>('DjBeatRuler');
 
 /// One position inside the phrase/bar/beat structure (#416).
 ///
@@ -133,7 +134,8 @@ class DjBeatRuler {
     final cached = _rulerByAnalysis[analysis];
     if (cached != null) return cached;
     final timing = analysis.effectiveTiming;
-    final beats = _strictlyIncreasing(timing.beatGrid?.beatsMs ?? const <int>[]);
+    final beats =
+        _strictlyIncreasing(timing.beatGrid?.beatsMs ?? const <int>[]);
     if (beats.isEmpty) return null;
 
     final meter = timing.meter?.beatsPerBar;
@@ -172,8 +174,8 @@ class DjBeatRuler {
       barStartsMs: barStarts,
       beatsPerBar: beatsPerBar,
       phraseLengthBars: phraseBars != null && phraseBars > 0 ? phraseBars : 4,
-      numbered: ClipTempoMetadata.fromTrackAnalysis(analysis)
-          .hasReliableDownbeats,
+      numbered:
+          ClipTempoMetadata.fromTrackAnalysis(analysis).hasReliableDownbeats,
       anchorBeatIndex:
           barStarts.isEmpty ? -1 : _nearestBeatIndex(beats, barStarts.first),
     );
@@ -187,8 +189,8 @@ class DjBeatRuler {
   /// than clamped to the first bar.
   DjBeatPosition? positionAt(int positionMs) {
     if (!hasBarAnchor) return null;
-    final delta = _lastBeatIndexAtOrBefore(beatsMs, positionMs) -
-        anchorBeatIndex;
+    final delta =
+        _lastBeatIndexAtOrBefore(beatsMs, positionMs) - anchorBeatIndex;
     final bars = _floorDiv(delta, beatsPerBar);
     final phraseIndex = _floorDiv(bars, phraseLengthBars);
     return DjBeatPosition(

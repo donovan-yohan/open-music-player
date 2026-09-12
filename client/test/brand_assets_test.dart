@@ -19,7 +19,8 @@ void main() {
     expect(_pngDimension(bytes, 20), 1024);
   });
 
-  test('auth surfaces reference the canonical logo instead of the placeholder', () {
+  test('auth surfaces reference the canonical logo instead of the placeholder',
+      () {
     for (final path in [
       'lib/features/auth/screens/login_screen.dart',
       'lib/features/splash/splash_screen.dart',

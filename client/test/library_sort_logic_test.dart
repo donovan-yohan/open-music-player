@@ -41,8 +41,8 @@ void main() {
     });
 
     test('selecting the SAME field flips the order', () {
-      const asc =
-          LibrarySortOption(field: LibrarySortField.title, order: SortOrder.asc);
+      const asc = LibrarySortOption(
+          field: LibrarySortField.title, order: SortOrder.asc);
       expect(asc.selecting(LibrarySortField.title).order, SortOrder.desc);
     });
 
@@ -60,8 +60,8 @@ void main() {
     });
 
     test('fromStorage falls back to default on malformed/unknown input', () {
-      expect(LibrarySortOption.fromStorage(null),
-          LibrarySortOption.defaultOption);
+      expect(
+          LibrarySortOption.fromStorage(null), LibrarySortOption.defaultOption);
       expect(LibrarySortOption.fromStorage('garbage'),
           LibrarySortOption.defaultOption);
       expect(LibrarySortOption.fromStorage('nope:asc'),
@@ -136,10 +136,11 @@ void main() {
       expect(await store.load(), LibrarySortOption.defaultOption);
     });
 
-    test('save then load round-trips the selection (survives re-open)', () async {
+    test('save then load round-trips the selection (survives re-open)',
+        () async {
       final store = LibrarySortStore();
-      const selection =
-          LibrarySortOption(field: LibrarySortField.title, order: SortOrder.asc);
+      const selection = LibrarySortOption(
+          field: LibrarySortField.title, order: SortOrder.asc);
       await store.save(selection);
 
       // A fresh store instance models re-opening the screen.

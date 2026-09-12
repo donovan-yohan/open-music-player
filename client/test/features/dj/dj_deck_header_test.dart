@@ -71,8 +71,8 @@ void main() {
                 width: width,
                 height: 44, // the preferred header band height
                 child: DjDeckHeader(
-                  deck: djLoadedDeckState()
-                      .copyWith(keySemitones: keySemitones),
+                  deck:
+                      djLoadedDeckState().copyWith(keySemitones: keySemitones),
                 ),
               ),
             ),
@@ -84,8 +84,8 @@ void main() {
 
   for (final width in <double>[207.3, 260, 347.5, 470]) {
     for (final textScale in <double>[1.0, 1.3, 1.6]) {
-      testWidgets(
-          'the header fits ${width}dp at textScale $textScale', (tester) async {
+      testWidgets('the header fits ${width}dp at textScale $textScale',
+          (tester) async {
         final errors = DjErrorCollector()..install();
         addTearDown(errors.restore);
 

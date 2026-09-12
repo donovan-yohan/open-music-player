@@ -542,8 +542,7 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
                 ChoiceChip(
                   key: ValueKey('mix_preset_${preset.id.name}'),
                   selected: _preset == preset,
-                  onSelected:
-                      _saving ? null : (_) => _selectPreset(preset),
+                  onSelected: _saving ? null : (_) => _selectPreset(preset),
                   avatar: MixPresetGlyph(
                     preset: preset,
                     color: _preset == preset ? accent : AppTheme.textSecondary,

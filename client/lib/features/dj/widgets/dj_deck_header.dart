@@ -194,9 +194,8 @@ class DjDeckHeader extends StatelessWidget {
         // proportionally so the row ellipsises instead of overflowing.
         final needed = neededBy(metrics);
         final metricBudget = budgetFor(metrics.length);
-        final scale = needed <= metricBudget || needed == 0
-            ? 1.0
-            : metricBudget / needed;
+        final scale =
+            needed <= metricBudget || needed == 0 ? 1.0 : metricBudget / needed;
         return Row(
           children: [
             Expanded(

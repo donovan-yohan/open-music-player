@@ -63,7 +63,8 @@ void main() {
 
     expect(rig.session.syncEngagedOn(DjDeckId.a), isFalse);
     expect(rig.session.syncMaster, isNull,
-        reason: 'D4b: nothing follows deck B any more, so it sets nobody tempo');
+        reason:
+            'D4b: nothing follows deck B any more, so it sets nobody tempo');
     expect(rig.session.stateFor(DjDeckId.a).rate, rateWhileEngaged,
         reason: 'snapping back to 1.0 would be an audible jump mid-blend');
   });

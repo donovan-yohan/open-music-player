@@ -149,7 +149,8 @@ class _StubPlaylistService extends PlaylistService {
 }
 
 class _FakePlayback extends Fake implements PlaybackState {
-  final List<({List<Map<String, dynamic>> tracks, MixPlan plan, int startIndex})>
+  final List<
+          ({List<Map<String, dynamic>> tracks, MixPlan plan, int startIndex})>
       mixPlanCalls = [];
   final List<({MixPlan plan, int seamIndex})> previewCalls = [];
   int endPreviewCalls = 0;

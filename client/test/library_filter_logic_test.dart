@@ -27,10 +27,11 @@ void main() {
     });
 
     test('the Unknown chip is a valid, sendable genre value', () {
-      final state =
-          LibraryFilterState.cleared.selectGenre(LibraryFilterState.unknownGenre);
+      final state = LibraryFilterState.cleared
+          .selectGenre(LibraryFilterState.unknownGenre);
       expect(state.toQueryParams()['genre'], 'Unknown');
-      expect(LibraryFilterState.genreChips.last, LibraryFilterState.unknownGenre);
+      expect(
+          LibraryFilterState.genreChips.last, LibraryFilterState.unknownGenre);
     });
 
     test('a whitespace-only search is not an active filter', () {
@@ -59,7 +60,8 @@ void main() {
   });
 
   group('filtered-empty vs empty decision', () {
-    test('a filter that yields nothing is filteredEmpty (clear affordance)', () {
+    test('a filter that yields nothing is filteredEmpty (clear affordance)',
+        () {
       final hasActiveFilters =
           LibraryFilterState.cleared.selectGenre('Jazz').hasActiveFilters;
       final state = resolveLibraryVisualState(
@@ -86,7 +88,8 @@ void main() {
         isLoading: false,
         hasError: false,
         isEmpty: false,
-        hasActiveFilters: LibraryFilterState.cleared.toggleLiked().hasActiveFilters,
+        hasActiveFilters:
+            LibraryFilterState.cleared.toggleLiked().hasActiveFilters,
       );
       expect(state, LibraryVisualState.content);
     });

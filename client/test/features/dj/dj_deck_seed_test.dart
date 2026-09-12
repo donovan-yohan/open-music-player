@@ -83,7 +83,8 @@ void main() {
       expect(deck.bpm, 128.0);
     });
 
-    test('seeded beats come from the effective projection, never the generated '
+    test(
+        'seeded beats come from the effective projection, never the generated '
         'summary', () {
       final analysis = _overriddenGridAnalysis();
 

@@ -109,7 +109,8 @@ void main() {
       expect(result.isMatched, isTrue);
       expect(result.followerTempoScale, 2);
       expect(result.targetRate, closeTo(1.0, 1e-6));
-      expect(result.targetRate, inInclusiveRange(kDjDeckMinRate, kDjDeckMaxRate));
+      expect(
+          result.targetRate, inInclusiveRange(kDjDeckMinRate, kDjDeckMaxRate));
     });
 
     test('leader 140 over follower 90 matches, it does not refuse', () {
@@ -167,8 +168,7 @@ void main() {
     test('a refused press leaves the follower rate bit-identical', () async {
       final rig = djSyncRig();
       addTearDown(rig.session.dispose);
-      await rig.session
-          .load(DjDeckId.b, djSyncDeckSeed(id: '91', bpm: 128));
+      await rig.session.load(DjDeckId.b, djSyncDeckSeed(id: '91', bpm: 128));
       await rig.session.load(DjDeckId.a, djSyncDeckSeed(id: '90', bpm: 95));
 
       final before = rig.session.stateFor(DjDeckId.a).rate;
@@ -189,10 +189,8 @@ void main() {
     test('twenty presses never touch the master deck', () async {
       final rig = djSyncRig();
       addTearDown(rig.session.dispose);
-      await rig.session
-          .load(DjDeckId.b, djSyncDeckSeed(id: '91', bpm: 128));
-      await rig.session
-          .load(DjDeckId.a, djSyncDeckSeed(id: '90', bpm: 124.5));
+      await rig.session.load(DjDeckId.b, djSyncDeckSeed(id: '91', bpm: 128));
+      await rig.session.load(DjDeckId.a, djSyncDeckSeed(id: '90', bpm: 124.5));
 
       final leaderBefore = rig.session.stateFor(DjDeckId.b);
       final leaderSpeeds = rig.voiceFor(DjDeckId.b).speeds.length;

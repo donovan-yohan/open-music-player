@@ -301,7 +301,8 @@ class _LikedLibraryService extends LibraryService {
 }
 
 class _StubPlaylistService extends PlaylistService {
-  _StubPlaylistService() : super(api: core_api.ApiClient(storage: SecureStorage()));
+  _StubPlaylistService()
+      : super(api: core_api.ApiClient(storage: SecureStorage()));
 
   @override
   Future<Playlist> getPlaylist(int id) async => Playlist(

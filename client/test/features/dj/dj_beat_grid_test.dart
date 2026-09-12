@@ -24,7 +24,8 @@ void main() {
       expect(ruler.positionAt(djBeatMs * 16)!.label, '1.1 · phrase 2');
     });
 
-    test('tier A: a manual downbeat phase shifts the counter and leaves a '
+    test(
+        'tier A: a manual downbeat phase shifts the counter and leaves a '
         'phrase-free reading before the anchor', () {
       final ruler =
           DjBeatRuler.forAnalysis(djNumberedAnalysis(downbeatPhaseIndex: 2))!;
@@ -110,7 +111,8 @@ void main() {
       expect(ruler.positionAt(djBeatMs)!.label, '1.1 · phrase 1');
     });
 
-    test('beatsPerBar is inferred from the downbeat stride when no meter is '
+    test(
+        'beatsPerBar is inferred from the downbeat stride when no meter is '
         'declared', () {
       final analysis = djDownbeatsWithoutMeterAnalysis(beatsPerBar: 3);
       expect(analysis.effectiveTiming.meter, isNull);

@@ -134,7 +134,6 @@ class _TrackingVoice implements Voice {
   /// What this fake claims the loaded audio is worth, or null for unknown.
   int? reportedDurationMs;
 
-
   @override
   Future<void> dispose() async {
     disposeCount++;

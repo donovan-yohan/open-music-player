@@ -224,8 +224,12 @@ void main() {
   // accessibility font scale.
   for (final probe in <(String, DjViewport, double, double)>[
     ('a 300x120 freeform window', landscapeTinyWindow, 260, 28),
-    ('the reference lane at textScale 1.6',
-        landscapeReference.withTextScale(1.6), 380, 56),
+    (
+      'the reference lane at textScale 1.6',
+      landscapeReference.withTextScale(1.6),
+      380,
+      56
+    ),
   ]) {
     testWidgets('the notice and its action fit ${probe.$1}', (tester) async {
       final errors = DjErrorCollector()..install();
@@ -246,7 +250,6 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   }
-
 
   testWidgets("the load affordance carries its own deck's id", (tester) async {
     final picks = <DjDeckId>[];
@@ -307,7 +310,8 @@ void main() {
       const DjDeckState(deckId: DjDeckId.a),
     ),
   ]) {
-    testWidgets('the ${probe.$1} action keeps a 48dp target at the reference '
+    testWidgets(
+        'the ${probe.$1} action keeps a 48dp target at the reference '
         'lane', (tester) async {
       await pumpNotice(
         tester,

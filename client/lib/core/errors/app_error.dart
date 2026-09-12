@@ -69,7 +69,8 @@ class AppError implements Exception {
   factory AppError.offline() {
     return const AppError(
       code: 'OFFLINE',
-      message: 'You appear to be offline. Please check your internet connection.',
+      message:
+          'You appear to be offline. Please check your internet connection.',
       category: ErrorCategory.network,
     );
   }
@@ -122,15 +123,15 @@ class AppError implements Exception {
   /// Whether this is an authentication error that requires re-login
   bool get isAuthError {
     return code == 'UNAUTHORIZED' ||
-           code == 'INVALID_TOKEN' ||
-           code == 'TOKEN_EXPIRED';
+        code == 'INVALID_TOKEN' ||
+        code == 'TOKEN_EXPIRED';
   }
 
   /// Whether this is a not found error
   bool get isNotFound {
     return statusCode == 404 ||
-           code == 'NOT_FOUND' ||
-           code.endsWith('_NOT_FOUND');
+        code == 'NOT_FOUND' ||
+        code.endsWith('_NOT_FOUND');
   }
 
   /// Whether this is a validation error

@@ -212,8 +212,7 @@ class TimelineLaneHeader extends StatelessWidget {
     return TrackArtwork(
       url: track.artworkUrl,
       kind: track.artworkKind,
-      cacheKey:
-          'timeline:${track.queueItemId}:${track.artworkKind.wireValue}:'
+      cacheKey: 'timeline:${track.queueItemId}:${track.artworkKind.wireValue}:'
           '${track.artworkUrl ?? "none"}',
       width: 36,
       height: 36,

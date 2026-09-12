@@ -63,7 +63,8 @@ void main() {
       viewport: landscapeReference,
     );
 
-    final centre = tester.getRect(find.byKey(const ValueKey('dj_center_column')));
+    final centre =
+        tester.getRect(find.byKey(const ValueKey('dj_center_column')));
     final deckAEdge =
         tester.getRect(find.byKey(const ValueKey('dj_header_deck_a'))).right;
     final deckBEdge =

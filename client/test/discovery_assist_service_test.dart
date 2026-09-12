@@ -17,7 +17,8 @@ void main() {
 
   DiscoveryService serviceWith(_AssistAdapter adapter) {
     return DiscoveryService(
-      ApiClient(storage: SecureStorage(), dio: Dio()..httpClientAdapter = adapter),
+      ApiClient(
+          storage: SecureStorage(), dio: Dio()..httpClientAdapter = adapter),
     );
   }
 
@@ -99,7 +100,12 @@ const Map<String, dynamic> _okEnvelopeJson = {
       },
     ],
     'providers': [
-      {'provider': 'youtube', 'status': 'ok', 'resultCount': 1, 'elapsedMs': 30},
+      {
+        'provider': 'youtube',
+        'status': 'ok',
+        'resultCount': 1,
+        'elapsedMs': 30
+      },
     ],
   },
   'caveats': ['These are likely matches, not a confirmed live version.'],
@@ -129,7 +135,8 @@ const Map<String, dynamic> _directUrlEnvelopeJson = {
 };
 
 final (String, int) _okEnvelope = (jsonEncode(_okEnvelopeJson), 200);
-final (String, int) _disabledEnvelope = (jsonEncode(_disabledEnvelopeJson), 200);
+final (String, int) _disabledEnvelope =
+    (jsonEncode(_disabledEnvelopeJson), 200);
 final (String, int) _directUrlEnvelope =
     (jsonEncode(_directUrlEnvelopeJson), 200);
 

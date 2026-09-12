@@ -115,8 +115,8 @@ void main() {
       ),
     );
 
-    final gesture =
-        await tester.startGesture(tester.getCenter(find.byKey(const ValueKey('dj_cue'))));
+    final gesture = await tester
+        .startGesture(tester.getCenter(find.byKey(const ValueKey('dj_cue'))));
     await tester.pump();
     expect(presses, 1);
     await gesture.up();

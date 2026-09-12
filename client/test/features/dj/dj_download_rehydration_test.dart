@@ -72,7 +72,8 @@ void main() {
     await harness.retire(tester);
   });
 
-  testWidgets('analysis that lands after the in-place download still reaches '
+  testWidgets(
+      'analysis that lands after the in-place download still reaches '
       'the lane', (tester) async {
     final harness = await _pumpRefusedDeck(tester);
 
@@ -112,7 +113,8 @@ TimelineWaveformPainter _lanePainter(WidgetTester tester, DjDeckId deck) =>
         .widgetList<CustomPaint>(
           find.descendant(
             of: find.byWidgetPredicate(
-              (widget) => widget is DjWaveformLane && widget.deck.deckId == deck,
+              (widget) =>
+                  widget is DjWaveformLane && widget.deck.deckId == deck,
             ),
             matching: find.byType(CustomPaint),
           ),

@@ -61,8 +61,7 @@ double timelineScrubEdgeVelocityPxPerSecond({
   if (zone <= 0) return 0;
   final paneX = pointerPaneX.clamp(0.0, paneWidth).toDouble();
   if (paneX < zone) {
-    return -timelineScrubMaxEdgeScrollPxPerSecond *
-        ((zone - paneX) / zone);
+    return -timelineScrubMaxEdgeScrollPxPerSecond * ((zone - paneX) / zone);
   }
   final rightZoneStart = paneWidth - zone;
   if (paneX > rightZoneStart) {
@@ -570,8 +569,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
   static const double _waveformPaintWindowPx = 96;
   static const double _laneScrollCacheExtentPx = 160;
   static const double _selectionControlsWidth = 96;
-  static const Duration _maxScrubEdgeTickInterval =
-      Duration(milliseconds: 250);
+  static const Duration _maxScrubEdgeTickInterval = Duration(milliseconds: 250);
 
   late SnapMarkerMode _snapMode;
   double _zoom = 1.0;
@@ -3213,8 +3211,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
         1000;
     final currentOffset =
         _preciseManualOffsetMs ?? baseViewport.offsetMs.toDouble();
-    final nextPreciseOffset =
-        (currentOffset + deltaMs).clamp(0.0, baseViewport.maxOffsetMs.toDouble());
+    final nextPreciseOffset = (currentOffset + deltaMs)
+        .clamp(0.0, baseViewport.maxOffsetMs.toDouble());
     _preciseManualOffsetMs = nextPreciseOffset;
     final nextOffsetMs = nextPreciseOffset.round();
     if (nextOffsetMs == baseViewport.offsetMs) {

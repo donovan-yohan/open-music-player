@@ -30,7 +30,8 @@ class _ScriptedStemsService implements StemsService {
     if (getError != null) throw getError!;
     // Hold the last scripted answer once the script runs out.
     final index = getCalls - 1;
-    return _responses[index >= _responses.length ? _responses.length - 1 : index];
+    return _responses[
+        index >= _responses.length ? _responses.length - 1 : index];
   }
 
   @override
@@ -68,7 +69,14 @@ class _FailingRequestStemsService implements StemsService {
       );
 }
 
-TrackStems _ready({List<String> channels = const ['vocals', 'melody', 'bass', 'kick', 'perc']}) =>
+TrackStems _ready(
+        {List<String> channels = const [
+          'vocals',
+          'melody',
+          'bass',
+          'kick',
+          'perc'
+        ]}) =>
     TrackStems(
       trackId: 42,
       channelSet: defaultStemChannelSet,
@@ -140,8 +148,9 @@ void main() {
   });
 
   test('a partial manifest only exposes the stems that exist', () async {
-    final service =
-        _ScriptedStemsService([_ready(channels: ['vocals', 'bass'])]);
+    final service = _ScriptedStemsService([
+      _ready(channels: ['vocals', 'bass'])
+    ]);
     final source = TrackStemChannelSource(service: service);
 
     await source.bindTrack(42);
@@ -302,7 +311,8 @@ void main() {
     await source.requestSeparation();
 
     expect(source.errorMessage, contains('queue is full'));
-    expect(service.getCalls, 1, reason: 'no re-read after a trigger that failed');
+    expect(service.getCalls, 1,
+        reason: 'no re-read after a trigger that failed');
   });
 
   test('a transport failure is surfaced, not swallowed', () async {

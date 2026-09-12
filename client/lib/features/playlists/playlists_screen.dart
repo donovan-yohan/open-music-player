@@ -192,9 +192,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
         children: [
           Icon(
             isActive
-                ? (_order == 'asc'
-                    ? Icons.arrow_upward
-                    : Icons.arrow_downward)
+                ? (_order == 'asc' ? Icons.arrow_upward : Icons.arrow_downward)
                 : Icons.sort,
             size: 18,
           ),
@@ -321,7 +319,8 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               try {
                 await _playlistService.deletePlaylist(playlist.id);
                 if (!mounted) return;
-                setState(() => _playlists.removeWhere((p) => p.id == playlist.id));
+                setState(
+                    () => _playlists.removeWhere((p) => p.id == playlist.id));
                 messenger.showSnackBar(
                   SnackBar(content: Text('Deleted "${playlist.name}"')),
                 );

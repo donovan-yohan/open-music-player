@@ -247,6 +247,5 @@ class _FakeDownloadState extends ChangeNotifier implements DownloadState {
   Set<int> get downloadedTrackIds => _ids;
 
   @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      super.noSuchMethod(invocation);
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

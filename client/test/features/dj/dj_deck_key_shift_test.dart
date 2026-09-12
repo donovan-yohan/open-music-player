@@ -165,7 +165,10 @@ void main() {
       // Worst-case composition at both rate extremes, with keylock off: the
       // range never collides with Voice.setPitch's own 0.5-2.0 clamp.
       for (final rate in <double>[kDjDeckMinRate, kDjDeckMaxRate]) {
-        for (final semitones in <int>[-kDjMaxKeySemitones, kDjMaxKeySemitones]) {
+        for (final semitones in <int>[
+          -kDjMaxKeySemitones,
+          kDjMaxKeySemitones
+        ]) {
           final factor = rate * semitoneFactor(semitones);
           expect(factor, greaterThanOrEqualTo(0.5), reason: '$rate/$semitones');
           expect(factor, lessThanOrEqualTo(2.0), reason: '$rate/$semitones');
@@ -200,7 +203,8 @@ void main() {
       expect(rig.session.deckA.pitchSupported, isTrue);
     });
 
-    test('a fresh load puts the VOICE back to rate 1 and pitch 1, not just '
+    test(
+        'a fresh load puts the VOICE back to rate 1 and pitch 1, not just '
         'the state', () async {
       // The regression this pins: `Voice.load` swaps the audio source and
       // nothing else, and `release()` only stops, so speed and pitch are

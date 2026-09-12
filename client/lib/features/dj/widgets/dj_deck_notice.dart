@@ -84,8 +84,8 @@ class DjDeckNotice extends StatelessWidget {
             final copy = _copyBlock(
               context,
               message: message,
-              showsError: showsDownload &&
-                  download.phase == DjDeckDownloadPhase.failed,
+              showsError:
+                  showsDownload && download.phase == DjDeckDownloadPhase.failed,
             );
             final action = showsDownload
                 ? _DownloadAction(
@@ -102,8 +102,7 @@ class DjDeckNotice extends StatelessWidget {
                         style: style,
                         // The deck this lane belongs to, not a hardcoded one:
                         // this button is rendered on whichever deck is empty.
-                        onPressed: () =>
-                            actions!.onPickLocalFile!(deck.deckId),
+                        onPressed: () => actions!.onPickLocalFile!(deck.deckId),
                         child: const Text(djDeckLoadFileAction),
                       )
                     : null;
@@ -194,8 +193,7 @@ class DjDeckNotice extends StatelessWidget {
 /// 8 from `minimumSize` and `shrinkWrap` drops the padded target.
 ButtonStyle _actionStyle({required bool compact}) => FilledButton.styleFrom(
       minimumSize: Size(0, compact ? 32 : 48),
-      visualDensity:
-          compact ? VisualDensity.compact : VisualDensity.standard,
+      visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
       padding: const EdgeInsets.symmetric(horizontal: AppTheme.space3),
       tapTargetSize: compact
           ? MaterialTapTargetSize.shrinkWrap

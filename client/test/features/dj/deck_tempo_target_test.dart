@@ -32,7 +32,8 @@ void main() {
 
     test('is null for a deck with no analyzed tempo', () {
       expect(
-        djReachableBpmBand(const DjDeckState(deckId: DjDeckId.a, trackRef: '1')),
+        djReachableBpmBand(
+            const DjDeckState(deckId: DjDeckId.a, trackRef: '1')),
         isNull,
       );
     });
@@ -138,7 +139,9 @@ void main() {
     });
 
     test('every resolved rate is inside the deck window', () {
-      for (var bpm = kDjTempoFieldMinBpm; bpm <= kDjTempoFieldMaxBpm; bpm += 1) {
+      for (var bpm = kDjTempoFieldMinBpm;
+          bpm <= kDjTempoFieldMaxBpm;
+          bpm += 1) {
         final target = djResolveTargetBpm(deck: deck(), targetBpm: bpm);
         if (!target.isResolved) continue;
         expect(target.rate, greaterThanOrEqualTo(kDjDeckMinRate - 1e-9),
@@ -172,8 +175,8 @@ void main() {
         () {
       // Collapsing them would send the user to the wrong action: one is about
       // the number typed, the other about who owns the deck's rate.
-      expect(DjTempoTargetRefusal.values, contains(
-          DjTempoTargetRefusal.syncControlled));
+      expect(DjTempoTargetRefusal.values,
+          contains(DjTempoTargetRefusal.syncControlled));
       expect(
         djResolveTargetBpm(deck: deck(), targetBpm: 300).refusal,
         DjTempoTargetRefusal.outOfReach,

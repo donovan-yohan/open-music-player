@@ -102,8 +102,7 @@ void main() {
       for (final id in const ['a', 'b']) {
         final cue = rectIn(tester, 'dj_transport_deck_$id', 'dj_cue');
         final hotCue = rectIn(tester, 'dj_control_deck_$id', 'dj_hot_cue_1');
-        final play =
-            rectIn(tester, 'dj_transport_deck_$id', 'dj_play_pause');
+        final play = rectIn(tester, 'dj_transport_deck_$id', 'dj_play_pause');
         final switcher =
             rectIn(tester, 'dj_control_deck_$id', 'dj_panel_switcher');
         final transport =

@@ -78,16 +78,16 @@ class TrimRange {
       trackDurationMs <= 0 ? 1 : endOffsetMs / trackDurationMs;
 
   Map<String, dynamic> toJson() => {
-    'startOffsetMs': startOffsetMs,
-    'endOffsetMs': endOffsetMs,
-    'trackDurationMs': trackDurationMs,
-  };
+        'startOffsetMs': startOffsetMs,
+        'endOffsetMs': endOffsetMs,
+        'trackDurationMs': trackDurationMs,
+      };
 
   factory TrimRange.fromJson(Map<String, dynamic> json) => TrimRange.clamped(
-    trackDurationMs: (json['trackDurationMs'] as num).toInt(),
-    startOffsetMs: (json['startOffsetMs'] as num).toInt(),
-    endOffsetMs: (json['endOffsetMs'] as num).toInt(),
-  );
+        trackDurationMs: (json['trackDurationMs'] as num).toInt(),
+        startOffsetMs: (json['startOffsetMs'] as num).toInt(),
+        endOffsetMs: (json['endOffsetMs'] as num).toInt(),
+      );
 
   static int _snap(int ms) => ((ms / snapMs).round()) * snapMs;
 

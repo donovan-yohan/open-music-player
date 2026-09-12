@@ -74,8 +74,19 @@ void main() {
     });
 
     test('anything that is not a Camelot key returns null, never throws', () {
-      for (final input in <String?>[null, '', 'x', '13A', '0A', '8C', '8', 'A8',
-        '8 A', '--', 'A minor']) {
+      for (final input in <String?>[
+        null,
+        '',
+        'x',
+        '13A',
+        '0A',
+        '8C',
+        '8',
+        'A8',
+        '8 A',
+        '--',
+        'A minor'
+      ]) {
         expect(djCamelotShifted(input, 1), isNull, reason: 'input "$input"');
       }
     });

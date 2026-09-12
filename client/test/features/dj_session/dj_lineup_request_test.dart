@@ -4,7 +4,8 @@ import 'package:open_music_player/features/dj_session/dj_session_models.dart';
 void main() {
   group('DjLineupRequest anchorTrackId', () {
     test('is sent when the queue has a tail', () {
-      const request = DjLineupRequest(blocks: 3, perBlock: 5, anchorTrackId: 42);
+      const request =
+          DjLineupRequest(blocks: 3, perBlock: 5, anchorTrackId: 42);
 
       expect(request.toQueryParameters()['anchorTrackId'], 42);
     });

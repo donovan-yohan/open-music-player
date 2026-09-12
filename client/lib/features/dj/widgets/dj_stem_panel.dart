@@ -57,8 +57,9 @@ class DjStemPanel extends StatelessWidget {
   /// state, a failed separation, and the honest "no track" case.
   Widget _placeholder(BuildContext context) {
     final theme = Theme.of(context);
-    final live =
-        source is TrackStemChannelSource ? source as TrackStemChannelSource : null;
+    final live = source is TrackStemChannelSource
+        ? source as TrackStemChannelSource
+        : null;
 
     if (source.isPending) {
       return _Centered(

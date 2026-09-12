@@ -65,9 +65,7 @@ class DjLineup {
     final rawBlocks = json['blocks'];
     final pinned = json['pinned'];
     return DjLineup(
-      pinnedBlockId: pinned is Map
-          ? _stringValue(pinned['blockId'])
-          : null,
+      pinnedBlockId: pinned is Map ? _stringValue(pinned['blockId']) : null,
       requested: requested is Map
           ? Map<String, dynamic>.from(requested)
           : const <String, dynamic>{},

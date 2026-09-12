@@ -115,10 +115,10 @@ List<DjBeatTick> djBeatRulerTicks({
     // The thinner returns x values only, so walk both ascending lists together
     // to recover which phrase each surviving marker belongs to.
     var index = 0;
-    for (final x in thin([for (final marker in phrases) marker.ms],
-        kDjPhraseTickMinSpacingPx)) {
-      while (index < phrases.length &&
-          (xFor(phrases[index].ms) - x).abs() > 0.5) {
+    for (final x in thin(
+        [for (final marker in phrases) marker.ms], kDjPhraseTickMinSpacingPx)) {
+      while (
+          index < phrases.length && (xFor(phrases[index].ms) - x).abs() > 0.5) {
         index++;
       }
       if (index >= phrases.length) break;

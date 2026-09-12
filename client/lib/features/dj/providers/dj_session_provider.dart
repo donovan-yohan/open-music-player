@@ -345,6 +345,7 @@ class DjSessionProvider extends ChangeNotifier {
     _forgetSyncCorrection(deck);
     _clearMasterWithoutFollowers();
   }
+
   List<DjHotCue> hotCuesFor(DjDeckId deck) =>
       _hotCues[deck]!.values.toList()..sort((a, b) => a.slot.compareTo(b.slot));
 
@@ -417,9 +418,9 @@ class DjSessionProvider extends ChangeNotifier {
       for (final controller in _decks.values) {
         final state = controller.state;
         final queueItemId = state.queueItemId;
-        final matches = (queueItemId != null &&
-                queueItemId == track.queueItemId) ||
-            (trackRef != null && state.trackRef == trackRef);
+        final matches =
+            (queueItemId != null && queueItemId == track.queueItemId) ||
+                (trackRef != null && state.trackRef == trackRef);
         if (!matches) continue;
         if (controller.updateQueueTrack(track)) changed = true;
       }
