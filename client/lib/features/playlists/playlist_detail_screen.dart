@@ -11,7 +11,9 @@ import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/audio/queue_ordering.dart';
 import '../../core/providers/settings_provider.dart';
+import '../../core/services/library_service.dart';
 import '../../core/services/playlist_service.dart';
+import '../../core/services/api_client.dart' as services_api;
 import '../../core/api/api_client.dart';
 import '../../../models/mix_plan.dart';
 import '../../models/nearby_tracks.dart';
@@ -26,6 +28,7 @@ import '../../shared/widgets/track_tile.dart';
 import 'mix/mix_models.dart';
 import 'mix/mix_presets.dart';
 import 'mix/mix_transition_editor.dart';
+import 'add_tracks_sheet.dart';
 import 'harmonic_discovery_sheet.dart';
 import 'mixed_playlist_view.dart';
 import 'playlist_edit_dialog.dart';
@@ -97,12 +100,17 @@ class PlaylistDetailScreen extends StatefulWidget {
   /// Defaults to the authenticated `GET /tracks/nearby`.
   final HarmonicSearch? harmonicSearch;
 
+  /// Loads library pages for the "add tracks" picker. Injectable for the same
+  /// reason as [harmonicSearch]. Defaults to the authenticated `GET /library`.
+  final LibraryTrackPageLoader? libraryTrackLoader;
+
   const PlaylistDetailScreen({
     super.key,
     required this.playlistId,
     this.playlistService,
     this.onSaveMixPlan,
     this.harmonicSearch,
+    this.libraryTrackLoader,
   });
 
   @override
@@ -113,6 +121,11 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   late final PlaylistService _playlistService = widget.playlistService ??
       PlaylistService(api: ApiClient(storage: SecureStorage()));
   late final ApiClient _mixPlanApiClient = ApiClient(storage: SecureStorage());
+
+  // The library list is served by the parser-based services client, the same
+  // one the Library screen reads its pages from.
+  late final LibraryService _libraryService =
+      LibraryService(services_api.ApiClient());
 
   Playlist? _playlist;
   bool _isLoading = true;
@@ -576,13 +589,47 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
   }
 
-  Future<void> _addMatchToPlaylist(NearbyTrack match) async {
+  Future<void> _addMatchToPlaylist(NearbyTrack match) =>
+      _addTracksToPlaylist([match.id]);
+
+  /// Browses the library for tracks to add. The sheet only chooses; the write
+  /// stays here so every add on this screen reports the same way.
+  Future<void> _openTrackPicker() async {
+    final existing = {
+      for (final track in _playlist?.tracks ?? const <Track>[]) track.id,
+    };
+    final picked = await AddTracksSheet.show(
+      context,
+      playlistName: _playlistDisplayName,
+      loadPage: widget.libraryTrackLoader ?? _loadLibraryPage,
+      alreadyInPlaylist: existing,
+    );
+    if (!mounted || picked == null || picked.isEmpty) return;
+    await _addTracksToPlaylist(picked);
+  }
+
+  Future<({List<Track> tracks, int total})> _loadLibraryPage({
+    required int limit,
+    required int offset,
+    String? query,
+  }) =>
+      _libraryService.getLibraryPage(
+        limit: limit,
+        offset: offset,
+        query: query,
+        fields: LibraryService.libraryListFields,
+      );
+
+  /// The single "add to this playlist" path for this screen, so a harmonic
+  /// match and a library pick surface the backend's added/skipped report —
+  /// and reload the list behind it — identically.
+  Future<void> _addTracksToPlaylist(List<int> trackIds) async {
     final messenger = ScaffoldMessenger.of(context);
     final playlistName = _playlistDisplayName;
     try {
       final result = await _playlistService.addTracks(
         widget.playlistId,
-        [match.id],
+        trackIds,
       );
       if (!mounted) return;
       messenger.showSnackBar(
@@ -1058,6 +1105,12 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         ),
       ),
       actions: [
+        IconButton(
+          key: const ValueKey('playlist_add_tracks_action'),
+          icon: const Icon(Icons.playlist_add),
+          onPressed: _openTrackPicker,
+          tooltip: 'Add tracks from your library',
+        ),
         _HarmonicDiscoveryAction(onPressed: _openHarmonicDiscovery),
         if (_hasMixEligibleTracks && _isMixLoading)
           const Padding(
@@ -1246,19 +1299,23 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
 
     if (tracks.isEmpty) {
-      return const SliverFillRemaining(
+      return SliverFillRemaining(
         hasScrollBody: false,
         child: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.music_note, size: 48, color: Colors.grey),
-              SizedBox(height: 16),
-              Text('No tracks yet'),
-              SizedBox(height: 8),
-              Text(
-                'Add tracks from your library',
-                style: TextStyle(color: Colors.grey),
+              const Icon(Icons.music_note, size: 48, color: Colors.grey),
+              const SizedBox(height: 16),
+              const Text('No tracks yet'),
+              const SizedBox(height: 16),
+              // The advice here used to be inert text. An empty playlist's
+              // only job is to get filled, so it is the affordance itself.
+              FilledButton.icon(
+                key: const ValueKey('playlist_empty_add_tracks'),
+                onPressed: _openTrackPicker,
+                icon: const Icon(Icons.playlist_add),
+                label: const Text('Add tracks from your library'),
               ),
             ],
           ),
