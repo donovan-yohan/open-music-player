@@ -221,7 +221,11 @@ func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, prog
 		log.Printf("Warning: failed to add track %d to library: %v", track.ID, err)
 	}
 	if err := p.attachTrackToPlaylistIntent(ctx, job, track.ID); err != nil {
-		return fmt.Errorf("playlist attach failed: %w", err)
+		// The audio downloaded and is already in the library. Failing the job
+		// here would retry the whole download over a playlist bookkeeping
+		// error and would leave the user with neither the track nor a reason.
+		// Playlist imports keep their own per-item state for reconciliation.
+		log.Printf("Warning: failed to attach track %d to its playlist: %v", track.ID, err)
 	}
 	p.enqueueAnalysis(ctx, track, metadata)
 	progress(95)
@@ -1124,11 +1128,17 @@ func (p *Processor) attachTargetPlaylistTrack(ctx context.Context, job *download
 	if p.playlistRepo == nil || job.PlaylistID == 0 {
 		return nil
 	}
-	err := p.playlistRepo.AddTrackAtPosition(ctx, job.PlaylistID, trackID, job.PlaylistPosition)
+	// Append, rather than AddTrackAtPosition with the job's PlaylistPosition.
+	// A picked track has no source ordering to preserve, and PlaylistPosition
+	// is 0 for this intent — which collides with whatever already sits at
+	// position 0 and violates playlist_tracks_playlist_id_position_key. AddTracks
+	// resolves the next free position in its own transaction.
+	_, err := p.playlistRepo.AddTracks(ctx, job.PlaylistID, []int64{trackID})
 	switch {
-	case err == nil, errors.Is(err, db.ErrTrackAlreadyInPlaylist):
-		// The track is where the user asked for it either way, so a retried job
-		// or a manual add that beat the download is not a download failure.
+	case err == nil:
+		// AddTracks reports an existing member as skipped rather than erroring,
+		// so a retried job or a manual add that beat the download lands here and
+		// is correctly not a failure.
 		return nil
 	case errors.Is(err, db.ErrPlaylistNotFound):
 		// Downloads take minutes and the user may delete the playlist in the

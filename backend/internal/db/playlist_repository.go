@@ -432,6 +432,14 @@ func (r *PlaylistRepository) AddTracks(ctx context.Context, playlistID int64, tr
 		`
 		res, err := tx.ExecContext(ctx, query, playlistID, trackID, pos)
 		if err != nil {
+			// The only referenced rows are the playlist and a track the caller
+			// already resolved, so a violated reference means the playlist was
+			// deleted between the caller forming its intent and this insert.
+			// Callers that queued work minutes earlier rely on telling that
+			// apart from a genuine write failure.
+			if isForeignKeyViolation(err) {
+				return AddTracksResult{Added: []int64{}, Skipped: []int64{}}, ErrPlaylistNotFound
+			}
 			return AddTracksResult{Added: []int64{}, Skipped: []int64{}}, err
 		}
 		affected, err := res.RowsAffected()
