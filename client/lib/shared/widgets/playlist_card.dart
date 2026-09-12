@@ -53,7 +53,7 @@ class PlaylistCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '${playlist.trackCount} tracks • ${playlist.formattedDuration}',
+                    '${playlist.trackCountLabel} • ${playlist.formattedDuration}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodySmall,
@@ -104,7 +104,7 @@ class PlaylistListTile extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
       ),
       subtitle: Text(
-        '${playlist.trackCount} tracks',
+        playlist.trackCountLabel,
         style: theme.textTheme.bodySmall,
       ),
       trailing: trailing,

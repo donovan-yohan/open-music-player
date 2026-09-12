@@ -1248,7 +1248,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 ),
               ),
             Text(
-              '${_playlist!.trackCount} tracks • ${_playlist!.formattedDuration}',
+              '${_playlist!.trackCountLabel} • ${_playlist!.formattedDuration}',
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 16),

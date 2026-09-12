@@ -313,7 +313,10 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
             Text(
               [
                 if (_album!.releaseYear.isNotEmpty) _album!.releaseYear,
-                if (_album!.trackCount != null) '${_album!.trackCount} tracks',
+                if (_album!.trackCount != null)
+                  _album!.trackCount == 1
+                      ? '1 track'
+                      : '${_album!.trackCount} tracks',
                 if (_album!.country != null) _album!.country,
               ].join(' | '),
               style: TextStyle(

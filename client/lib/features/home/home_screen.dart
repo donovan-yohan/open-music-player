@@ -340,8 +340,7 @@ class _DesktopPosterItem {
   final int? index;
 
   String get title => track?.title ?? playlist!.name;
-  String get subtitle =>
-      track?.displayArtist ?? '${playlist!.trackCount} tracks';
+  String get subtitle => track?.displayArtist ?? playlist!.trackCountLabel;
   String? get imageUrl => playlist?.coverUrl;
 }
 
@@ -515,7 +514,7 @@ class _PlaylistSection extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            subtitle: Text('${playlist.trackCount} tracks'),
+            subtitle: Text(playlist.trackCountLabel),
           ),
       ],
     );
