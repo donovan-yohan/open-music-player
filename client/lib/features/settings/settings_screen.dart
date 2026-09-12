@@ -350,6 +350,31 @@ class SettingsPlaybackSection extends ConsumerWidget {
           onChanged: settingsNotifier.setDjModeEnabled,
         ),
         ListTile(
+          key: const ValueKey('settings_swipe_queue_mode'),
+          leading: const Icon(Icons.swipe_right_outlined),
+          title: const Text('Swipe to queue'),
+          subtitle: Text(
+            '${settings.swipeQueueMode.displayName} · '
+            '${settings.swipeQueueMode.description}',
+          ),
+          onTap: () => _showSwipeQueueModePicker(
+            context,
+            settings.swipeQueueMode,
+            settingsNotifier,
+          ),
+        ),
+        SwitchListTile(
+          key: const ValueKey('settings_preserve_manual_queue'),
+          secondary: const Icon(Icons.playlist_add_check),
+          title: const Text('Keep queued songs'),
+          subtitle: const Text(
+            'Songs you queued by hand stay in the queue when you start a '
+            'different playlist, album, or list, and play before it.',
+          ),
+          value: settings.preserveManualQueue,
+          onChanged: settingsNotifier.setPreserveManualQueue,
+        ),
+        ListTile(
           key: const ValueKey('settings_end_of_queue'),
           leading: const Icon(Icons.all_inclusive_outlined),
           title: const Text('End of queue'),
@@ -364,6 +389,32 @@ class SettingsPlaybackSection extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+
+  void _showSwipeQueueModePicker(
+    BuildContext context,
+    QueueInsertMode currentMode,
+    SettingsNotifier notifier,
+  ) {
+    showDialog(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Swipe to queue'),
+        children: QueueInsertMode.values.map((mode) {
+          return RadioListTile<QueueInsertMode>(
+            key: ValueKey('settings_swipe_queue_mode_${mode.name}'),
+            title: Text(mode.displayName),
+            subtitle: Text(mode.description),
+            value: mode,
+            groupValue: currentMode,
+            onChanged: (value) {
+              if (value != null) notifier.setSwipeQueueMode(value);
+              Navigator.pop(context);
+            },
+          );
+        }).toList(),
+      ),
     );
   }
 

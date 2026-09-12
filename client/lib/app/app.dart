@@ -81,6 +81,8 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
     final settings = ref.read(settingsProvider);
     _applyCrossfadeDuration(settings.crossfadeDuration);
     widget.playbackState.setEndOfQueueMode(settings.endOfQueueMode);
+    widget.playbackState.setSwipeQueueMode(settings.swipeQueueMode);
+    widget.playbackState.setPreserveManualQueue(settings.preserveManualQueue);
   }
 
   @override
@@ -108,6 +110,14 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
     ref.listen<EndOfQueueMode>(
       settingsProvider.select((settings) => settings.endOfQueueMode),
       (_, mode) => widget.playbackState.setEndOfQueueMode(mode),
+    );
+    ref.listen<QueueInsertMode>(
+      settingsProvider.select((settings) => settings.swipeQueueMode),
+      (_, mode) => widget.playbackState.setSwipeQueueMode(mode),
+    );
+    ref.listen<bool>(
+      settingsProvider.select((settings) => settings.preserveManualQueue),
+      (_, preserve) => widget.playbackState.setPreserveManualQueue(preserve),
     );
     final settings = ref.watch(settingsProvider);
 

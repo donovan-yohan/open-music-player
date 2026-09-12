@@ -73,11 +73,12 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _enqueueTrack(Track track) async {
     final playback = context.read<PlaybackState>();
     final messenger = ScaffoldMessenger.of(context);
+    final mode = playback.swipeQueueMode;
     try {
-      await playback.enqueue(track.toPlaybackJson());
+      await playback.queueTrack(track.toPlaybackJson(), mode: mode);
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(content: Text('Added "${track.title}" to queue')),
+        SnackBar(content: Text(mode.confirmationFor(track.title))),
       );
     } catch (_) {
       if (!mounted) return;

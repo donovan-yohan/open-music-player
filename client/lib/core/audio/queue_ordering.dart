@@ -59,3 +59,44 @@ int manualEnqueueIndex(List<MediaItem> queue, int? currentIndex) {
   }
   return i;
 }
+
+/// The manual items of [queue] the listener has not heard yet, in queue order.
+///
+/// "Unplayed" is everything strictly after [currentIndex]. The item playing
+/// right now is excluded even when it is manual: the listener is leaving it on
+/// purpose by starting something else, and re-queueing a track they are already
+/// hearing would be a surprise rather than a rescue. Items before the current
+/// one have been played and stay played.
+///
+/// Manual items are collected wherever they sit, not only from the contiguous
+/// run after the current item, because the queue screen lets the listener drag
+/// a queued track further down the list and it is still their track.
+List<MediaItem> unplayedManualItems(List<MediaItem> queue, int? currentIndex) {
+  final first = max(0, (currentIndex ?? -1) + 1);
+  return [
+    for (var i = first; i < queue.length; i++)
+      if (itemOrigin(queue[i]) == queueOriginManual) queue[i],
+  ];
+}
+
+/// Splices a carried-over user queue into a freshly built context queue.
+///
+/// [manual] lands directly after the item at [startIndex] — the track whose tap
+/// started this context. So the tapped track plays first, then everything the
+/// listener queued by hand, then the rest of the new collection. Anything
+/// before [startIndex] is context the listener started past and keeps its
+/// place, which leaves [startIndex] valid for the merged queue.
+List<MediaItem> withCarriedOverManualItems(
+  List<MediaItem> contextItems,
+  List<MediaItem> manual, {
+  required int startIndex,
+}) {
+  if (manual.isEmpty) return contextItems;
+  if (contextItems.isEmpty) return List<MediaItem>.of(manual);
+  final insertAt = startIndex.clamp(0, contextItems.length - 1) + 1;
+  return [
+    ...contextItems.take(insertAt),
+    ...manual,
+    ...contextItems.skip(insertAt),
+  ];
+}

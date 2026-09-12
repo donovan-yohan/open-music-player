@@ -10,6 +10,7 @@ import '../../app/theme.dart';
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/audio/queue_ordering.dart';
+import '../../core/models/settings_model.dart';
 import '../../core/providers/settings_provider.dart';
 import '../../core/services/library_service.dart';
 import '../../core/services/playlist_service.dart';
@@ -494,22 +495,28 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     }
   }
 
-  Future<void> _enqueueTrack(Track track) =>
-      _enqueuePayload(track.toPlaybackJson(), track.title);
+  Future<void> _enqueueTrack(Track track) => _enqueuePayload(
+        track.toPlaybackJson(),
+        track.title,
+        mode: context.read<PlaybackState>().swipeQueueMode,
+      );
 
   /// The single queue-append path for this screen, so a playlist row and a
-  /// harmonic match report success and failure identically.
+  /// harmonic match report success and failure identically. [mode] defaults to
+  /// "add to queue" for the buttons that say so; the swipe passes the
+  /// listener's configured default instead.
   Future<void> _enqueuePayload(
     Map<String, dynamic> payload,
-    String title,
-  ) async {
+    String title, {
+    QueueInsertMode mode = QueueInsertMode.addToQueue,
+  }) async {
     final playback = context.read<PlaybackState>();
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await playback.enqueue(payload);
+      await playback.queueTrack(payload, mode: mode);
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(content: Text('Added "$title" to queue')),
+        SnackBar(content: Text(mode.confirmationFor(title))),
       );
     } catch (_) {
       if (!mounted) return;

@@ -234,4 +234,50 @@ void main() {
     // The opt-out has to survive a restart, otherwise the gate is decorative.
     expect(SettingsNotifier(preferences).state.djModeEnabled, isFalse);
   });
+
+  test('swipe-to-queue defaults to what the swipe already did', () {
+    // Changing the gesture's meaning on upgrade would be a surprise, so the
+    // default has to be the historical "Add to queue".
+    expect(const SettingsModel().swipeQueueMode, QueueInsertMode.addToQueue);
+    expect(
+      SettingsModel.fromJson(const {}).swipeQueueMode,
+      QueueInsertMode.addToQueue,
+    );
+
+    const chosen = SettingsModel(swipeQueueMode: QueueInsertMode.playNext);
+    expect(chosen.toJson()['swipeQueueMode'], 'playNext');
+    expect(
+      SettingsModel.fromJson(chosen.toJson()).swipeQueueMode,
+      QueueInsertMode.playNext,
+    );
+    expect(
+      SettingsModel.fromJson(const {'swipeQueueMode': 'nonsense'})
+          .swipeQueueMode,
+      QueueInsertMode.addToQueue,
+    );
+  });
+
+  test('the user queue is preserved by default and the opt-out persists',
+      () async {
+    expect(const SettingsModel().preserveManualQueue, isTrue);
+    // An older blob predating the key lands on the default rather than
+    // silently opting the listener out of the feature.
+    expect(SettingsModel.fromJson(const {}).preserveManualQueue, isTrue);
+    expect(
+      SettingsModel.fromJson(const {'preserveManualQueue': false})
+          .preserveManualQueue,
+      isFalse,
+    );
+
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final notifier = SettingsNotifier(preferences);
+    notifier.setPreserveManualQueue(false);
+    notifier.setSwipeQueueMode(QueueInsertMode.playNext);
+    await Future<void>.delayed(Duration.zero);
+
+    final restored = SettingsNotifier(preferences).state;
+    expect(restored.preserveManualQueue, isFalse);
+    expect(restored.swipeQueueMode, QueueInsertMode.playNext);
+  });
 }

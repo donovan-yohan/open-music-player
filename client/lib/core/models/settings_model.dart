@@ -56,6 +56,36 @@ enum EndOfQueueMode {
       };
 }
 
+/// Where a "queue this track" gesture drops the track in the user queue.
+///
+/// Both modes tag the item `queueOriginManual`, so both survive a context
+/// switch the same way; they differ only in where inside the user queue the
+/// track lands. [addToQueue] appends after everything already queued by hand,
+/// [playNext] jumps the line and plays right after the current track.
+enum QueueInsertMode {
+  addToQueue,
+  playNext;
+
+  String get displayName => switch (this) {
+        QueueInsertMode.addToQueue => 'Add to queue',
+        QueueInsertMode.playNext => 'Play next',
+      };
+
+  String get description => switch (this) {
+        QueueInsertMode.addToQueue =>
+          'Queue after anything you have already queued',
+        QueueInsertMode.playNext => 'Queue ahead of anything you have '
+            'already queued',
+      };
+
+  /// Confirmation copy for a completed queue gesture on [title]. Kept beside
+  /// the mode so every surface that offers the gesture reports the same thing.
+  String confirmationFor(String title) => switch (this) {
+        QueueInsertMode.addToQueue => 'Added "$title" to queue',
+        QueueInsertMode.playNext => 'Playing "$title" next',
+      };
+}
+
 const double defaultClickAuditionVolume = 0.20;
 const int minClickAuditionOutputOffsetMs = -500;
 const int maxClickAuditionOutputOffsetMs = 500;
@@ -177,6 +207,19 @@ class SettingsModel {
   /// [EndOfQueueMode.off] so an upgrade preserves the existing "stop when the
   /// queue runs out" behavior until the listener opts in.
   final EndOfQueueMode endOfQueueMode;
+
+  /// Where a swipe-to-queue gesture drops the track. Defaults to
+  /// [QueueInsertMode.addToQueue], which is what the swipe has always done, so
+  /// the setting only ever changes the gesture for listeners who ask it to.
+  final QueueInsertMode swipeQueueMode;
+
+  /// Whether the user queue outlives the passive queue it was built on top of.
+  ///
+  /// Defaults to true: manually queued tracks are the listener's own choices,
+  /// and starting a different playlist is a statement about what plays *after*
+  /// them, not a request to throw them away. Turning it off restores the older
+  /// behavior where starting a new collection replaces the whole queue.
+  final bool preserveManualQueue;
   final double clickAuditionVolume;
   final bool clickAuditionDownbeatAccentEnabled;
   final ClickAuditionOutputOffsets clickAuditionOutputOffsets;
@@ -196,6 +239,8 @@ class SettingsModel {
     this.themeMode = AppThemeMode.system,
     this.keyNotation = KeyNotation.camelot,
     this.endOfQueueMode = EndOfQueueMode.off,
+    this.swipeQueueMode = QueueInsertMode.addToQueue,
+    this.preserveManualQueue = true,
     this.clickAuditionVolume = defaultClickAuditionVolume,
     this.clickAuditionDownbeatAccentEnabled = true,
     this.clickAuditionOutputOffsets = const ClickAuditionOutputOffsets._(),
@@ -207,6 +252,8 @@ class SettingsModel {
     AppThemeMode? themeMode,
     KeyNotation? keyNotation,
     EndOfQueueMode? endOfQueueMode,
+    QueueInsertMode? swipeQueueMode,
+    bool? preserveManualQueue,
     double? clickAuditionVolume,
     bool? clickAuditionDownbeatAccentEnabled,
     ClickAuditionOutputOffsets? clickAuditionOutputOffsets,
@@ -217,6 +264,8 @@ class SettingsModel {
       themeMode: themeMode ?? this.themeMode,
       keyNotation: keyNotation ?? this.keyNotation,
       endOfQueueMode: endOfQueueMode ?? this.endOfQueueMode,
+      swipeQueueMode: swipeQueueMode ?? this.swipeQueueMode,
+      preserveManualQueue: preserveManualQueue ?? this.preserveManualQueue,
       clickAuditionVolume: _clampVolume(
         clickAuditionVolume ?? this.clickAuditionVolume,
       ),
@@ -237,6 +286,8 @@ class SettingsModel {
       'themeMode': themeMode.index,
       'keyNotation': keyNotation.name,
       'endOfQueueMode': endOfQueueMode.name,
+      'swipeQueueMode': swipeQueueMode.name,
+      'preserveManualQueue': preserveManualQueue,
       'clickAuditionVolume': clickAuditionVolume,
       'clickAuditionDownbeatAccentEnabled': clickAuditionDownbeatAccentEnabled,
       'clickAuditionOutputOffsetsMs': clickAuditionOutputOffsets.toJson(),
@@ -250,6 +301,13 @@ class SettingsModel {
       themeMode: _themeModeFromJson(json['themeMode']),
       keyNotation: _keyNotationFromJson(json['keyNotation']),
       endOfQueueMode: _endOfQueueModeFromJson(json['endOfQueueMode']),
+      swipeQueueMode: _queueInsertModeFromJson(json['swipeQueueMode']),
+      // Absent means the listener upgraded without choosing, which lands on
+      // the default rather than silently opting them out of the feature.
+      preserveManualQueue: _readBool(
+        json['preserveManualQueue'],
+        fallback: true,
+      ),
       clickAuditionVolume: _readVolume(json['clickAuditionVolume']),
       clickAuditionDownbeatAccentEnabled: _readBool(
         json['clickAuditionDownbeatAccentEnabled'],
@@ -295,6 +353,16 @@ EndOfQueueMode _endOfQueueModeFromJson(Object? value) {
   return switch (normalized) {
     'shufflelibrary' || 'shuffle_library' => EndOfQueueMode.shuffleLibrary,
     _ => EndOfQueueMode.off,
+  };
+}
+
+/// Reads a persisted [QueueInsertMode], defaulting to
+/// [QueueInsertMode.addToQueue] — the behavior swipe-to-queue shipped with.
+QueueInsertMode _queueInsertModeFromJson(Object? value) {
+  final normalized = value?.toString().trim().toLowerCase();
+  return switch (normalized) {
+    'playnext' || 'play_next' => QueueInsertMode.playNext,
+    _ => QueueInsertMode.addToQueue,
   };
 }
 

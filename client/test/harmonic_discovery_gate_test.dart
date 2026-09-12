@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/api/api_client.dart' as core_api;
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/models/settings_model.dart';
 import 'package:open_music_player/core/providers/settings_provider.dart';
 import 'package:open_music_player/core/services/playlist_service.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
@@ -70,10 +71,20 @@ class _StubPlaylistService extends PlaylistService {
 
 class _FakePlayback extends Fake implements PlaybackState {
   final List<Map<String, dynamic>> enqueued = [];
+  final List<QueueInsertMode> modes = [];
 
   @override
   Future<void> enqueue(Map<String, dynamic> track) async {
     enqueued.add(track);
+  }
+
+  @override
+  Future<void> queueTrack(
+    Map<String, dynamic> track, {
+    required QueueInsertMode mode,
+  }) async {
+    modes.add(mode);
+    await enqueue(track);
   }
 
   @override

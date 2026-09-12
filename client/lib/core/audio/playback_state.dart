@@ -79,6 +79,8 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   final QueueContinuationSource? _continuationSource;
   final int _continuationBatchSize;
   EndOfQueueMode _endOfQueueMode = EndOfQueueMode.off;
+  QueueInsertMode _swipeQueueMode = QueueInsertMode.addToQueue;
+  bool _preserveManualQueue = true;
 
   /// The listening queue a seam preview borrowed, or null when no preview is
   /// running. Held here — not in the sheet — because the queue it describes is
@@ -316,6 +318,43 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     _endOfQueueMode = mode;
   }
 
+  /// Where a swipe-to-queue gesture drops a track. Pushed in from settings the
+  /// same way [endOfQueueMode] is; surfaces read it to word their confirmation.
+  QueueInsertMode get swipeQueueMode => _swipeQueueMode;
+
+  void setSwipeQueueMode(QueueInsertMode mode) {
+    _swipeQueueMode = mode;
+  }
+
+  /// Whether the user queue survives a context switch.
+  bool get preserveManualQueue => _preserveManualQueue;
+
+  void setPreserveManualQueue(bool preserve) {
+    _preserveManualQueue = preserve;
+  }
+
+  /// Adds [track] to the user queue at the position [mode] names.
+  ///
+  /// Gestures that do not state their own position pass [swipeQueueMode];
+  /// explicit "Add to queue" / "Play next" commands pass the mode they mean, or
+  /// keep calling [enqueue] / [playNext] directly.
+  Future<void> queueTrack(
+    Map<String, dynamic> track, {
+    required QueueInsertMode mode,
+  }) =>
+      switch (mode) {
+        QueueInsertMode.addToQueue => enqueue(track),
+        QueueInsertMode.playNext => playNext(track),
+      };
+
+  /// The unplayed user queue to carry into the next context, captured *before*
+  /// the running session is torn down. Empty when carry-over is switched off,
+  /// which restores the older replace-everything behavior.
+  List<MediaItem> _manualCarryOver() {
+    if (!_preserveManualQueue) return const [];
+    return unplayedManualItems(queue, currentIndex);
+  }
+
   /// Continues playback past the natural end of the queue.
   ///
   /// Runs only for a natural completion: [QueueTimelineController]
@@ -386,12 +425,15 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   }
 
   Future<void> playTrack(Map<String, dynamic> track) async {
+    // Read the user queue first: _beginPlaybackReplacement empties the
+    // controller, and after that the manual items are gone for good.
+    final carriedOver = _manualCarryOver();
     final generation = await _beginPlaybackReplacement(context: null);
     await _resolveSignedUrls(() async {
       await _startWithRecovery(() async {
         final item = await _sourceResolver.resolveTrack(track);
         if (!_isCurrentPlayRequest(generation)) return;
-        await _queueController.setQueue([item]);
+        await _queueController.setQueue([item, ...carriedOver]);
         if (!_isCurrentPlayRequest(generation)) return;
         await _queueController.play();
       });
@@ -405,15 +447,27 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   }) async {
     if (tracks.isEmpty) return;
 
+    // The passive queue is being replaced; the active one is not. Read it
+    // before _beginPlaybackReplacement empties the controller.
+    final carriedOver = _manualCarryOver();
+
     // Stamp (or clear) the attribution before playback starts so the player
     // updates immediately and a context-less play never leaves a stale label.
     final generation = await _beginPlaybackReplacement(context: context);
 
     await _resolveSignedUrls(() async {
       await _startWithRecovery(() async {
-        final items = await _sourceResolver.resolveQueue(tracks);
+        final resolved = await _sourceResolver.resolveQueue(tracks);
         if (!_isCurrentPlayRequest(generation)) return;
-        await _queueController.setQueue(items, initialIndex: startIndex);
+        final startAt = resolved.isEmpty
+            ? 0
+            : startIndex.clamp(0, resolved.length - 1).toInt();
+        final items = withCarriedOverManualItems(
+          resolved,
+          carriedOver,
+          startIndex: startAt,
+        );
+        await _queueController.setQueue(items, initialIndex: startAt);
         if (!_isCurrentPlayRequest(generation)) return;
         await _queueController.play();
       });
@@ -422,6 +476,10 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
 
   /// Validates that the persisted plan retains Slice 1's canonical playlist
   /// order, then loads it through the single queue timeline controller.
+  ///
+  /// Unlike [playQueue] this never carries the user queue over: a mix plan's
+  /// clips are positionally bound to its tracks (see [_validateMixPlanOrder]),
+  /// so splicing extra items into the queue would desynchronize the plan.
   Future<void> playMixPlan(
     List<Map<String, dynamic>> tracks,
     MixPlan plan, {
