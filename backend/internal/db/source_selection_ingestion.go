@@ -3,12 +3,75 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
 
 	"github.com/openmusicplayer/backend/internal/download"
 )
+
+// sourceSelectionDownloadJobInsert persists the durable row for a trusted
+// source-selection download.
+//
+// It deliberately omits download_jobs.target_playlist_id, the column the
+// processor reads to append a finished download to a playlist the user picked
+// (see processor.attachTargetPlaylistTrack). The only caller of
+// CreateDownloadForDecision is the playlist import service, and an import
+// carries its destination through playlist_import_items, so there is nothing
+// for this path to store. queue.createDurableDownloadJob has the 16-column
+// shape for the path that does need it; unifying the two is a bigger change
+// than the absent requirement justifies.
+//
+// The hazard of that choice is that a playlist target arriving here later
+// would be dropped silently and the track would land in the library only,
+// which is indistinguishable from success. checkPersistablePlaylistTarget
+// exists to turn that into a loud failure instead.
+const sourceSelectionDownloadJobInsert = `INSERT INTO download_jobs (id, user_id, url, source_type, status, candidate_id, source_id, title, artist, album, uploader, duration_ms, thumbnail_url, metadata_json) VALUES ($1,$2,$3,$4,'queued',$5,$6,$7,$8,$9,$10,$11,$12,$13)`
+
+// ErrDownloadPlaylistTargetUnsupported reports that a download job carries a
+// playlist destination this ingestion path cannot persist.
+var ErrDownloadPlaylistTargetUnsupported = errors.New("source-selection ingestion cannot persist a playlist target")
+
+// checkPersistablePlaylistTarget rejects a job whose playlist destination
+// sourceSelectionDownloadJobInsert would not write.
+//
+// Nothing reaches this today: download.SourceCandidate has no playlist fields,
+// so newSourceSelectionDownloadJob cannot produce one. That is exactly why the
+// guard is here — a future caller that adds a playlist target to this path has
+// no other signal that the column is missing, and would otherwise ship a
+// download that quietly forgets where the user wanted the track to go.
+func checkPersistablePlaylistTarget(job *download.DownloadJob) error {
+	if job == nil || (job.PlaylistID == 0 && job.PlaylistPosition == 0) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: job %s targets playlist %d position %d; add target_playlist_id to sourceSelectionDownloadJobInsert before routing a playlist download through this path",
+		ErrDownloadPlaylistTargetUnsupported, job.ID, job.PlaylistID, job.PlaylistPosition,
+	)
+}
+
+// newSourceSelectionDownloadJob builds the durable job for a trusted
+// source-selection download. It is split out from CreateDownloadForDecision so
+// the fields that do and do not survive the INSERT can be asserted directly.
+func newSourceSelectionDownloadJob(userID uuid.UUID, candidate download.SourceCandidate) *download.DownloadJob {
+	return &download.DownloadJob{
+		ID:           uuid.NewString(),
+		UserID:       userID.String(),
+		URL:          candidate.SourceURL,
+		SourceType:   candidate.Provider,
+		Status:       download.StatusQueued,
+		CandidateID:  candidate.CandidateID,
+		SourceID:     candidate.SourceID,
+		Title:        candidate.Title,
+		Artist:       candidate.Artist,
+		Album:        candidate.Album,
+		Uploader:     candidate.Uploader,
+		DurationMs:   candidate.DurationMs,
+		ThumbnailURL: candidate.ThumbnailURL,
+		Metadata:     candidate.Metadata,
+	}
+}
 
 // SourceSelectionIngestion owns the durable side of trusted ingestion. Redis
 // receives work only after this package has persisted a decision and linked job.
@@ -54,8 +117,11 @@ func (s *SourceSelectionIngestion) CreateDownloadForDecision(ctx context.Context
 	if err != nil {
 		return nil, fmt.Errorf("marshal trusted candidate metadata: %w", err)
 	}
-	job := &download.DownloadJob{ID: uuid.NewString(), UserID: userID.String(), URL: candidate.SourceURL, SourceType: candidate.Provider, Status: download.StatusQueued, CandidateID: candidate.CandidateID, SourceID: candidate.SourceID, Title: candidate.Title, Artist: candidate.Artist, Album: candidate.Album, Uploader: candidate.Uploader, DurationMs: candidate.DurationMs, ThumbnailURL: candidate.ThumbnailURL, Metadata: candidate.Metadata}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO download_jobs (id, user_id, url, source_type, status, candidate_id, source_id, title, artist, album, uploader, duration_ms, thumbnail_url, metadata_json) VALUES ($1,$2,$3,$4,'queued',$5,$6,$7,$8,$9,$10,$11,$12,$13)`, job.ID, userID, job.URL, job.SourceType, job.CandidateID, job.SourceID, job.Title, job.Artist, job.Album, job.Uploader, job.DurationMs, job.ThumbnailURL, metadata)
+	job := newSourceSelectionDownloadJob(userID, candidate)
+	if err := checkPersistablePlaylistTarget(job); err != nil {
+		return nil, err
+	}
+	_, err = s.db.ExecContext(ctx, sourceSelectionDownloadJobInsert, job.ID, userID, job.URL, job.SourceType, job.CandidateID, job.SourceID, job.Title, job.Artist, job.Album, job.Uploader, job.DurationMs, job.ThumbnailURL, metadata)
 	if err != nil {
 		return nil, fmt.Errorf("create durable source-selection download job: %w", err)
 	}
