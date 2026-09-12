@@ -14,7 +14,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('page_queue')), findsOneWidget);
-    expect(_navigationBar(tester).selectedIndex, 3);
+    expect(_navigationBar(tester).selectedIndex, 4);
     expect(find.widgetWithText(NavigationDestination, 'Queue'), findsOneWidget);
   });
 
@@ -39,7 +39,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byKey(const ValueKey('page_home')), findsOneWidget);
-      expect(_navigationBar(tester).destinations.length, 5);
+      expect(_navigationBar(tester).destinations.length, 6);
 
       await tester.tap(find.widgetWithText(NavigationDestination, 'Queue'));
       await tester.pumpAndSettle();
@@ -48,7 +48,7 @@ void main() {
     }
 
     expect(find.byKey(const ValueKey('page_queue')), findsOneWidget);
-    expect(_navigationBar(tester).selectedIndex, 3);
+    expect(_navigationBar(tester).selectedIndex, 4);
     expect(
       flutterErrors.where(
         (error) => error.exceptionAsString().contains('overflowed'),
@@ -88,6 +88,11 @@ GoRouter _testRouter({required String initialLocation}) {
             path: '/library',
             pageBuilder: (context, state) =>
                 const NoTransitionPage(child: _TestPage('library')),
+          ),
+          GoRoute(
+            path: '/playlists',
+            pageBuilder: (context, state) =>
+                const NoTransitionPage(child: _TestPage('playlists')),
           ),
           GoRoute(
             path: '/queue',

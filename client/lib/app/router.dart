@@ -246,11 +246,10 @@ class ScaffoldWithNavBar extends StatelessWidget {
     final location = GoRouterState.of(context).uri.path;
     if (location.startsWith('/home')) return 0;
     if (location.startsWith('/search')) return 1;
-    if (location.startsWith('/library') || location.startsWith('/playlists')) {
-      return 2;
-    }
-    if (location.startsWith('/queue')) return 3;
-    if (location.startsWith('/settings')) return 4;
+    if (location.startsWith('/library')) return 2;
+    if (location.startsWith('/playlists')) return 3;
+    if (location.startsWith('/queue')) return 4;
+    if (location.startsWith('/settings')) return 5;
     return 0;
   }
 
@@ -266,9 +265,12 @@ class ScaffoldWithNavBar extends StatelessWidget {
         context.go('/library');
         break;
       case 3:
-        context.go('/queue');
+        context.go('/playlists');
         break;
       case 4:
+        context.go('/queue');
+        break;
+      case 5:
         context.go('/settings');
         break;
     }
@@ -313,6 +315,11 @@ class _MobileShell extends StatelessWidget {
             label: 'Library',
           ),
           NavigationDestination(
+            icon: Icon(Icons.playlist_play_outlined),
+            selectedIcon: Icon(Icons.playlist_play),
+            label: 'Playlists',
+          ),
+          NavigationDestination(
             icon: Icon(Icons.queue_music_outlined),
             selectedIcon: Icon(Icons.queue_music),
             label: 'Queue',
@@ -353,7 +360,7 @@ class _DesktopShellState extends State<_DesktopShell> {
     skipTraversal: true,
   );
   late final List<FocusNode> _destinationFocusNodes = List.generate(
-    5,
+    6,
     (index) => FocusNode(debugLabel: 'Sound Q destination $index'),
   );
 
@@ -473,29 +480,44 @@ class _DesktopShellState extends State<_DesktopShell> {
                         NavigationRailDestination(
                           icon: _DesktopRailIcon(
                             index: 3,
-                            icon: Icons.queue_music_outlined,
+                            icon: Icons.playlist_play_outlined,
                             focusNode: _destinationFocusNodes[3],
                             onActivate: widget.onDestinationSelected,
                           ),
                           selectedIcon: _DesktopRailIcon(
                             index: 3,
-                            icon: Icons.queue_music,
+                            icon: Icons.playlist_play,
                             focusNode: _destinationFocusNodes[3],
+                            onActivate: widget.onDestinationSelected,
+                          ),
+                          label: const Text('Playlists'),
+                        ),
+                        NavigationRailDestination(
+                          icon: _DesktopRailIcon(
+                            index: 4,
+                            icon: Icons.queue_music_outlined,
+                            focusNode: _destinationFocusNodes[4],
+                            onActivate: widget.onDestinationSelected,
+                          ),
+                          selectedIcon: _DesktopRailIcon(
+                            index: 4,
+                            icon: Icons.queue_music,
+                            focusNode: _destinationFocusNodes[4],
                             onActivate: widget.onDestinationSelected,
                           ),
                           label: const Text('Queue'),
                         ),
                         NavigationRailDestination(
                           icon: _DesktopRailIcon(
-                            index: 4,
+                            index: 5,
                             icon: Icons.settings_outlined,
-                            focusNode: _destinationFocusNodes[4],
+                            focusNode: _destinationFocusNodes[5],
                             onActivate: widget.onDestinationSelected,
                           ),
                           selectedIcon: _DesktopRailIcon(
-                            index: 4,
+                            index: 5,
                             icon: Icons.settings,
-                            focusNode: _destinationFocusNodes[4],
+                            focusNode: _destinationFocusNodes[5],
                             onActivate: widget.onDestinationSelected,
                           ),
                           label: const Text('Settings'),

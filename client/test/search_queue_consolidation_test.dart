@@ -200,7 +200,7 @@ void main() {
       expect(find.text('Plastic Love'), findsOneWidget);
       expect(
         tester.widget<NavigationBar>(find.byType(NavigationBar)).selectedIndex,
-        3,
+        4,
       );
 
       await tester.tap(find.widgetWithText(NavigationDestination, 'Queue'));
