@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../core/storage/offline_database.dart';
 import '../../core/network/connectivity_service.dart';
+import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/api/api_client.dart';
 import '../../core/commands/app_command.dart';
@@ -812,6 +813,39 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
+  /// Plays the library from the tapped row, queueing the rows as they are
+  /// listed rather than the tapped track alone.
+  ///
+  /// The queue is the tracks currently loaded, in the order the current filter
+  /// and sort put them on screen, so what plays next is what the listener can
+  /// see coming. Rows loaded later by infinite scroll are deliberately not
+  /// appended to an already-playing queue: growing a queue underneath someone
+  /// is a surprise, and the end-of-queue continuation setting already covers
+  /// "keep going once this runs out".
+  Future<void> _playFrom(int index) async {
+    if (index < 0 || index >= _tracks.length) return;
+    final playback = context.read<PlaybackState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await playback.playQueue(
+        _tracks.map((track) => track.toPlaybackJson()).toList(),
+        startIndex: index,
+        context: const PlaybackContext(
+          kind: PlaybackContextKind.library,
+          label: 'Library',
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(playback.playbackError ?? 'Could not play this track.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   Widget _buildTrackList() {
     return RefreshIndicator(
       onRefresh: _loadTracks,
@@ -837,6 +871,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             libraryService: _libraryService,
             detailApiClient: _servicesApiClient,
             onTrackUpdated: _loadTracks,
+            onPlay: () => _playFrom(index),
           );
         },
       ),
@@ -851,6 +886,10 @@ class LibraryTrackListTile extends StatefulWidget {
   final PlaylistService? playlistService;
   final VoidCallback? onTrackUpdated;
 
+  /// Plays the surrounding list from this row. Null when the row is mounted
+  /// outside the library list and there is no surrounding list to play.
+  final VoidCallback? onPlay;
+
   const LibraryTrackListTile({
     super.key,
     required this.track,
@@ -858,6 +897,7 @@ class LibraryTrackListTile extends StatefulWidget {
     required this.detailApiClient,
     this.playlistService,
     this.onTrackUpdated,
+    this.onPlay,
   });
 
   @override
@@ -1100,7 +1140,8 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
                 ),
               ],
             ),
-            onTap: () => _playTrack(context),
+            onTap: () =>
+                widget.onPlay != null ? widget.onPlay!() : _playTrack(context),
             onLongPress: track.needsVerification
                 ? () => _showMatchSuggestions(context)
                 : () => _showActions(context),
