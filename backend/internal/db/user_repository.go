@@ -94,6 +94,10 @@ func isUniqueViolation(err error) bool {
 	return err != nil && (contains(err.Error(), "unique") || contains(err.Error(), "duplicate"))
 }
 
+func isForeignKeyViolation(err error) bool {
+	return err != nil && contains(err.Error(), "foreign key")
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr, 0))
 }

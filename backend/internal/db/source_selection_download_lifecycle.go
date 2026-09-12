@@ -167,6 +167,7 @@ func (l *SourceSelectionDownloadLifecycle) Complete(ctx context.Context, job *do
 // be tested without Redis. Each method must be idempotent.
 type SourceSelectionRecoveryQueue interface {
 	EnsureSourceCandidateWithID(context.Context, string, string, download.SourceCandidate, *string) (*download.DownloadJob, error)
+	EnsureSourceCandidateForPlaylistWithID(context.Context, string, string, download.SourceCandidate, *string, int64) (*download.DownloadJob, error)
 	EnsurePlaylistImportItemWithID(context.Context, string, string, download.SourceCandidate, string, int64, int64, int) (*download.DownloadJob, error)
 }
 
@@ -196,7 +197,8 @@ func (l *SourceSelectionDownloadLifecycle) RecoverWithPlayback(ctx context.Conte
 	rows, err := l.db.QueryContext(ctx, `
 		SELECT j.id, j.user_id, d.selected_candidate, j.mb_recording_id,
 			qi.queue_item_id, qi.insert_position,
-			pi.import_job_id, pi.id, pij.playlist_id, pi.playlist_position
+			pi.import_job_id, pi.id, pij.playlist_id, pi.playlist_position,
+			j.target_playlist_id
 		FROM download_jobs AS j
 		JOIN source_selection_decisions AS d ON d.download_job_id = j.id
 		LEFT JOIN source_selection_queue_intents AS qi
@@ -219,8 +221,8 @@ func (l *SourceSelectionDownloadLifecycle) RecoverWithPlayback(ctx context.Conte
 		var mbRecordingID uuid.NullUUID
 		var queueItemID, insertPosition sql.NullString
 		var importJobID uuid.NullUUID
-		var importItemID, playlistID, playlistPosition sql.NullInt64
-		if err := rows.Scan(&jobID, &userID, &snapshot, &mbRecordingID, &queueItemID, &insertPosition, &importJobID, &importItemID, &playlistID, &playlistPosition); err != nil {
+		var importItemID, playlistID, playlistPosition, targetPlaylistID sql.NullInt64
+		if err := rows.Scan(&jobID, &userID, &snapshot, &mbRecordingID, &queueItemID, &insertPosition, &importJobID, &importItemID, &playlistID, &playlistPosition, &targetPlaylistID); err != nil {
 			return recovered, err
 		}
 		candidate, err := candidateFromPersistedSelection(snapshot)
@@ -244,7 +246,9 @@ func (l *SourceSelectionDownloadLifecycle) RecoverWithPlayback(ctx context.Conte
 			if _, err := queue.EnsurePlaylistImportItemWithID(ctx, jobID.String(), userID.String(), candidate, importJobID.UUID.String(), importItemID.Int64, playlistID.Int64, int(playlistPosition.Int64)); err != nil {
 				return recovered, fmt.Errorf("recover durable playlist-import job %s: %w", jobID, err)
 			}
-		} else if _, err := queue.EnsureSourceCandidateWithID(ctx, jobID.String(), userID.String(), candidate, mbID); err != nil {
+		} else if _, err := queue.EnsureSourceCandidateForPlaylistWithID(ctx, jobID.String(), userID.String(), candidate, mbID, targetPlaylistID.Int64); err != nil {
+			// target_playlist_id is NULL-on-delete, so a playlist removed while
+			// the download was in flight recovers as a plain download.
 			return recovered, fmt.Errorf("recover durable source-selection job %s: %w", jobID, err)
 		}
 		recovered++

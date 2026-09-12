@@ -805,7 +805,7 @@ func main() {
 		})
 		playlistImportHandlers = api.NewPlaylistImportHandlers(playlistImportService)
 
-		queueHandlers = queue.NewHandlersWithSourceSelections(queueService, downloadService, analysisRepo, sourceSelectionRepo, database)
+		queueHandlers = queue.NewHandlersWithPlaylistTargets(queueService, downloadService, analysisRepo, sourceSelectionRepo, database, playlistRepo)
 	}
 
 	var redisClient *redis.Client

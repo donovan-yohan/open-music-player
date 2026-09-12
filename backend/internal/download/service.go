@@ -93,6 +93,13 @@ func (s *Service) EnsureSourceCandidateWithID(ctx context.Context, jobID, userID
 	return s.queue.EnsureCandidateWithID(ctx, jobID, userID, candidate, mbRecordingID)
 }
 
+// EnsureSourceCandidateForPlaylistWithID is EnsureSourceCandidateWithID for a
+// candidate the user picked for a playlist. The target playlist rides along so
+// the processor can attach the finished track without a live request.
+func (s *Service) EnsureSourceCandidateForPlaylistWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string, targetPlaylistID int64) (*DownloadJob, error) {
+	return s.queue.EnsureCandidateForPlaylistWithID(ctx, jobID, userID, candidate, mbRecordingID, targetPlaylistID)
+}
+
 func (s *Service) EnqueuePlaylistImportItem(ctx context.Context, userID string, candidate SourceCandidate, importJobID string, importItemID int64, playlistID int64, playlistPosition int) (*DownloadJob, error) {
 	return s.queue.EnqueuePlaylistImportItem(ctx, userID, candidate, importJobID, importItemID, playlistID, playlistPosition)
 }
