@@ -15,24 +15,63 @@ import (
 	"github.com/openmusicplayer/backend/internal/db"
 )
 
+// playlistRepository is the playlist persistence these routes actually use.
+//
+// It is declared consumer-side, the way playback.go and stems.go already do, so
+// the handlers can be exercised with fakes instead of a live Postgres. The
+// concrete *db.PlaylistRepository satisfies it without changing the repository.
+type playlistRepository interface {
+	Create(ctx context.Context, playlist *db.Playlist) error
+	GetByID(ctx context.Context, id int64) (*db.Playlist, error)
+	GetByIDWithTracks(ctx context.Context, id int64) (*db.PlaylistWithTracks, error)
+	GetByUserID(ctx context.Context, userID uuid.UUID, params db.ListPlaylistsParams) ([]db.PlaylistWithTracks, int, error)
+	Update(ctx context.Context, playlist *db.Playlist) error
+	Delete(ctx context.Context, id int64) error
+	AddTracks(ctx context.Context, playlistID int64, trackIDs []int64) (db.AddTracksResult, error)
+	RemoveTrack(ctx context.Context, playlistID, trackID int64) error
+	RemoveTracks(ctx context.Context, playlistID int64, trackIDs []int64) error
+	ReorderTrack(ctx context.Context, playlistID, trackID int64, newPosition int) error
+}
+
+// playlistTrackRepository is the one track lookup AddTracks needs to reject an
+// unknown track ID before any membership row is written. It stays separate from
+// playlistRepository because tracks and playlists are different stores, and a
+// test that only cares about membership should not have to stub track reads.
+type playlistTrackRepository interface {
+	GetByID(ctx context.Context, id int64) (*db.Track, error)
+}
+
+// playlistMetadataOverrideRepository is the display-layer merge that renders the
+// caller's per-user metadata overrides (issue #344) onto already-loaded tracks.
+type playlistMetadataOverrideRepository interface {
+	ApplyToTracks(ctx context.Context, userID uuid.UUID, tracks []*db.Track) error
+}
+
 type PlaylistHandlers struct {
-	playlistRepo *db.PlaylistRepository
-	trackRepo    *db.TrackRepository
+	playlistRepo playlistRepository
+	trackRepo    playlistTrackRepository
 	// overrideRepo is optional. When set, playlist track payloads render the caller's
 	// per-user metadata overrides (issue #344) so a playlist queued into the player
 	// shows the same edited title/artist/album as the library.
-	overrideRepo *db.TrackMetadataOverrideRepository
+	overrideRepo playlistMetadataOverrideRepository
 }
 
-func NewPlaylistHandlers(playlistRepo *db.PlaylistRepository, trackRepo *db.TrackRepository) *PlaylistHandlers {
+func NewPlaylistHandlers(playlistRepo playlistRepository, trackRepo playlistTrackRepository) *PlaylistHandlers {
 	return NewPlaylistHandlersWithMetadataOverrides(playlistRepo, trackRepo, nil)
 }
 
 func NewPlaylistHandlersWithMetadataOverrides(
-	playlistRepo *db.PlaylistRepository,
-	trackRepo *db.TrackRepository,
-	overrideRepo *db.TrackMetadataOverrideRepository,
+	playlistRepo playlistRepository,
+	trackRepo playlistTrackRepository,
+	overrideRepo playlistMetadataOverrideRepository,
 ) *PlaylistHandlers {
+	// The override repository is optional and the read paths treat nil as "no
+	// overrides". A nil *db.TrackMetadataOverrideRepository stored in an
+	// interface still tests non-nil and would panic on the first override read,
+	// so normalize it back to a nil interface and keep that contract intact.
+	if repo, ok := overrideRepo.(*db.TrackMetadataOverrideRepository); ok && repo == nil {
+		overrideRepo = nil
+	}
 	return &PlaylistHandlers{
 		playlistRepo: playlistRepo,
 		trackRepo:    trackRepo,

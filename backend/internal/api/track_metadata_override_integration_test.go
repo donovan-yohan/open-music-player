@@ -378,14 +378,14 @@ func TestPlaylistTracksApplyMetadataOverrides(t *testing.T) {
 	if err := playlistRepo.Create(ctx, ownerPlaylist); err != nil {
 		t.Fatalf("create owner playlist: %v", err)
 	}
-	if err := playlistRepo.AddTrack(ctx, ownerPlaylist.ID, trackID); err != nil {
+	if _, err := playlistRepo.AddTracks(ctx, ownerPlaylist.ID, []int64{trackID}); err != nil {
 		t.Fatalf("add track to owner playlist: %v", err)
 	}
 	otherPlaylist := &db.Playlist{UserID: otherID, Name: "Other Playlist"}
 	if err := playlistRepo.Create(ctx, otherPlaylist); err != nil {
 		t.Fatalf("create other playlist: %v", err)
 	}
-	if err := playlistRepo.AddTrack(ctx, otherPlaylist.ID, trackID); err != nil {
+	if _, err := playlistRepo.AddTracks(ctx, otherPlaylist.ID, []int64{trackID}); err != nil {
 		t.Fatalf("add track to other playlist: %v", err)
 	}
 

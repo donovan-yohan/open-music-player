@@ -140,7 +140,7 @@ func newTrackMetadataOverrideResponse(trackID int64, override *db.TrackMetadataO
 // returning canonical metadata.
 func applyMetadataOverridesToTracks(
 	ctx context.Context,
-	repo *db.TrackMetadataOverrideRepository,
+	repo playlistMetadataOverrideRepository,
 	userID uuid.UUID,
 	tracks []db.Track,
 ) error {

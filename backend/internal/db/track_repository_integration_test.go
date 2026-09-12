@@ -593,7 +593,7 @@ func TestNullMetadataJSONScansWithoutErrorAgainstPostgres(t *testing.T) {
 	if err := playlistRepo.Create(ctx, playlist); err != nil {
 		t.Fatalf("create playlist: %v", err)
 	}
-	if err := playlistRepo.AddTrack(ctx, playlist.ID, nullTrack.ID); err != nil {
+	if _, err := playlistRepo.AddTracks(ctx, playlist.ID, []int64{nullTrack.ID}); err != nil {
 		t.Fatalf("add null-metadata track to playlist: %v", err)
 	}
 	withTracks, err := playlistRepo.GetByIDWithTracks(ctx, playlist.ID)

@@ -125,7 +125,7 @@ func TestPlaylistSourceApplyResolvedMappingReplacesSourceAndPreservesLibraryTrac
 	if _, err := database.Exec(`INSERT INTO user_library (user_id, track_id) VALUES ($1, $2)`, userID, manualLibraryTrack); err != nil {
 		t.Fatalf("add manual library track: %v", err)
 	}
-	if err := playlistRepo.AddTrack(ctx, playlist.ID, manualLibraryTrack); err != nil {
+	if _, err := playlistRepo.AddTracks(ctx, playlist.ID, []int64{manualLibraryTrack}); err != nil {
 		t.Fatalf("add manual playlist track: %v", err)
 	}
 
