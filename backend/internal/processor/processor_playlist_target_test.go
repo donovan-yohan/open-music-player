@@ -201,3 +201,51 @@ func TestAttachTargetPlaylistTrackAppendsToANonEmptyPlaylist(t *testing.T) {
 		t.Fatalf("playlist members = %d, want 2", members)
 	}
 }
+
+// The two intents differ in what a failed attach costs. A pick owns only
+// membership, so a failure must not fail a download that already produced a
+// usable track. An import owns item state and job counts, and nothing sweeps a
+// stuck item — the job retry is the only reconciler, so its failure must stay
+// fatal. Collapsing both into "log and continue" silently strands import items.
+func TestPickToleratesAFailedAttachWhileImportStaysFatal(t *testing.T) {
+	database, ctx := newProcessorPostgresTestDB(t)
+	userID := uuid.New()
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO users (id, email, username, password_hash)
+		VALUES ($1, $2, 'processor-intent', 'x')
+	`, userID, "processor-intent-"+userID.String()+"@example.test"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	trackRepo := db.NewTrackRepository(database)
+	track, _, err := trackRepo.CreateTrackFromMetadata(ctx, "Intent", "Intent track", "", 90000)
+	if err != nil {
+		t.Fatalf("create track: %v", err)
+	}
+
+	processor := New(&ProcessorConfig{
+		PlaylistRepo: db.NewPlaylistRepository(database),
+		ImportRepo:   playlistimport.NewImportRepository(database),
+	})
+
+	// A playlist id that does not exist stands in for any attach that cannot
+	// land. The pick path must absorb it.
+	pick := &download.DownloadJob{ID: uuid.NewString(), UserID: userID.String(), PlaylistID: 999999}
+	if err := processor.attachTrackToPlaylistIntent(ctx, pick, track.ID); err != nil {
+		t.Fatalf("pick attach to a missing playlist = %v, want the download to survive it", err)
+	}
+
+	// The same unattachable target on an import must surface, so the job fails
+	// and retries rather than leaving the item queued forever. Without an
+	// import repo the import path falls back to a direct membership write,
+	// which is the branch that can actually report a failure here.
+	importProcessor := New(&ProcessorConfig{PlaylistRepo: db.NewPlaylistRepository(database)})
+	imported := &download.DownloadJob{
+		ID:                   uuid.NewString(),
+		UserID:               userID.String(),
+		PlaylistID:           999999,
+		PlaylistImportItemID: 999999,
+	}
+	if err := importProcessor.attachTrackToPlaylistIntent(ctx, imported, track.ID); err == nil {
+		t.Fatal("import attach to a missing playlist = nil, want an error so the job retries")
+	}
+}
