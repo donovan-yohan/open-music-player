@@ -220,8 +220,8 @@ func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, prog
 	if err := p.addToLibrary(ctx, job.UserID, track.ID); err != nil {
 		log.Printf("Warning: failed to add track %d to library: %v", track.ID, err)
 	}
-	if err := p.attachPlaylistImportTrack(ctx, job, track.ID); err != nil {
-		return fmt.Errorf("playlist import attach failed: %w", err)
+	if err := p.attachTrackToPlaylistIntent(ctx, job, track.ID); err != nil {
+		return fmt.Errorf("playlist attach failed: %w", err)
 	}
 	p.enqueueAnalysis(ctx, track, metadata)
 	progress(95)
@@ -1098,6 +1098,46 @@ func (p *Processor) recordTrackSource(ctx context.Context, job *download.Downloa
 	}
 	if err := p.sourceRepo.UpsertTrackSource(ctx, trackID, job.SourceType, job.SourceID, job.URL); err != nil {
 		log.Printf("Warning: failed to record track source for track %d: %v", trackID, err)
+	}
+}
+
+// attachTrackToPlaylistIntent routes a finished download to whichever playlist
+// intent it carries. A playlist import and a single "add this to that playlist"
+// pick are different intents that happen to share the job fields: the import
+// owns item state and job counts, the pick only owns membership. Keeping them
+// in separate functions is what stops one from quietly acquiring the other's
+// bookkeeping.
+func (p *Processor) attachTrackToPlaylistIntent(ctx context.Context, job *download.DownloadJob, trackID int64) error {
+	if job == nil {
+		return nil
+	}
+	if job.PlaylistImportItemID != 0 {
+		return p.attachPlaylistImportTrack(ctx, job, trackID)
+	}
+	return p.attachTargetPlaylistTrack(ctx, job, trackID)
+}
+
+// attachTargetPlaylistTrack honors a playlist the user chose when the download
+// was queued. Ownership was settled at enqueue time; this runs with no request
+// context, so it deliberately does not re-authorize and must not invent one.
+func (p *Processor) attachTargetPlaylistTrack(ctx context.Context, job *download.DownloadJob, trackID int64) error {
+	if p.playlistRepo == nil || job.PlaylistID == 0 {
+		return nil
+	}
+	err := p.playlistRepo.AddTrackAtPosition(ctx, job.PlaylistID, trackID, job.PlaylistPosition)
+	switch {
+	case err == nil, errors.Is(err, db.ErrTrackAlreadyInPlaylist):
+		// The track is where the user asked for it either way, so a retried job
+		// or a manual add that beat the download is not a download failure.
+		return nil
+	case errors.Is(err, db.ErrPlaylistNotFound):
+		// Downloads take minutes and the user may delete the playlist in the
+		// meantime. The audio is still theirs and is already in their library;
+		// failing or retrying the job over a vanished target would be wrong.
+		log.Printf("Skipped playlist attach for track %d: playlist %d no longer exists", trackID, job.PlaylistID)
+		return nil
+	default:
+		return fmt.Errorf("add track %d to playlist %d: %w", trackID, job.PlaylistID, err)
 	}
 }
 

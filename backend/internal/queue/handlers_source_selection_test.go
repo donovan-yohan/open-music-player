@@ -86,6 +86,9 @@ type fakeQueueDownloadService struct {
 	enqueueErr error
 	enqueued   []download.SourceCandidate
 	mbIDs      []*string
+	// targetPlaylists records the playlist intent handed to the download side,
+	// including the 0 that means "no playlist".
+	targetPlaylists []int64
 }
 
 func (s *fakeQueueDownloadService) GetJob(context.Context, string) (*download.DownloadJob, error) {
@@ -110,6 +113,17 @@ func (s *fakeQueueDownloadService) EnsureSourceCandidateWithID(ctx context.Conte
 		return s.job, nil
 	}
 	return s.EnqueueSourceCandidateWithID(ctx, jobID, userID, candidate, mbID)
+}
+func (s *fakeQueueDownloadService) EnsureSourceCandidateForPlaylistWithID(ctx context.Context, jobID, userID string, candidate download.SourceCandidate, mbID *string, targetPlaylistID int64) (*download.DownloadJob, error) {
+	s.targetPlaylists = append(s.targetPlaylists, targetPlaylistID)
+	job, err := s.EnsureSourceCandidateWithID(ctx, jobID, userID, candidate, mbID)
+	if err != nil {
+		return nil, err
+	}
+	if job.PlaylistID == 0 {
+		job.PlaylistID = targetPlaylistID
+	}
+	return job, nil
 }
 func (s *fakeQueueDownloadService) RetryJob(context.Context, string) error { return nil }
 

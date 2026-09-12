@@ -214,6 +214,17 @@ func (db *DB) Migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_download_jobs_user_status ON download_jobs(user_id, status);
 	CREATE INDEX IF NOT EXISTS idx_download_jobs_track_id ON download_jobs(track_id) WHERE track_id IS NOT NULL;
 
+	-- A queue enqueue can carry the playlist the user picked for the result. The
+	-- target lives on the job, not in the client, so the intent survives both the
+	-- user leaving the screen and a server restart mid-download. ON DELETE SET
+	-- NULL is the deliberate behavior for a playlist deleted while the download
+	-- is still running: the download keeps going, it just has nowhere to land.
+	ALTER TABLE download_jobs
+		ADD COLUMN IF NOT EXISTS target_playlist_id BIGINT
+		REFERENCES playlists(id) ON DELETE SET NULL;
+	CREATE INDEX IF NOT EXISTS idx_download_jobs_target_playlist
+		ON download_jobs(target_playlist_id) WHERE target_playlist_id IS NOT NULL;
+
 	CREATE TABLE IF NOT EXISTS source_selection_sessions (
 		id UUID PRIMARY KEY,
 		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

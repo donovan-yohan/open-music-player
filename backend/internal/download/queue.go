@@ -96,6 +96,16 @@ func (q *Queue) EnqueueCandidate(ctx context.Context, userID string, candidate S
 // job ID. This lets API handlers persist a visible queue item before publishing
 // the job to workers.
 func (q *Queue) EnqueueCandidateWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string) (*DownloadJob, error) {
+	return q.EnqueueCandidateForPlaylistWithID(ctx, jobID, userID, candidate, mbRecordingID, 0)
+}
+
+// EnqueueCandidateForPlaylistWithID queues a discovery candidate the user picked
+// for a specific playlist. This is not a playlist import: there is no import item
+// to reconcile, only a target the processor should attach the finished track to.
+// Carrying the target on the job is what makes the intent outlive the request,
+// since a download takes minutes and the user is free to navigate away.
+// A targetPlaylistID of 0 means "no playlist", which is the generic queue path.
+func (q *Queue) EnqueueCandidateForPlaylistWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string, targetPlaylistID int64) (*DownloadJob, error) {
 	return q.enqueueJob(ctx, &DownloadJob{
 		ID:            jobID,
 		UserID:        userID,
@@ -111,18 +121,39 @@ func (q *Queue) EnqueueCandidateWithID(ctx context.Context, jobID, userID string
 		DurationMs:    candidate.DurationMs,
 		ThumbnailURL:  candidate.ThumbnailURL,
 		Metadata:      candidate.Metadata,
+		PlaylistID:    targetPlaylistID,
 	})
 }
 
 // EnsureCandidateWithID restores a missing queue-list entry after a process
 // restart without creating another entry for a job that is already queued.
 func (q *Queue) EnsureCandidateWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string) (*DownloadJob, error) {
+	return q.EnsureCandidateForPlaylistWithID(ctx, jobID, userID, candidate, mbRecordingID, 0)
+}
+
+// EnsureCandidateForPlaylistWithID is the idempotent form of
+// EnqueueCandidateForPlaylistWithID used by restart recovery and by repeated
+// client submissions of the same source decision.
+//
+// A job that is already live adopts a target it does not yet have, so a second
+// submission that finally names a playlist is not lost. It never overwrites a
+// target it already carries: one download produces one track, the first intent
+// wins, and a user who wants the track in a second playlist can add it there
+// once it lands.
+func (q *Queue) EnsureCandidateForPlaylistWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string, targetPlaylistID int64) (*DownloadJob, error) {
 	job, err := q.GetJob(ctx, jobID)
 	if err == nil {
 		if job.UserID != userID {
 			return nil, fmt.Errorf("download job %s belongs to another user", jobID)
 		}
 		if !job.IsTerminal() {
+			if targetPlaylistID != 0 && job.PlaylistID == 0 {
+				job.PlaylistID = targetPlaylistID
+				job.UpdatedAt = time.Now()
+				if err := q.saveJob(ctx, job); err != nil {
+					return nil, fmt.Errorf("adopt playlist target for job %s: %w", jobID, err)
+				}
+			}
 			_, positionErr := q.client.LPos(ctx, keyJobQueue, jobID, redis.LPosArgs{}).Result()
 			switch {
 			case positionErr == nil:
@@ -140,7 +171,7 @@ func (q *Queue) EnsureCandidateWithID(ctx context.Context, jobID, userID string,
 	} else if !errors.Is(err, ErrJobNotFound) {
 		return nil, err
 	}
-	return q.EnqueueCandidateWithID(ctx, jobID, userID, candidate, mbRecordingID)
+	return q.EnqueueCandidateForPlaylistWithID(ctx, jobID, userID, candidate, mbRecordingID, targetPlaylistID)
 }
 
 // EnsurePlaylistImportItemWithID restores a playlist-import job with its

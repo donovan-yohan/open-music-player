@@ -12,9 +12,10 @@ import (
 )
 
 type recoveryQueueStub struct {
-	seen          map[string]*download.DownloadJob
-	enqueue       int
-	playlistCalls []playlistRecoveryCall
+	seen            map[string]*download.DownloadJob
+	enqueue         int
+	playlistCalls   []playlistRecoveryCall
+	targetPlaylists []int64
 }
 
 type playlistRecoveryCall struct {
@@ -33,6 +34,16 @@ func (q *recoveryQueueStub) EnsureSourceCandidateWithID(_ context.Context, id, u
 	q.enqueue++
 	job := &download.DownloadJob{ID: id, UserID: userID, Status: download.StatusQueued, CandidateID: candidate.CandidateID, MBRecordingID: mbID}
 	q.seen[id] = job
+	return job, nil
+}
+
+func (q *recoveryQueueStub) EnsureSourceCandidateForPlaylistWithID(ctx context.Context, id, userID string, candidate download.SourceCandidate, mbID *string, targetPlaylistID int64) (*download.DownloadJob, error) {
+	q.targetPlaylists = append(q.targetPlaylists, targetPlaylistID)
+	job, err := q.EnsureSourceCandidateWithID(ctx, id, userID, candidate, mbID)
+	if err != nil {
+		return nil, err
+	}
+	job.PlaylistID = targetPlaylistID
 	return job, nil
 }
 

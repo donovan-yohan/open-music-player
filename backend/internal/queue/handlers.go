@@ -25,6 +25,7 @@ type Handlers struct {
 	analysisRepo    *db.AnalysisRepository
 	selectionRepo   sourceDecisionRepository
 	database        durableDownloadJobStore
+	playlistRepo    playlistOwnershipRepository
 }
 
 // These seams keep the HTTP boundary testable without Redis or PostgreSQL.
@@ -47,7 +48,15 @@ type queueDownloadService interface {
 	GetJob(context.Context, string) (*download.DownloadJob, error)
 	EnqueueSourceCandidateWithID(context.Context, string, string, download.SourceCandidate, *string) (*download.DownloadJob, error)
 	EnsureSourceCandidateWithID(context.Context, string, string, download.SourceCandidate, *string) (*download.DownloadJob, error)
+	EnsureSourceCandidateForPlaylistWithID(context.Context, string, string, download.SourceCandidate, *string, int64) (*download.DownloadJob, error)
 	RetryJob(context.Context, string) error
+}
+
+// playlistOwnershipRepository is the authorization seam for the optional
+// playlistId intent. Ownership has to be settled here, while a request context
+// still exists; the download processor runs long after the request is gone.
+type playlistOwnershipRepository interface {
+	GetByID(context.Context, int64) (*db.Playlist, error)
 }
 
 type sourceDecisionRepository interface {
@@ -76,7 +85,14 @@ func NewHandlersWithAnalysis(service queueHandlerService, downloadService queueD
 // NewHandlersWithSourceSelections enables the decision-gated source ingress.
 // Library-track insertion remains independent of this dependency.
 func NewHandlersWithSourceSelections(service queueHandlerService, downloadService queueDownloadService, analysisRepo *db.AnalysisRepository, selectionRepo sourceDecisionRepository, database durableDownloadJobStore) *Handlers {
-	return &Handlers{service: service, downloadService: downloadService, analysisRepo: analysisRepo, selectionRepo: selectionRepo, database: database}
+	return NewHandlersWithPlaylistTargets(service, downloadService, analysisRepo, selectionRepo, database, nil)
+}
+
+// NewHandlersWithPlaylistTargets additionally accepts the playlist repository
+// that authorizes an optional playlistId on queue insertion. A nil playlistRepo
+// keeps the endpoint working and simply rejects requests that name a playlist.
+func NewHandlersWithPlaylistTargets(service queueHandlerService, downloadService queueDownloadService, analysisRepo *db.AnalysisRepository, selectionRepo sourceDecisionRepository, database durableDownloadJobStore, playlistRepo playlistOwnershipRepository) *Handlers {
+	return &Handlers{service: service, downloadService: downloadService, analysisRepo: analysisRepo, selectionRepo: selectionRepo, database: database, playlistRepo: playlistRepo}
 }
 
 // ErrorResponse represents an error response
@@ -133,10 +149,16 @@ type QueueItemResponse struct {
 
 // AddQueueItemRequest is the mobile-facing queue insertion contract. It accepts
 // either an existing playable track or a non-playable discovery source candidate.
+//
+// PlaylistID is the optional "I picked this for that playlist" intent. It only
+// applies to a source candidate, since a track already in the library can be
+// added to a playlist through the playlist endpoints directly. Omitting it
+// leaves the endpoint behaving exactly as it did before.
 type AddQueueItemRequest struct {
 	Position         string  `json:"position"`
 	TrackID          *int64  `json:"trackId,omitempty"`
 	SourceDecisionID *string `json:"sourceDecisionId,omitempty"`
+	PlaylistID       *int64  `json:"playlistId,omitempty"`
 }
 
 const maxAddQueueItemRequestBytes = 8 * 1024
@@ -190,6 +212,10 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "trackId cannot be combined with source selection fields")
 			return
 		}
+		if req.PlaylistID != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "playlistId applies to a new source, not a library track")
+			return
+		}
 		if *req.TrackID <= 0 {
 			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "trackId must be positive")
 			return
@@ -238,6 +264,10 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "INVALID_SOURCE_DECISION", "source decision candidate is invalid")
 		return
 	}
+	targetPlaylistID, ok := h.authorizedPlaylistTarget(w, r, userCtx.UserID, req.PlaylistID)
+	if !ok {
+		return
+	}
 
 	if err := h.service.ValidateInsertPosition(r.Context(), userCtx.UserID.String(), req.Position); err != nil {
 		if err == ErrInvalidPosition {
@@ -251,9 +281,17 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 	createdJob := false
 	if decision.DownloadJobID.Valid {
 		jobID = decision.DownloadJobID.UUID.String()
+		if targetPlaylistID != 0 {
+			// A decision that already owns a job still has to record the intent
+			// durably, or a restart would re-enqueue the job without its target.
+			if err := h.adoptDurableDownloadJobPlaylist(r.Context(), userCtx.UserID.String(), jobID, targetPlaylistID); err != nil {
+				writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to record playlist target")
+				return
+			}
+		}
 	} else {
 		jobID = uuid.NewString()
-		if err := h.createDurableDownloadJob(r.Context(), userCtx.UserID.String(), jobID, candidate, mbRecordingID); err != nil {
+		if err := h.createDurableDownloadJob(r.Context(), userCtx.UserID.String(), jobID, candidate, mbRecordingID, targetPlaylistID); err != nil {
 			writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create download job")
 			return
 		}
@@ -269,7 +307,7 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 	}
 	existingJob, getErr := h.downloadService.GetJob(r.Context(), jobID)
 	jobAlreadyPublished := getErr == nil && existingJob != nil
-	job, err := h.enqueueDecisionCandidate(r, userCtx.UserID.String(), jobID, candidate, intent.QueueItemID, intent.InsertPosition, mbRecordingID)
+	job, err := h.enqueueDecisionCandidate(r, userCtx.UserID.String(), jobID, candidate, intent.QueueItemID, intent.InsertPosition, mbRecordingID, targetPlaylistID)
 	if err != nil {
 		writeQueueDecisionEnqueueError(w, err)
 		return
@@ -348,34 +386,79 @@ func selectedCandidateMBRecordingID(metadata map[string]interface{}) (*string, e
 	return &value, nil
 }
 
-func (h *Handlers) createDurableDownloadJob(ctx context.Context, userID, jobID string, candidate SourceCandidate, mbRecordingID *string) error {
+// authorizedPlaylistTarget resolves the optional playlistId to a target the
+// requesting user may actually write to. Authorization has to happen here, where
+// the caller's identity is known: the processor attaches the finished track
+// minutes later with no request context and no user to check against. It writes
+// the error response itself and reports whether the caller may continue.
+func (h *Handlers) authorizedPlaylistTarget(w http.ResponseWriter, r *http.Request, userID uuid.UUID, requested *int64) (int64, bool) {
+	if requested == nil {
+		return 0, true
+	}
+	if *requested <= 0 {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "playlistId must be positive")
+		return 0, false
+	}
+	if h.playlistRepo == nil {
+		writeError(w, http.StatusServiceUnavailable, "PLAYLIST_TARGET_UNAVAILABLE", "playlist targeting is disabled")
+		return 0, false
+	}
+	playlist, err := h.playlistRepo.GetByID(r.Context(), *requested)
+	if err != nil {
+		if errors.Is(err, db.ErrPlaylistNotFound) {
+			writeError(w, http.StatusNotFound, "PLAYLIST_NOT_FOUND", "playlist not found")
+			return 0, false
+		}
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load playlist")
+		return 0, false
+	}
+	if playlist.UserID != userID {
+		writeError(w, http.StatusForbidden, "FORBIDDEN", "not authorized to modify this playlist")
+		return 0, false
+	}
+	return playlist.ID, true
+}
+
+func (h *Handlers) createDurableDownloadJob(ctx context.Context, userID, jobID string, candidate SourceCandidate, mbRecordingID *string, targetPlaylistID int64) error {
 	metadata, err := json.Marshal(candidate.Metadata)
 	if err != nil {
 		return err
 	}
+	var playlistID any
+	if targetPlaylistID != 0 {
+		playlistID = targetPlaylistID
+	}
 	// Use exactly the same immutable derived mbRecordingID value that was validated.
-	_, err = h.database.ExecContext(ctx, `INSERT INTO download_jobs (id, user_id, url, source_type, status, candidate_id, source_id, title, artist, album, uploader, duration_ms, thumbnail_url, metadata_json, mb_recording_id) VALUES ($1,$2,$3,$4,'queued',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, jobID, userID, candidate.SourceURL, candidate.Provider, candidate.CandidateID, candidate.SourceID, candidate.Title, candidate.Artist, candidate.Album, candidate.Uploader, candidate.DurationMs, candidate.ThumbnailURL, metadata, mbRecordingID)
+	_, err = h.database.ExecContext(ctx, `INSERT INTO download_jobs (id, user_id, url, source_type, status, candidate_id, source_id, title, artist, album, uploader, duration_ms, thumbnail_url, metadata_json, mb_recording_id, target_playlist_id) VALUES ($1,$2,$3,$4,'queued',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, jobID, userID, candidate.SourceURL, candidate.Provider, candidate.CandidateID, candidate.SourceID, candidate.Title, candidate.Artist, candidate.Album, candidate.Uploader, candidate.DurationMs, candidate.ThumbnailURL, metadata, mbRecordingID, playlistID)
+	return err
+}
+
+// adoptDurableDownloadJobPlaylist only fills an empty target. An in-flight job
+// already aimed at a playlist keeps that aim, matching the Redis side, so a
+// second submission cannot silently redirect a download the user is watching.
+func (h *Handlers) adoptDurableDownloadJobPlaylist(ctx context.Context, userID, jobID string, targetPlaylistID int64) error {
+	_, err := h.database.ExecContext(ctx, `UPDATE download_jobs SET target_playlist_id = $3, updated_at = clock_timestamp() WHERE id = $1 AND user_id = $2 AND target_playlist_id IS NULL`, jobID, userID, targetPlaylistID)
 	return err
 }
 func (h *Handlers) deleteDurableDownloadJob(ctx context.Context, jobID string) error {
 	_, err := h.database.ExecContext(ctx, `DELETE FROM download_jobs WHERE id = $1`, jobID)
 	return err
 }
-func (h *Handlers) enqueueDecisionCandidate(r *http.Request, userID, jobID string, candidate SourceCandidate, queueItemID, position string, mbRecordingID *string) (*download.DownloadJob, error) {
+func (h *Handlers) enqueueDecisionCandidate(r *http.Request, userID, jobID string, candidate SourceCandidate, queueItemID, position string, mbRecordingID *string, targetPlaylistID int64) (*download.DownloadJob, error) {
 	state, err := h.service.GetQueue(r.Context(), userID)
 	if err != nil {
 		return nil, err
 	}
 	for _, item := range state.Items {
 		if item.DownloadJobID == jobID {
-			return h.downloadService.EnsureSourceCandidateWithID(r.Context(), jobID, userID, toDownloadCandidate(candidate), mbRecordingID)
+			return h.downloadService.EnsureSourceCandidateForPlaylistWithID(r.Context(), jobID, userID, toDownloadCandidate(candidate), mbRecordingID, targetPlaylistID)
 		}
 	}
 	_, err = h.service.EnsureSourceCandidateWithID(r.Context(), userID, queueItemID, candidate, jobID, position)
 	if err != nil {
 		return nil, err
 	}
-	return h.downloadService.EnsureSourceCandidateWithID(r.Context(), jobID, userID, toDownloadCandidate(candidate), mbRecordingID)
+	return h.downloadService.EnsureSourceCandidateForPlaylistWithID(r.Context(), jobID, userID, toDownloadCandidate(candidate), mbRecordingID, targetPlaylistID)
 }
 func toDownloadCandidate(candidate SourceCandidate) download.SourceCandidate {
 	return download.SourceCandidate{CandidateID: candidate.CandidateID, Provider: candidate.Provider, SourceID: candidate.SourceID, SourceURL: candidate.SourceURL, Title: candidate.Title, Artist: candidate.Artist, Album: candidate.Album, Uploader: candidate.Uploader, DurationMs: candidate.DurationMs, ThumbnailURL: candidate.ThumbnailURL, Metadata: candidate.Metadata}

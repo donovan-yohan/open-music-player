@@ -357,6 +357,12 @@ func (r *PlaylistRepository) AddTrackAtPosition(ctx context.Context, playlistID,
 	`
 	result, err := r.db.ExecContext(ctx, query, playlistID, trackID, position)
 	if err != nil {
+		// The only referenced rows here are the playlist and the track the caller
+		// just resolved, so a violated reference means the playlist was deleted
+		// between the caller forming its intent and this insert.
+		if isForeignKeyViolation(err) {
+			return ErrPlaylistNotFound
+		}
 		return err
 	}
 	rows, err := result.RowsAffected()
