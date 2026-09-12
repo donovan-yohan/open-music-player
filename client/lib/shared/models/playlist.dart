@@ -62,6 +62,11 @@ class Playlist {
 
   int get trackCount => tracks?.length ?? _trackCount ?? 0;
 
+  /// "1 track" / "7 tracks". Every surface that shows a count renders this, so
+  /// a one-track playlist does not read as "1 tracks".
+  String get trackCountLabel =>
+      trackCount == 1 ? '1 track' : '$trackCount tracks';
+
   /// Returns total duration of all tracks formatted as "Xh Ym" or "Xm Ys"
   String get formattedDuration {
     if ((tracks == null || tracks!.isEmpty) && totalDurationMs == null) {

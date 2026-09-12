@@ -53,7 +53,7 @@ class PlaylistPickerSheet extends StatelessWidget {
               (playlist) => ListTile(
                 leading: const Icon(Icons.playlist_play),
                 title: Text(playlist.name),
-                subtitle: Text('${playlist.trackCount} tracks'),
+                subtitle: Text(playlist.trackCountLabel),
                 onTap: () => Navigator.of(context).pop(playlist),
               ),
             ),
