@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
-import 'package:open_music_player/core/services/api_client.dart' as local_api;
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/features/library/local_browse_navigation.dart';
 import 'package:open_music_player/features/library/local_browse_screens.dart';
@@ -9,7 +9,7 @@ import 'package:open_music_player/shared/models/track.dart';
 
 /// Records the filter the destination screen asked the backend for.
 class _RecordingLibraryService extends LibraryService {
-  _RecordingLibraryService() : super(local_api.ApiClient());
+  _RecordingLibraryService() : super(ApiClient());
 
   String? capturedArtist;
   String? capturedAlbum;

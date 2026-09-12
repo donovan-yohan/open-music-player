@@ -99,12 +99,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _verificationFilter != VerificationFilter.all ||
       _filter.hasActiveFilters;
 
-  // Library mutations (like/unlike, remove, playlists) and MusicBrainz-backed
-  // detail navigation run through the parser-based services client, mirroring
-  // the search/discovery screens.
-  final services.ApiClient _servicesApiClient = services.ApiClient();
+  final ApiClient _apiClient = ApiClient();
   late final services.LibraryService _libraryService =
-      services.LibraryService(_servicesApiClient);
+      services.LibraryService(_apiClient);
 
   @override
   void initState() {
@@ -869,7 +866,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             key: ValueKey(track.id),
             track: track,
             libraryService: _libraryService,
-            detailApiClient: _servicesApiClient,
+            detailApiClient: _apiClient,
             onTrackUpdated: _loadTracks,
             onPlay: () => _playFrom(index),
           );
@@ -882,7 +879,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 class LibraryTrackListTile extends StatefulWidget {
   final Track track;
   final services.LibraryService libraryService;
-  final services.ApiClient detailApiClient;
+  final ApiClient detailApiClient;
   final PlaylistService? playlistService;
   final VoidCallback? onTrackUpdated;
 

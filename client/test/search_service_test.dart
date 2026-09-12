@@ -1,6 +1,7 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/models/models.dart';
-import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/search_service.dart';
 
 /// Captures the endpoint/params a service asked for and returns a canned parsed
@@ -10,19 +11,22 @@ class _CapturingApiClient extends ApiClient {
 
   final Map<String, dynamic> envelope;
   String? capturedEndpoint;
-  Map<String, String>? capturedParams;
+  Map<String, dynamic>? capturedParams;
 
   @override
-  Future<T> get<T>(
-    String endpoint, {
-    T Function(Map<String, dynamic>)? parser,
-    T Function(List<dynamic>)? listParser,
-    Map<String, String>? queryParams,
-    bool requiresAuth = true,
+  Future<Response<T>> get<T>(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
   }) async {
-    capturedEndpoint = endpoint;
-    capturedParams = queryParams;
-    return parser!(envelope);
+    capturedEndpoint = path;
+    capturedParams = queryParameters;
+    return Response<T>(
+      requestOptions: RequestOptions(path: path),
+      statusCode: 200,
+      data: envelope as T,
+    );
   }
 }
 

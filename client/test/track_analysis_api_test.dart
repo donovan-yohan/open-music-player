@@ -1,60 +1,60 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
-import 'package:open_music_player/core/services/analysis_service.dart';
-import 'package:open_music_player/core/services/api_client.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/widgets/analysis_correction_sheet.dart';
 
-/// Captures the endpoint a service asked for and returns a canned parsed body,
-/// so we can assert routing + parsing without a real HTTP call.
-class _CapturingApiClient extends ApiClient {
-  _CapturingApiClient(this.body, {this.conflict = false}) : super();
+import 'support/mock_dio_client.dart';
+
+/// Drives the real [ApiClient] over a canned transport and records the request
+/// it made, so routing and request bodies stay asserted alongside parsing
+/// without a real HTTP call.
+class _CapturingApi {
+  _CapturingApi(this.body, {this.conflict = false}) {
+    client = mockQueueApiClient((request) async {
+      // The client is configured with the `/api/v1` prefix; the assertions are
+      // written against the endpoint the caller asked for.
+      capturedEndpoint = request.url.path.replaceFirst('/api/v1', '');
+      if (request.body.isNotEmpty) {
+        final decoded = jsonDecode(request.body) as Map<String, dynamic>;
+        capturedBody = decoded;
+        capturedBodies.add(decoded);
+      }
+      if (conflict) {
+        return http.Response(
+          jsonEncode({
+            'code': 'OVERRIDE_REVISION_CONFLICT',
+            'message': 'Override changed on another client',
+          }),
+          409,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+      return http.Response(
+        jsonEncode(body),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    });
+  }
 
   final Map<String, dynamic> body;
   final bool conflict;
+  late final ApiClient client;
   String? capturedEndpoint;
   Map<String, dynamic>? capturedBody;
   final List<Map<String, dynamic>> capturedBodies = [];
-
-  @override
-  Future<T> get<T>(
-    String endpoint, {
-    T Function(Map<String, dynamic>)? parser,
-    T Function(List<dynamic>)? listParser,
-    Map<String, String>? queryParams,
-    bool requiresAuth = true,
-  }) async {
-    capturedEndpoint = endpoint;
-    return parser!(body);
-  }
-
-  @override
-  Future<T> patch<T>(
-    String endpoint, {
-    Map<String, dynamic>? body,
-    T Function(Map<String, dynamic>)? parser,
-    bool requiresAuth = true,
-  }) async {
-    capturedEndpoint = endpoint;
-    capturedBody = body;
-    if (body != null) capturedBodies.add(body);
-    if (conflict) {
-      throw ApiException(
-        code: 'OVERRIDE_REVISION_CONFLICT',
-        message: 'Override changed on another client',
-        statusCode: 409,
-      );
-    }
-    return parser!(this.body);
-  }
 }
 
 void main() {
-  group('AnalysisService', () {
+  group('track analysis API', () {
     test(
       'getTrackAnalysis -> GET /tracks/{id}/analysis and parses summary',
       () async {
-        final api = _CapturingApiClient({
+        final api = _CapturingApi({
           'track_id': 42,
           'status': 'analyzed',
           'updated_at': '2026-07-10T11:00:00.123456Z',
@@ -131,7 +131,7 @@ void main() {
           },
         });
 
-        final analysis = await AnalysisService(api).getTrackAnalysis(42);
+        final analysis = await api.client.getTrackAnalysis(42);
 
         expect(api.capturedEndpoint, '/tracks/42/analysis');
         expect(analysis.status, TrackAnalysisStatus.analyzed);
@@ -176,7 +176,7 @@ void main() {
     );
 
     test('updateTrackAnalysisOverrides -> PATCH override contract', () async {
-      final api = _CapturingApiClient({
+      final api = _CapturingApi({
         'track_id': 42,
         'status': 'analyzed',
         'updated_at': '2026-07-10T11:00:00.123457Z',
@@ -197,7 +197,7 @@ void main() {
         },
       });
 
-      final analysis = await AnalysisService(api).updateTrackAnalysisOverrides(
+      final analysis = await api.client.updateTrackAnalysisOverrides(
         42,
         const TrackAnalysisOverrides(
           bpm: 124,
@@ -236,7 +236,7 @@ void main() {
     test(
       'legacy BPM-only overrides stay scoped to BPM provenance',
       () async {
-        final api = _CapturingApiClient({
+        final api = _CapturingApi({
           'track_id': 42,
           'status': 'analyzed',
           'summary': {
@@ -248,8 +248,7 @@ void main() {
           },
         });
 
-        final analysis =
-            await AnalysisService(api).updateTrackAnalysisOverrides(
+        final analysis = await api.client.updateTrackAnalysisOverrides(
           42,
           const TrackAnalysisOverrides(bpm: 124),
         );
@@ -265,7 +264,7 @@ void main() {
     );
 
     test('PATCH sends expected revision and parses its successor', () async {
-      final api = _CapturingApiClient({
+      final api = _CapturingApi({
         'status': 'analyzed',
         'override_revision': 8,
         'override_updated_at': '2026-07-26T10:11:12Z',
@@ -286,7 +285,7 @@ void main() {
         },
       });
 
-      final analysis = await AnalysisService(api).updateTrackAnalysisOverrides(
+      final analysis = await api.client.updateTrackAnalysisOverrides(
         42,
         manualTimingOverridesFromFields(
           bpm: 120,
@@ -312,11 +311,11 @@ void main() {
 
     test('PATCH preserves omission and serializes replace and clear mutations',
         () async {
-      final api = _CapturingApiClient({
+      final api = _CapturingApi({
         'status': 'analyzed',
         'overrides': <String, dynamic>{},
       });
-      final service = AnalysisService(api);
+      final service = api.client;
 
       await service.updateTrackAnalysisOverrides(
         42,
@@ -352,10 +351,10 @@ void main() {
     });
 
     test('PATCH surfaces an optimistic-concurrency conflict', () async {
-      final api = _CapturingApiClient(const {}, conflict: true);
+      final api = _CapturingApi(const {}, conflict: true);
 
       await expectLater(
-        () => AnalysisService(api).updateTrackAnalysisOverrides(
+        () => api.client.updateTrackAnalysisOverrides(
           42,
           manualTimingOverridesFromFields(bpm: 120, beatAnchorMs: 87),
           expectedRevision: 7,
@@ -363,8 +362,8 @@ void main() {
         throwsA(
           isA<ApiException>()
               .having((error) => error.statusCode, 'statusCode', 409)
-              .having(
-                  (error) => error.code, 'code', 'OVERRIDE_REVISION_CONFLICT'),
+              .having((error) => error.errorCode, 'errorCode',
+                  'OVERRIDE_REVISION_CONFLICT'),
         ),
       );
     });
@@ -409,7 +408,7 @@ void main() {
     });
 
     test('offset-only detail hydration preserves analyzer trust', () async {
-      final api = _CapturingApiClient({
+      final api = _CapturingApi({
         'track_id': 42,
         'status': 'analyzed',
         'summary': {
@@ -431,7 +430,7 @@ void main() {
         },
       });
 
-      final analysis = await AnalysisService(api).getTrackAnalysis(42);
+      final analysis = await api.client.getTrackAnalysis(42);
       final tempo = ClipTempoMetadata.fromAnalysisSummary(
         analysis.summary?.toJson(),
         overrides: analysis.overrides?.toJson(),
@@ -453,9 +452,9 @@ void main() {
     });
 
     test('tolerates a pending analysis with no summary', () async {
-      final api = _CapturingApiClient({'track_id': 7, 'status': 'pending'});
+      final api = _CapturingApi({'track_id': 7, 'status': 'pending'});
 
-      final analysis = await AnalysisService(api).getTrackAnalysis(7);
+      final analysis = await api.client.getTrackAnalysis(7);
 
       expect(analysis.status, TrackAnalysisStatus.pending);
       expect(analysis.summary, isNull);
@@ -464,9 +463,9 @@ void main() {
     test(
       'parses stale analysis status for invalidated analyzer artifacts',
       () async {
-        final api = _CapturingApiClient({'track_id': 9, 'status': 'stale'});
+        final api = _CapturingApi({'track_id': 9, 'status': 'stale'});
 
-        final analysis = await AnalysisService(api).getTrackAnalysis(9);
+        final analysis = await api.client.getTrackAnalysis(9);
 
         expect(analysis.status, TrackAnalysisStatus.stale);
         expect(analysis.isNonSuccess, isTrue);

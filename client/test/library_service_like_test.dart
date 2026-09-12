@@ -1,5 +1,6 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 
 /// Captures the method + endpoint a service asked for, so we can assert routing
@@ -12,23 +13,32 @@ class _CapturingApiClient extends ApiClient {
   String? deleteEndpoint;
 
   @override
-  Future<T> post<T>(
-    String endpoint, {
-    Map<String, dynamic>? body,
-    T Function(Map<String, dynamic>)? parser,
-    bool requiresAuth = true,
+  Future<Response<T>> post<T>(
+    String path, {
+    dynamic data,
+    Map<String, dynamic>? queryParameters,
+    Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
   }) async {
-    postEndpoint = endpoint;
-    postBody = body;
-    return null as T;
+    postEndpoint = path;
+    postBody = data as Map<String, dynamic>?;
+    return Response<T>(
+      requestOptions: RequestOptions(path: path),
+      statusCode: 200,
+    );
   }
 
   @override
-  Future<void> delete(
-    String endpoint, {
-    bool requiresAuth = true,
+  Future<Response<T>> delete<T>(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    Map<String, dynamic>? headers,
   }) async {
-    deleteEndpoint = endpoint;
+    deleteEndpoint = path;
+    return Response<T>(
+      requestOptions: RequestOptions(path: path),
+      statusCode: 200,
+    );
   }
 }
 

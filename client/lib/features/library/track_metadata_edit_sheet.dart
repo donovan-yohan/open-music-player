@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../core/services/api_client.dart';
+import '../../core/api/api_client.dart';
 import '../../core/services/library_service.dart';
 
 const double trackMetadataEditDesktopBreakpoint = 960;

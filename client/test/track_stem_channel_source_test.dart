@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/stems_service.dart';
 import 'package:open_music_player/core/stems/stem_channel_source.dart';
 import 'package:open_music_player/features/stems/track_stem_channel_source.dart';
@@ -63,9 +63,9 @@ class _FailingRequestStemsService implements StemsService {
     String channelSet = defaultStemChannelSet,
   }) async =>
       throw ApiException(
-        code: 'QUEUE_FULL',
-        message: 'stem separation queue is full; retry later',
-        statusCode: 429,
+        'stem separation queue is full; retry later',
+        429,
+        errorCode: 'QUEUE_FULL',
       );
 }
 
@@ -319,9 +319,9 @@ void main() {
     final service = _ScriptedStemsService([_ready()]);
     final source = TrackStemChannelSource(service: service);
     service.getError = ApiException(
-      code: 'SERVICE_DISABLED',
-      message: 'stem separation is unavailable',
-      statusCode: 503,
+      'stem separation is unavailable',
+      503,
+      errorCode: 'SERVICE_DISABLED',
     );
 
     await source.bindTrack(42);

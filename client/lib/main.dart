@@ -26,7 +26,6 @@ import 'core/storage/offline_database.dart';
 import 'core/network/connectivity_service.dart';
 import 'core/download/download_service.dart';
 import 'core/download/download_state.dart';
-import 'core/services/api_client.dart' as services_api;
 import 'core/services/library_service.dart';
 import 'core/services/liked_tracks_state.dart';
 
@@ -43,9 +42,7 @@ void main() async {
   Future<String?> currentAccountId() async =>
       accountIdFromAccessToken(await storage.getAccessToken());
   final initialAccountId = await currentAccountId();
-  final libraryService = LibraryService(
-    services_api.ApiClient(storage: storage),
-  );
+  final libraryService = LibraryService(apiClient);
   final likedTracksState = LikedTracksState(
     libraryService,
     accountId: initialAccountId,

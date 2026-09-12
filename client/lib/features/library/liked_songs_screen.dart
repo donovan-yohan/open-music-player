@@ -22,8 +22,8 @@ class LikedSongsScreen extends StatefulWidget {
   const LikedSongsScreen(
       {super.key, this.libraryService, this.playlistService});
 
-  /// Injectable for tests; defaults to a real service over the parser-based
-  /// [services.ApiClient], mirroring how the Library screen builds its client.
+  /// Injectable for tests; defaults to a real service over the app-wide
+  /// [ApiClient], mirroring how the Library screen builds its client.
   final services.LibraryService? libraryService;
 
   /// Injectable for tests; defaults to a service over the app-wide
@@ -36,7 +36,7 @@ class LikedSongsScreen extends StatefulWidget {
 
 class _LikedSongsScreenState extends State<LikedSongsScreen> {
   late final services.LibraryService _libraryService =
-      widget.libraryService ?? services.LibraryService(services.ApiClient());
+      widget.libraryService ?? services.LibraryService(ApiClient());
 
   List<Track> _tracks = const [];
   int _total = 0;

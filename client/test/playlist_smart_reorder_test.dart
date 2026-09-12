@@ -2,7 +2,7 @@ import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open_music_player/core/api/api_client.dart' as core_api;
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/services/playlist_service.dart';
@@ -93,7 +93,7 @@ class _StubPlaylistService extends PlaylistService {
     this.failSmartReorder = false,
     this.smartReorderError,
     this.failReload = false,
-  }) : super(api: core_api.ApiClient(storage: SecureStorage()));
+  }) : super(api: ApiClient(storage: SecureStorage()));
 
   final List<Track> tracks;
   final Map<String, dynamic> autoMixResult;
@@ -393,7 +393,7 @@ void main() {
         'transitions': [_transitionJson(1, 2)],
         'mixPlan': _mixPlanJson([1, 2]),
       },
-      smartReorderError: core_api.ApiException(
+      smartReorderError: ApiException(
         serverMessage,
         400,
         errorCode: 'VALIDATION_ERROR',
@@ -430,7 +430,7 @@ void main() {
         'transitions': [_transitionJson(1, 2)],
         'mixPlan': _mixPlanJson([1, 2]),
       },
-      smartReorderError: core_api.ApiException(
+      smartReorderError: ApiException(
         serverMessage,
         400,
         errorCode: 'VALIDATION_ERROR',

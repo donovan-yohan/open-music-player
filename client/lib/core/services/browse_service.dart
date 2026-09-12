@@ -1,29 +1,32 @@
+import '../api/api_client.dart';
 import '../models/models.dart';
-import 'api_client.dart';
 
 class BrowseService {
   final ApiClient _apiClient;
 
   BrowseService(this._apiClient);
 
-  Future<ArtistDetail> getArtist(String mbId) async {
-    return _apiClient.get(
-      '/artists/$mbId',
-      parser: ArtistDetail.fromJson,
-    );
+  Future<ArtistDetail> getArtist(String mbId) {
+    return _apiClient.withServerError('Failed to load artist', () async {
+      final response =
+          await _apiClient.get<Map<String, dynamic>>('/artists/$mbId');
+      return ArtistDetail.fromJson(response.data!);
+    });
   }
 
-  Future<AlbumDetail> getAlbum(String mbId) async {
-    return _apiClient.get(
-      '/albums/$mbId',
-      parser: AlbumDetail.fromJson,
-    );
+  Future<AlbumDetail> getAlbum(String mbId) {
+    return _apiClient.withServerError('Failed to load album', () async {
+      final response =
+          await _apiClient.get<Map<String, dynamic>>('/albums/$mbId');
+      return AlbumDetail.fromJson(response.data!);
+    });
   }
 
-  Future<TrackDetail> getTrack(String mbId) async {
-    return _apiClient.get(
-      '/tracks/$mbId',
-      parser: TrackDetail.fromJson,
-    );
+  Future<TrackDetail> getTrack(String mbId) {
+    return _apiClient.withServerError('Failed to load track', () async {
+      final response =
+          await _apiClient.get<Map<String, dynamic>>('/tracks/$mbId');
+      return TrackDetail.fromJson(response.data!);
+    });
   }
 }

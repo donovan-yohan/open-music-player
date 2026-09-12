@@ -447,7 +447,7 @@ class ApiClient {
             data['override_updated_at'] ?? data['overrideUpdatedAt'],
       );
     } on DioException catch (e) {
-      throw ApiException('Failed to get track analysis', _statusCodeOf(e));
+      throw _apiExceptionFrom(e, 'Failed to get track analysis');
     }
   }
 
@@ -484,10 +484,10 @@ class ApiClient {
             data['override_updated_at'] ?? data['overrideUpdatedAt'],
       );
     } on DioException catch (e) {
-      throw ApiException(
-        'Failed to update track analysis overrides',
-        _statusCodeOf(e),
-      );
+      // Carries the server's code through so an optimistic-concurrency
+      // rejection (OVERRIDE_REVISION_CONFLICT) can be told apart from an
+      // analyzer that is simply unavailable.
+      throw _apiExceptionFrom(e, 'Failed to update track analysis overrides');
     }
   }
 

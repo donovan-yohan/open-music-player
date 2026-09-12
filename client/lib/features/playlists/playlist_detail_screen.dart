@@ -14,7 +14,6 @@ import '../../core/models/settings_model.dart';
 import '../../core/providers/settings_provider.dart';
 import '../../core/services/library_service.dart';
 import '../../core/services/playlist_service.dart';
-import '../../core/services/api_client.dart' as services_api;
 import '../../core/api/api_client.dart';
 import '../../../models/mix_plan.dart';
 import '../../models/nearby_tracks.dart';
@@ -123,10 +122,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       PlaylistService(api: ApiClient(storage: SecureStorage()));
   late final ApiClient _mixPlanApiClient = ApiClient(storage: SecureStorage());
 
-  // The library list is served by the parser-based services client, the same
-  // one the Library screen reads its pages from.
   late final LibraryService _libraryService =
-      LibraryService(services_api.ApiClient());
+      LibraryService(ApiClient(storage: SecureStorage()));
 
   Playlist? _playlist;
   bool _isLoading = true;

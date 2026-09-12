@@ -3,10 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
-import 'package:open_music_player/core/api/api_client.dart' as dio_api;
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
-import 'package:open_music_player/core/services/api_client.dart' as parser_api;
 import 'package:open_music_player/core/services/home_service.dart';
 import 'package:open_music_player/core/services/playlist_service.dart';
 import 'package:open_music_player/features/home/home_screen.dart';
@@ -90,7 +89,7 @@ void main() {
 }
 
 class _HomeService extends HomeService {
-  _HomeService(this.track) : super(parser_api.ApiClient());
+  _HomeService(this.track) : super(ApiClient());
 
   final Track track;
 
@@ -106,7 +105,7 @@ class _HomeService extends HomeService {
 }
 
 class _PlaylistService extends PlaylistService {
-  _PlaylistService(this.playlist) : super(api: dio_api.ApiClient());
+  _PlaylistService(this.playlist) : super(api: ApiClient());
 
   final Playlist playlist;
 

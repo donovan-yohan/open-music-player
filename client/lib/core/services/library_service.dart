@@ -1,5 +1,5 @@
 import '../../shared/models/track.dart';
-import 'api_client.dart';
+import '../api/api_client.dart';
 
 /// Authoritative state of one track's per-user metadata override, as returned
 /// by `PUT /tracks/{id}/metadata-override`.
@@ -73,15 +73,17 @@ class LibraryService {
   Future<List<Track>> getLibraryByArtist(
     String artist, {
     int limit = 500,
-  }) async {
-    return _apiClient.get<List<Track>>(
-      '/library',
-      queryParams: {
-        'artist': artist,
-        'limit': limit.toString(),
-      },
-      parser: _parseLibraryTracks,
-    );
+  }) {
+    return _apiClient.withServerError('Failed to load library', () async {
+      final response = await _apiClient.get<Map<String, dynamic>>(
+        '/library',
+        queryParameters: {
+          'artist': artist,
+          'limit': limit.toString(),
+        },
+      );
+      return _parseLibraryTracks(response.data!);
+    });
   }
 
   /// Loads every library track whose `album` exactly matches [album], via the
@@ -90,15 +92,17 @@ class LibraryService {
   Future<List<Track>> getLibraryByAlbum(
     String album, {
     int limit = 500,
-  }) async {
-    return _apiClient.get<List<Track>>(
-      '/library',
-      queryParams: {
-        'album': album,
-        'limit': limit.toString(),
-      },
-      parser: _parseLibraryTracks,
-    );
+  }) {
+    return _apiClient.withServerError('Failed to load library', () async {
+      final response = await _apiClient.get<Map<String, dynamic>>(
+        '/library',
+        queryParameters: {
+          'album': album,
+          'limit': limit.toString(),
+        },
+      );
+      return _parseLibraryTracks(response.data!);
+    });
   }
 
   /// Loads one page of the library list via `GET /library`, forwarding paging
@@ -129,15 +133,16 @@ class LibraryService {
       if (genre != null && genre.isNotEmpty) 'genre': genre,
       if (trimmedQuery != null && trimmedQuery.isNotEmpty) 'q': trimmedQuery,
     };
-    return _apiClient.get<({List<Track> tracks, int total})>(
-      '/library',
-      queryParams: params,
-      parser: (json) {
-        final tracks = _parseLibraryTracks(json);
-        final total = json['total'] as int? ?? tracks.length;
-        return (tracks: tracks, total: total);
-      },
-    );
+    return _apiClient.withServerError('Failed to load library', () async {
+      final response = await _apiClient.get<Map<String, dynamic>>(
+        '/library',
+        queryParameters: params,
+      );
+      final json = response.data!;
+      final tracks = _parseLibraryTracks(json);
+      final total = json['total'] as int? ?? tracks.length;
+      return (tracks: tracks, total: total);
+    });
   }
 
   /// Loads the caller's Liked Songs collection via `GET /library?liked=true`,
@@ -193,25 +198,34 @@ class LibraryService {
         .toList();
   }
 
-  Future<void> addTrackToLibrary(String mbid) async {
-    await _apiClient.post(
-      '/library/tracks',
-      body: {'mbid': mbid},
+  Future<void> addTrackToLibrary(String mbid) {
+    return _apiClient.withServerError(
+      'Failed to add track to library',
+      () => _apiClient.post('/library/tracks', data: {'mbid': mbid}),
     );
   }
 
-  Future<void> removeTrackFromLibrary(String trackId) async {
-    await _apiClient.delete('/library/tracks/$trackId');
+  Future<void> removeTrackFromLibrary(String trackId) {
+    return _apiClient.withServerError(
+      'Failed to remove track from library',
+      () => _apiClient.delete('/library/tracks/$trackId'),
+    );
   }
 
   /// Likes (favorites) a library track. Idempotent server-side.
-  Future<void> like(int trackId) async {
-    await _apiClient.post('/library/tracks/$trackId/like');
+  Future<void> like(int trackId) {
+    return _apiClient.withServerError(
+      'Failed to like track',
+      () => _apiClient.post('/library/tracks/$trackId/like'),
+    );
   }
 
   /// Removes the like (favorite) from a library track.
-  Future<void> unlike(int trackId) async {
-    await _apiClient.delete('/library/tracks/$trackId/like');
+  Future<void> unlike(int trackId) {
+    return _apiClient.withServerError(
+      'Failed to unlike track',
+      () => _apiClient.delete('/library/tracks/$trackId/like'),
+    );
   }
 
   /// Confirms a MusicBrainz match suggestion for a track
@@ -220,22 +234,28 @@ class LibraryService {
     required String recordingMbid,
     String? artistMbid,
     String? releaseMbid,
-  }) async {
-    await _apiClient.post(
-      '/tracks/$trackId/confirm-match',
-      body: {
-        'recordingMbid': recordingMbid,
-        if (artistMbid != null) 'artistMbid': artistMbid,
-        if (releaseMbid != null) 'releaseMbid': releaseMbid,
-      },
+  }) {
+    return _apiClient.withServerError(
+      'Failed to confirm match',
+      () => _apiClient.post(
+        '/tracks/$trackId/confirm-match',
+        data: {
+          'recordingMbid': recordingMbid,
+          if (artistMbid != null) 'artistMbid': artistMbid,
+          if (releaseMbid != null) 'releaseMbid': releaseMbid,
+        },
+      ),
     );
   }
 
   /// Triggers a re-match for an unverified track
-  Future<Map<String, dynamic>> rematchTrack(int trackId) async {
-    return await _apiClient.post<Map<String, dynamic>>(
-      '/tracks/$trackId/match',
-    );
+  Future<Map<String, dynamic>> rematchTrack(int trackId) {
+    return _apiClient.withServerError('Failed to rematch track', () async {
+      final response = await _apiClient.post<Map<String, dynamic>>(
+        '/tracks/$trackId/match',
+      );
+      return response.data!;
+    });
   }
 
   /// Replaces this user's display-metadata override for [trackId].
@@ -252,16 +272,18 @@ class LibraryService {
     String? title,
     String? artist,
     String? album,
-  }) async {
-    return _apiClient.put<TrackMetadataOverrideResult>(
-      '/tracks/$trackId/metadata-override',
-      body: {
-        'title': _overrideField(title),
-        'artist': _overrideField(artist),
-        'album': _overrideField(album),
-      },
-      parser: TrackMetadataOverrideResult.fromJson,
-    );
+  }) {
+    return _apiClient.withServerError('Failed to save metadata', () async {
+      final response = await _apiClient.put<Map<String, dynamic>>(
+        '/tracks/$trackId/metadata-override',
+        data: {
+          'title': _overrideField(title),
+          'artist': _overrideField(artist),
+          'album': _overrideField(album),
+        },
+      );
+      return TrackMetadataOverrideResult.fromJson(response.data!);
+    });
   }
 
   /// Clears every metadata override for [trackId], restoring the original

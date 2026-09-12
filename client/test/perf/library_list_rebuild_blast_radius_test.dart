@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
-import 'package:open_music_player/core/api/api_client.dart' as dio_api;
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/commands/command_registry.dart';
 import 'package:open_music_player/core/download/download_state.dart';
@@ -34,7 +34,7 @@ void main() {
     final playback = _TickingPlayback();
     addTearDown(playback.dispose);
     final downloads = _FakeDownloadState();
-    final api = services.ApiClient();
+    final api = ApiClient();
     final liked = LikedTracksState(services.LibraryService(api));
     for (final track in tracks) {
       liked.seedTrack(track);
@@ -59,7 +59,7 @@ void main() {
                 track: tracks[index],
                 libraryService: services.LibraryService(api),
                 detailApiClient: api,
-                playlistService: PlaylistService(api: dio_api.ApiClient()),
+                playlistService: PlaylistService(api: ApiClient()),
               ),
             ),
           ),

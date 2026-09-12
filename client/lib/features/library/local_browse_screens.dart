@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../core/api/api_client.dart' as api;
+import '../../core/api/api_client.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/audio/queue_ordering.dart';
-import '../../core/services/api_client.dart';
 import '../../core/services/library_service.dart';
 import '../../core/services/liked_tracks_state.dart';
 import '../../core/services/playlist_service.dart';
@@ -316,7 +315,7 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
     return showAddToPlaylistSheet(
       context,
       playlistService: widget.playlistService ??
-          PlaylistService(api: context.read<api.ApiClient>()),
+          PlaylistService(api: context.read<ApiClient>()),
       trackIds: [track.id],
     );
   }

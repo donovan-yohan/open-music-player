@@ -7,7 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/commands/command_registry.dart';
 import 'package:open_music_player/core/download/download_state.dart';
-import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
 import 'package:open_music_player/features/library/library_screen.dart';
@@ -337,9 +337,9 @@ void main() {
     _useWideViewport(tester);
     final library = _StubLibraryService()
       ..failure = ApiException(
-        code: 'INVALID_REQUEST',
-        message: 'Title is too long',
-        statusCode: 400,
+        'Title is too long',
+        400,
+        errorCode: 'INVALID_REQUEST',
       );
     final host = await _pumpRow(tester, track: _track(), library: library);
 
