@@ -326,18 +326,30 @@ class ApiClient {
     }
   }
 
+  /// Queues a chosen source. [playlistId] hands the server the playlist the
+  /// user picked for a result that is not in the library yet: the download job
+  /// carries the target, and the track lands in the playlist when the download
+  /// completes. The server rejects it alongside a library track id, which
+  /// already has its own playlist endpoints.
   Future<SourceDecisionQueueResponse> addSourceDecisionToQueue({
     required String sourceDecisionId,
     String position = 'last',
+    int? playlistId,
   }) async {
     try {
       final response = await _dio.post(
         '/queue/items',
-        data: {'position': position, 'sourceDecisionId': sourceDecisionId},
+        data: {
+          'position': position,
+          'sourceDecisionId': sourceDecisionId,
+          if (playlistId != null) 'playlistId': playlistId,
+        },
       );
       return SourceDecisionQueueResponse.fromJson(_asMap(response.data));
     } on DioException catch (e) {
-      throw ApiException('Failed to queue selected source', _statusCodeOf(e));
+      // Carries the server's error code through so a rejected playlist target
+      // can be told apart from a queue that is simply unavailable.
+      throw _apiExceptionFrom(e, 'Failed to queue selected source');
     }
   }
 

@@ -71,7 +71,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       await tester.pump();
 
-      await tester.tap(find.byIcon(Icons.playlist_add));
+      await tester.tap(find.byIcon(Icons.queue_music));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 50));
 
@@ -149,7 +149,7 @@ void main() {
         find.text('Daft Punk - One More Time (Scribble Remix)'),
         findsOneWidget,
       );
-      await tester.tap(find.byIcon(Icons.playlist_add).last);
+      await tester.tap(find.byIcon(Icons.queue_music).last);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 50));
 
@@ -378,6 +378,7 @@ class _QueueMutationClient extends ApiClient {
   Future<SourceDecisionQueueResponse> addSourceDecisionToQueue({
     required String sourceDecisionId,
     String position = 'last',
+    int? playlistId,
   }) async {
     postedSourceDecisions++;
     return SourceDecisionQueueResponse(

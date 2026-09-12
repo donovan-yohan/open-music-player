@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/api/api_client.dart' as api;
 import '../../core/audio/playback_state.dart';
 import '../../core/audio/queue_ordering.dart';
 import '../../core/services/api_client.dart';
 import '../../core/services/library_service.dart';
 import '../../core/services/liked_tracks_state.dart';
+import '../../core/services/playlist_service.dart';
 import '../../shared/models/track.dart';
 import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/song_metadata_chips.dart';
 import '../../shared/widgets/track_artwork.dart';
+import '../playlists/add_to_playlist.dart';
 
 /// Loads the tracks a local artist/album page should render. Returns the full
 /// (already-filtered) track list for the header + list.
@@ -23,12 +26,16 @@ class LocalArtistScreen extends StatelessWidget {
     super.key,
     required this.artist,
     this.libraryService,
+    this.playlistService,
   });
 
   final String artist;
 
   /// Injectable for tests; defaults to a real [LibraryService].
   final LibraryService? libraryService;
+
+  /// Injectable for tests; defaults to one built from the provided client.
+  final PlaylistService? playlistService;
 
   @override
   Widget build(BuildContext context) {
@@ -37,6 +44,7 @@ class LocalArtistScreen extends StatelessWidget {
       title: artist,
       subtitle: 'Artist',
       loader: () => service.getLibraryByArtist(artist),
+      playlistService: playlistService,
     );
   }
 }
@@ -48,12 +56,16 @@ class LocalAlbumScreen extends StatelessWidget {
     super.key,
     required this.album,
     this.libraryService,
+    this.playlistService,
   });
 
   final String album;
 
   /// Injectable for tests; defaults to a real [LibraryService].
   final LibraryService? libraryService;
+
+  /// Injectable for tests; defaults to one built from the provided client.
+  final PlaylistService? playlistService;
 
   @override
   Widget build(BuildContext context) {
@@ -62,6 +74,7 @@ class LocalAlbumScreen extends StatelessWidget {
       title: album,
       subtitle: 'Album',
       loader: () => service.getLibraryByAlbum(album),
+      playlistService: playlistService,
     );
   }
 }
@@ -75,11 +88,15 @@ class LocalBrowseView extends StatefulWidget {
     required this.title,
     required this.subtitle,
     required this.loader,
+    this.playlistService,
   });
 
   final String title;
   final String subtitle;
   final LocalTrackLoader loader;
+
+  /// Injectable for tests; defaults to one built from the provided client.
+  final PlaylistService? playlistService;
 
   @override
   State<LocalBrowseView> createState() => _LocalBrowseViewState();
@@ -254,12 +271,53 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
                   track.formattedDuration,
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
+                IconButton(
+                  key: ValueKey('local_browse_more_${track.id}'),
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.more_vert),
+                  tooltip: 'More actions',
+                  onPressed: () => _showActions(track),
+                ),
               ],
             ),
             onTap: () => _play(startIndex: index - 1),
+            onLongPress: () => _showActions(track),
           );
         },
       ),
+    );
+  }
+
+  /// Row overflow, reachable the same two ways as on the library screen so a
+  /// track's actions do not depend on which page the user found it from.
+  void _showActions(Track track) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              key: ValueKey('local_browse_add_to_playlist_${track.id}'),
+              leading: const Icon(Icons.playlist_add),
+              title: const Text('Add to playlist'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _addToPlaylist(track);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _addToPlaylist(Track track) {
+    return showAddToPlaylistSheet(
+      context,
+      playlistService: widget.playlistService ??
+          PlaylistService(api: context.read<api.ApiClient>()),
+      trackIds: [track.id],
     );
   }
 

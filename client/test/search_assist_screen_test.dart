@@ -88,12 +88,12 @@ void main() {
       );
       expect(find.text('Porter Robinson - Shelter (Live)'), findsOneWidget);
       expect(find.text('Live'), findsNothing);
-      expect(find.byIcon(Icons.playlist_add), findsOneWidget);
+      expect(find.byIcon(Icons.queue_music), findsOneWidget);
 
       // Nothing was queued by rendering candidates: the action is explicit.
       expect(queueClient.addItemRequests, 0);
 
-      await tester.tap(find.byIcon(Icons.playlist_add));
+      await tester.tap(find.byIcon(Icons.queue_music));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 50));
 
@@ -190,7 +190,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
       expect(find.text('Pasted Track'), findsOneWidget);
       expect(find.text('Direct link'), findsOneWidget);
-      expect(find.byIcon(Icons.playlist_add), findsOneWidget);
+      expect(find.byIcon(Icons.queue_music), findsOneWidget);
       expect(queueClient.addItemRequests, 0);
 
       await tester.pumpWidget(const SizedBox.shrink());
@@ -209,7 +209,7 @@ void main() {
     );
 
     await enterAssistMode(tester, 'https://youtu.be/abc');
-    await tester.tap(find.byIcon(Icons.playlist_add));
+    await tester.tap(find.byIcon(Icons.queue_music));
     await tester.pump();
 
     expect(find.textContaining('source choice expired'), findsOneWidget);
@@ -241,7 +241,7 @@ void main() {
     );
 
     await enterAssistMode(tester, 'https://youtu.be/abc');
-    await tester.tap(find.byIcon(Icons.playlist_add).last);
+    await tester.tap(find.byIcon(Icons.queue_music).last);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
@@ -267,7 +267,7 @@ void main() {
       );
 
       await enterAssistMode(tester, 'https://youtu.be/abc');
-      await tester.tap(find.byIcon(Icons.playlist_add));
+      await tester.tap(find.byIcon(Icons.queue_music));
       await tester.pumpAndSettle();
 
       expect(queueClient.addItemRequests, 1);
@@ -299,7 +299,7 @@ void main() {
     await pumpSearch(tester, assistEnvelope: _directUrlEnvelope);
 
     await enterAssistMode(tester, 'https://youtu.be/abc');
-    await tester.tap(find.byIcon(Icons.playlist_add));
+    await tester.tap(find.byIcon(Icons.queue_music));
     await tester.pumpAndSettle();
     expect(
       find.byKey(const ValueKey('source_selection_status')),
@@ -440,7 +440,7 @@ void main() {
       await enterAssistMode(tester, 'something obscure');
 
       expect(find.text('No grounded sources'), findsOneWidget);
-      expect(find.byIcon(Icons.playlist_add), findsNothing);
+      expect(find.byIcon(Icons.queue_music), findsNothing);
       // The provenance footnote must not promise candidates that are not there.
       expect(
         find.textContaining('Candidates below come from your sources'),
@@ -747,6 +747,7 @@ class _QueueClient extends ApiClient {
   Future<SourceDecisionQueueResponse> addSourceDecisionToQueue({
     required String sourceDecisionId,
     String position = 'last',
+    int? playlistId,
   }) async {
     addItemRequests++;
     lastAddBody = {'position': position, 'sourceDecisionId': sourceDecisionId};

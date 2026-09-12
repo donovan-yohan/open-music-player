@@ -12,9 +12,17 @@ import '../../core/discovery/discovery_models.dart';
 import '../../core/discovery/research_models.dart';
 import '../../core/discovery/research_service.dart';
 import '../../core/discovery/discovery_service.dart';
+import '../../core/services/playlist_service.dart';
 import '../../models/track.dart';
 import '../../providers/queue_provider.dart';
+import '../playlists/add_to_playlist.dart';
 import 'search_local_logic.dart';
+
+/// Queues a Discover result, optionally handing the server the playlist the
+/// finished download should land in. Rows carry this rather than a plain
+/// callback so the overflow's playlist action can reuse the same import path
+/// the queue button uses.
+typedef _ChooseCandidate = Future<void> Function({int? playlistId});
 
 class SearchScreen extends StatefulWidget {
   final ResearchJobService? researchService;
@@ -25,11 +33,15 @@ class SearchScreen extends StatefulWidget {
   /// the provider page in its native application where possible.
   final Future<bool> Function(Uri url)? externalUrlLauncher;
 
+  /// Injectable for tests; production builds one from the provided client.
+  final PlaylistService? playlistService;
+
   const SearchScreen({
     super.key,
     this.researchService,
     this.commandFocusController,
     this.externalUrlLauncher,
+    this.playlistService,
     this.researchPollDelays = const [
       Duration(seconds: 1),
       Duration(seconds: 2),
@@ -523,8 +535,9 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Future<void> _chooseCandidate(
     DiscoveryCandidate candidate,
-    DiscoverySelectionSession? selection,
-  ) async {
+    DiscoverySelectionSession? selection, {
+    int? playlistId,
+  }) async {
     if (selection == null || !selection.isPresent || selection.isExpired) {
       _showSelectionRecoveryError();
       return;
@@ -533,12 +546,14 @@ class _SearchScreenState extends State<SearchScreen> {
       candidate,
       selection,
       SourceSelectionAction.selected,
+      playlistId: playlistId,
     );
   }
 
   Future<void> _chooseResearchCandidate(
-    ResearchCandidate researchCandidate,
-  ) async {
+    ResearchCandidate researchCandidate, {
+    int? playlistId,
+  }) async {
     final snapshot = _researchSnapshot;
     if (snapshot == null) return;
     final candidate = researchCandidate.toDiscoveryCandidate();
@@ -551,7 +566,11 @@ class _SearchScreenState extends State<SearchScreen> {
       }
     }
     if (candidate.candidateId == recommendedId) {
-      await _submitResearchChoice(candidate, SourceSelectionAction.accepted);
+      await _submitResearchChoice(
+        candidate,
+        SourceSelectionAction.accepted,
+        playlistId: playlistId,
+      );
       return;
     }
     final reason = await _promptForOverrideReason(candidate, maxLength: 512);
@@ -560,6 +579,7 @@ class _SearchScreenState extends State<SearchScreen> {
       candidate,
       SourceSelectionAction.overridden,
       reason: reason,
+      playlistId: playlistId,
     );
   }
 
@@ -635,6 +655,7 @@ class _SearchScreenState extends State<SearchScreen> {
     DiscoveryCandidate candidate,
     SourceSelectionAction action, {
     String? reason,
+    int? playlistId,
   }) async {
     final snapshot = _researchSnapshot;
     if (snapshot == null) return;
@@ -655,7 +676,7 @@ class _SearchScreenState extends State<SearchScreen> {
         action: action,
         reason: reason,
       );
-      await provider.addSourceDecision(decision.id);
+      await provider.addSourceDecision(decision.id, playlistId: playlistId);
       if (!mounted) return;
       setState(() {
         _sourceSelectionStatus = action == SourceSelectionAction.accepted
@@ -673,6 +694,8 @@ class _SearchScreenState extends State<SearchScreen> {
           _assistError = 'That source choice could not be saved. Try again.';
         }
       });
+      // See _submitSourceChoice: the playlist caller owns that message.
+      if (playlistId != null) rethrow;
     } finally {
       if (mounted) {
         setState(() => _pendingCandidateKeys.remove(key));
@@ -686,6 +709,7 @@ class _SearchScreenState extends State<SearchScreen> {
     DiscoverySelectionSession selection,
     SourceSelectionAction action, {
     String? reason,
+    int? playlistId,
   }) async {
     final key = _candidateKey(candidate);
     final provider = context.read<QueueProvider>();
@@ -711,7 +735,10 @@ class _SearchScreenState extends State<SearchScreen> {
                 reason: reason,
               );
       decision = createdDecision;
-      await provider.addSourceDecision(createdDecision.id);
+      await provider.addSourceDecision(
+        createdDecision.id,
+        playlistId: playlistId,
+      );
       if (!mounted) return;
       setState(() {
         _sourceSelectionStatus = 'Added ${candidate.title} to imports.';
@@ -727,6 +754,9 @@ class _SearchScreenState extends State<SearchScreen> {
       } else {
         _showSelectionRecoveryError();
       }
+      // A playlist-targeted choice has a caller waiting to name the playlist
+      // in its own message; the status line above cannot say which one.
+      if (playlistId != null) rethrow;
     } finally {
       if (mounted) {
         setState(() {
@@ -1189,7 +1219,10 @@ class _SearchScreenState extends State<SearchScreen> {
           stableKey: ValueKey(
             'research_candidate_${researchCandidate.candidateId}',
           ),
-          onChoose: () => _chooseResearchCandidate(researchCandidate),
+          onChoose: ({int? playlistId}) => _chooseResearchCandidate(
+            researchCandidate,
+            playlistId: playlistId,
+          ),
           queueAvailable: !queueProvider.queueServiceDisabled,
         ),
       if (candidates.isEmpty)
@@ -1898,7 +1931,7 @@ class _SearchScreenState extends State<SearchScreen> {
     DiscoveryCandidate candidate, {
     DiscoverySelectionSession? selection,
     Key? stableKey,
-    VoidCallback? onChoose,
+    _ChooseCandidate? onChoose,
     bool queueAvailable = true,
   }) {
     final queuedTrack =
@@ -1988,7 +2021,7 @@ class _SearchScreenState extends State<SearchScreen> {
     required bool canPreview,
     required DiscoverySelectionSession? selection,
     required bool queueAvailable,
-    VoidCallback? onChoose,
+    _ChooseCandidate? onChoose,
   }) {
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -2017,7 +2050,175 @@ class _SearchScreenState extends State<SearchScreen> {
             selection: selection,
             onChoose: onChoose,
           ),
+        if (canPreview || queueAvailable) const SizedBox(width: 4),
+        IconButton(
+          key: ValueKey('discover_result_more_${_candidateKey(candidate)}'),
+          tooltip: 'More actions',
+          onPressed: () => _showCandidateActions(
+            candidate,
+            queuedTrack,
+            selection: selection,
+            onChoose: onChoose,
+          ),
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+          padding: EdgeInsets.zero,
+          iconSize: 20,
+          icon: const Icon(Icons.more_vert),
+        ),
       ],
+    );
+  }
+
+  /// Row overflow for a Discover result.
+  ///
+  /// Playlists hold library tracks, and a catalog candidate only becomes one
+  /// once its import has finished. The action stays enabled regardless and
+  /// sequences that import itself, so the affordance means the same thing on
+  /// every row.
+  void _showCandidateActions(
+    DiscoveryCandidate candidate,
+    QueueTrack? queuedTrack, {
+    DiscoverySelectionSession? selection,
+    _ChooseCandidate? onChoose,
+  }) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+          children: [
+            Text(
+              candidate.title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(
+                sheetContext,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              key: ValueKey(
+                'discover_add_to_playlist_${_candidateKey(candidate)}',
+              ),
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.playlist_add),
+              title: const Text('Add to playlist'),
+              subtitle: _libraryTrackId(queuedTrack) == null
+                  ? const Text('Imports this result first')
+                  : null,
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _addCandidateToPlaylist(
+                  candidate,
+                  queuedTrack,
+                  selection: selection,
+                  onChoose: onChoose,
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// The backend track id behind an imported candidate, when it has one.
+  /// Source-backed queue items key their row by queue item UUID, so only the
+  /// numeric playback id names a track the playlist API will accept.
+  int? _libraryTrackId(QueueTrack? queuedTrack) {
+    if (queuedTrack == null) return null;
+    return int.tryParse(queuedTrack.playbackTrackId ?? queuedTrack.id);
+  }
+
+  PlaylistService get _playlistService =>
+      widget.playlistService ?? PlaylistService(api: context.read<ApiClient>());
+
+  /// Adds a Discover result to a playlist.
+  ///
+  /// A result already in the library is added straight away. One that is still
+  /// a catalog entry has no track id yet — a download job only gains one when
+  /// it completes, minutes later — so the chosen playlist is handed to the
+  /// server with the import instead. The download job carries the target and
+  /// the track lands in the playlist on completion, which survives the user
+  /// leaving this screen and the app being killed.
+  Future<void> _addCandidateToPlaylist(
+    DiscoveryCandidate candidate,
+    QueueTrack? queuedTrack, {
+    DiscoverySelectionSession? selection,
+    _ChooseCandidate? onChoose,
+  }) async {
+    final trackId = _libraryTrackId(queuedTrack);
+    if (trackId != null) {
+      await showAddToPlaylistSheet(
+        context,
+        playlistService: _playlistService,
+        trackIds: [trackId],
+      );
+      return;
+    }
+
+    final playlist = await pickPlaylist(
+      context,
+      playlistService: _playlistService,
+      title: 'Add to playlist after import',
+    );
+    if (playlist == null || !mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      if (onChoose != null) {
+        await onChoose(playlistId: playlist.id);
+      } else {
+        await _chooseCandidate(candidate, selection, playlistId: playlist.id);
+      }
+    } on ApiException catch (error) {
+      _showPlaylistTargetFailure(messenger, error, playlist.name);
+      return;
+    } catch (_) {
+      messenger.showSnackBar(
+        SnackBar(
+          key: const ValueKey('discover_playlist_import_failed'),
+          content: Text('Could not import "${candidate.title}".'),
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
+
+    messenger.showSnackBar(
+      SnackBar(
+        key: const ValueKey('discover_playlist_deferred_notice'),
+        content: Text(
+          'Downloading "${candidate.title}". It will be added to '
+          '"${playlist.name}" when the download finishes.',
+        ),
+      ),
+    );
+  }
+
+  /// Reports a rejected playlist target in the server's own terms, so a
+  /// playlist that was deleted or is not the caller's does not read as a
+  /// generic queue failure.
+  void _showPlaylistTargetFailure(
+    ScaffoldMessengerState messenger,
+    ApiException error,
+    String playlistName,
+  ) {
+    final message = switch (error.errorCode) {
+      'PLAYLIST_NOT_FOUND' => '"$playlistName" no longer exists.',
+      'FORBIDDEN' => 'You cannot add to "$playlistName".',
+      'PLAYLIST_TARGET_UNAVAILABLE' =>
+        'This server cannot add downloads to a playlist yet.',
+      _ => 'Could not add this to "$playlistName".',
+    };
+    messenger.showSnackBar(
+      SnackBar(
+        key: const ValueKey('discover_playlist_import_failed'),
+        content: Text(message),
+      ),
     );
   }
 
@@ -2074,7 +2275,7 @@ class _SearchScreenState extends State<SearchScreen> {
     required bool pending,
     required bool mobile,
     required DiscoverySelectionSession? selection,
-    VoidCallback? onChoose,
+    _ChooseCandidate? onChoose,
   }) {
     final queued = queuedTrack != null || pending;
     if (queued) {
@@ -2102,9 +2303,10 @@ class _SearchScreenState extends State<SearchScreen> {
       );
     }
 
-    final onPressed = !candidate.downloadable
-        ? null
-        : onChoose ?? () => _chooseCandidate(candidate, selection);
+    final choose = onChoose ??
+        ({int? playlistId}) =>
+            _chooseCandidate(candidate, selection, playlistId: playlistId);
+    final onPressed = !candidate.downloadable ? null : () => choose();
     if (mobile) {
       return IconButton.filledTonal(
         tooltip: 'Add to queue',
@@ -2112,7 +2314,7 @@ class _SearchScreenState extends State<SearchScreen> {
         constraints: const BoxConstraints.tightFor(width: 48, height: 48),
         padding: EdgeInsets.zero,
         iconSize: 20,
-        icon: const Icon(Icons.playlist_add),
+        icon: const Icon(Icons.queue_music),
       );
     }
 
@@ -2123,7 +2325,7 @@ class _SearchScreenState extends State<SearchScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 10),
         minimumSize: const Size(84, 36),
       ),
-      icon: const Icon(Icons.playlist_add, size: 18),
+      icon: const Icon(Icons.queue_music, size: 18),
       label: const Text('Add', style: TextStyle(fontSize: 13)),
     );
   }

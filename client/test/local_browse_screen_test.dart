@@ -2,12 +2,16 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/api/api_client.dart' as api;
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/services/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
+import 'package:open_music_player/core/services/playlist_service.dart';
+import 'package:open_music_player/features/playlists/add_to_playlist.dart';
 import 'package:open_music_player/features/library/local_browse_screens.dart';
+import 'package:open_music_player/shared/models/playlist.dart';
 import 'package:open_music_player/shared/models/track.dart';
 import 'package:provider/provider.dart';
 
@@ -243,6 +247,102 @@ void main() {
     expect(find.byKey(const ValueKey('local_browse_error')), findsNothing);
     expect(find.byKey(const ValueKey('local_track_3')), findsOneWidget);
   });
+
+  testWidgets('the row overflow adds the track to a playlist', (tester) async {
+    final fake = _FakeLibraryService(result: [_track(id: 7, title: 'A')]);
+    final playlists = _FakePlaylistService(
+      playlists: [_playlist(3, 'Late night')],
+    );
+    await tester.pumpWidget(
+      _wrap(
+        LocalArtistScreen(
+          artist: 'AC/DC',
+          libraryService: fake,
+          playlistService: playlists,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('local_browse_more_7')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('local_browse_add_to_playlist_7')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(addToPlaylistSheetKey), findsOneWidget);
+    await tester.tap(find.text('Late night'));
+    await tester.pumpAndSettle();
+
+    expect(playlists.addedTo, [3]);
+    expect(playlists.addedTrackIds, [
+      [7]
+    ]);
+    expect(find.byKey(addToPlaylistSuccessKey), findsOneWidget);
+  });
+
+  testWidgets('long-pressing a row reaches the same actions', (tester) async {
+    final fake = _FakeLibraryService(result: [_track(id: 7, title: 'A')]);
+    await tester.pumpWidget(
+      _wrap(
+        LocalAlbumScreen(
+          album: 'Back in Black',
+          libraryService: fake,
+          playlistService: _FakePlaylistService(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.longPress(find.byKey(const ValueKey('local_track_7')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('local_browse_add_to_playlist_7')),
+      findsOneWidget,
+    );
+  });
+}
+
+Playlist _playlist(int id, String name) => Playlist(
+      id: id,
+      name: name,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      trackCount: 2,
+    );
+
+class _FakePlaylistService extends PlaylistService {
+  _FakePlaylistService({this.playlists = const []})
+      : super(api: api.ApiClient());
+
+  final List<Playlist> playlists;
+  final List<int> addedTo = [];
+  final List<List<int>> addedTrackIds = [];
+
+  @override
+  Future<PlaylistsResponse> getPlaylists({
+    int limit = 50,
+    int offset = 0,
+    String? q,
+    String? sort,
+    String? order,
+  }) async {
+    return PlaylistsResponse(
+      playlists: playlists,
+      total: playlists.length,
+      offset: 0,
+      limit: limit,
+    );
+  }
+
+  @override
+  Future<AddTracksResult> addTracks(int playlistId, List<int> trackIds) async {
+    addedTo.add(playlistId);
+    addedTrackIds.add(trackIds);
+    return AddTracksResult(added: trackIds, skipped: const <int>[]);
+  }
 }
 
 /// Always errors, counting each load so the Retry wiring can be asserted.
