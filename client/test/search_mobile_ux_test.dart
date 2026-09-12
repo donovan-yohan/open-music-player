@@ -260,6 +260,7 @@ class _EmptyQueueClient extends ApiClient {
   Future<SourceDecisionQueueResponse> addSourceDecisionToQueue({
     required String sourceDecisionId,
     String position = 'last',
+    int? playlistId,
   }) async {
     addSourceDecisionCalls++;
     throw UnimplementedError('preview must not queue a source');

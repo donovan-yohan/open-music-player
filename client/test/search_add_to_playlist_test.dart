@@ -48,7 +48,7 @@ void main() {
     expect(find.byIcon(Icons.playlist_add), findsNothing);
   });
 
-  testWidgets('an unimported result imports first, then adds once it has an id',
+  testWidgets('an unimported result hands the playlist to the import',
       (tester) async {
     final playlists = _FakePlaylistService(
       playlists: [_playlist(9, 'Late night')],
@@ -71,146 +71,105 @@ void main() {
     await tester.tap(find.byKey(_resultAddKey));
     await tester.pumpAndSettle();
 
-    // The playlist is captured before the wait, not after it.
+    // The playlist is chosen first so the server can be told about it.
     expect(find.byKey(addToPlaylistSheetKey), findsOneWidget);
     await tester.tap(find.text('Late night'));
     await tester.pumpAndSettle();
 
+    // The target rides the enqueue; the client never waits for the track id.
     expect(queueApi.addedDecisionIds, ['decision-1']);
+    expect(queueApi.addedPlaylistIds, [9]);
     expect(playlists.addedTrackIds, isEmpty);
+
+    // A deferred add must not read like a completed one.
     expect(
-      find.byKey(const ValueKey('discover_playlist_sequence_notice')),
+      find.text(
+        'Downloading "Porter Robinson - Sad Machine". It will be added to '
+        '"Late night" when the download finishes.',
+      ),
       findsOneWidget,
     );
-
-    // The download finishes and the queue item gains its library track id.
-    queueApi.completeImport(77);
-    await _drainPoll(tester);
-
-    expect(playlists.addedTo, [9]);
-    expect(playlists.addedTrackIds, [
-      [77]
-    ]);
-    expect(find.byKey(addToPlaylistSuccessKey), findsOneWidget);
-  });
-
-  testWidgets('a failed import says the track was not added', (tester) async {
-    final playlists = _FakePlaylistService(
-      playlists: [_playlist(9, 'Late night')],
-    );
-    final queueApi = _ImportingQueueApiClient();
-    await _pumpSearch(
-      tester,
-      playlistService: playlists,
-      queueApiClient: queueApi,
-    );
-    await _search(tester);
-
-    await tester.tap(find.byKey(_resultMoreKey));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(_resultAddKey));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Late night'));
-    await tester.pumpAndSettle();
-
-    queueApi.failImport();
-    await _drainPoll(tester);
-
-    expect(playlists.addedTrackIds, isEmpty);
-    expect(
-      find.byKey(const ValueKey('discover_playlist_import_failed')),
-      findsOneWidget,
-    );
-  });
-
-  testWidgets('an add that fails after a good import reports the failure',
-      (tester) async {
-    final playlists = _FakePlaylistService(
-      playlists: [_playlist(9, 'Late night')],
-      failAdd: true,
-    );
-    final queueApi = _ImportingQueueApiClient();
-    await _pumpSearch(
-      tester,
-      playlistService: playlists,
-      queueApiClient: queueApi,
-    );
-    await _search(tester);
-
-    await tester.tap(find.byKey(_resultMoreKey));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(_resultAddKey));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Late night'));
-    await tester.pumpAndSettle();
-
-    queueApi.completeImport(77);
-    await _drainPoll(tester);
-
-    expect(find.byKey(addToPlaylistFailureKey), findsOneWidget);
     expect(find.byKey(addToPlaylistSuccessKey), findsNothing);
   });
 
-  testWidgets('an import that never reaches the queue gives up and says so',
-      (tester) async {
+  testWidgets('a rejected enqueue reports the failure', (tester) async {
     final playlists = _FakePlaylistService(
       playlists: [_playlist(9, 'Late night')],
     );
-    // A queue that never accepts the import, standing in for a source-selection
-    // path that fails without throwing at the call site.
     await _pumpSearch(
       tester,
       playlistService: playlists,
-      queueApiClient: EmptyQueueApiClient(),
-      importWaitPolls: 2,
+      queueApiClient: _ImportingQueueApiClient(
+        failure: ApiException('Queue unavailable', 500),
+      ),
     );
     await _search(tester);
+    await _chooseLateNight(tester);
 
-    await tester.tap(find.byKey(_resultMoreKey));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(_resultAddKey));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Late night'));
-    await tester.pumpAndSettle();
-
-    await _drainPoll(tester);
-
-    expect(playlists.addedTrackIds, isEmpty);
     expect(
-      find.byKey(const ValueKey('discover_playlist_import_failed')),
+      find.text('Could not add this to "Late night".'),
       findsOneWidget,
     );
+    expect(playlists.addedTrackIds, isEmpty);
   });
 
-  testWidgets('leaving Discover mid-import drops the wait without crashing',
-      (tester) async {
-    final playlists = _FakePlaylistService(
-      playlists: [_playlist(9, 'Late night')],
-    );
-    final queueApi = _ImportingQueueApiClient();
+  testWidgets('a playlist deleted before the import says so', (tester) async {
     await _pumpSearch(
       tester,
-      playlistService: playlists,
-      queueApiClient: queueApi,
+      playlistService: _FakePlaylistService(
+        playlists: [_playlist(9, 'Late night')],
+      ),
+      queueApiClient: _ImportingQueueApiClient(
+        failure: ApiException(
+          'playlist not found',
+          404,
+          errorCode: 'PLAYLIST_NOT_FOUND',
+        ),
+      ),
     );
     await _search(tester);
+    await _chooseLateNight(tester);
 
-    await tester.tap(find.byKey(_resultMoreKey));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(_resultAddKey));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Late night'));
-    await tester.pumpAndSettle();
+    expect(find.text('"Late night" no longer exists.'), findsOneWidget);
+  });
 
-    // Replace the screen while the import is still running.
-    await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-    await tester.pumpAndSettle();
+  testWidgets("a playlist the user does not own says so", (tester) async {
+    await _pumpSearch(
+      tester,
+      playlistService: _FakePlaylistService(
+        playlists: [_playlist(9, 'Late night')],
+      ),
+      queueApiClient: _ImportingQueueApiClient(
+        failure: ApiException('forbidden', 403, errorCode: 'FORBIDDEN'),
+      ),
+    );
+    await _search(tester);
+    await _chooseLateNight(tester);
 
-    queueApi.completeImport(77);
-    await _drainPoll(tester);
+    expect(find.text('You cannot add to "Late night".'), findsOneWidget);
+  });
 
-    expect(tester.takeException(), isNull);
-    expect(playlists.addedTrackIds, isEmpty);
+  testWidgets('a server without playlist targets says so', (tester) async {
+    await _pumpSearch(
+      tester,
+      playlistService: _FakePlaylistService(
+        playlists: [_playlist(9, 'Late night')],
+      ),
+      queueApiClient: _ImportingQueueApiClient(
+        failure: ApiException(
+          'unavailable',
+          503,
+          errorCode: 'PLAYLIST_TARGET_UNAVAILABLE',
+        ),
+      ),
+    );
+    await _search(tester);
+    await _chooseLateNight(tester);
+
+    expect(
+      find.text('This server cannot add downloads to a playlist yet.'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('an imported result adds its library track to a playlist',
@@ -228,6 +187,7 @@ void main() {
     await tester.tap(find.byKey(_resultMoreKey));
     await tester.pumpAndSettle();
 
+    // Already in the library, so nothing is deferred.
     expect(find.text('Imports this result first'), findsNothing);
     await tester.tap(find.byKey(_resultAddKey));
     await tester.pumpAndSettle();
@@ -244,11 +204,20 @@ void main() {
   });
 }
 
+/// Opens the row overflow, picks "Add to playlist", and chooses Late night.
+Future<void> _chooseLateNight(WidgetTester tester) async {
+  await tester.tap(find.byKey(_resultMoreKey));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(_resultAddKey));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Late night'));
+  await tester.pumpAndSettle();
+}
+
 Future<void> _pumpSearch(
   WidgetTester tester, {
   required PlaylistService playlistService,
   ApiClient? queueApiClient,
-  int importWaitPolls = 30,
 }) async {
   final apiClient = ApiClient(
     storage: SecureStorage(),
@@ -265,22 +234,10 @@ Future<void> _pumpSearch(
         ListenableProvider<PlaybackState>.value(value: _FakePlaybackState()),
       ],
       child: MaterialApp(
-        home: SearchScreen(
-          playlistService: playlistService,
-          importWaitPolls: importWaitPolls,
-        ),
+        home: SearchScreen(playlistService: playlistService),
       ),
     ),
   );
-}
-
-/// Advances past the screen's 2s queue poll and lets its async refresh land.
-Future<void> _drainPoll(WidgetTester tester) async {
-  for (var i = 0; i < 4; i++) {
-    await tester.pump(const Duration(seconds: 3));
-    await tester.pump();
-    await tester.pump();
-  }
 }
 
 Future<void> _search(WidgetTester tester) async {
@@ -318,17 +275,15 @@ class _ImportedQueueApiClient extends EmptyQueueApiClient {
       );
 }
 
-/// A queue whose import starts without a library track id and gains one only
-/// when the download completes — the real sequence a Discover result follows.
+/// A queue that records what the enqueue carried. The server owns the deferred
+/// add now, so the client never needs the track id to appear.
 class _ImportingQueueApiClient extends EmptyQueueApiClient {
+  _ImportingQueueApiClient({this.failure});
+
+  final ApiException? failure;
   final List<String> addedDecisionIds = [];
+  final List<int?> addedPlaylistIds = [];
   bool _queued = false;
-  int? _trackId;
-  bool _failed = false;
-
-  void completeImport(int trackId) => _trackId = trackId;
-
-  void failImport() => _failed = true;
 
   @override
   Future<QueueState> getQueue() async => _state();
@@ -337,8 +292,11 @@ class _ImportingQueueApiClient extends EmptyQueueApiClient {
   Future<SourceDecisionQueueResponse> addSourceDecisionToQueue({
     required String sourceDecisionId,
     String position = 'last',
+    int? playlistId,
   }) async {
+    if (failure != null) throw failure!;
     addedDecisionIds.add(sourceDecisionId);
+    addedPlaylistIds.add(playlistId);
     _queued = true;
     return SourceDecisionQueueResponse(
       queue: _state(),
@@ -353,17 +311,12 @@ class _ImportingQueueApiClient extends EmptyQueueApiClient {
       tracks: [
         QueueTrack(
           id: 'queue-item-uuid',
-          playbackTrackId: _trackId?.toString(),
           sourceCandidateId: 'youtube:123',
           sourceUrl: 'https://youtube.com/watch?v=123',
           title: 'Porter Robinson - Sad Machine',
           duration: 272,
           addedAt: DateTime.utc(2026),
-          queueStatus: _failed
-              ? TrackQueueStatus.failed
-              : _trackId == null
-                  ? TrackQueueStatus.downloading
-                  : TrackQueueStatus.playable,
+          queueStatus: TrackQueueStatus.downloading,
         ),
       ],
       currentIndex: 0,
@@ -372,11 +325,9 @@ class _ImportingQueueApiClient extends EmptyQueueApiClient {
 }
 
 class _FakePlaylistService extends PlaylistService {
-  _FakePlaylistService({this.playlists = const [], this.failAdd = false})
-      : super(api: ApiClient());
+  _FakePlaylistService({this.playlists = const []}) : super(api: ApiClient());
 
   final List<Playlist> playlists;
-  final bool failAdd;
   final List<int> addedTo = [];
   final List<List<int>> addedTrackIds = [];
 
@@ -398,7 +349,6 @@ class _FakePlaylistService extends PlaylistService {
 
   @override
   Future<AddTracksResult> addTracks(int playlistId, List<int> trackIds) async {
-    if (failAdd) throw StateError('add rejected');
     addedTo.add(playlistId);
     addedTrackIds.add(trackIds);
     return AddTracksResult(added: trackIds, skipped: const <int>[]);

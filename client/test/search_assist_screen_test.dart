@@ -747,6 +747,7 @@ class _QueueClient extends ApiClient {
   Future<SourceDecisionQueueResponse> addSourceDecisionToQueue({
     required String sourceDecisionId,
     String position = 'last',
+    int? playlistId,
   }) async {
     addItemRequests++;
     lastAddBody = {'position': position, 'sourceDecisionId': sourceDecisionId};

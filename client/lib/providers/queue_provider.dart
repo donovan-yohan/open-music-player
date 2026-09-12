@@ -481,9 +481,13 @@ class QueueProvider extends ChangeNotifier {
 
   /// Re-throws queue failures after reconciling provider state so callers can
   /// retain the already-persisted source decision and offer an idempotent retry.
+  /// [playlistId] asks the server to land the finished download in that
+  /// playlist. The target rides the download job, so the intent survives the
+  /// user leaving the screen and the app being killed mid-download.
   Future<void> addSourceDecision(
     String sourceDecisionId, {
     bool playNext = false,
+    int? playlistId,
   }) async {
     await _runQueueMutation(() async {
       final operationGeneration = _beginQueueOperation();
@@ -493,6 +497,7 @@ class QueueProvider extends ChangeNotifier {
         final response = await _apiClient.addSourceDecisionToQueue(
           sourceDecisionId: sourceDecisionId,
           position: playNext ? 'next' : 'last',
+          playlistId: playlistId,
         );
         final updatedQueue = response.queue;
         if (!_isCurrentQueueOperation(operationGeneration)) return;

@@ -378,6 +378,7 @@ class _QueueMutationClient extends ApiClient {
   Future<SourceDecisionQueueResponse> addSourceDecisionToQueue({
     required String sourceDecisionId,
     String position = 'last',
+    int? playlistId,
   }) async {
     postedSourceDecisions++;
     return SourceDecisionQueueResponse(
