@@ -311,38 +311,6 @@ func (r *PlaylistRepository) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-// AddTrack adds a track to a playlist at the end.
-func (r *PlaylistRepository) AddTrack(ctx context.Context, playlistID, trackID int64) error {
-	// Get the next position
-	var maxPosition sql.NullInt32
-	posQuery := `SELECT MAX(position) FROM playlist_tracks WHERE playlist_id = $1`
-	if err := r.db.QueryRowContext(ctx, posQuery, playlistID).Scan(&maxPosition); err != nil {
-		return err
-	}
-
-	nextPosition := 0
-	if maxPosition.Valid {
-		nextPosition = int(maxPosition.Int32) + 1
-	}
-
-	query := `
-		INSERT INTO playlist_tracks (playlist_id, track_id, position)
-		VALUES ($1, $2, $3)
-	`
-
-	_, err := r.db.ExecContext(ctx, query, playlistID, trackID, nextPosition)
-	if err != nil {
-		if isUniqueViolation(err) {
-			return ErrTrackAlreadyInPlaylist
-		}
-		return err
-	}
-
-	// Update playlist's updated_at
-	_, err = r.db.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID)
-	return err
-}
-
 // AddTrackAtPosition adds a track to a playlist at a specific source-order
 // position. Existing playlist membership is left intact so duplicate playlist
 // imports do not reshuffle user-curated tracks.
