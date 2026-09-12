@@ -9,7 +9,23 @@ SOURCE_REF="${OMP_SOURCE_REF:-$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)@$(gi
 BUILD_ID="${OMP_BUILD_ID:-dogfood-$(date -u +%Y%m%dT%H%M%SZ)}"
 API_BASE_URL="${OMP_API_BASE_URL:-$DEFAULT_API_BASE_URL}"
 EVIDENCE_DIR="${OMP_DOGFOOD_EVIDENCE_DIR:-/tmp/open-music-player-dogfood-$BUILD_ID}"
-APK_PATH="$ROOT/client/build/app/outputs/flutter-apk/app-debug.apk"
+
+# Dogfood builds are profile, not debug. A Flutter debug build runs Dart under
+# the JIT with assertions on, and on a Pixel 10 Pro that alone triples the
+# library scroll's late-frame rate (35% of moving frames late in debug vs 10%
+# in profile) — so debug dogfooding reports jank the shipped app does not have.
+# Profile keeps the service extensions and observability that dogfooding wants.
+# Set OMP_BUILD_MODE=debug when you actually need hot reload or a debugger.
+BUILD_MODE="${OMP_BUILD_MODE:-profile}"
+case "$BUILD_MODE" in
+  profile|debug|release) ;;
+  *)
+    printf 'Unsupported OMP_BUILD_MODE: %s (want profile, debug or release)\n' \
+      "$BUILD_MODE" >&2
+    exit 2
+    ;;
+esac
+APK_PATH="$ROOT/client/build/app/outputs/flutter-apk/app-$BUILD_MODE.apk"
 EVIDENCE_PATH="$EVIDENCE_DIR/evidence.md"
 LOGCAT_PATH="$EVIDENCE_DIR/logcat.txt"
 
@@ -35,6 +51,7 @@ reset_evidence() {
 - Source ref: \`$SOURCE_REF\`
 - Build ID: \`$BUILD_ID\`
 - API base URL: \`$API_BASE_URL\`
+- Build mode: \`$BUILD_MODE\`
 - ADB server: \`${ADB_SERVER_SOCKET:-default}\`
 - Android serial: \`${ANDROID_SERIAL:-default}\`
 
@@ -53,7 +70,7 @@ build_apk() {
     cd "$ROOT/client"
     flutter pub get
     flutter build apk \
-      --debug \
+      "--$BUILD_MODE" \
       --no-pub \
       --target-platform android-arm64 \
       --dart-define=OMP_API_BASE_URL="$API_BASE_URL" \
@@ -66,6 +83,7 @@ build_apk() {
   append_evidence ""
   append_evidence "- APK: \`$APK_PATH\`"
   append_evidence "- APK SHA256: \`$apk_sha\`"
+  append_evidence "- Build mode: \`$BUILD_MODE\`"
   append_evidence ""
   printf 'Built APK: %s\n' "$APK_PATH"
   printf 'Evidence: %s\n' "$EVIDENCE_PATH"
@@ -130,6 +148,9 @@ usage: scripts/dogfood-android [build|install|logs|all]
 
 Environment:
   OMP_API_BASE_URL             Phone-reachable API URL.
+  OMP_BUILD_MODE               profile (default), debug, or release. Debug is
+                               JIT and janks in ways the shipped app does not;
+                               use it only for hot reload or a debugger.
   OMP_SOURCE_REF               Source marker compiled into Settings.
   OMP_BUILD_ID                 Build marker compiled into Settings.
   OMP_DOGFOOD_EVIDENCE_DIR     Evidence output directory.
