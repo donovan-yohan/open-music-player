@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/httpjson"
 )
 
 // TrackMetadataOverrideHandlers serves the per-user manual metadata correction
@@ -92,9 +92,7 @@ func (h *TrackMetadataOverrideHandlers) UpdateTrackMetadataOverride(w http.Respo
 
 	var req TrackMetadataOverrideRequest
 	if r.Body != nil {
-		decoder := json.NewDecoder(r.Body)
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&req); err != nil {
+		if err := httpjson.DecodeRequest(r.URL.Path, r.Body, &req); err != nil {
 			writeLibraryError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
 			return
 		}

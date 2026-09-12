@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
+	"github.com/openmusicplayer/backend/internal/httpjson"
 )
 
 const maxCreateDownloadBodyBytes = 16 * 1024
@@ -126,13 +126,8 @@ func (h *DownloadHandlers) CreateDownload(w http.ResponseWriter, r *http.Request
 
 func decodeCreateDownloadRequest(w http.ResponseWriter, r *http.Request, req *CreateDownloadRequest) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxCreateDownloadBodyBytes)
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(req); err != nil {
+	if err := httpjson.DecodeRequest(r.URL.Path, r.Body, req); err != nil {
 		return err
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return fmt.Errorf("multiple JSON values")
 	}
 	if len(strings.TrimSpace(req.URL)) == 0 || len(req.URL) > 4096 || len(req.SourceType) > 50 || len(req.PageMetadata.Title) > 500 || len(req.PageMetadata.Thumbnail) > 2048 {
 		return fmt.Errorf("request fields exceed limits")

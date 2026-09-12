@@ -114,7 +114,7 @@ func (h *ResearchHandlers) Create(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, researchMaxRequestBodyBytes)
 	var request createResearchJobRequest
-	if err := decodeStrictJSON(r, &request); err != nil {
+	if err := decodeRequestJSON(r, &request); err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
 			h.observer.ObserveResearchCreate("invalid_request", 0)
@@ -122,7 +122,7 @@ func (h *ResearchHandlers) Create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.observer.ObserveResearchCreate("invalid_request", 0)
-		writeResearchError(w, http.StatusBadRequest, "INVALID_RESEARCH_REQUEST", "research request must be a single JSON object with known fields")
+		writeResearchError(w, http.StatusBadRequest, "INVALID_RESEARCH_REQUEST", "research request must be a single JSON object")
 		return
 	}
 	if err := validateResearchCreateRequest(&request); err != nil {
@@ -285,9 +285,9 @@ func (h *ResearchHandlers) Review(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, researchMaxRequestBodyBytes)
 	var request researchReviewRequest
-	if err := decodeStrictJSON(r, &request); err != nil {
+	if err := decodeRequestJSON(r, &request); err != nil {
 		h.observer.ObserveResearchReview("unknown", "invalid_request")
-		writeResearchError(w, http.StatusBadRequest, "INVALID_RESEARCH_REVIEW", "review request must be a single JSON object with known fields")
+		writeResearchError(w, http.StatusBadRequest, "INVALID_RESEARCH_REVIEW", "review request must be a single JSON object")
 		return
 	}
 	if err := validateResearchReviewRequest(&request); err != nil {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/httpjson"
 	"github.com/openmusicplayer/backend/internal/playlistimport"
 )
 
@@ -73,7 +74,7 @@ func (h *PlaylistImportHandlers) CreateImport(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var req CreatePlaylistImportRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httpjson.DecodeRequest(r.URL.Path, r.Body, &req); err != nil {
 		writePlaylistImportError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
 		return
 	}

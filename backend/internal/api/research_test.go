@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,7 +128,9 @@ func TestResearchCreateRequiresIdempotencyAndStrictBoundedRequest(t *testing.T) 
 
 	for name, body := range map[string][]byte{
 		"missing key":        []byte(`{"query":"x","providers":["youtube"],"limit":1}`),
-		"unknown property":   []byte(`{"query":"x","providers":["youtube"],"limit":1,"requestHash":"client"}`),
+		"malformed body":     []byte(`{"query":"x","providers":`),
+		"two json values":    []byte(`{"query":"x","providers":["youtube"],"limit":1} {}`),
+		"wrong type":         []byte(`{"query":"x","providers":["youtube"],"limit":"one"}`),
 		"invalid provider":   []byte(`{"query":"x","providers":["spotify"],"limit":1}`),
 		"duplicate provider": []byte(`{"query":"x","providers":["youtube","youtube"],"limit":1}`),
 		"invalid limit":      []byte(`{"query":"x","providers":["youtube"],"limit":26}`),
@@ -143,6 +146,32 @@ func TestResearchCreateRequiresIdempotencyAndStrictBoundedRequest(t *testing.T) 
 				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+// TestResearchCreateDropsUnknownFieldsFromTheCanonicalRequest replaces the old
+// "unknown property is a 400" case. Unknown keys are now tolerated for version
+// skew, so the guard that matters is that they cannot reach the service: the
+// canonical request is re-marshaled from the parsed struct, and a client
+// supplied requestHash is still not accepted on this boundary.
+func TestResearchCreateDropsUnknownFieldsFromTheCanonicalRequest(t *testing.T) {
+	service := &fakeResearchService{snapshot: researchSnapshot(researchTestJobID)}
+	handlers := NewResearchHandlers(service, &fakeResearchBaseline{}, 3)
+
+	request := newResearchAuthedRequest(uuid.New(), http.MethodPost, "/api/v1/research-jobs",
+		[]byte(`{"query":"x","providers":["youtube"],"limit":1,"requestHash":"client"}`))
+	request.Header.Set("Idempotency-Key", "key")
+	recorder := httptest.NewRecorder()
+	handlers.Create(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if service.createInput.RequestHash == "client" {
+		t.Fatal("client supplied requestHash reached the service")
+	}
+	if strings.Contains(string(service.createInput.Request), "requestHash") {
+		t.Fatalf("unknown key survived into the canonical request: %s", service.createInput.Request)
 	}
 }
 
@@ -261,12 +290,33 @@ func TestResearchReviewReturnsSourceSelectionDecisionAndRejectsForbiddenPayload(
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.Origin != db.SourceSelectionOriginResearch || response.SessionID != nil || response.SelectedCandidateID != "youtube:abc" {
 		t.Fatalf("review response = %#v err=%v", response, err)
 	}
+	// Keys the review contract has no field for are now dropped for version
+	// skew instead of rejected. What still has to hold is that they cannot
+	// select a revision, a session, or a provider: only candidateId and action
+	// ever reach the service.
 	for _, body := range [][]byte{
 		[]byte(`{"candidateId":"youtube:abc","action":"accepted","revisionId":"client-selected"}`),
 		[]byte(`{"candidateId":"youtube:abc","action":"accepted","sessionId":"client-session"}`),
 		[]byte(`{"candidateId":"youtube:abc","action":"accepted","provider":"youtube"}`),
+	} {
+		service.review = research.ReviewInput{}
+		req := newResearchAuthedRequest(userID, http.MethodPost, "/api/v1/research-jobs/"+researchTestJobID+"/reviews", body)
+		req.SetPathValue("id", researchTestJobID)
+		req.Header.Set("Idempotency-Key", "review-skewed")
+		recorder := httptest.NewRecorder()
+		handlers.Review(recorder, req)
+		if recorder.Code != http.StatusCreated {
+			t.Fatalf("body %s status = %d, response = %s", body, recorder.Code, recorder.Body.String())
+		}
+		if service.review.CandidateID != "youtube:abc" || service.review.Action != research.ReviewAccepted || service.review.Reason != "" {
+			t.Fatalf("body %s put %#v on the review", body, service.review)
+		}
+	}
+	for _, body := range [][]byte{
 		[]byte(`{"candidateId":"https://example.test","action":"accepted"}`),
 		[]byte(`{"candidateId":"youtube:abc","action":"accepted","reason":"https://example.test"}`),
+		[]byte(`{"candidateId":"youtube:abc","action":"accepted"} {}`),
+		[]byte(`{"candidateId":"youtube:abc","action":`),
 	} {
 		req := newResearchAuthedRequest(userID, http.MethodPost, "/api/v1/research-jobs/"+researchTestJobID+"/reviews", body)
 		req.SetPathValue("id", researchTestJobID)

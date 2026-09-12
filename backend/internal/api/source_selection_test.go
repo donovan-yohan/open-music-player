@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -124,8 +126,9 @@ func TestSourceSelectionCreateStrictAndBoundedRequest(t *testing.T) {
 		code   string
 		status int
 	}{
-		{name: "unknown field", body: `{"sessionId":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","candidateId":"youtube:selected","action":"accepted","sourceUrl":"https://attacker.test"}`, code: "INVALID_SOURCE_SELECTION", status: http.StatusBadRequest},
 		{name: "trailing json", body: `{"sessionId":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","candidateId":"youtube:selected","action":"accepted"} {}`, code: "INVALID_SOURCE_SELECTION", status: http.StatusBadRequest},
+		{name: "malformed json", body: `{"sessionId":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","candidateId":`, code: "INVALID_SOURCE_SELECTION", status: http.StatusBadRequest},
+		{name: "wrong type on known field", body: `{"sessionId":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","candidateId":7,"action":"accepted"}`, code: "INVALID_SOURCE_SELECTION", status: http.StatusBadRequest},
 		{name: "too large", body: `{"sessionId":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","candidateId":"youtube:selected","action":"accepted","reason":"` + strings.Repeat("x", sourceSelectionMaxRequestBodyBytes) + `"}`, code: "SOURCE_SELECTION_TOO_LARGE", status: http.StatusRequestEntityTooLarge},
 	}
 	for _, tc := range cases {
@@ -136,6 +139,40 @@ func TestSourceSelectionCreateStrictAndBoundedRequest(t *testing.T) {
 				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestSourceSelectionCreateToleratesUnknownFields pins the version-skew
+// contract: a newer client sends a key this build has no field for, the
+// selection is still recorded from the keys it does know, and the stray key is
+// logged so a client sending a name that binds to nothing stays discoverable.
+func TestSourceSelectionCreateToleratesUnknownFields(t *testing.T) {
+	repo := &fakeSourceSelectionRepository{decision: sourceSelectionTestDecision(db.SourceSelectionActionAccepted)}
+	h := NewSourceSelectionHandlers(repo)
+	body := `{"sessionId":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","candidateId":"youtube:selected","action":"accepted","sourceUrl":"https://attacker.test"}`
+
+	var logged bytes.Buffer
+	previousWriter, previousFlags := log.Writer(), log.Flags()
+	log.SetOutput(&logged)
+	log.SetFlags(0)
+	rec := httptest.NewRecorder()
+	h.Create(rec, sourceSelectionRequest(body, true))
+	log.SetOutput(previousWriter)
+	log.SetFlags(previousFlags)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created.candidateID != "youtube:selected" || repo.created.action != "accepted" {
+		t.Fatalf("known fields did not reach the repository: %+v", repo.created)
+	}
+	// The unknown key must not have smuggled a value through any field.
+	if strings.Contains(rec.Body.String(), "attacker.test") {
+		t.Fatalf("unknown field leaked into the response: %s", rec.Body.String())
+	}
+	want := "Warning: ignoring unknown JSON fields in request body for /api/v1/source-selections: sourceUrl\n"
+	if logged.String() != want {
+		t.Fatalf("log = %q, want %q", logged.String(), want)
 	}
 }
 
