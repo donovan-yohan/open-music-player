@@ -90,9 +90,8 @@ class DjTransport extends StatelessWidget {
   /// The wrapper keeps carrying the reason in semantics as well as on screen:
   /// the labelled CUE variant has no tooltip of its own, so this node is where
   /// its reason lives.
-  Widget _gated(Widget child) => enabled
-      ? child
-      : Tooltip(message: _reason, child: child);
+  Widget _gated(Widget child) =>
+      enabled ? child : Tooltip(message: _reason, child: child);
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(

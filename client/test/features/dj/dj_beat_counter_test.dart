@@ -41,7 +41,8 @@ String counterText(WidgetTester tester) =>
 
 void main() {
   group('tier A: numbered counter', () {
-    testWidgets('reads bar.beat and the phrase at a downbeat, mid-phrase and '
+    testWidgets(
+        'reads bar.beat and the phrase at a downbeat, mid-phrase and '
         'before the anchor', (tester) async {
       await pumpCounter(tester, deckAt(djNumberedAnalysis(), 0));
       expect(counterText(tester), '1.1 · phrase 1');
@@ -79,7 +80,8 @@ void main() {
         (tester) async {
       await pumpCounter(tester, deckAt(djNumberedAnalysis(), djBeatMs * 5));
       expect(counterText(tester), isNot(contains('!')));
-      expect(counterText(tester), matches(RegExp(r'^\d+\.\d+( · phrase \d+)?$')));
+      expect(
+          counterText(tester), matches(RegExp(r'^\d+\.\d+( · phrase \d+)?$')));
     });
   });
 

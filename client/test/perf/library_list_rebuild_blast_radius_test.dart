@@ -91,12 +91,10 @@ void main() {
     debugPrintRebuildDirtyWidgets = false;
     debugPrint = previousPrint;
 
-    final rebuiltRows = rebuilt
-        .where((line) => line.contains('LibraryTrackListTile'))
-        .length;
-    final rebuiltWidgets = rebuilt
-        .where((line) => !line.startsWith('Rebuilt '))
-        .length;
+    final rebuiltRows =
+        rebuilt.where((line) => line.contains('LibraryTrackListTile')).length;
+    final rebuiltWidgets =
+        rebuilt.where((line) => !line.startsWith('Rebuilt ')).length;
     // ignore: avoid_print
     print('PERF widgetsRebuiltPerNotification=$rebuiltWidgets '
         'libraryRowsRebuilt=$rebuiltRows');

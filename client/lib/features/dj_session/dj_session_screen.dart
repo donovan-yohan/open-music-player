@@ -89,8 +89,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   /// instead of the transport-failure banner (spec QA-a).
   final Set<String> _emptySwapBlockIds = {};
 
-  bool get _isAnySectionLoading =>
-      _loadingAll || _loadingBlockIds.isNotEmpty;
+  bool get _isAnySectionLoading => _loadingAll || _loadingBlockIds.isNotEmpty;
 
   // Full requests invalidate every in-flight block reroll, while rerolls only
   // invalidate a full response that started before them. That keeps two
@@ -389,8 +388,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
 
     final loadGeneration = _fullLoadGeneration;
     try {
-      final lineup =
-          await _service.fetchLineup(_requestForFilters());
+      final lineup = await _service.fetchLineup(_requestForFilters());
       if (!mounted || loadGeneration != _fullLoadGeneration) return;
       setState(() {
         _blocks = lineup.blocks;
@@ -538,14 +536,12 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                     track.artist.isEmpty ? 'Unknown artist' : track.artist,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(sheetContext)
-                        .textTheme
-                        .bodyMedium
-                        ?.copyWith(
-                          color: Theme.of(sheetContext)
-                              .colorScheme
-                              .onSurfaceVariant,
-                        ),
+                    style:
+                        Theme.of(sheetContext).textTheme.bodyMedium?.copyWith(
+                              color: Theme.of(sheetContext)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                            ),
                   ),
                 ],
               ),
@@ -623,8 +619,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   Future<void> _maybeShowCoachMark() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final submittedBefore =
-          prefs.getBool(_requestSubmittedKey) ?? false;
+      final submittedBefore = prefs.getBool(_requestSubmittedKey) ?? false;
       if (!mounted ||
           submittedBefore ||
           (prefs.getBool(_coachMarkSeenKey) ?? false)) {
@@ -667,8 +662,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                   ),
                   SliverPadding(
                     padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-                    sliver:
-                        SliverToBoxAdapter(child: _buildRequestBar(theme)),
+                    sliver: SliverToBoxAdapter(child: _buildRequestBar(theme)),
                   ),
                   SliverPadding(
                     padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
@@ -693,8 +687,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                         child: _PinnedBanner(
                           blockTitle: _titleOf(_pinnedBlockId!),
                           onUnlock: _unlockFromBanner,
-                          enabled:
-                              !_isPinBusy && !_isAnySectionLoading,
+                          enabled: !_isPinBusy && !_isAnySectionLoading,
                         ),
                       ),
                     ),
@@ -724,16 +717,14 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                             onEnqueueTrack: (track) =>
                                 _enqueue(track, playNext: false),
                             reducedMotion: reducedMotion,
-                            isPinned:
-                                _pinnedBlockId == _visibleBlocks[0].id,
+                            isPinned: _pinnedBlockId == _visibleBlocks[0].id,
                             pinPending:
                                 _pendingPinBlockId == _visibleBlocks[0].id,
                             pinBlockedByOther: (_pendingPinBlockId != null &&
                                     _pendingPinBlockId !=
                                         _visibleBlocks[0].id) ||
                                 (_pinnedBlockId != null &&
-                                    _pinnedBlockId !=
-                                        _visibleBlocks[0].id),
+                                    _pinnedBlockId != _visibleBlocks[0].id),
                             onTogglePin: () => _togglePin(_visibleBlocks[0]),
                           ),
                         ),
@@ -750,8 +741,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                               block: _visibleBlocks[i],
                               isLoading: _loadingBlockIds
                                   .contains(_visibleBlocks[i].id),
-                              errorMessage:
-                                  _blockErrors[_visibleBlocks[i].id],
+                              errorMessage: _blockErrors[_visibleBlocks[i].id],
                               showEmptySwapNote: _emptySwapBlockIds
                                   .contains(_visibleBlocks[i].id),
                               revision:
@@ -761,19 +751,15 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                               onEnqueueTrack: (track) =>
                                   _enqueue(track, playNext: false),
                               reducedMotion: reducedMotion,
-                              isPinned:
-                                  _pinnedBlockId == _visibleBlocks[i].id,
+                              isPinned: _pinnedBlockId == _visibleBlocks[i].id,
                               pinPending:
                                   _pendingPinBlockId == _visibleBlocks[i].id,
-                              pinBlockedByOther:
-                                  (_pendingPinBlockId != null &&
-                                          _pendingPinBlockId !=
-                                              _visibleBlocks[i].id) ||
-                                      (_pinnedBlockId != null &&
-                                          _pinnedBlockId !=
-                                              _visibleBlocks[i].id),
-                              onTogglePin: () =>
-                                  _togglePin(_visibleBlocks[i]),
+                              pinBlockedByOther: (_pendingPinBlockId != null &&
+                                      _pendingPinBlockId !=
+                                          _visibleBlocks[i].id) ||
+                                  (_pinnedBlockId != null &&
+                                      _pinnedBlockId != _visibleBlocks[i].id),
+                              onTogglePin: () => _togglePin(_visibleBlocks[i]),
                             ),
                           ),
                         ),
@@ -822,65 +808,66 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
           children: [
             Expanded(
               child: Tooltip(
-          message: 'Reroll the full lineup. Hold to request a vibe.',
-          child: Semantics(
-            button: true,
-            label: 'Reroll session. Double-tap to reroll the full lineup. '
-                'Long press to request a vibe.',
-            key: const ValueKey('dj_reroll_session'),
-            child: GestureDetector(
-              onLongPress: () {
-                _heroPressed = false;
-                setState(() {});
-                _focusRequestField();
-              },
-              onLongPressStart: (_) {
-                HapticFeedback.mediumImpact();
-                setState(() => _heroPressed = true);
-              },
-              onLongPressEnd: (_) {
-                if (_heroPressed) setState(() => _heroPressed = false);
-              },
-              onLongPressCancel: () {
-                if (_heroPressed) setState(() => _heroPressed = false);
-              },
-              child: AnimatedScale(
-                duration: const Duration(milliseconds: 140),
-                curve: Curves.easeOutBack,
-                scale: _heroPressed ? 0.97 : 1.0,
-                child: SizedBox(
-                  width: double.infinity,
-                  height: 64,
-                  child: FilledButton.icon(
-                    key: const ValueKey('dj_hero_pill'),
-                    style: FilledButton.styleFrom(
-                      shape: RoundedRectangleBorder(
-                        borderRadius:
-                            BorderRadius.circular(AppTheme.radiusLarge),
-                      ),
-                      textStyle: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: theme.colorScheme.onPrimary,
-                      ),
-                    ),
-                    onPressed: busy ? null : _onHeroTap,
-                    icon: busy
-                        ? SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.4,
+                message: 'Reroll the full lineup. Hold to request a vibe.',
+                child: Semantics(
+                  button: true,
+                  label:
+                      'Reroll session. Double-tap to reroll the full lineup. '
+                      'Long press to request a vibe.',
+                  key: const ValueKey('dj_reroll_session'),
+                  child: GestureDetector(
+                    onLongPress: () {
+                      _heroPressed = false;
+                      setState(() {});
+                      _focusRequestField();
+                    },
+                    onLongPressStart: (_) {
+                      HapticFeedback.mediumImpact();
+                      setState(() => _heroPressed = true);
+                    },
+                    onLongPressEnd: (_) {
+                      if (_heroPressed) setState(() => _heroPressed = false);
+                    },
+                    onLongPressCancel: () {
+                      if (_heroPressed) setState(() => _heroPressed = false);
+                    },
+                    child: AnimatedScale(
+                      duration: const Duration(milliseconds: 140),
+                      curve: Curves.easeOutBack,
+                      scale: _heroPressed ? 0.97 : 1.0,
+                      child: SizedBox(
+                        width: double.infinity,
+                        height: 64,
+                        child: FilledButton.icon(
+                          key: const ValueKey('dj_hero_pill'),
+                          style: FilledButton.styleFrom(
+                            shape: RoundedRectangleBorder(
+                              borderRadius:
+                                  BorderRadius.circular(AppTheme.radiusLarge),
+                            ),
+                            textStyle: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
                               color: theme.colorScheme.onPrimary,
                             ),
-                          )
-                        : const Icon(Icons.autorenew, size: 24),
-                    label: Text(busy ? 'Steering…' : 'Reroll session'),
+                          ),
+                          onPressed: busy ? null : _onHeroTap,
+                          icon: busy
+                              ? SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2.4,
+                                    color: theme.colorScheme.onPrimary,
+                                  ),
+                                )
+                              : const Icon(Icons.autorenew, size: 24),
+                          label: Text(busy ? 'Steering…' : 'Reroll session'),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
-        ),
             ),
             const SizedBox(width: 12),
             SizedBox(
@@ -907,8 +894,9 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                   style: theme.textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w700,
                     fontSize: 15,
-                    color:
-                        _isAnySectionLoading ? null : theme.colorScheme.onSurface,
+                    color: _isAnySectionLoading
+                        ? null
+                        : theme.colorScheme.onSurface,
                   ),
                 ),
               ),
@@ -1141,14 +1129,12 @@ class _LineupBlockSection extends StatelessWidget {
           const _EmptyBlockState()
         else
           AnimatedSwitcher(
-            duration:
-                Duration(milliseconds: reducedMotion ? 150 : 260),
+            duration: Duration(milliseconds: reducedMotion ? 150 : 260),
             switchInCurve: Curves.easeOutCubic,
             switchOutCurve: Curves.easeInCubic,
             transitionBuilder: (child, animation) {
               if (reducedMotion) {
-                return FadeTransition(
-                    opacity: animation, child: child);
+                return FadeTransition(opacity: animation, child: child);
               }
               return FadeTransition(
                 opacity: animation,
@@ -1342,8 +1328,7 @@ class _SkeletonCard extends StatelessWidget {
               height: 148,
               decoration: BoxDecoration(
                 color: placeholder,
-                borderRadius:
-                    BorderRadius.circular(AppTheme.radiusMedium),
+                borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
               ),
             ),
             const SizedBox(height: 10),
@@ -1352,8 +1337,7 @@ class _SkeletonCard extends StatelessWidget {
               height: 12,
               decoration: BoxDecoration(
                 color: placeholder,
-                borderRadius:
-                    BorderRadius.circular(AppTheme.radiusSmall),
+                borderRadius: BorderRadius.circular(AppTheme.radiusSmall),
               ),
             ),
             const SizedBox(height: 6),
@@ -1706,5 +1690,3 @@ class _EmptyLibraryState extends StatelessWidget {
     );
   }
 }
-
-

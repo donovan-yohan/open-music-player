@@ -20,18 +20,20 @@ import 'package:provider/provider.dart';
 import '../../support/dj_analysis_fixtures.dart';
 import '../../support/dj_viewport_fixtures.dart';
 
-TimelineWaveformPainter lanePainter(WidgetTester tester, DjDeckId deck) => tester
-    .widgetList<CustomPaint>(
-      find.descendant(
-        of: find.byWidgetPredicate(
-          (widget) => widget is DjWaveformLane && widget.deck.deckId == deck,
-        ),
-        matching: find.byType(CustomPaint),
-      ),
-    )
-    .map((paint) => paint.painter)
-    .whereType<TimelineWaveformPainter>()
-    .first;
+TimelineWaveformPainter lanePainter(WidgetTester tester, DjDeckId deck) =>
+    tester
+        .widgetList<CustomPaint>(
+          find.descendant(
+            of: find.byWidgetPredicate(
+              (widget) =>
+                  widget is DjWaveformLane && widget.deck.deckId == deck,
+            ),
+            matching: find.byType(CustomPaint),
+          ),
+        )
+        .map((paint) => paint.painter)
+        .whereType<TimelineWaveformPainter>()
+        .first;
 
 void main() {
   group('DeckController.updateQueueTrack (#410)', () {

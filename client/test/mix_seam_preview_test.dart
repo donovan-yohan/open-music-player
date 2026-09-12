@@ -52,7 +52,11 @@ void main() {
       id: '42',
     );
     await playback.playQueue(
-      [_track(7, seconds: 120), _track(8, seconds: 120), _track(9, seconds: 120)],
+      [
+        _track(7, seconds: 120),
+        _track(8, seconds: 120),
+        _track(9, seconds: 120)
+      ],
       startIndex: 1,
       context: listeningContext,
     );
@@ -142,7 +146,8 @@ void main() {
     final playback = _playbackState();
     addTearDown(playback.dispose);
 
-    await playback.playQueue([_track(7, seconds: 120), _track(8, seconds: 120)]);
+    await playback
+        .playQueue([_track(7, seconds: 120), _track(8, seconds: 120)]);
     await Future<void>.delayed(Duration.zero);
 
     final tracks = [

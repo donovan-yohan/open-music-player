@@ -4,8 +4,8 @@ enum SearchResultTab { song, artist, album }
 
 extension SearchResultTabLabel on SearchResultTab {
   String get label => switch (this) {
-    SearchResultTab.song => 'Song',
-    SearchResultTab.artist => 'Artist',
-    SearchResultTab.album => 'Album',
-  };
+        SearchResultTab.song => 'Song',
+        SearchResultTab.artist => 'Artist',
+        SearchResultTab.album => 'Album',
+      };
 }

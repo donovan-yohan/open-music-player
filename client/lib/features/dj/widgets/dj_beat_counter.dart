@@ -72,10 +72,8 @@ class _DjBeatCounterState extends State<DjBeatCounter> {
         child: Text(
           position.label,
           key: ValueKey('dj_beat_counter_$deckName'),
-          style: Theme.of(context)
-              .textTheme
-              .labelMedium
-              ?.copyWith(color: accent),
+          style:
+              Theme.of(context).textTheme.labelMedium?.copyWith(color: accent),
           maxLines: 1,
           softWrap: false,
           overflow: TextOverflow.clip,

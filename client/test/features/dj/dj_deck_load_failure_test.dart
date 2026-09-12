@@ -106,7 +106,8 @@ void main() {
       expect(voice.loadCalls, 0);
     });
 
-    test('a resolver that throws produces sourceUnavailable and keeps the '
+    test(
+        'a resolver that throws produces sourceUnavailable and keeps the '
         'detail', () async {
       final voice = _FakeVoice();
       final controller = DeckController.empty(
@@ -119,11 +120,13 @@ void main() {
 
       expect(controller.state.loadFailure?.kind,
           DjDeckLoadFailureKind.sourceUnavailable);
-      expect(controller.state.loadFailure?.detail, contains('resolver blew up'));
+      expect(
+          controller.state.loadFailure?.detail, contains('resolver blew up'));
       expect(voice.loadCalls, 0);
     });
 
-    test('a failing reload releases the previously loaded voice and clears '
+    test(
+        'a failing reload releases the previously loaded voice and clears '
         'isLoaded', () async {
       final voice = _FakeVoice();
       final resolver = _SwitchableResolver();
@@ -203,7 +206,8 @@ void main() {
       expect(provider.deckB.isLoaded, isTrue);
       expect(provider.deckA.loadFailure?.kind,
           DjDeckLoadFailureKind.sourceUnavailable);
-      expect(provider.deckA.loadFailure?.detail, contains('deck load exploded'));
+      expect(
+          provider.deckA.loadFailure?.detail, contains('deck load exploded'));
     });
 
     test('a refused deck stops advertising the track it could not load',

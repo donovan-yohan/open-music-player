@@ -2620,9 +2620,7 @@ void main() {
     expect(
       beforeJitter.left - afterHold.left,
       lessThanOrEqualTo(
-        timelineScrubMaxEdgeScrollPxPerSecond *
-            hold.inMilliseconds /
-            1000,
+        timelineScrubMaxEdgeScrollPxPerSecond * hold.inMilliseconds / 1000,
       ),
     );
 
@@ -2831,9 +2829,7 @@ void main() {
         final updatesBefore = updates.length;
         await _pumpFrames(tester, const Duration(milliseconds: 250));
         expect(
-          tester
-              .getRect(find.byKey(const ValueKey('timeline_clip_t2')))
-              .left,
+          tester.getRect(find.byKey(const ValueKey('timeline_clip_t2'))).left,
           closeTo(clipBefore.left, 0.1),
         );
         expect(updates, hasLength(updatesBefore));

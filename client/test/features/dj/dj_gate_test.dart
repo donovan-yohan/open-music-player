@@ -58,7 +58,8 @@ void main() {
   // The rotate state gained a second line in #414, so it is held to the same
   // bar as the too-small state below.
   for (final textScale in <double>[1.0, 1.6]) {
-    testWidgets('the rotate notice fits a portrait phone at textScale '
+    testWidgets(
+        'the rotate notice fits a portrait phone at textScale '
         '$textScale', (tester) async {
       final errors = DjErrorCollector()..install();
       addTearDown(errors.restore);
@@ -83,7 +84,8 @@ void main() {
   // deck it rescues: a near-minimum freeform window, at an ordinary and at an
   // accessibility font scale, where its own intrinsic height does not fit.
   for (final textScale in <double>[1.0, 1.6]) {
-    testWidgets('the too-small notice itself fits a 300x120 window '
+    testWidgets(
+        'the too-small notice itself fits a 300x120 window '
         'at textScale $textScale', (tester) async {
       final errors = DjErrorCollector()..install();
       addTearDown(errors.restore);
@@ -103,7 +105,8 @@ void main() {
     });
   }
 
-  testWidgets('a landscape box below the minimum *width* renders the '
+  testWidgets(
+      'a landscape box below the minimum *width* renders the '
       'too-small state', (tester) async {
     final errors = DjErrorCollector()..install();
     addTearDown(errors.restore);

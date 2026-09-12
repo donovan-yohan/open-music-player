@@ -119,7 +119,8 @@ void main() {
         reason: 'a continuation that outlives the route must notify nobody');
   });
 
-  testWidgets('a deck callback captured across the pop drives no released voice',
+  testWidgets(
+      'a deck callback captured across the pop drives no released voice',
       (tester) async {
     final navigator = GlobalKey<NavigatorState>();
     final (:session, :voices) = await openDeck(tester, navigator);
@@ -128,9 +129,8 @@ void main() {
 
     // A callback held by something that outlives the route — a tooltip, a
     // long-press recogniser, a queued gesture — invoked entirely after dispose.
-    final onPlayPause = tester
-        .widget<DjTransport>(find.byType(DjTransport).first)
-        .onPlayPause;
+    final onPlayPause =
+        tester.widget<DjTransport>(find.byType(DjTransport).first).onPlayPause;
 
     await popDeck(tester, navigator);
     expect(find.byType(DjScreen), findsNothing);
@@ -141,7 +141,8 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(voices.first.playCalls, 0,
-        reason: 'a disposed session must not drive a voice it already released');
+        reason:
+            'a disposed session must not drive a voice it already released');
   });
 }
 

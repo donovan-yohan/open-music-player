@@ -47,10 +47,9 @@ class StemAutomationSection extends StatelessWidget {
   /// snap-to-beat toggle.
   final List<int> beatGridMs;
 
-  int get _defaultAtMs =>
-      (playheadSourceMs ?? clip.sourceStartMs)
-          .clamp(clip.sourceStartMs, clip.sourceEndMs)
-          .toInt();
+  int get _defaultAtMs => (playheadSourceMs ?? clip.sourceStartMs)
+      .clamp(clip.sourceStartMs, clip.sourceEndMs)
+      .toInt();
 
   /// Channels to render, newest-truth-first.
   ///
@@ -188,8 +187,7 @@ class StemAutomationSection extends StatelessWidget {
                         'stem_change_point_${descriptor.id}_${event.atMs}',
                       ),
                       label: Text(stemChangePointLabel(event)),
-                      onPressed: () =>
-                          _openDialog(context, descriptor, event),
+                      onPressed: () => _openDialog(context, descriptor, event),
                       deleteIcon: Icon(
                         Icons.close,
                         key: ValueKey(

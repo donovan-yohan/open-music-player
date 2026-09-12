@@ -135,7 +135,8 @@ void main() {
     expect(find.text('Session queued · 3 tracks'), findsOneWidget);
   });
 
-  testWidgets('suggestion chips show when empty, hide after typing, and '
+  testWidgets(
+      'suggestion chips show when empty, hide after typing, and '
       'apply through parseDjVibeText', (tester) async {
     final lineupRequests = <http.Request>[];
     final apiClient = mockQueueApiClient((request) async {
@@ -175,8 +176,8 @@ void main() {
     await tester.pumpAndSettle();
 
     // Midday Wednesday: pair rotated to [Reset, Focus mode], plus Something new.
-    expect(find.byKey(const ValueKey('dj_suggestion_Focus mode')),
-        findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('dj_suggestion_Focus mode')), findsOneWidget);
     expect(find.byKey(const ValueKey('dj_suggestion_Reset')), findsOneWidget);
     expect(find.byKey(const ValueKey('dj_suggestion_Something new')),
         findsOneWidget);
@@ -191,8 +192,8 @@ void main() {
     expect(lineupRequests.single.url.queryParameters.containsKey('q'), isFalse);
 
     // Filters are active now: suggestions hidden, presets remain.
-    expect(find.byKey(const ValueKey('dj_suggestion_Focus mode')),
-        findsNothing);
+    expect(
+        find.byKey(const ValueKey('dj_suggestion_Focus mode')), findsNothing);
     expect(find.text('Chill'), findsOneWidget);
 
     // Clearing the query filter brings suggestions back.
@@ -235,16 +236,16 @@ void main() {
     await tester.pumpAndSettle();
 
     // Morning Wednesday: [Slow start, Coffee first, Something new].
-    expect(find.byKey(const ValueKey('dj_suggestion_Slow start')),
-        findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('dj_suggestion_Slow start')), findsOneWidget);
     expect(find.byKey(const ValueKey('dj_suggestion_Coffee first')),
         findsOneWidget);
 
     await tester.enterText(find.byType(TextField), 'some vibe');
     await tester.pump();
 
-    expect(find.byKey(const ValueKey('dj_suggestion_Slow start')),
-        findsNothing);
+    expect(
+        find.byKey(const ValueKey('dj_suggestion_Slow start')), findsNothing);
     expect(find.byKey(const ValueKey('dj_suggestion_Something new')),
         findsNothing);
   });
@@ -268,7 +269,8 @@ void main() {
         ['Late drive', 'Wind down']);
   });
 
-  testWidgets('empty-swap renders the friendly note; error swap keeps the '
+  testWidgets(
+      'empty-swap renders the friendly note; error swap keeps the '
       'banner', (tester) async {
     var failNextSwap = false;
     final apiClient = mockQueueApiClient((request) async {

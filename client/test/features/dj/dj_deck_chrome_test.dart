@@ -33,10 +33,7 @@ void main() {
     final sources = [
       ...Directory('lib/features/dj').listSync(recursive: true),
       ...Directory('lib/features/dj_session').listSync(recursive: true),
-    ]
-        .whereType<File>()
-        .where((file) => file.path.endsWith('.dart'))
-        .toList();
+    ].whereType<File>().where((file) => file.path.endsWith('.dart')).toList();
 
     expect(sources, isNotEmpty);
 
@@ -99,8 +96,8 @@ void main() {
           tokens.waveformDeckB,
           playhead.color,
         ]) {
-          expect(_contrastRatio(hairline.color, lane),
-              greaterThanOrEqualTo(3.0));
+          expect(
+              _contrastRatio(hairline.color, lane), greaterThanOrEqualTo(3.0));
         }
         final hairlineRect = tester.getRect(find.byKey(hairlineKey));
         final playheadRect =

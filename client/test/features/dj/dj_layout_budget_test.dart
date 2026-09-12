@@ -54,8 +54,7 @@ void main() {
     for (final viewport in [base, base.withTextScale(1.3)]) {
       testWidgets('rows fit and the transport holds 64dp at ${viewport.name}',
           (tester) async {
-        await pumpDjScreen(
-            tester, session: deck.session, viewport: viewport);
+        await pumpDjScreen(tester, session: deck.session, viewport: viewport);
 
         double height(String key) =>
             tester.getSize(find.byKey(ValueKey(key))).height;

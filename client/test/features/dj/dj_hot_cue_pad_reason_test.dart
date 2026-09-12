@@ -94,7 +94,8 @@ void main() {
     expect(sets, isEmpty);
   });
 
-  testWidgets('a gated pad keeps its own name and gains the reason in '
+  testWidgets(
+      'a gated pad keeps its own name and gains the reason in '
       'semantics', (tester) async {
     final handle = tester.ensureSemantics();
     await pumpPads(

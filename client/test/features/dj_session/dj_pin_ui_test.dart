@@ -12,8 +12,7 @@ import '../../support/mock_dio_client.dart';
 
 String _lineupFixture({String? pinnedBlockId}) => jsonEncode({
       'requested': <String, Object?>{},
-      if (pinnedBlockId != null)
-        'pinned': {'blockId': pinnedBlockId},
+      if (pinnedBlockId != null) 'pinned': {'blockId': pinnedBlockId},
       'blocks': [
         {
           'id': 'on-repeat',
@@ -35,7 +34,8 @@ String _lineupFixture({String? pinnedBlockId}) => jsonEncode({
     });
 
 void main() {
-  testWidgets('tapping pin posts the pin, refetches the lineup, and marks '
+  testWidgets(
+      'tapping pin posts the pin, refetches the lineup, and marks '
       'the section pinned with others disabled', (tester) async {
     final requests = <http.Request>[];
     final apiClient = mockQueueApiClient((request) async {
@@ -59,8 +59,8 @@ void main() {
       if (request.url.path.endsWith('/dj/lineup')) {
         // After a successful POST /dj/pin the lineup carries the pinned
         // marker; before that it doesn't.
-        final pinned =
-            requests.any((r) => r.method == 'POST' && r.url.path.endsWith('/dj/pin'));
+        final pinned = requests
+            .any((r) => r.method == 'POST' && r.url.path.endsWith('/dj/pin'));
         return http.Response(
           _lineupFixture(pinnedBlockId: pinned ? 'flashback' : null),
           200,
@@ -109,9 +109,11 @@ void main() {
       findsOneWidget,
     );
     expect(
-      tester.widget<IconButton>(
-        find.byKey(const ValueKey('dj_pin_flashback')),
-      ).onPressed,
+      tester
+          .widget<IconButton>(
+            find.byKey(const ValueKey('dj_pin_flashback')),
+          )
+          .onPressed,
       isNotNull,
     );
 
@@ -122,14 +124,17 @@ void main() {
     expect(find.byKey(const ValueKey('dj_pinned_banner')), findsOneWidget);
     expect(find.text('Vibe locked: Flashback'), findsOneWidget);
     expect(
-      tester.widget<IconButton>(
-        find.byKey(const ValueKey('dj_pin_on-repeat')),
-      ).onPressed,
+      tester
+          .widget<IconButton>(
+            find.byKey(const ValueKey('dj_pin_on-repeat')),
+          )
+          .onPressed,
       isNull,
     );
   });
 
-  testWidgets('pinned lineup response renders the banner; Unlock deletes '
+  testWidgets(
+      'pinned lineup response renders the banner; Unlock deletes '
       'the pin and refetches', (tester) async {
     var pinExists = true;
     final requests = <http.Request>[];
@@ -172,9 +177,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      requests
-          .where((r) => r.method == 'DELETE')
-          .map((r) => r.url.path),
+      requests.where((r) => r.method == 'DELETE').map((r) => r.url.path),
       contains(endsWith('/dj/pin')),
     );
     expect(
@@ -184,7 +187,8 @@ void main() {
     expect(find.byKey(const ValueKey('dj_pinned_banner')), findsNothing);
   });
 
-  testWidgets('a failed pin rolls back the optimistic state and shows a '
+  testWidgets(
+      'a failed pin rolls back the optimistic state and shows a '
       'snackbar', (tester) async {
     final apiClient = mockQueueApiClient((request) async {
       if (request.method == 'POST' && request.url.path.endsWith('/dj/pin')) {
@@ -216,9 +220,11 @@ void main() {
       findsNothing,
     );
     expect(
-      tester.widget<IconButton>(
-        find.byKey(const ValueKey('dj_pin_on-repeat')),
-      ).onPressed,
+      tester
+          .widget<IconButton>(
+            find.byKey(const ValueKey('dj_pin_on-repeat')),
+          )
+          .onPressed,
       isNotNull,
     );
     expect(find.text("Couldn't pin that vibe"), findsOneWidget);

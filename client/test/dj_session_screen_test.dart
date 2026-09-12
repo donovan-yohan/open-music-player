@@ -257,8 +257,7 @@ class _DeferredDjSessionDataSource implements DjSessionDataSource {
   }
 
   @override
-  Future<DjPin> pinBlock(String blockId) async =>
-      DjPin.fromJson(const {});
+  Future<DjPin> pinBlock(String blockId) async => DjPin.fromJson(const {});
 
   @override
   Future<void> unpinBlock() async {}

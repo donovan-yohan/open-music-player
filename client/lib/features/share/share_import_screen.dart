@@ -58,8 +58,7 @@ class _ShareImportScreenState extends State<ShareImportScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('Shared to Sound Q',
-                  style: theme.textTheme.headlineSmall),
+              Text('Shared to Sound Q', style: theme.textTheme.headlineSmall),
               const SizedBox(height: 12),
               if (candidate == null)
                 _InvalidShareCard(sharedText: widget.sharedText)

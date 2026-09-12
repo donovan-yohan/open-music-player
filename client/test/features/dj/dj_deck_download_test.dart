@@ -63,8 +63,8 @@ void main() {
           .data,
       djDeckDownloadRequired,
     );
-    expect(find.byKey(const ValueKey('dj_deck_header_status_a')),
-        findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('dj_deck_header_status_a')), findsOneWidget);
 
     // (1) the action reaches the app's one download pipeline, with the id the
     // pipeline keys on.
@@ -138,7 +138,8 @@ void main() {
     expect(find.text(djDeckDownloadRetryAction), findsOneWidget);
     expect(
       tester
-          .widget<FilledButton>(find.byKey(const ValueKey('dj_deck_download_a')))
+          .widget<FilledButton>(
+              find.byKey(const ValueKey('dj_deck_download_a')))
           .onPressed,
       isNotNull,
     );
@@ -268,6 +269,5 @@ class _RecordingDownloadState extends ChangeNotifier implements DownloadState {
   bool isDownloading(int trackId) => getProgress(trackId) != null;
 
   @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      super.noSuchMethod(invocation);
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

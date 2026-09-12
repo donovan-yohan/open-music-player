@@ -45,7 +45,8 @@ enum SortOrder { asc, desc }
 extension SortOrderX on SortOrder {
   String get apiValue => this == SortOrder.asc ? 'asc' : 'desc';
 
-  SortOrder get flipped => this == SortOrder.asc ? SortOrder.desc : SortOrder.asc;
+  SortOrder get flipped =>
+      this == SortOrder.asc ? SortOrder.desc : SortOrder.asc;
 
   static SortOrder fromApiValue(String? value) =>
       value == 'desc' ? SortOrder.desc : SortOrder.asc;
@@ -97,7 +98,9 @@ class LibrarySortOption {
 
   @override
   bool operator ==(Object other) =>
-      other is LibrarySortOption && other.field == field && other.order == order;
+      other is LibrarySortOption &&
+      other.field == field &&
+      other.order == order;
 
   @override
   int get hashCode => Object.hash(field, order);

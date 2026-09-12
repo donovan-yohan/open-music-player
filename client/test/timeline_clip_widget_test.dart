@@ -518,8 +518,10 @@ void main() {
       );
       final box = tester.getTopLeft(find.byType(TimelineClipWidget));
 
-      expect(tick.dx - box.dx, closeTo(150, 1),
-          reason: 'a mid-clip change point sits mid-box',
+      expect(
+        tick.dx - box.dx,
+        closeTo(150, 1),
+        reason: 'a mid-clip change point sits mid-box',
       );
     });
 
@@ -537,8 +539,10 @@ void main() {
       );
       final box = tester.getTopLeft(find.byType(TimelineClipWidget));
 
-      expect(tick.dx - box.dx, closeTo(150, 1),
-          reason: 'atMs is absolute source time, not clip-relative',
+      expect(
+        tick.dx - box.dx,
+        closeTo(150, 1),
+        reason: 'atMs is absolute source time, not clip-relative',
       );
     });
 

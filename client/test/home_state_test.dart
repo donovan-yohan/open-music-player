@@ -33,7 +33,8 @@ void main() {
       expect(state.errorMessage, 'boom');
     });
 
-    test('loaded with all sections empty collapses to a SINGLE empty state '
+    test(
+        'loaded with all sections empty collapses to a SINGLE empty state '
         '(not a spinner, not an error)', () {
       final state = HomeState.loaded(const HomeSections());
       expect(state.view, HomeView.empty);

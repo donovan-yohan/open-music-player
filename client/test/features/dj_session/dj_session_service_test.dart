@@ -104,8 +104,7 @@ void main() {
       expect(pin.blockId, 'on-repeat');
     });
 
-    test('DELETE /dj/pin succeeds and swallows 404 as already-gone',
-        () async {
+    test('DELETE /dj/pin succeeds and swallows 404 as already-gone', () async {
       var deleteCount = 0;
       var status = 200;
       final apiClient = support.mockQueueApiClient((request) async {

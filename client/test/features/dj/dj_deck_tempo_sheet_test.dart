@@ -48,8 +48,8 @@ void main() {
 
       await openSheet(tester, 'a');
 
-      expect(find.byKey(const ValueKey('dj_deck_tempo_sheet_a')),
-          findsOneWidget);
+      expect(
+          find.byKey(const ValueKey('dj_deck_tempo_sheet_a')), findsOneWidget);
       // One deck's controls, not both.
       expect(find.byKey(const ValueKey('dj_deck_tempo_sheet_b')), findsNothing);
       for (final key in const [
@@ -73,12 +73,13 @@ void main() {
 
       await openSheet(tester, 'b');
 
-      expect(find.byKey(const ValueKey('dj_deck_tempo_sheet_b')),
-          findsOneWidget);
+      expect(
+          find.byKey(const ValueKey('dj_deck_tempo_sheet_b')), findsOneWidget);
       expect(find.text('128.0 BPM'), findsWidgets);
     });
 
-    testWidgets('the trigger is present at every serviceable viewport and '
+    testWidgets(
+        'the trigger is present at every serviceable viewport and '
         'never overlaps the other deck', (tester) async {
       for (final viewport in djServiceableViewports) {
         await pumpDeck(tester, viewport: viewport);
@@ -106,8 +107,7 @@ void main() {
       await pumpDeck(tester);
 
       expect(find.byKey(const ValueKey('dj_deck_tempo_sheet_a')), findsNothing);
-      await tester
-          .longPress(find.byKey(const ValueKey('dj_tempo_key_lane_a')));
+      await tester.longPress(find.byKey(const ValueKey('dj_tempo_key_lane_a')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
 
@@ -116,7 +116,8 @@ void main() {
       expect(find.byKey(const ValueKey('dj_deck_tempo_sheet_b')), findsNothing);
     });
 
-    testWidgets('the lane trigger keeps a 48dp target at the reference '
+    testWidgets(
+        'the lane trigger keeps a 48dp target at the reference '
         'viewport', (tester) async {
       await pumpDeck(tester);
 
@@ -267,8 +268,7 @@ void main() {
       expect(find.text(djDeckTempoOctaveDetail), findsNothing);
     });
 
-    testWidgets('ten fine steps land the readout on 125.5 BPM',
-        (tester) async {
+    testWidgets('ten fine steps land the readout on 125.5 BPM', (tester) async {
       await pumpDeck(tester);
       await openSheet(tester, 'a');
 
@@ -397,7 +397,6 @@ void main() {
         reason: 'the ceiling disables its own chip rather than clamping',
       );
     });
-
   });
 
   group('a backend with no pitch shifting', () {
@@ -496,7 +495,8 @@ void main() {
       landscapeNarrowServiceable,
     ]) {
       for (final scale in <double>[1.0, 1.3, 1.6]) {
-        testWidgets('the sheet raises no overflow at ${viewport.name} '
+        testWidgets(
+            'the sheet raises no overflow at ${viewport.name} '
             '@ textScale $scale', (tester) async {
           final errors = DjErrorCollector()..install();
           addTearDown(errors.restore);

@@ -46,8 +46,7 @@ void main() {
       reason: 'the contract must not be padded with duplicates',
     );
 
-    final source =
-        File('lib/features/dj/dj_deck_copy.dart').readAsStringSync();
+    final source = File('lib/features/dj/dj_deck_copy.dart').readAsStringSync();
     for (final copy in djDeckCopyStrings) {
       expect(source, contains(copy),
           reason: 'every contract string is declared in dj_deck_copy.dart');
@@ -81,10 +80,9 @@ void main() {
 /// Drops block and line comments so a scan only sees code and string literals.
 /// `//` preceded by `:` is left alone, so a URL inside a literal survives.
 String _withoutComments(String source) => source
-    .replaceAll(RegExp(r'/\*.*?\*/', dotAll: true), '')
-    .split('\n')
-    .map((line) {
+        .replaceAll(RegExp(r'/\*.*?\*/', dotAll: true), '')
+        .split('\n')
+        .map((line) {
       final match = RegExp(r'(?<!:)//').firstMatch(line);
       return match == null ? line : line.substring(0, match.start);
-    })
-    .join('\n');
+    }).join('\n');

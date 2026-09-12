@@ -153,10 +153,9 @@ class DjRowBudget {
   /// above the reference budget, and steps to the compact band on the same
   /// rung as [DjPitchFader.nudgeExtentFor], so the two touch-target ladders
   /// cannot drift apart.
-  double get panelSwitcherHeight =>
-      controlField >= kDjPitchFaderFullNudgeHeight
-          ? kDjPanelSwitcherHeight
-          : kDjPanelSwitcherCompactHeight;
+  double get panelSwitcherHeight => controlField >= kDjPitchFaderFullNudgeHeight
+      ? kDjPanelSwitcherHeight
+      : kDjPanelSwitcherCompactHeight;
 }
 
 class DjLayout extends StatefulWidget {

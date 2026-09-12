@@ -76,8 +76,8 @@ List<MixPlanClip>? clipsWithSeamEdit(
   final previousOverlapMs =
       previousOutgoing.timelineEndMs - previousIncoming.timelineStartMs;
   final placementDeltaMs = newOverlapMs - previousOverlapMs;
-  clips[incomingIndex] = clips[incomingIndex].withTimelineStartMs(
-      previousIncoming.timelineStartMs - placementDeltaMs);
+  clips[incomingIndex] = clips[incomingIndex]
+      .withTimelineStartMs(previousIncoming.timelineStartMs - placementDeltaMs);
   for (var j = incomingIndex + 1; j < clips.length; j++) {
     clips[j] = clips[j]
         .withTimelineStartMs(clips[j].timelineStartMs - placementDeltaMs);

@@ -137,5 +137,7 @@ List<DjPromptSuggestion> djPromptSuggestions({DateTime? now}) {
   ];
 }
 
-final _highEnergyWords = RegExp(r'\b(energetic|hype|gym|party|dance|high[ -]energy)\b');
-final _lowEnergyWords = RegExp(r'\b(chill|calm|sleep|focus|study|low[ -]energy)\b');
+final _highEnergyWords =
+    RegExp(r'\b(energetic|hype|gym|party|dance|high[ -]energy)\b');
+final _lowEnergyWords =
+    RegExp(r'\b(chill|calm|sleep|focus|study|low[ -]energy)\b');

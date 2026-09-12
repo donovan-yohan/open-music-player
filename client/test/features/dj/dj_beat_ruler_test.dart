@@ -40,7 +40,8 @@ Future<Uint8List> rasterize(CustomPainter painter, Size size) async {
 }
 
 void main() {
-  testWidgets('detail zoom paints beat, bar and phrase levels at the expected '
+  testWidgets(
+      'detail zoom paints beat, bar and phrase levels at the expected '
       'x positions', (tester) async {
     final track = djAnalysisTrack(analysis: djNumberedAnalysis());
     await pumpDjLane(tester, deck: deckFor(track), track: track);

@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/engine/engine_audio_source_resolver.dart';
@@ -109,8 +108,7 @@ void main() {
           disabledReason: djDeckDownloadRequired,
         );
 
-        final cue =
-            tester.getSemantics(find.byKey(const ValueKey('dj_cue')));
+        final cue = tester.getSemantics(find.byKey(const ValueKey('dj_cue')));
         final play =
             tester.getSemantics(find.byKey(const ValueKey('dj_play_pause')));
 
@@ -131,8 +129,7 @@ void main() {
       });
     }
 
-    testWidgets('a gated deck records no cue press or release',
-        (tester) async {
+    testWidgets('a gated deck records no cue press or release', (tester) async {
       final cue = <String>[];
       await pumpTransport(
         tester,
@@ -405,7 +402,8 @@ void main() {
       expect(
         tester
             .widget<GestureDetector>(
-              find.ancestor(of: padA, matching: find.byType(GestureDetector))
+              find
+                  .ancestor(of: padA, matching: find.byType(GestureDetector))
                   .first,
             )
             .onLongPress,
@@ -414,7 +412,8 @@ void main() {
       expect(
         tester
             .widget<GestureDetector>(
-              find.ancestor(of: padB, matching: find.byType(GestureDetector))
+              find
+                  .ancestor(of: padB, matching: find.byType(GestureDetector))
                   .first,
             )
             .onLongPress,

@@ -228,7 +228,8 @@ class _DownloadListTile extends StatelessWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Remove Download'),
-        content: Text('Remove "${download.track?.title ?? 'this track'}" from downloads?'),
+        content: Text(
+            'Remove "${download.track?.title ?? 'this track'}" from downloads?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),

@@ -58,6 +58,9 @@ run_client() {
     cd "$ROOT/client"
     flutter pub get
     flutter analyze --no-fatal-warnings --no-fatal-infos
+    # Gated so an unformatted file cannot land and then reappear as a large
+    # incidental diff inside somebody else's feature PR.
+    dart format --output=none --set-exit-if-changed lib test
   )
 }
 

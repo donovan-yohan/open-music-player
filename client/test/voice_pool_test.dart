@@ -1028,7 +1028,6 @@ class FakeVoice implements Voice {
   /// What this fake claims the loaded audio is worth, or null for unknown.
   int? reportedDurationMs;
 
-
   @override
   int? driftMs(int expectedLocalPositionMs) {
     final position = _positionMs;

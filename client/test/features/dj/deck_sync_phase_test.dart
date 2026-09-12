@@ -84,7 +84,8 @@ void main() {
       // equating beat fractions is unsatisfiable and would report the follower
       // a whole 469ms leader-beat out when it is 234ms out.
       final reading = djSyncPhaseReading(
-        leader: gridDeck(deckId: DjDeckId.b, beatsMs: grid(469), positionMs: 234),
+        leader:
+            gridDeck(deckId: DjDeckId.b, beatsMs: grid(469), positionMs: 234),
         follower: gridDeck(beatsMs: grid(938), positionMs: 0),
       );
 
@@ -109,8 +110,7 @@ void main() {
         () {
       final reading = djSyncPhaseReading(
         leader: gridDeck(deckId: DjDeckId.b, beatsMs: grid(469), positionMs: 0),
-        follower:
-            gridDeck(beatsMs: grid(484), positionMs: 100, rate: 1.032258),
+        follower: gridDeck(beatsMs: grid(484), positionMs: 100, rate: 1.032258),
       );
 
       expect(reading, isNotNull);
@@ -127,8 +127,7 @@ void main() {
       expect(
         djSyncPhaseErrorMs(
           leader: leader,
-          follower:
-              gridDeck(beatsMs: [1000, 1469, 1938], positionMs: 500),
+          follower: gridDeck(beatsMs: [1000, 1469, 1938], positionMs: 500),
         ),
         isNull,
         reason: 'the position precedes the grid',
@@ -612,8 +611,8 @@ void main() {
       );
 
       await rig.session.nudgePitchEnd(DjDeckId.a);
-      expect(rig.session.stateFor(DjDeckId.a).rate,
-          closeTo(rateBeforeBend, 1e-12),
+      expect(
+          rig.session.stateFor(DjDeckId.a).rate, closeTo(rateBeforeBend, 1e-12),
           reason: 'the bend returns the deck to what sync is holding');
 
       final commandsAfterRelease = voice.speeds.length;
@@ -650,7 +649,8 @@ void main() {
       final refused = await rig.session.pressSync(DjDeckId.b);
 
       expect(refused.isMatched, isFalse);
-      expect(rig.session.syncMaster, DjDeckId.b, reason: 'a refusal moves no roles');
+      expect(rig.session.syncMaster, DjDeckId.b,
+          reason: 'a refusal moves no roles');
       expect(rig.session.syncEngagedOn(DjDeckId.a), isTrue);
       expect(rig.session.stateFor(DjDeckId.a).rate, closeTo(base, 1e-9),
           reason: 'the swap unwound the correction before computing the match');
@@ -699,8 +699,8 @@ void main() {
           positionA += rig.session.stateFor(DjDeckId.a).rate * 33;
           positionB += 33;
         }
-        expect(rig.session.stateFor(DjDeckId.a).rate,
-            isNot(closeTo(base, 1e-9)),
+        expect(
+            rig.session.stateFor(DjDeckId.a).rate, isNot(closeTo(base, 1e-9)),
             reason: 'the correction has bent the rate away from the base');
         final commandsBefore = voice.speeds.length;
 
@@ -709,7 +709,8 @@ void main() {
         } else {
           await rig.session.load(
             DjDeckId.b,
-            djSyncDeckSeed(id: '92', analysis: djSyncLongGridAnalysis(bpm: 128)),
+            djSyncDeckSeed(
+                id: '92', analysis: djSyncLongGridAnalysis(bpm: 128)),
           );
         }
 
@@ -723,7 +724,8 @@ void main() {
       }
     });
 
-    test('the placement is retaken when the follower actually starts', () async {
+    test('the placement is retaken when the follower actually starts',
+        () async {
       // Placing a paused follower at press time is only exact for that instant:
       // the leader keeps playing, so by the time PLAY is pressed - seconds
       // later, normally - the deck is an arbitrary fraction of a beat out
@@ -856,8 +858,8 @@ void main() {
           positionA += rig.session.stateFor(DjDeckId.a).rate * 33;
           positionB += 33;
         }
-        expect(rig.session.stateFor(DjDeckId.a).rate,
-            isNot(closeTo(base, 1e-9)),
+        expect(
+            rig.session.stateFor(DjDeckId.a).rate, isNot(closeTo(base, 1e-9)),
             reason: 'the correction has bent the rate away from the base');
 
         await rig.session.nudgePitchStart(DjDeckId.a, -2);

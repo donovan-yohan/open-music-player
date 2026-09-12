@@ -72,7 +72,8 @@ class ErrorView extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final displayTitle = title ?? _getTitle();
-    final displayMessage = message ?? error?.displayMessage ?? 'An error occurred';
+    final displayMessage =
+        message ?? error?.displayMessage ?? 'An error occurred';
     final showRetry = error?.isRetryable ?? true;
 
     return Center(
@@ -162,7 +163,8 @@ class InlineError extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final displayMessage = message ?? error?.displayMessage ?? 'An error occurred';
+    final displayMessage =
+        message ?? error?.displayMessage ?? 'An error occurred';
     final showRetry = error?.isRetryable ?? true;
 
     return Container(
@@ -326,7 +328,8 @@ class AsyncBuilder<T> extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return result.build(
-      loading: loadingBuilder ?? () => const Center(child: CircularProgressIndicator()),
+      loading: loadingBuilder ??
+          () => const Center(child: CircularProgressIndicator()),
       data: builder,
       error: errorBuilder ??
           (error, retry) => ErrorView(

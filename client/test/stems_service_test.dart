@@ -74,13 +74,14 @@ void main() {
     });
 
     test('reads the channel list out of the worker manifest', () async {
-      final stems =
-          await StemsService(_FakeApiClient(getBody: _readyBody())).getTrackStems(42);
+      final stems = await StemsService(_FakeApiClient(getBody: _readyBody()))
+          .getTrackStems(42);
 
       expect(stems.status, StemsStatus.ready);
       expect(stems.isReady, isTrue);
       expect(stems.channels, ['vocals', 'melody', 'bass', 'kick', 'perc']);
-      expect(stems.stemModelVersion, 'audio-separator-htdemucs-ft-4s-v1+lr4-180');
+      expect(
+          stems.stemModelVersion, 'audio-separator-htdemucs-ft-4s-v1+lr4-180');
     });
 
     test('a ready row with no manifest objects is not reported ready',

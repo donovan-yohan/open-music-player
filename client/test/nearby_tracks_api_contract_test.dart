@@ -70,7 +70,8 @@ void main() {
       expect(
         full.durationMs,
         214000,
-        reason: 'a queued match needs a real length or its clip is never active',
+        reason:
+            'a queued match needs a real length or its clip is never active',
       );
       expect(full.bpm, 124.4);
       expect(full.camelot, '8A', reason: 'labels are canonicalized');

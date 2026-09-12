@@ -35,8 +35,7 @@ String? djCamelotShifted(String? camelot, int semitones) {
   if (match == null) return null;
   final number = int.parse(match.group(1)!);
   final letter = match.group(2)!;
-  final shifted =
-      (number - 1 + _camelotStepsPerSemitone * semitones) % 12 + 1;
+  final shifted = (number - 1 + _camelotStepsPerSemitone * semitones) % 12 + 1;
   return '$shifted$letter';
 }
 

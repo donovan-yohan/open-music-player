@@ -18,7 +18,8 @@ void main() {
         unknownKeys: unknownKeys,
       );
 
-  StemGainEvent event(String channel, int atMs, double gain, {int? beatIndex}) =>
+  StemGainEvent event(String channel, int atMs, double gain,
+          {int? beatIndex}) =>
       StemGainEvent(
         channel: channel,
         atMs: atMs,
@@ -80,7 +81,8 @@ void main() {
       expect(decoded.toJson(), source.toJson());
       expect(decoded.schemaVersion, 1);
       expect(decoded.channelSet.id, 'stems5-hybrid-v1');
-      expect(decoded.stemModelVersion, 'audio-separator-htdemucs-ft-4s-v1+lr4-180');
+      expect(decoded.stemModelVersion,
+          'audio-separator-htdemucs-ft-4s-v1+lr4-180');
       expect(decoded.sourceFileHash, 'sha256:deadbeef');
       expect(decoded.beatGridRef?.analysisRef, 'analysis-77');
       expect(decoded.eventsFor('bass').single.beatIndex, isNull,

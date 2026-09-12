@@ -51,9 +51,9 @@ class _SectionHeader extends StatelessWidget {
       child: Text(
         title,
         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-          color: Theme.of(context).colorScheme.primary,
-          fontWeight: FontWeight.bold,
-        ),
+              color: Theme.of(context).colorScheme.primary,
+              fontWeight: FontWeight.bold,
+            ),
       ),
     );
   }
@@ -90,8 +90,8 @@ class _AccountSection extends ConsumerWidget {
                   : 'Device biometric or screen lock is not available on this platform.',
             ),
             value: authState.biometricUnlockEnabled,
-            onChanged:
-                authState.isLoading || !authState.biometricUnlockAvailable
+            onChanged: authState.isLoading ||
+                    !authState.biometricUnlockAvailable
                 ? null
                 : (enabled) => _setBiometricUnlock(context, authState, enabled),
           ),
@@ -149,8 +149,8 @@ class _AccountSection extends ConsumerWidget {
         content: Text(
           success
               ? enabled
-                    ? 'Biometric unlock enabled for this installed app session.'
-                    : 'Biometric unlock disabled.'
+                  ? 'Biometric unlock enabled for this installed app session.'
+                  : 'Biometric unlock disabled.'
               : authState.error ?? 'Could not update biometric unlock.',
         ),
         backgroundColor: success ? null : Theme.of(context).colorScheme.error,
@@ -440,8 +440,8 @@ class _SettingsStorageSectionState
               _cacheManager == null
                   ? 'Unavailable on this platform'
                   : snapshot.hasData
-                  ? formatBytes(snapshot.data!)
-                  : 'Calculating...',
+                      ? formatBytes(snapshot.data!)
+                      : 'Calculating...',
             ),
           ),
           trailing: TextButton(

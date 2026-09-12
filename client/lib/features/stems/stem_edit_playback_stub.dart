@@ -62,7 +62,8 @@ class StemEditPlaybackStub implements StemChannelSource {
   bool get isPending => status == StemsStatus.pending;
 
   @override
-  List<StemChannel> get channels => List<StemChannel>.unmodifiable(<StemChannel>[
+  List<StemChannel> get channels =>
+      List<StemChannel>.unmodifiable(<StemChannel>[
         for (final descriptor in _edits.channelSet.channels)
           StemChannel(
             id: descriptor.id,

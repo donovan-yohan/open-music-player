@@ -3,7 +3,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/features/playlists/playlist_import_screen.dart';
 
 void main() {
-  testWidgets('malformed playlist URLs show validation error instead of throwing',
+  testWidgets(
+      'malformed playlist URLs show validation error instead of throwing',
       (tester) async {
     await tester.pumpWidget(
       const MaterialApp(home: PlaylistImportScreen()),

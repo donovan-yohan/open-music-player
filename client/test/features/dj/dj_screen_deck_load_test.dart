@@ -61,7 +61,8 @@ void main() {
     session.dispose();
   });
 
-  testWidgets('deck entry loads the queue once and does not prompt for a '
+  testWidgets(
+      'deck entry loads the queue once and does not prompt for a '
       'local file', (tester) async {
     pinViewport(tester);
     final api = _CountingQueueApiClient(
@@ -108,7 +109,8 @@ void main() {
     queue.dispose();
   });
 
-  testWidgets('a genuinely empty queue renders the inline load affordance '
+  testWidgets(
+      'a genuinely empty queue renders the inline load affordance '
       'instead of a modal', (tester) async {
     pinViewport(tester);
     final api = _CountingQueueApiClient(QueueState.empty());

@@ -33,7 +33,9 @@ void main() {
     expect(MixPresetId.values, [MixPresetId.fade, MixPresetId.cut]);
   });
 
-  test('Fade writes the requested overlap into both fades and preserves clip gain', () {
+  test(
+      'Fade writes the requested overlap into both fades and preserves clip gain',
+      () {
     final applied = MixPreset.fade.applyTo(
       outgoing: _clip('clip-1', timelineStartMs: 0, gainDb: -1.5),
       incoming: _clip('clip-2', timelineStartMs: 190000, gainDb: -1.5),

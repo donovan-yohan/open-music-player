@@ -107,7 +107,8 @@ void main() {
       });
       expect(queueClient.lastAddBody!.containsKey('sourceCandidate'), isFalse);
       expect(
-        find.textContaining('Added Porter Robinson - Shelter (Live) to imports'),
+        find.textContaining(
+            'Added Porter Robinson - Shelter (Live) to imports'),
         findsOneWidget,
       );
 
@@ -218,7 +219,8 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('non-first Scribble Remix adds directly without a source dialog', (
+  testWidgets('non-first Scribble Remix adds directly without a source dialog',
+      (
     tester,
   ) async {
     final queueClient = await pumpSearch(

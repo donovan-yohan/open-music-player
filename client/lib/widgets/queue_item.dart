@@ -112,8 +112,7 @@ class QueueItem extends StatelessWidget {
                         ),
                         url: track.artworkUrl,
                         kind: track.artworkKind,
-                        cacheKey:
-                            'queue:${track.queueItemId}:'
+                        cacheKey: 'queue:${track.queueItemId}:'
                             '${track.artworkKind.wireValue}:'
                             '${track.artworkUrl ?? "none"}',
                         width: 48,
@@ -415,7 +414,6 @@ class QueueItem extends StatelessWidget {
       ),
     );
   }
-
 }
 
 class _AnalysisChip extends StatelessWidget {
@@ -503,8 +501,7 @@ class QueueActionSheet extends StatelessWidget {
                 TrackArtwork(
                   url: track.artworkUrl,
                   kind: track.artworkKind,
-                  cacheKey:
-                      'queue-sheet:${track.queueItemId}:'
+                  cacheKey: 'queue-sheet:${track.queueItemId}:'
                       '${track.artworkKind.wireValue}:'
                       '${track.artworkUrl ?? "none"}',
                   width: 48,

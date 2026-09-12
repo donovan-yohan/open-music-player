@@ -46,7 +46,8 @@ void main() {
       expect(api.capturedParams?.containsKey('album'), isFalse);
       // Generous limit so a full local catalogue arrives in one page.
       expect(api.capturedParams?['limit'], isNotNull);
-      expect(int.parse(api.capturedParams!['limit']!), greaterThanOrEqualTo(100));
+      expect(
+          int.parse(api.capturedParams!['limit']!), greaterThanOrEqualTo(100));
 
       expect(tracks, hasLength(1));
       expect(tracks.first.id, 1);
@@ -67,7 +68,8 @@ void main() {
         {'id': 7, 'title': 'Back in Black', 'album': 'Back in Black'}
       ]));
 
-      final tracks = await LibraryService(api).getLibraryByAlbum('Back in Black');
+      final tracks =
+          await LibraryService(api).getLibraryByAlbum('Back in Black');
 
       expect(api.capturedEndpoint, '/library');
       expect(api.capturedParams?['album'], 'Back in Black');

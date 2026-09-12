@@ -55,7 +55,8 @@ void main() {
       expect(find.byKey(const ValueKey('playing_from_label')), findsOneWidget);
     });
 
-    testWidgets('collapses to nothing when the context is null', (tester) async {
+    testWidgets('collapses to nothing when the context is null',
+        (tester) async {
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(body: PlaybackContextLabel(null)),

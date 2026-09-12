@@ -397,8 +397,7 @@ class StemGainRange {
   int get hashCode => Object.hash(channel, startMs, endMs, gain);
 
   @override
-  String toString() =>
-      'StemGainRange($channel [$startMs, $endMs) -> $gain)';
+  String toString() => 'StemGainRange($channel [$startMs, $endMs) -> $gain)';
 }
 
 /// The `stemEdits` v1 document that hangs off one clip.

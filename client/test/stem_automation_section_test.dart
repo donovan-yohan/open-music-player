@@ -145,8 +145,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const ValueKey('stem_change_point_dialog')),
-        findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('stem_change_point_dialog')), findsOneWidget);
     expect(
       tester
           .widget<TextField>(
@@ -305,8 +305,8 @@ void main() {
         find.byKey(const ValueKey('stem_automation_source_status')),
         findsNothing,
       );
-      expect(find.byKey(const ValueKey('stem_channel_row_perc')),
-          findsOneWidget);
+      expect(
+          find.byKey(const ValueKey('stem_channel_row_perc')), findsOneWidget);
     });
 
     testWidgets('a ready source names the real separated channels', (
@@ -370,10 +370,11 @@ void main() {
       );
       // All five registry rows stay authorable: atMs is anchored to the source
       // file, so an edit written now survives a later separation.
-      expect(find.byKey(const ValueKey('stem_channel_row_perc')),
-          findsOneWidget);
+      expect(
+          find.byKey(const ValueKey('stem_channel_row_perc')), findsOneWidget);
 
-      await tester.tap(find.byKey(const ValueKey('stem_add_change_point_perc')));
+      await tester
+          .tap(find.byKey(const ValueKey('stem_add_change_point_perc')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('stem_change_point_save')));
       await tester.pumpAndSettle();
@@ -417,8 +418,8 @@ void main() {
       await source.setMute('kick', true);
       await tester.pump();
 
-      expect(find.byKey(const ValueKey('stem_channel_row_kick')),
-          findsOneWidget);
+      expect(
+          find.byKey(const ValueKey('stem_channel_row_kick')), findsOneWidget);
     });
   });
 }

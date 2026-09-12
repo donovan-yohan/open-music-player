@@ -26,7 +26,8 @@ T painterIn<T>(WidgetTester tester, DjDeckId deck) =>
 
 void main() {
   group('lane analysis state (#410)', () {
-    testWidgets('an analyzed track whose peaks have not landed says it is '
+    testWidgets(
+        'an analyzed track whose peaks have not landed says it is '
         'still analyzing', (tester) async {
       final track = djAnalysisTrack(analysis: djCompactAnalysis());
       final session = djCountingSession([]);
@@ -62,8 +63,8 @@ void main() {
 
       // The playhead hairline is an opaque full-height surface band on the
       // lane's centre axis, so a centred notice came out bisected.
-      final notice =
-          tester.getRect(find.byKey(const ValueKey('dj_lane_analysis_pending_a')));
+      final notice = tester
+          .getRect(find.byKey(const ValueKey('dj_lane_analysis_pending_a')));
       final hairline = tester.getRect(
         find.byKey(const ValueKey('dj_waveform_playhead_hairline_a')),
       );
@@ -226,8 +227,8 @@ void main() {
         session: session,
         viewport: landscapeReference,
       );
-      expect(painterIn<DjBeatRulerPainter>(tester, DjDeckId.a).ticks,
-          isNotEmpty);
+      expect(
+          painterIn<DjBeatRulerPainter>(tester, DjDeckId.a).ticks, isNotEmpty);
 
       // shouldRepaint cannot observe this: the ruler rides in a Positioned
       // whose left is position-derived, and the relayout that follows always

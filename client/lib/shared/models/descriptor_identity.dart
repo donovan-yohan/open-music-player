@@ -24,7 +24,9 @@ bool descriptorIdentityStale({
       storedStorageKeyVersion != storageKeyVersion) {
     return true;
   }
-  if (storedSizeBytes != null && sizeBytes != null && storedSizeBytes != sizeBytes) {
+  if (storedSizeBytes != null &&
+      sizeBytes != null &&
+      storedSizeBytes != sizeBytes) {
     return true;
   }
   return false;

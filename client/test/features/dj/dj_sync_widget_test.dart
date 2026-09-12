@@ -405,7 +405,8 @@ void main() {
     tearDown(() => rig.session.dispose());
 
     for (final viewport in djServiceableViewports) {
-      testWidgets('keeps the engaged state while correcting at '
+      testWidgets(
+          'keeps the engaged state while correcting at '
           '${viewport.name}', (tester) async {
         final errors = DjErrorCollector()..install();
         addTearDown(errors.restore);
