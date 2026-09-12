@@ -12,6 +12,7 @@ import 'package:open_music_player/core/engine/voice_pool.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 
 void main() {
+  late DateTime now;
   late DefaultTimelineClock clock;
   late List<FakeVoice> voices;
   late FakeResolver resolver;
@@ -19,8 +20,9 @@ void main() {
   late VoicePool pool;
 
   setUp(() async {
+    now = DateTime.utc(2026, 1, 1);
     clock = DefaultTimelineClock(
-      now: () => DateTime.utc(2026, 1, 1),
+      now: () => now,
       uiTickInterval: const Duration(hours: 1),
     );
     voices = [];
@@ -400,6 +402,10 @@ void main() {
           _clip(
             'a',
             0,
+            // A fade means the envelope gain actually moves as the clock
+            // advances, so the periodic level update has real work to do.
+            // Level updates that would re-send an unchanged gain are skipped.
+            fadeInMs: 8000,
             rateAutomation: const PlaybackRateAutomation(baseRate: 1.25),
           ),
         ],
@@ -410,6 +416,9 @@ void main() {
     final gate = Completer<void>();
     final levelUpdateStarted = voice.blockNextSetVolume(gate);
     voice.nextSetVolumeError = StateError('level update failed');
+    // 200ms into the fade the envelope gain differs from the gain the voice
+    // already holds, so the level update really does reach the player.
+    pool.scheduleActiveVoiceLevelsForTest(200);
     await levelUpdateStarted.timeout(const Duration(milliseconds: 500));
     clock.holdForBuffering();
 

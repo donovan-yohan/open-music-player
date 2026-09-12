@@ -120,26 +120,13 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
         itemBuilder: (context, index) {
           if (index == 0) return _buildHeader(context);
           final track = _tracks[index - 1];
-          final currentTrackId = context.watch<PlaybackState>().currentItem?.id;
-          final likedState = context.watch<LikedTracksState>();
-          final liked = likedState.isLiked(track.id) ?? false;
-          final isToggling = likedState.isToggling(track.id);
-          return QueueSwipeAction(
-            actionKey: ValueKey('liked_queue_${track.id}_${index - 1}'),
+          return _LikedSongRow(
+            key: ValueKey('liked_song_row_${track.id}'),
+            track: track,
+            onTap: () => _playFrom(index - 1),
             onAddToQueue: () => _enqueueTrack(track),
-            child: TrackTile.fromTrack(
-              track,
-              isCurrent: currentTrackId == track.id.toString(),
-              onTap: () => _playFrom(index - 1),
-              trailing: IconButton(
-                key: ValueKey('liked_song_heart_${track.id}'),
-                icon: Icon(
-                  liked ? Icons.favorite : Icons.favorite_border,
-                ),
-                tooltip: liked ? 'Unlike' : 'Like',
-                onPressed: isToggling ? null : () => _toggleLike(track.id),
-              ),
-            ),
+            onToggleLike: () => _toggleLike(track.id),
+            queueActionKey: ValueKey('liked_queue_${track.id}_${index - 1}'),
           );
         },
       ),
@@ -298,6 +285,59 @@ class _ErrorState extends StatelessWidget {
             label: const Text('Retry'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// One Liked Songs row.
+///
+/// Extracted out of the list's `itemBuilder` on purpose: a `context.watch`
+/// inside `itemBuilder` subscribes the *sliver* rather than the row, so every
+/// playback notification rebuilt the whole visible list. Each row now depends
+/// only on the two facts it renders — whether it is the current track and
+/// whether it is liked.
+class _LikedSongRow extends StatelessWidget {
+  const _LikedSongRow({
+    super.key,
+    required this.track,
+    required this.onTap,
+    required this.onAddToQueue,
+    required this.onToggleLike,
+    required this.queueActionKey,
+  });
+
+  final Track track;
+  final VoidCallback onTap;
+  final Future<void> Function() onAddToQueue;
+  final VoidCallback onToggleLike;
+  final Key queueActionKey;
+
+  @override
+  Widget build(BuildContext context) {
+    final isCurrent = context.select<PlaybackState, bool>(
+      (playback) => playback.currentItem?.id == track.id.toString(),
+    );
+    final liked = context.select<LikedTracksState, bool>(
+      (tracks) => tracks.isLiked(track.id) ?? false,
+    );
+    final isToggling = context.select<LikedTracksState, bool>(
+      (tracks) => tracks.isToggling(track.id),
+    );
+
+    return QueueSwipeAction(
+      actionKey: queueActionKey,
+      onAddToQueue: onAddToQueue,
+      child: TrackTile.fromTrack(
+        track,
+        isCurrent: isCurrent,
+        onTap: onTap,
+        trailing: IconButton(
+          key: ValueKey('liked_song_heart_${track.id}'),
+          icon: Icon(liked ? Icons.favorite : Icons.favorite_border),
+          tooltip: liked ? 'Unlike' : 'Like',
+          onPressed: isToggling ? null : onToggleLike,
+        ),
       ),
     );
   }

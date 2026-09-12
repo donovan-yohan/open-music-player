@@ -1122,12 +1122,21 @@ class QueueTimelineController {
     final localMs = _localForGlobal(globalMs);
     final position = Duration(milliseconds: localMs);
     final duration = _durationForCurrentItem();
+    final mediaItem = _currentIndex == null ? null : _queue[_currentIndex!];
     _positionSubject.add(position);
-    _bufferedPositionSubject.add(duration);
-    _durationSubject.add(duration);
-    _currentMediaItemSubject.add(
-      _currentIndex == null ? null : _queue[_currentIndex!],
-    );
+    // Only the position actually moves on a steady UI tick. Republishing the
+    // unchanged duration and media item costs a listener notification each,
+    // and every `PlaybackState` watcher on screen rebuilds per notification —
+    // so an idle tick used to cost 4x the widget work it needs to.
+    if (_bufferedPositionSubject.value != duration) {
+      _bufferedPositionSubject.add(duration);
+    }
+    if (_durationSubject.value != duration) {
+      _durationSubject.add(duration);
+    }
+    if (!identical(_currentMediaItemSubject.value, mediaItem)) {
+      _currentMediaItemSubject.add(mediaItem);
+    }
     _publishSnapshot(globalMs);
   }
 

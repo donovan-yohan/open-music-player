@@ -1,7 +1,9 @@
+import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../../app/theme.dart';
+import '../../../core/audio/playback_context.dart';
 import '../../../core/audio/playback_state.dart';
 import 'playback_context_label.dart';
 
@@ -10,17 +12,23 @@ class MiniPlayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final miniPlayer = Consumer<PlaybackState>(
-      builder: (context, playback, _) {
-        if (!playback.hasTrack) {
+    // Everything except the progress bar changes only when the track or the
+    // play/pause state changes. Rebuilding the whole mini player on every
+    // position tick added avoidable per-frame work to every screen that shows
+    // it — including the library list while it is being scrolled.
+    final miniPlayer = Selector<PlaybackState, _MiniPlayerSnapshot>(
+      selector: (_, playback) => _MiniPlayerSnapshot(
+        hasTrack: playback.hasTrack,
+        item: playback.currentItem,
+        isPlaying: playback.isPlaying,
+        playbackContext: playback.playbackContext,
+      ),
+      builder: (context, snapshot, _) {
+        if (!snapshot.hasTrack || snapshot.item == null) {
           return const SizedBox.shrink();
         }
 
-        final item = playback.currentItem!;
-        final progress = playback.duration.inMilliseconds > 0
-            ? playback.position.inMilliseconds /
-                playback.duration.inMilliseconds
-            : 0.0;
+        final item = snapshot.item!;
 
         final colors = Theme.of(context).colorScheme;
         final playerTheme = SoundQPlayerTheme.of(context);
@@ -46,14 +54,7 @@ class MiniPlayer extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                LinearProgressIndicator(
-                  value: progress.clamp(0.0, 1.0),
-                  minHeight: 2,
-                  backgroundColor: playerTheme.waveformBase,
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    playerTheme.playhead,
-                  ),
-                ),
+                const _MiniPlayerProgressBar(),
                 Padding(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 12,
@@ -84,7 +85,7 @@ class MiniPlayer extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             PlaybackContextLabel(
-                              playback.playbackContext,
+                              snapshot.playbackContext,
                               style: TextStyle(
                                 color: playerTheme.playhead,
                                 fontSize: 10,
@@ -117,13 +118,14 @@ class MiniPlayer extends StatelessWidget {
                       ),
                       IconButton(
                         icon: Icon(
-                          playback.isPlaying ? Icons.pause : Icons.play_arrow,
+                          snapshot.isPlaying ? Icons.pause : Icons.play_arrow,
                           color: isMobilePoster
                               ? AppTheme.background
                               : colors.onSurface,
                         ),
-                        tooltip: playback.isPlaying ? 'Pause' : 'Play',
-                        onPressed: playback.togglePlayPause,
+                        tooltip: snapshot.isPlaying ? 'Pause' : 'Play',
+                        onPressed:
+                            context.read<PlaybackState>().togglePlayPause,
                         style: isMobilePoster
                             ? IconButton.styleFrom(
                                 backgroundColor: AppTheme.orange,
@@ -155,6 +157,65 @@ class MiniPlayer extends StatelessWidget {
       height: 48,
       color: colors.surfaceContainerHighest,
       child: Icon(Icons.music_note, color: colors.onSurfaceVariant, size: 24),
+    );
+  }
+}
+
+/// The fields the mini player chrome renders, so a position tick that changes
+/// none of them does not rebuild it.
+class _MiniPlayerSnapshot {
+  const _MiniPlayerSnapshot({
+    required this.hasTrack,
+    required this.item,
+    required this.isPlaying,
+    required this.playbackContext,
+  });
+
+  final bool hasTrack;
+  final MediaItem? item;
+  final bool isPlaying;
+  final PlaybackContext? playbackContext;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _MiniPlayerSnapshot &&
+      other.hasTrack == hasTrack &&
+      other.isPlaying == isPlaying &&
+      other.playbackContext == playbackContext &&
+      other.item?.id == item?.id &&
+      other.item?.title == item?.title &&
+      other.item?.artist == item?.artist &&
+      other.item?.artUri == item?.artUri;
+
+  @override
+  int get hashCode => Object.hash(
+        hasTrack,
+        isPlaying,
+        playbackContext,
+        item?.id,
+        item?.title,
+        item?.artist,
+        item?.artUri,
+      );
+}
+
+/// The only part of the mini player that follows the playback position.
+class _MiniPlayerProgressBar extends StatelessWidget {
+  const _MiniPlayerProgressBar();
+
+  @override
+  Widget build(BuildContext context) {
+    final playerTheme = SoundQPlayerTheme.of(context);
+    final progress = context.select<PlaybackState, double>((playback) {
+      final total = playback.duration.inMilliseconds;
+      if (total <= 0) return 0;
+      return (playback.position.inMilliseconds / total).clamp(0.0, 1.0);
+    });
+    return LinearProgressIndicator(
+      value: progress,
+      minHeight: 2,
+      backgroundColor: playerTheme.waveformBase,
+      valueColor: AlwaysStoppedAnimation<Color>(playerTheme.playhead),
     );
   }
 }
