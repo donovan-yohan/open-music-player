@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
+	"github.com/openmusicplayer/backend/internal/httpjson"
 )
 
 // Handlers provides HTTP handlers for queue operations
@@ -197,7 +197,7 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxAddQueueItemRequestBytes)
 	var req AddQueueItemRequest
-	if err := decodeAddQueueItemRequest(r.Body, &req); err != nil {
+	if err := decodeAddQueueItemRequest(r, &req); err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
 			writeError(w, http.StatusRequestEntityTooLarge, "QUEUE_ITEM_TOO_LARGE", "queue item request is too large")
@@ -328,16 +328,11 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func decodeAddQueueItemRequest(body io.Reader, request *AddQueueItemRequest) error {
-	decoder := json.NewDecoder(body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(request); err != nil {
-		return err
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return fmt.Errorf("multiple JSON values")
-	}
-	return nil
+// decodeAddQueueItemRequest binds the queue add body. A client build that sends
+// a field this server predates must still get its item queued, so unknown
+// top-level keys are logged and dropped rather than failing the whole add.
+func decodeAddQueueItemRequest(r *http.Request, request *AddQueueItemRequest) error {
+	return httpjson.DecodeRequest(r.URL.Path, r.Body, request)
 }
 
 func sourceCandidateFromDecision(raw json.RawMessage) (SourceCandidate, *string, error) {

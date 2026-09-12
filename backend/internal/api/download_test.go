@@ -62,11 +62,32 @@ func TestCreateDownloadCreatesTrustedDecisionAndKeepsResponseFields(t *testing.T
 	}
 }
 
-func TestCreateDownloadRejectsUnknownAndOversizedFields(t *testing.T) {
+// TestCreateDownloadIgnoresUnknownFields keeps an extension or client that is
+// newer than this server usable: the field it added is dropped, not fatal, and
+// it still cannot smuggle a value into the server-normalized candidate.
+func TestCreateDownloadIgnoresUnknownFields(t *testing.T) {
+	ingestion := &fakeDirectIngestion{}
+	handler := NewDownloadHandlers(fakeDirectDownloadService{}, ingestion)
+	rec := httptest.NewRecorder()
+	handler.CreateDownload(rec, authenticatedDownloadRequest(`{"url":"https://www.youtube.com/watch?v=x","source_type":"youtube","identity":"attacker"}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if ingestion.created == nil || ingestion.created.Candidate.Provider != "youtube" {
+		t.Fatalf("known fields did not bind: %+v", ingestion.created)
+	}
+	if strings.Contains(rec.Body.String(), "attacker") {
+		t.Fatalf("unknown field leaked into the response: %s", rec.Body.String())
+	}
+}
+
+func TestCreateDownloadRejectsMalformedAndOversizedFields(t *testing.T) {
 	handler := NewDownloadHandlers(nil)
 	for name, body := range map[string]string{
-		"unknown":   `{"url":"https://www.youtube.com/watch?v=x","source_type":"youtube","identity":"attacker"}`,
-		"oversized": `{"url":"https://www.youtube.com/watch?v=x","page_metadata":{"title":"` + strings.Repeat("x", 501) + `"}}`,
+		"malformed":  `{"url":"https://www.youtube.com/watch?v=x",`,
+		"wrong type": `{"url":7}`,
+		"two values": `{"url":"https://www.youtube.com/watch?v=x"} {}`,
+		"oversized":  `{"url":"https://www.youtube.com/watch?v=x","page_metadata":{"title":"` + strings.Repeat("x", 501) + `"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			rec := httptest.NewRecorder()

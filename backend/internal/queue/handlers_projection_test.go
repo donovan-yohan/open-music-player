@@ -254,8 +254,8 @@ func TestAddQueueItemRejectsLegacySourceCandidateBeforeEnqueue(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("AddQueueItem file:// status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "INVALID_REQUEST") {
-		t.Fatalf("AddQueueItem legacy sourceCandidate response should be rejected by strict decode, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "SOURCE_DECISION_REQUIRED") {
+		t.Fatalf("AddQueueItem legacy sourceCandidate body should fail on the missing sourceDecisionId, got %s", rec.Body.String())
 	}
 }
 
@@ -308,8 +308,8 @@ func TestAddQueueItemRejectsLegacySourceCandidateBeforePositionValidation(t *tes
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("AddQueueItem invalid position status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "INVALID_REQUEST") {
-		t.Fatalf("AddQueueItem legacy sourceCandidate response should be rejected by strict decode, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "SOURCE_DECISION_REQUIRED") {
+		t.Fatalf("AddQueueItem legacy sourceCandidate body should fail on the missing sourceDecisionId, got %s", rec.Body.String())
 	}
 	if len(afterJobs) != len(beforeJobs) {
 		t.Fatalf("download job count for user changed from %d to %d for invalid queue position", len(beforeJobs), len(afterJobs))

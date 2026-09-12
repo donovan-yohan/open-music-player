@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/httpjson"
 	"github.com/openmusicplayer/backend/internal/storage"
 )
 
@@ -105,13 +105,7 @@ func (h *PlaybackHandlers) CreatePlaybackURLs(w http.ResponseWriter, r *http.Req
 	}
 
 	var req PlaybackURLRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writePlaybackError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON request body")
-		return
-	}
-	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+	if err := httpjson.DecodeRequest(r.URL.Path, r.Body, &req); err != nil {
 		writePlaybackError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON request body")
 		return
 	}

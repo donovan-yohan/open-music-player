@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/httpjson"
 )
 
 // SourceSelectionHandlers exposes the durable, user-owned audit trail for
@@ -71,7 +71,7 @@ func (h *SourceSelectionHandlers) Create(w http.ResponseWriter, r *http.Request)
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, sourceSelectionMaxRequestBodyBytes)
 	var request createSourceSelectionRequest
-	if err := decodeStrictJSON(r, &request); err != nil {
+	if err := decodeRequestJSON(r, &request); err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
 			writeSourceSelectionError(w, http.StatusRequestEntityTooLarge, "SOURCE_SELECTION_TOO_LARGE", "source selection request is too large")
@@ -186,16 +186,11 @@ func sourceSelectionFromDB(decision *db.SourceSelectionDecision) sourceSelection
 	return response
 }
 
-func decodeStrictJSON(r *http.Request, value any) error {
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		return err
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return errors.New("request must contain one JSON object")
-	}
-	return nil
+// decodeRequestJSON binds one JSON object from the request body. Unknown
+// top-level keys are logged and ignored so a client newer than this server is
+// not turned away wholesale over a field it added; every other guard holds.
+func decodeRequestJSON(r *http.Request, value any) error {
+	return httpjson.DecodeRequest(r.URL.Path, r.Body, value)
 }
 
 func writeSourceSelectionRepositoryError(w http.ResponseWriter, err error) {

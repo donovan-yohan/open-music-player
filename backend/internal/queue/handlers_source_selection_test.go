@@ -1,10 +1,12 @@
 package queue
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -204,17 +206,79 @@ func scribbleRemixSourceDecisionSnapshot(t *testing.T) json.RawMessage {
 	return raw
 }
 
-func TestAddQueueItemStrictlyRejectsLegacySourceFields(t *testing.T) {
+// TestAddQueueItemIgnoresLegacySourceFields is the version-skew case that broke
+// a real device: an older server saw a field a newer client had added and
+// failed the whole add. Unknown keys are now dropped, and dropping them is what
+// keeps a legacy source URL out of the enqueue -- the owned decision snapshot
+// is still the only thing the download side ever sees.
+func TestAddQueueItemIgnoresLegacySourceFields(t *testing.T) {
+	const ownedURL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 	for _, body := range []string{
 		`{"sourceDecisionId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","mbRecordingId":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}`,
 		`{"sourceDecisionId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","sourceUrl":"https://attacker.example/audio"}`,
 		`{"sourceDecisionId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","sourceCandidate":{"sourceUrl":"https://attacker.example/audio"}}`,
 	} {
+		service := &fakeQueueHandlerService{state: &QueueState{Items: []QueueItem{}}}
+		downloads := &fakeQueueDownloadService{}
+		repo := &fakeSourceDecisionRepository{decision: sourceDecisionForQueue(t, sourceDecisionSnapshot(t, ownedURL, ""))}
+		h := NewHandlersWithSourceSelections(service, downloads, nil, repo, &fakeDurableDownloadJobStore{})
+
 		rec := httptest.NewRecorder()
-		NewHandlers(nil).AddQueueItem(rec, queueDecisionRequest(body))
-		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "INVALID_REQUEST") {
+		h.AddQueueItem(rec, queueDecisionRequest(body))
+
+		if rec.Code != http.StatusAccepted {
 			t.Fatalf("legacy body status=%d body=%s", rec.Code, rec.Body.String())
 		}
+		if len(downloads.enqueued) != 1 || downloads.enqueued[0].SourceURL != ownedURL {
+			t.Fatalf("legacy field reached the enqueue: %#v", downloads.enqueued)
+		}
+		if downloads.mbIDs[0] != nil {
+			t.Fatalf("legacy mbRecordingId was honored: %v", *downloads.mbIDs[0])
+		}
+	}
+}
+
+// TestAddQueueItemLogsUnknownFields keeps the discoverability the strict decoder
+// used to provide: a key that binds to nothing is dropped, but it is named in
+// the log rather than vanishing.
+func TestAddQueueItemLogsUnknownFields(t *testing.T) {
+	service := &fakeQueueHandlerService{state: &QueueState{Items: []QueueItem{}}}
+	repo := &fakeSourceDecisionRepository{decision: sourceDecisionForQueue(t, sourceDecisionSnapshot(t, "https://www.youtube.com/watch?v=dQw4w9WgXcQ", ""))}
+	h := NewHandlersWithSourceSelections(service, &fakeQueueDownloadService{}, nil, repo, &fakeDurableDownloadJobStore{})
+
+	var logged bytes.Buffer
+	previousWriter, previousFlags := log.Writer(), log.Flags()
+	log.SetOutput(&logged)
+	log.SetFlags(0)
+	rec := httptest.NewRecorder()
+	h.AddQueueItem(rec, queueDecisionRequest(`{"sourceDecisionId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","position":"last","crossfadeMs":250,"sourceUrl":"https://attacker.example/audio"}`))
+	log.SetOutput(previousWriter)
+	log.SetFlags(previousFlags)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	want := "Warning: ignoring unknown JSON fields in request body for /api/v1/queue/items: crossfadeMs, sourceUrl\n"
+	if logged.String() != want {
+		t.Fatalf("log = %q, want %q", logged.String(), want)
+	}
+}
+
+// TestAddQueueItemStillRejectsMalformedBodies: only unknown-field tolerance
+// changed. A body this server cannot parse at all is still a 400.
+func TestAddQueueItemStillRejectsMalformedBodies(t *testing.T) {
+	for name, body := range map[string]string{
+		"malformed json":       `{"trackId":`,
+		"multiple json values": `{"trackId":1} {"trackId":2}`,
+		"wrong type":           `{"trackId":"seven"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			NewHandlers(nil).AddQueueItem(rec, queueDecisionRequest(body))
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "INVALID_REQUEST") {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 
