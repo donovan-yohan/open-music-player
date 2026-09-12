@@ -25,15 +25,13 @@ import '../core/engine/timeline_model.dart';
 import '../core/models/settings_model.dart';
 import '../core/providers/settings_provider.dart';
 import '../core/services/playlist_service.dart';
-import '../features/playlists/playlist_edit_dialog.dart';
+import '../features/playlists/add_to_playlist.dart';
 import '../models/track.dart';
 import '../models/track_analysis.dart';
 import '../models/trim_range.dart';
 import '../providers/queue_provider.dart';
-import '../shared/models/playlist.dart';
 import '../shared/models/track.dart' show trackArtworkKindFromPayload;
 import '../shared/widgets/like_button.dart';
-import '../shared/widgets/playlist_picker_sheet.dart';
 import '../shared/widgets/track_tile.dart';
 import '../widgets/queue_item.dart';
 import '../shared/widgets/soundq_status_chip.dart';
@@ -1894,108 +1892,22 @@ class _QueueScreenState extends State<QueueScreen> {
   /// The saved order is the visible play order — the listening queue itself,
   /// not the collection it was launched from — so a shuffled session saves what
   /// the user can actually see.
-  Future<void> _saveQueueAsPlaylist() async {
-    final messenger = ScaffoldMessenger.of(context);
+  Future<void> _saveQueueAsPlaylist() {
     final trackIds = saveableQueueTrackIds(context.read<PlaybackState>().queue);
     if (trackIds.isEmpty) {
-      messenger.showSnackBar(
+      ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No saveable tracks in the queue')),
       );
-      return;
+      return Future.value();
     }
-    final playlistService = widget.playlistService ??
-        PlaylistService(api: context.read<ApiClient>());
-
-    List<Playlist> playlists;
-    try {
-      playlists = (await playlistService.getPlaylists()).playlists;
-    } catch (_) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Failed to load playlists')),
-      );
-      return;
-    }
-    if (!mounted) return;
-
-    var createNew = false;
-    final selected = await showModalBottomSheet<Playlist>(
-      context: context,
-      builder: (sheetContext) => PlaylistPickerSheet(
-        playlists: playlists,
-        title: 'Save queue as playlist',
-        leading: ListTile(
-          key: const ValueKey('queue_new_playlist_from_queue'),
-          leading: const Icon(Icons.add),
-          title: const Text('New playlist'),
-          onTap: () {
-            createNew = true;
-            Navigator.of(sheetContext).pop();
-          },
-        ),
-      ),
+    return showAddToPlaylistSheet(
+      context,
+      playlistService: widget.playlistService ??
+          PlaylistService(api: context.read<ApiClient>()),
+      trackIds: trackIds,
+      title: 'Save queue as playlist',
+      addFailureMessage: 'Failed to save queue as playlist',
     );
-    if (!mounted) return;
-
-    if (createNew) {
-      await _createPlaylistFromQueue(messenger, playlistService, trackIds);
-      return;
-    }
-    if (selected == null) return;
-    await _addQueueToPlaylist(messenger, playlistService, selected, trackIds);
-  }
-
-  Future<void> _createPlaylistFromQueue(
-    ScaffoldMessengerState messenger,
-    PlaylistService playlistService,
-    List<int> trackIds,
-  ) {
-    return showDialog<void>(
-      context: context,
-      builder: (_) => PlaylistEditDialog(
-        onSave: (result) async {
-          Playlist created;
-          try {
-            created = await playlistService.createPlaylist(
-              name: result.name,
-              description: result.description,
-              coverUrl: result.coverUrl,
-              isPublic: result.isPublic,
-            );
-          } catch (_) {
-            messenger.showSnackBar(
-              const SnackBar(content: Text('Failed to create playlist')),
-            );
-            return;
-          }
-          await _addQueueToPlaylist(
-            messenger,
-            playlistService,
-            created,
-            trackIds,
-          );
-        },
-      ),
-    );
-  }
-
-  /// Duplicate handling is the backend's: [AddTracksResult] reports what was
-  /// added versus already present, and that report is what the user is told.
-  Future<void> _addQueueToPlaylist(
-    ScaffoldMessengerState messenger,
-    PlaylistService playlistService,
-    Playlist playlist,
-    List<int> trackIds,
-  ) async {
-    try {
-      final result = await playlistService.addTracks(playlist.id, trackIds);
-      messenger.showSnackBar(
-        SnackBar(content: Text(result.feedbackMessage(playlist.name))),
-      );
-    } catch (_) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Failed to save queue as playlist')),
-      );
-    }
   }
 
   bool _canEditAnalysis(QueueTrack track) {

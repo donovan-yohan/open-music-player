@@ -18,6 +18,7 @@ import '../../shared/models/models.dart';
 import '../../shared/widgets/widgets.dart';
 import '../discovery/screens/album_detail_screen.dart';
 import '../discovery/screens/artist_detail_screen.dart';
+import '../playlists/add_to_playlist.dart';
 import 'library_filter_logic.dart';
 import 'liked_songs_screen.dart';
 import 'local_browse_navigation.dart';
@@ -1254,37 +1255,13 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     );
   }
 
-  Future<void> _addToPlaylist() async {
-    final messenger = ScaffoldMessenger.of(context);
-    final playlistService = widget.playlistService ??
-        PlaylistService(api: context.read<ApiClient>());
-    List<Playlist> playlists;
-    try {
-      playlists = (await playlistService.getPlaylists()).playlists;
-    } catch (_) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Failed to load playlists')),
-      );
-      return;
-    }
-    if (!mounted) return;
-
-    final selected = await showModalBottomSheet<Playlist>(
-      context: context,
-      builder: (context) => PlaylistPickerSheet(playlists: playlists),
+  Future<void> _addToPlaylist() {
+    return showAddToPlaylistSheet(
+      context,
+      playlistService: widget.playlistService ??
+          PlaylistService(api: context.read<ApiClient>()),
+      trackIds: [track.id],
     );
-    if (selected == null) return;
-
-    try {
-      final result = await playlistService.addTracks(selected.id, [track.id]);
-      messenger.showSnackBar(
-        SnackBar(content: Text(result.feedbackMessage(selected.name))),
-      );
-    } catch (_) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Failed to add to playlist')),
-      );
-    }
   }
 
   /// Opens the user's own library filtered to this track's artist.
