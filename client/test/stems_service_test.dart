@@ -1,47 +1,80 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/stems_service.dart';
 import 'package:open_music_player/core/stems/stem_channel_source.dart';
 
-/// Captures the endpoint/body a service asked for and returns a canned parsed
+/// Captures the endpoint/body a service asked for and returns a canned
 /// response, so routing + parsing are asserted without a real HTTP call.
+///
+/// [getError] is a [DioException] (not a pre-mapped [ApiException]) so the
+/// production `withServerError` mapping inside [StemsService] is exercised
+/// rather than bypassed.
 class _FakeApiClient extends ApiClient {
   _FakeApiClient({this.getBody, this.postBody, this.getError}) : super();
 
   final Map<String, dynamic>? getBody;
   final Map<String, dynamic>? postBody;
-  final ApiException? getError;
+  final DioException? getError;
 
   String? capturedGetEndpoint;
-  Map<String, String>? capturedQueryParams;
+  Map<String, dynamic>? capturedQueryParams;
   String? capturedPostEndpoint;
   Map<String, dynamic>? capturedPostBody;
 
   @override
-  Future<T> get<T>(
-    String endpoint, {
-    T Function(Map<String, dynamic>)? parser,
-    T Function(List<dynamic>)? listParser,
-    Map<String, String>? queryParams,
-    bool requiresAuth = true,
+  Future<Response<T>> get<T>(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
   }) async {
-    capturedGetEndpoint = endpoint;
-    capturedQueryParams = queryParams;
+    capturedGetEndpoint = path;
+    capturedQueryParams = queryParameters;
     if (getError != null) throw getError!;
-    return parser!(getBody!);
+    return Response<T>(
+      requestOptions: RequestOptions(path: path),
+      statusCode: 200,
+      data: getBody! as T,
+    );
   }
 
   @override
-  Future<T> post<T>(
-    String endpoint, {
-    Map<String, dynamic>? body,
-    T Function(Map<String, dynamic>)? parser,
-    bool requiresAuth = true,
+  Future<Response<T>> post<T>(
+    String path, {
+    dynamic data,
+    Map<String, dynamic>? queryParameters,
+    Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
   }) async {
-    capturedPostEndpoint = endpoint;
-    capturedPostBody = body;
-    return parser!(postBody!);
+    capturedPostEndpoint = path;
+    capturedPostBody = data is Map<String, dynamic> ? data : null;
+    return Response<T>(
+      requestOptions: RequestOptions(path: path),
+      statusCode: 200,
+      data: postBody! as T,
+    );
   }
+}
+
+/// A [DioException] shaped like a real server error response, so
+/// [StemsService]'s production error mapping (via `withServerError`) is what
+/// turns it into the [ApiException] the tests assert on.
+DioException _serverError({
+  required String path,
+  required int statusCode,
+  required String code,
+  required String message,
+}) {
+  final requestOptions = RequestOptions(path: path);
+  return DioException(
+    requestOptions: requestOptions,
+    response: Response<dynamic>(
+      requestOptions: requestOptions,
+      statusCode: statusCode,
+      data: {'code': code, 'message': message},
+    ),
+  );
 }
 
 Map<String, dynamic> _readyBody() => {
@@ -138,10 +171,11 @@ void main() {
 
     test('404 is the normal "never asked" state, not an error', () async {
       final api = _FakeApiClient(
-        getError: ApiException(
+        getError: _serverError(
+          path: '/tracks/42/stems',
+          statusCode: 404,
           code: 'STEMS_NOT_FOUND',
           message: 'track stems not found',
-          statusCode: 404,
         ),
       );
 
@@ -153,10 +187,11 @@ void main() {
 
     test('other failures still surface so a deck can say why', () async {
       final api = _FakeApiClient(
-        getError: ApiException(
+        getError: _serverError(
+          path: '/tracks/42/stems',
+          statusCode: 503,
           code: 'SERVICE_DISABLED',
           message: 'stem separation is unavailable',
-          statusCode: 503,
         ),
       );
 

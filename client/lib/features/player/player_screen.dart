@@ -8,12 +8,10 @@ import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../../app/theme.dart';
-import '../../core/api/api_client.dart' as dio_api;
+import '../../core/api/api_client.dart';
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/providers/settings_provider.dart';
-import '../../core/services/analysis_service.dart';
-import '../../core/services/api_client.dart';
 import '../../core/services/liked_tracks_state.dart';
 import '../../core/services/library_service.dart';
 import '../../core/services/playlist_service.dart';
@@ -31,7 +29,7 @@ class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key, this.playlistService});
 
   /// Injectable for tests; defaults to a service over the app-wide
-  /// [dio_api.ApiClient], matching how the library rows build theirs.
+  /// [ApiClient], matching how the library rows build theirs.
   final PlaylistService? playlistService;
 
   @override
@@ -230,7 +228,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   void _showSongInfo(BuildContext context, MediaItem item) {
     final trackId = int.tryParse(item.id);
-    final analysisService = AnalysisService(context.read<ApiClient>());
+    final apiClient = context.read<ApiClient>();
     final editableTrackId = trackId != null && trackId > 0 ? trackId : null;
     showModalBottomSheet(
       context: context,
@@ -250,7 +248,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             // read-only "unavailable" state without hitting the API.
             return Future<TrackAnalysis>.error(StateError('missing track id'));
           }
-          return analysisService.getTrackAnalysis(trackId);
+          return apiClient.getTrackAnalysis(trackId);
         },
       ),
     );
@@ -277,11 +275,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       // The playback payload carries no override flag, so "Reset to original"
       // stays a Library-row action.
       hasMetadataOverride: false,
-      // Construct the parser-based services client directly, the way
-      // LibraryScreen does. Only the Dio `core/api` ApiClient is registered with
-      // Provider, so a `context.read<ApiClient>()` here would resolve to an
-      // unregistered type.
-      libraryService: LibraryService(ApiClient()),
+      libraryService: LibraryService(context.read<ApiClient>()),
     );
     if (result == null) return;
     messenger.showSnackBar(
@@ -682,7 +676,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return showAddToPlaylistSheet(
       context,
       playlistService: widget.playlistService ??
-          PlaylistService(api: context.read<dio_api.ApiClient>()),
+          PlaylistService(api: context.read<ApiClient>()),
       trackIds: [trackId],
     );
   }

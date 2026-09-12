@@ -5,7 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/audio/playback_state.dart';
 import '../../core/errors/error_widgets.dart';
-import '../../core/services/api_client.dart';
+import '../../core/api/api_client.dart';
 import '../../shared/models/models.dart';
 import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/queue_swipe_action.dart';

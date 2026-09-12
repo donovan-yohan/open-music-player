@@ -4,7 +4,7 @@ import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
-import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
 import 'package:open_music_player/features/library/liked_songs_screen.dart';

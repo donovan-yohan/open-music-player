@@ -8,7 +8,7 @@ import 'package:provider/provider.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/commands/app_command.dart';
 import 'package:open_music_player/core/commands/command_registry.dart';
-import 'package:open_music_player/core/api/api_client.dart' as dio_api;
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/download/download_state.dart';
 import 'package:open_music_player/core/services/services.dart' as services;
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
@@ -61,7 +61,7 @@ void main() {
       final track = _controlRichTrack();
       final playback = _FakePlaybackState();
       final downloads = _FakeDownloadState();
-      final api = services.ApiClient();
+      final api = ApiClient();
       final liked = LikedTracksState(services.LibraryService(api))
         ..seedTrack(track);
       final playlists = _PlaylistService();
@@ -239,7 +239,7 @@ class _FakeDownloadState extends Fake implements DownloadState {
 }
 
 class _PlaylistService extends PlaylistService {
-  _PlaylistService() : super(api: dio_api.ApiClient());
+  _PlaylistService() : super(api: ApiClient());
 
   int? addedPlaylistId;
   List<int>? addedTrackIds;

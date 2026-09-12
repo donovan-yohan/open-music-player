@@ -24,8 +24,6 @@ import 'package:open_music_player/core/engine/click_auditioner.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/models/settings_model.dart';
 import 'package:open_music_player/core/providers/settings_provider.dart';
-import 'package:open_music_player/core/services/api_client.dart'
-    as services_api;
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
 import 'package:open_music_player/core/services/playlist_service.dart';
@@ -4801,7 +4799,7 @@ class _FakePlaylistService extends PlaylistService {
 
 /// Records the like/unlike persistence calls made from queue rows.
 class _QueueLikeLibraryService extends LibraryService {
-  _QueueLikeLibraryService() : super(services_api.ApiClient());
+  _QueueLikeLibraryService() : super(ApiClient());
 
   final likedIds = <int>[];
 

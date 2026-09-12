@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open_music_player/core/api/api_client.dart' as core_api;
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/models/settings_model.dart';
@@ -48,8 +48,7 @@ Track _track(int id, {double? bpm, String? camelot}) => Track(
     );
 
 class _StubPlaylistService extends PlaylistService {
-  _StubPlaylistService()
-      : super(api: core_api.ApiClient(storage: SecureStorage()));
+  _StubPlaylistService() : super(api: ApiClient(storage: SecureStorage()));
 
   final List<({int playlistId, List<int> trackIds})> addedTracks = [];
 

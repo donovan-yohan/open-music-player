@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
-import '../../core/services/api_client.dart';
+import '../../core/api/api_client.dart';
 import '../../core/services/home_service.dart';
 import '../../shared/widgets/track_tile.dart';
 

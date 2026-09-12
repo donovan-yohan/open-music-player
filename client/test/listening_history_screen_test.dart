@@ -1,10 +1,11 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
-import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/home_service.dart';
 import 'package:open_music_player/features/settings/listening_history_screen.dart';
 
@@ -82,14 +83,17 @@ class _HistoryApiClient extends ApiClient {
   final Map<String, dynamic> body;
 
   @override
-  Future<T> get<T>(
-    String endpoint, {
-    T Function(Map<String, dynamic>)? parser,
-    T Function(List<dynamic>)? listParser,
-    Map<String, String>? queryParams,
-    bool requiresAuth = true,
+  Future<Response<T>> get<T>(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
   }) async {
-    return parser!(body);
+    return Response<T>(
+      requestOptions: RequestOptions(path: path),
+      statusCode: 200,
+      data: body as T,
+    );
   }
 }
 

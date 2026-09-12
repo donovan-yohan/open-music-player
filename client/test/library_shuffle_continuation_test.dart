@@ -1,10 +1,11 @@
 import 'dart:math';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/library_shuffle_continuation.dart';
 import 'package:open_music_player/core/audio/playback_source_resolver.dart';
 import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
-import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/models/track.dart';
 
@@ -15,36 +16,48 @@ class _CapturingApiClient extends ApiClient {
 
   final Map<String, dynamic> envelope;
   String? capturedEndpoint;
-  Map<String, String>? capturedParams;
+  Map<String, dynamic>? capturedParams;
   int getCalls = 0;
 
   @override
-  Future<T> get<T>(
-    String endpoint, {
-    T Function(Map<String, dynamic>)? parser,
-    T Function(List<dynamic>)? listParser,
-    Map<String, String>? queryParams,
-    bool requiresAuth = true,
+  Future<Response<T>> get<T>(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
   }) async {
     getCalls++;
-    capturedEndpoint = endpoint;
-    capturedParams = queryParams;
-    return parser!(envelope);
+    capturedEndpoint = path;
+    capturedParams = queryParameters;
+    return Response<T>(
+      requestOptions: RequestOptions(path: path),
+      statusCode: 200,
+      data: envelope as T,
+    );
   }
 }
 
+/// Simulates a transport failure via `withServerError`'s own DioException ->
+/// ApiException mapping, rather than throwing a bare Exception the
+/// production code would never actually see.
 class _FailingApiClient extends ApiClient {
   _FailingApiClient() : super();
 
   @override
-  Future<T> get<T>(
-    String endpoint, {
-    T Function(Map<String, dynamic>)? parser,
-    T Function(List<dynamic>)? listParser,
-    Map<String, String>? queryParams,
-    bool requiresAuth = true,
+  Future<Response<T>> get<T>(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
   }) async {
-    throw Exception('offline');
+    throw DioException(
+      requestOptions: RequestOptions(path: path),
+      response: Response<dynamic>(
+        requestOptions: RequestOptions(path: path),
+        statusCode: 500,
+        data: {'code': 'OFFLINE', 'message': 'offline'},
+      ),
+    );
   }
 }
 

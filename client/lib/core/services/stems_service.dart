@@ -1,5 +1,5 @@
+import '../api/api_client.dart';
 import '../stems/stem_channel_source.dart';
-import 'api_client.dart';
 
 /// Default channel set requested by this client. Matches
 /// `stems.DefaultChannelSet` in the backend.
@@ -134,11 +134,13 @@ class StemsService {
     String channelSet = defaultStemChannelSet,
   }) async {
     try {
-      return await _apiClient.get<TrackStems>(
-        '/tracks/$trackId/stems',
-        queryParams: {'channelSet': channelSet},
-        parser: TrackStems.fromJson,
-      );
+      return await _apiClient.withServerError('Failed to load stems', () async {
+        final response = await _apiClient.get<Map<String, dynamic>>(
+          '/tracks/$trackId/stems',
+          queryParameters: {'channelSet': channelSet},
+        );
+        return TrackStems.fromJson(response.data!);
+      });
     } on ApiException catch (e) {
       if (e.statusCode == 404) {
         return TrackStems.unavailable(trackId, channelSet: channelSet);
@@ -153,10 +155,13 @@ class StemsService {
   Future<StemsRequestResult> requestSeparation(
     int trackId, {
     String channelSet = defaultStemChannelSet,
-  }) =>
-      _apiClient.post<StemsRequestResult>(
+  }) {
+    return _apiClient.withServerError('Failed to request stems', () async {
+      final response = await _apiClient.post<Map<String, dynamic>>(
         '/tracks/$trackId/stems',
-        body: {'channelSet': channelSet},
-        parser: StemsRequestResult.fromJson,
+        data: {'channelSet': channelSet},
       );
+      return StemsRequestResult.fromJson(response.data!);
+    });
+  }
 }

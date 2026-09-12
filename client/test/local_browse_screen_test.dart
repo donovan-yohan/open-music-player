@@ -2,10 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open_music_player/core/api/api_client.dart' as api;
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
-import 'package:open_music_player/core/services/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
 import 'package:open_music_player/core/services/playlist_service.dart';
@@ -314,8 +313,7 @@ Playlist _playlist(int id, String name) => Playlist(
     );
 
 class _FakePlaylistService extends PlaylistService {
-  _FakePlaylistService({this.playlists = const []})
-      : super(api: api.ApiClient());
+  _FakePlaylistService({this.playlists = const []}) : super(api: ApiClient());
 
   final List<Playlist> playlists;
   final List<int> addedTo = [];

@@ -144,7 +144,7 @@ class SongInfoSheet extends StatefulWidget {
   final VoidCallback? onEditMetadata;
 
   /// Lazily loads the analysis. Implementations typically delegate to
-  /// `AnalysisService.getTrackAnalysis`. May throw; the sheet catches it.
+  /// `ApiClient.getTrackAnalysis`. May throw; the sheet catches it.
   final Future<TrackAnalysis> Function() analysisLoader;
 
   @override

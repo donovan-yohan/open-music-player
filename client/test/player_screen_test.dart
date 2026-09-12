@@ -5,14 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart' as riverpod;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:open_music_player/app/theme.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/providers/settings_provider.dart';
-import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
 import 'package:open_music_player/features/player/player_screen.dart';
@@ -20,6 +19,7 @@ import 'package:open_music_player/features/playlists/add_to_playlist.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/mock_dio_client.dart';
 import 'support/recording_playlist_service.dart';
 
 void main() {
@@ -579,8 +579,8 @@ void main() {
             providers: [
               ListenableProvider<PlaybackState>.value(value: playback),
               Provider<ApiClient>(
-                create: (_) => ApiClient(
-                  httpClient: MockClient((_) async => http.Response('{}', 404)),
+                create: (_) => mockQueueApiClient(
+                  (_) async => http.Response('{}', 404),
                 ),
               ),
             ],

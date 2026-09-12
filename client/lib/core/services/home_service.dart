@@ -1,5 +1,5 @@
 import '../../shared/models/models.dart';
-import 'api_client.dart';
+import '../api/api_client.dart';
 
 class ListeningHistoryEntry {
   const ListeningHistoryEntry({
@@ -30,9 +30,9 @@ class ListeningHistoryEntry {
   }
 }
 
-/// Backs the Home screen. Wraps the parser-based [ApiClient] and turns the
-/// play-history + playlists endpoints into the shared [Track] / [Playlist]
-/// models the UI already knows how to render and play.
+/// Backs the Home screen. Turns the play-history + playlists endpoints into the
+/// shared [Track] / [Playlist] models the UI already knows how to render and
+/// play.
 class HomeService {
   final ApiClient _apiClient;
 
@@ -41,11 +41,13 @@ class HomeService {
   /// GET /me/plays/recent - the user's most recently played tracks, newest
   /// first.
   Future<List<Track>> recentlyPlayed({int limit = 20}) {
-    return _apiClient.get<List<Track>>(
-      '/me/plays/recent',
-      queryParams: {'limit': limit.toString()},
-      parser: _parseTracks,
-    );
+    return _apiClient.withServerError('Failed to load recent plays', () async {
+      final response = await _apiClient.get<Map<String, dynamic>>(
+        '/me/plays/recent',
+        queryParameters: {'limit': limit.toString()},
+      );
+      return _parseTracks(response.data!);
+    });
   }
 
   /// GET /me/plays/history - raw, chronological listening history. Unlike the
@@ -54,44 +56,50 @@ class HomeService {
     int limit = 50,
     int offset = 0,
   }) {
-    return _apiClient.get<List<ListeningHistoryEntry>>(
-      '/me/plays/history',
-      queryParams: {
-        'limit': limit.toString(),
-        'offset': offset.toString(),
-      },
-      parser: _parseHistory,
-    );
+    return _apiClient.withServerError('Failed to load listening history',
+        () async {
+      final response = await _apiClient.get<Map<String, dynamic>>(
+        '/me/plays/history',
+        queryParameters: {
+          'limit': limit.toString(),
+          'offset': offset.toString(),
+        },
+      );
+      return _parseHistory(response.data!);
+    });
   }
 
   /// GET /me/plays/top - the user's most played tracks over the last [days].
   Future<List<Track>> topTracks({int days = 30, int limit = 20}) {
-    return _apiClient.get<List<Track>>(
-      '/me/plays/top',
-      queryParams: {
-        'days': days.toString(),
-        'limit': limit.toString(),
-      },
-      parser: _parseTracks,
-    );
+    return _apiClient.withServerError('Failed to load top tracks', () async {
+      final response = await _apiClient.get<Map<String, dynamic>>(
+        '/me/plays/top',
+        queryParameters: {
+          'days': days.toString(),
+          'limit': limit.toString(),
+        },
+      );
+      return _parseTracks(response.data!);
+    });
   }
 
   /// GET /playlists - reuse the existing playlists listing shape.
   Future<List<Playlist>> playlists({int limit = 20, int offset = 0}) {
-    return _apiClient.get<List<Playlist>>(
-      '/playlists',
-      queryParams: {
-        'limit': limit.toString(),
-        'offset': offset.toString(),
-      },
-      parser: (json) {
-        final list =
-            (json['playlists'] ?? json['data']) as List<dynamic>? ?? const [];
-        return list
-            .map((e) => Playlist.fromJson(e as Map<String, dynamic>))
-            .toList();
-      },
-    );
+    return _apiClient.withServerError('Failed to load playlists', () async {
+      final response = await _apiClient.get<Map<String, dynamic>>(
+        '/playlists',
+        queryParameters: {
+          'limit': limit.toString(),
+          'offset': offset.toString(),
+        },
+      );
+      final json = response.data!;
+      final list =
+          (json['playlists'] ?? json['data']) as List<dynamic>? ?? const [];
+      return list
+          .map((e) => Playlist.fromJson(e as Map<String, dynamic>))
+          .toList();
+    });
   }
 
   static List<Track> _parseTracks(Map<String, dynamic> json) {

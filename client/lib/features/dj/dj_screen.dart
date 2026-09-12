@@ -10,7 +10,6 @@ import '../../core/api/api_client.dart';
 import '../../core/cache/playback_cache_manager.dart';
 import '../../core/download/download_service.dart';
 import '../../core/engine/engine_audio_source_resolver.dart';
-import '../../core/services/api_client.dart' as services;
 import '../../core/services/stems_service.dart';
 import '../../providers/queue_provider.dart';
 import '../stems/track_stem_channel_source.dart';
@@ -183,12 +182,8 @@ class _DjScreenState extends State<DjScreen> {
   }
 
   DjSessionProvider _newPrototypeSession() {
-    // The parser-based client is not in the provider tree (only the Dio one
-    // is), so it is constructed here the same way main.dart does for
-    // LibraryService. Its default SecureStorage is the shared token authority,
-    // so this is not a second session.
-    _stems =
-        TrackStemChannelSource(service: StemsService(services.ApiClient()));
+    _stems = TrackStemChannelSource(
+        service: StemsService(context.read<ApiClient>()));
     return DjSessionProvider.prototype(
       resolver: DefaultEngineAudioSourceResolver(
         signedAudioUrlService: SignedAudioUrlService(context.read<ApiClient>()),

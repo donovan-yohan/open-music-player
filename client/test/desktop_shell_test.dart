@@ -9,7 +9,7 @@ import 'package:open_music_player/app/router.dart';
 import 'package:open_music_player/app/theme.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
-import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/home_service.dart';
 import 'package:open_music_player/features/home/home_screen.dart';
 import 'package:open_music_player/features/player/widgets/mini_player.dart';
