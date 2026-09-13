@@ -16,6 +16,16 @@ import '../core/engine/timeline_model.dart';
 class QueueProvider extends ChangeNotifier {
   static const String queueTimingMixPlanName = 'Queue timing';
   static const Duration defaultAnalysisRetryCooldown = Duration(seconds: 15);
+
+  /// Root used by callers that own the whole hydration surface rather than one
+  /// lane of it, and by the opportunistic pins [trackWithAnalysis] takes.
+  static const String defaultAnalysisHydrationRoot = 'default';
+
+  /// Detailed analysis is expensive to hold, so the union across roots is
+  /// capped: at most [maxAnalysisHydrationRoots] surfaces, each pinning at
+  /// most [maxAnalysisHydrationKeysPerRoot] tracks.
+  static const int maxAnalysisHydrationKeysPerRoot = 128;
+  static const int maxAnalysisHydrationRoots = 8;
   static const int _maxConcurrentAnalysisRequests = 3;
   static const int _maxAnalysisRequestAttempts = 4;
   static const int _maxRetainedAnalysisAuthorityEntries = 128;
@@ -56,6 +66,14 @@ class QueueProvider extends ChangeNotifier {
   final LinkedHashSet<String> _analysisAuthorityLru = LinkedHashSet<String>();
   Future<void>? _queueMutationTail;
   int _queueOperationGeneration = 0;
+
+  /// Retention claims keyed by root, ordered least-recently-claimed first.
+  ///
+  /// Each surface owns a named root so the timeline, the deck, and the import
+  /// queue can pin analysis without evicting each other; the effective set is
+  /// the union below, which is what every hydration check reads.
+  final LinkedHashMap<String, List<String>> _analysisHydrationRoots =
+      LinkedHashMap<String, List<String>>();
   final Set<String> _analysisHydrationInterest = {};
   final Set<String> _analysisRequestsInFlight = {};
   final Set<String> _analysisRequestsQueued = {};
@@ -197,8 +215,10 @@ class QueueProvider extends ChangeNotifier {
   /// Attach hydrated analysis by backend track ID. Collection responses carry
   /// tempo metadata but intentionally omit large waveform arrays, so the
   /// timeline hydrates those arrays lazily from the per-track endpoint.
-  QueueTrack trackWithAnalysis(QueueTrack track,
-      {bool requestHydration = true}) {
+  QueueTrack trackWithAnalysis(
+    QueueTrack track, {
+    bool requestHydration = true,
+  }) {
     final trackId = _analysisTrackId(track);
     if (trackId == null) {
       return track;
@@ -213,7 +233,7 @@ class QueueProvider extends ChangeNotifier {
     }
 
     if (requestHydration) {
-      _analysisHydrationInterest.add(key);
+      _retainAmbientAnalysisHydration(key);
       _fetchAnalysisIfNeeded(trackId);
     }
     final cached = _analysisByTrackId[key] ??
@@ -247,36 +267,34 @@ class QueueProvider extends ChangeNotifier {
     return accepted;
   }
 
-  /// Retains detailed analysis only for tracks rendered by the timeline.
+  /// Retains detailed analysis only for tracks a surface is actually showing.
   ///
   /// Collection payloads already carry compact BPM/key metadata. Waveform
-  /// arrays are hydrated only while a timeline lane needs them, which keeps
-  /// removed tracks and hidden history from continuing background work.
+  /// arrays are hydrated only while a lane needs them, which keeps removed
+  /// tracks and hidden history from continuing background work.
+  ///
+  /// [rootId] names the claiming surface. Roots pin independently — the
+  /// retained set is the union across roots — so a deck and a timeline looking
+  /// at different tracks cannot evict each other's hydration, and releasing one
+  /// root drops only that root's claim.
   ///
   /// Callers provide tracks in priority order. Requests that have not started
   /// are reordered to match the latest viewport while the existing in-flight
-  /// cap, retry cooldown, and generation checks remain authoritative.
-  void setAnalysisHydrationInterest(Iterable<QueueTrack> tracks) {
+  /// cap, retry cooldown, and generation checks remain authoritative. A root
+  /// keeps at most [maxAnalysisHydrationKeysPerRoot] of them so the union
+  /// stays bounded no matter how many surfaces claim at once.
+  void retainAnalysisHydration(String rootId, Iterable<QueueTrack> tracks) {
     final retainedTracks = tracks.toList(growable: false);
-    final next = <String>{};
+    final claim = <String>[];
+    final claimed = <String>{};
     for (final track in retainedTracks) {
       final trackId = _analysisTrackId(track);
-      if (trackId != null) next.add(trackId.toString());
+      if (trackId == null) continue;
+      final key = trackId.toString();
+      if (claimed.add(key)) claim.add(key);
     }
-
-    final removed = _analysisHydrationInterest.difference(next);
-    if (removed.isNotEmpty) {
-      for (final key in removed) {
-        _releaseAnalysisHydration(key);
-      }
-      _analysisRequestQueue.removeWhere(
-        (request) => removed.contains(request.trackId.toString()),
-      );
-    }
-    _analysisHydrationInterest
-      ..clear()
-      ..addAll(next);
-    _reprioritizeQueuedAnalysisRequests(next);
+    // Queue new requests before applying the final cross-root priority once.
+    _applyAnalysisHydrationClaim(rootId, claim, reprioritize: false);
 
     for (final track in retainedTracks) {
       final trackId = _analysisTrackId(track);
@@ -290,7 +308,102 @@ class QueueProvider extends ChangeNotifier {
       }
       _fetchAnalysisIfNeeded(trackId);
     }
+    // [_applyAnalysisHydrationClaim] can only reprioritize requests that were
+    // already queued. Put newly queued tracks from the claiming root in front
+    // of older roots as well, so the freshest viewport really does lead.
+    _reprioritizeQueuedAnalysisRequests(
+      _analysisHydrationKeysByPriority(rootId),
+    );
     _pruneAnalysisAuthorityState();
+  }
+
+  /// Drops [rootId]'s claim. Tracks another root still pins stay hydrated.
+  void releaseAnalysisHydration(String rootId) {
+    if (!_analysisHydrationRoots.containsKey(rootId)) return;
+    _applyAnalysisHydrationClaim(rootId, const <String>[]);
+    _pruneAnalysisAuthorityState();
+  }
+
+  /// Single-root entry point for surfaces that own the whole hydration window;
+  /// equivalent to claiming [defaultAnalysisHydrationRoot].
+  void setAnalysisHydrationInterest(Iterable<QueueTrack> tracks) =>
+      retainAnalysisHydration(defaultAnalysisHydrationRoot, tracks);
+
+  void clearAnalysisHydrationInterest() {
+    if (!_analysisHydrationRoots.containsKey(defaultAnalysisHydrationRoot)) {
+      return;
+    }
+    releaseAnalysisHydration(defaultAnalysisHydrationRoot);
+  }
+
+  /// [trackWithAnalysis] pins opportunistically, with no viewport to bound it,
+  /// so those keys ride the default root and the oldest one yields at the cap.
+  /// Reprioritization is left alone: an incidental pin says nothing about what
+  /// the already queued requests should do next.
+  void _retainAmbientAnalysisHydration(String key) {
+    final claim = _analysisHydrationRoots[defaultAnalysisHydrationRoot];
+    if (claim != null && claim.contains(key)) return;
+    final next = [...?claim, key];
+    _applyAnalysisHydrationClaim(
+      defaultAnalysisHydrationRoot,
+      next.length > maxAnalysisHydrationKeysPerRoot
+          ? next.sublist(next.length - maxAnalysisHydrationKeysPerRoot)
+          : next,
+      reprioritize: false,
+    );
+  }
+
+  void _applyAnalysisHydrationClaim(
+    String rootId,
+    List<String> claim, {
+    bool reprioritize = true,
+  }) {
+    // Re-inserting keeps the map least-recently-claimed first, so the root cap
+    // below sheds the stalest surface rather than the one that just spoke.
+    _analysisHydrationRoots.remove(rootId);
+    if (claim.isNotEmpty) {
+      _analysisHydrationRoots[rootId] =
+          claim.length > maxAnalysisHydrationKeysPerRoot
+              ? claim.sublist(0, maxAnalysisHydrationKeysPerRoot)
+              : claim;
+      while (_analysisHydrationRoots.length > maxAnalysisHydrationRoots) {
+        _analysisHydrationRoots.remove(_analysisHydrationRoots.keys.first);
+      }
+    }
+
+    final next = _analysisHydrationKeysByPriority(rootId);
+    final removed = _analysisHydrationInterest.difference(next.toSet());
+    if (removed.isNotEmpty) {
+      for (final key in removed) {
+        _releaseAnalysisHydration(key);
+      }
+      _analysisRequestQueue.removeWhere(
+        (request) => removed.contains(request.trackId.toString()),
+      );
+    }
+    _analysisHydrationInterest
+      ..clear()
+      ..addAll(next);
+    if (reprioritize) _reprioritizeQueuedAnalysisRequests(next);
+  }
+
+  /// The claiming root leads: it just described the freshest viewport. Every
+  /// other root still contributes, because [_reprioritizeQueuedAnalysisRequests]
+  /// drops queued work it is not handed.
+  List<String> _analysisHydrationKeysByPriority(String leadRootId) {
+    final ordered = <String>[];
+    final seen = <String>{};
+    void take(String rootId) {
+      for (final key in _analysisHydrationRoots[rootId] ?? const <String>[]) {
+        if (seen.add(key)) ordered.add(key);
+      }
+    }
+
+    take(leadRootId);
+    for (final rootId in _analysisHydrationRoots.keys) {
+      if (rootId != leadRootId) take(rootId);
+    }
+    return ordered;
   }
 
   void _reprioritizeQueuedAnalysisRequests(Iterable<String> priorityKeys) {
@@ -305,11 +418,6 @@ class QueueProvider extends ChangeNotifier {
         for (final key in priorityKeys)
           if (queuedByKey[key] case final request?) request,
       ]);
-  }
-
-  void clearAnalysisHydrationInterest() {
-    if (_analysisHydrationInterest.isEmpty) return;
-    setAnalysisHydrationInterest(const <QueueTrack>[]);
   }
 
   Future<TrackAnalysis> updateAnalysisOverrides(
@@ -549,10 +657,7 @@ class QueueProvider extends ChangeNotifier {
       } else if (currentPosition == _queue.currentIndex) {
         newCurrentIndex = newCurrentIndex.clamp(-1, newTracks.length - 1);
       }
-      _queue = QueueState(
-        tracks: newTracks,
-        currentIndex: newCurrentIndex,
-      );
+      _queue = QueueState(tracks: newTracks, currentIndex: newCurrentIndex);
       _pruneTimingState();
       _pruneAnalysisAuthorityState();
       _notifyListeners();
@@ -639,10 +744,7 @@ class QueueProvider extends ChangeNotifier {
         newCurrentIndex++;
       }
 
-      _queue = QueueState(
-        tracks: newTracks,
-        currentIndex: newCurrentIndex,
-      );
+      _queue = QueueState(tracks: newTracks, currentIndex: newCurrentIndex);
       _notifyListeners();
 
       try {
@@ -1244,10 +1346,7 @@ class QueueProvider extends ChangeNotifier {
             : track.copyWith(analysis: resolved),
       );
     }
-    return QueueState(
-      tracks: tracks,
-      currentIndex: queue.currentIndex,
-    );
+    return QueueState(tracks: tracks, currentIndex: queue.currentIndex);
   }
 
   void _rememberTrackAnalysis(QueueTrack track) {
@@ -1412,9 +1511,7 @@ class QueueProvider extends ChangeNotifier {
     );
   }
 
-  TrackAnalysisSummary? _compactAnalysisSummary(
-    TrackAnalysisSummary? source,
-  ) {
+  TrackAnalysisSummary? _compactAnalysisSummary(TrackAnalysisSummary? source) {
     if (source == null) return null;
     final beatGrid = source.beatGrid;
     final downbeats = source.downbeats;
@@ -2146,6 +2243,7 @@ class QueueProvider extends ChangeNotifier {
       timer.cancel();
     }
     _analysisRetryTimers.clear();
+    _analysisHydrationRoots.clear();
     _analysisHydrationInterest.clear();
     _analysisRequestQueue.clear();
     _analysisRequestsQueued.clear();
