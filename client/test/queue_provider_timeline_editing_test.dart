@@ -106,6 +106,53 @@ Future<void> _flushMicrotasks() async {
   }
 }
 
+/// Hydration lands through real timers, so poll instead of counting turns.
+Future<void> _waitUntil(
+  bool Function() condition, {
+  Duration timeout = const Duration(seconds: 5),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('condition was never met within $timeout');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+  }
+}
+
+QueueTrack _pendingTrack(int id) => _track(
+      id: '$id',
+      queueItemId: 'queue-$id',
+      playbackTrackId: '$id',
+      analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+    );
+
+/// Detailed waveform arrays are what hydration retains; compact metadata
+/// survives a release, so peaks are the signal that a pin is still held.
+bool _hasHydratedPeaks(QueueProvider provider, QueueTrack track) =>
+    provider
+        .trackWithAnalysis(track, requestHydration: false)
+        .analysis
+        ?.summary
+        ?.waveform
+        ?.peaks
+        .isNotEmpty ??
+    false;
+
+http.Response _analyzedWaveformResponse() => http.Response(
+      jsonEncode({
+        'status': 'analyzed',
+        'summary': {
+          'waveform': {
+            'sample_count': 2,
+            'peaks': [0.2, 0.8],
+          },
+        },
+      }),
+      200,
+      headers: {'content-type': 'application/json'},
+    );
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -2629,6 +2676,218 @@ void main() {
       releases[id]!.complete();
     }
     await Future<void>.delayed(Duration.zero);
+    provider.dispose();
+  });
+
+  test('hydration roots pin analysis independently', () async {
+    final requested = <int>[];
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        final match =
+            RegExp(r'/tracks/(\d+)/analysis$').firstMatch(request.url.path);
+        if (match == null) return http.Response('', 404);
+        requested.add(int.parse(match.group(1)!));
+        return _analyzedWaveformResponse();
+      }),
+    );
+    final timelineTrack = _pendingTrack(1);
+    final deckTrack = _pendingTrack(2);
+
+    provider.retainAnalysisHydration('timeline', [timelineTrack]);
+    provider.retainAnalysisHydration('deck', [deckTrack]);
+    await _waitUntil(
+      () =>
+          _hasHydratedPeaks(provider, timelineTrack) &&
+          _hasHydratedPeaks(provider, deckTrack),
+    );
+
+    expect(requested, containsAll(<int>[1, 2]));
+
+    // A later claim from one root must not evict what the other root pinned.
+    provider.retainAnalysisHydration('deck', [_pendingTrack(3)]);
+    await _flushMicrotasks();
+
+    expect(_hasHydratedPeaks(provider, timelineTrack), isTrue);
+    provider.dispose();
+  });
+
+  test('releasing one hydration root keeps the other root pins', () async {
+    final requested = <int>[];
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        final match =
+            RegExp(r'/tracks/(\d+)/analysis$').firstMatch(request.url.path);
+        if (match == null) return http.Response('', 404);
+        requested.add(int.parse(match.group(1)!));
+        return _analyzedWaveformResponse();
+      }),
+    );
+    final timelineTrack = _pendingTrack(1);
+    final deckTrack = _pendingTrack(2);
+
+    provider.retainAnalysisHydration('timeline', [timelineTrack]);
+    provider.retainAnalysisHydration('deck', [deckTrack]);
+    await _waitUntil(
+      () =>
+          _hasHydratedPeaks(provider, timelineTrack) &&
+          _hasHydratedPeaks(provider, deckTrack),
+    );
+    final requestsBeforeRelease = List<int>.from(requested);
+
+    provider.releaseAnalysisHydration('timeline');
+    await _flushMicrotasks();
+
+    expect(_hasHydratedPeaks(provider, timelineTrack), isFalse);
+    expect(_hasHydratedPeaks(provider, deckTrack), isTrue);
+    expect(
+      requested,
+      requestsBeforeRelease,
+      reason: 'the surviving pin must not be dropped and refetched',
+    );
+    provider.dispose();
+  });
+
+  test('a second hydration root does not strand queued requests', () async {
+    final releases = <int, Completer<void>>{};
+    final started = <int>[];
+    final firstWaveStarted = Completer<void>();
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        final match =
+            RegExp(r'/tracks/(\d+)/analysis$').firstMatch(request.url.path);
+        if (match == null) return http.Response('', 404);
+        final trackId = int.parse(match.group(1)!);
+        started.add(trackId);
+        if (started.length == 3 && !firstWaveStarted.isCompleted) {
+          firstWaveStarted.complete();
+        }
+        await releases.putIfAbsent(trackId, Completer<void>.new).future;
+        return _analyzedWaveformResponse();
+      }),
+    );
+    final timelineTracks = [for (var id = 1; id <= 6; id++) _pendingTrack(id)];
+
+    provider.retainAnalysisHydration('timeline', timelineTracks);
+    await firstWaveStarted.future.timeout(const Duration(seconds: 1));
+    provider.retainAnalysisHydration('deck', [_pendingTrack(7)]);
+
+    // Free one slot and prove the newly claiming root leads the queued work.
+    releases[started.first]!.complete();
+    await _waitUntil(() => started.length >= 4);
+    expect(started[3], 7);
+
+    // Keep freeing one in-flight request until every retained request starts.
+    // Releasing only the first wave deadlocks at six starts because the
+    // scheduler's concurrency cap is three.
+    while (started.length < 7) {
+      final startedBeforeRelease = started.length;
+      final nextRelease = started.firstWhere(
+        (id) => !releases[id]!.isCompleted,
+      );
+      releases[nextRelease]!.complete();
+      await _waitUntil(() => started.length > startedBeforeRelease);
+    }
+
+    expect(
+      started.toSet(),
+      containsAll(<int>[1, 2, 3, 4, 5, 6, 7]),
+      reason: 'reprioritization spans every root, so nothing queued is lost',
+    );
+    for (final release in releases.values) {
+      if (!release.isCompleted) release.complete();
+    }
+    await _flushMicrotasks();
+    provider.dispose();
+  });
+
+  test('a hydration root retains at most the per-root cap', () async {
+    const cap = QueueProvider.maxAnalysisHydrationKeysPerRoot;
+    final requested = <int>[];
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        final match =
+            RegExp(r'/tracks/(\d+)/analysis$').firstMatch(request.url.path);
+        if (match == null) return http.Response('', 404);
+        requested.add(int.parse(match.group(1)!));
+        return _analyzedWaveformResponse();
+      }),
+    );
+    final tracks = [for (var id = 1; id <= cap + 2; id++) _pendingTrack(id)];
+
+    provider.retainAnalysisHydration('timeline', tracks);
+    await _waitUntil(() => requested.length >= cap);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(requested, hasLength(cap));
+    expect(requested, isNot(contains(cap + 1)));
+    expect(_hasHydratedPeaks(provider, tracks[cap]), isFalse);
+    expect(_hasHydratedPeaks(provider, tracks[cap + 1]), isFalse);
+    provider.dispose();
+  });
+
+  test('a ninth hydration root evicts only the least-recent claim', () async {
+    const rootCap = QueueProvider.maxAnalysisHydrationRoots;
+    final releases = <int, Completer<void>>{};
+    final started = <int>[];
+    final firstWaveStarted = Completer<void>();
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        final match =
+            RegExp(r'/tracks/(\d+)/analysis$').firstMatch(request.url.path);
+        if (match == null) return http.Response('', 404);
+        final trackId = int.parse(match.group(1)!);
+        started.add(trackId);
+        if (started.length == 3 && !firstWaveStarted.isCompleted) {
+          firstWaveStarted.complete();
+        }
+        await releases.putIfAbsent(trackId, Completer<void>.new).future;
+        return _analyzedWaveformResponse();
+      }),
+    );
+    final tracks = [
+      for (var id = 1; id <= rootCap + 1; id++) _pendingTrack(id),
+    ];
+
+    for (var root = 0; root < rootCap; root++) {
+      provider.retainAnalysisHydration('root-$root', [tracks[root]]);
+    }
+    await firstWaveStarted.future.timeout(const Duration(seconds: 1));
+
+    // Refresh root 0, making root 1 the least recently claimed, then add the
+    // ninth root. Its in-flight response must be discarded while every
+    // surviving root's queued work still runs.
+    provider.retainAnalysisHydration('root-0', [tracks[0]]);
+    provider.retainAnalysisHydration('root-$rootCap', [tracks[rootCap]]);
+    final survivingIds = <int>{
+      1,
+      for (var id = 3; id <= rootCap + 1; id++) id,
+    };
+
+    while (!survivingIds.every(started.contains)) {
+      final startedBeforeRelease = started.length;
+      final nextRelease = started.firstWhere(
+        (id) => !releases[id]!.isCompleted,
+      );
+      releases[nextRelease]!.complete();
+      await _waitUntil(() => started.length > startedBeforeRelease);
+    }
+    for (final release in releases.values) {
+      if (!release.isCompleted) release.complete();
+    }
+    await _waitUntil(
+      () => [
+        for (var index = 0; index < tracks.length; index++)
+          if (index != 1) _hasHydratedPeaks(provider, tracks[index]),
+      ].every((hydrated) => hydrated),
+    );
+
+    expect(started.toSet(), containsAll(survivingIds));
+    expect(_hasHydratedPeaks(provider, tracks[0]), isTrue);
+    expect(
+      _hasHydratedPeaks(provider, tracks[1]),
+      isFalse,
+      reason: 'root 0 was refreshed, so root 1 must be the LRU eviction',
+    );
     provider.dispose();
   });
 
