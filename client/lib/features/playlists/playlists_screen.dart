@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import '../../core/services/playlist_import_service.dart';
 import '../../core/services/playlist_service.dart';
 import '../../core/api/api_client.dart';
 import '../../core/storage/secure_storage.dart';
 import '../../shared/models/playlist.dart';
 import '../../shared/widgets/playlist_card.dart';
+import 'playlist_creation_dialog.dart';
 import 'playlist_edit_dialog.dart';
 
 class PlaylistsScreen extends StatefulWidget {
@@ -16,6 +18,7 @@ class PlaylistsScreen extends StatefulWidget {
 
 class _PlaylistsScreenState extends State<PlaylistsScreen> {
   late final PlaylistService _playlistService;
+  late final PlaylistImportService _playlistImportService;
 
   final List<Playlist> _playlists = [];
   bool _isLoading = false;
@@ -35,6 +38,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     final storage = SecureStorage();
     final api = ApiClient(storage: storage);
     _playlistService = PlaylistService(api: api);
+    _playlistImportService = PlaylistImportService(api: api);
 
     _scrollController.addListener(_onScroll);
     _loadPlaylists();
@@ -203,32 +207,19 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     );
   }
 
-  void _showCreatePlaylistDialog() {
+  Future<void> _showCreatePlaylistDialog() async {
     final messenger = ScaffoldMessenger.of(context);
-    showDialog(
-      context: context,
-      builder: (context) => PlaylistEditDialog(
-        onSave: (result) async {
-          try {
-            final playlist = await _playlistService.createPlaylist(
-              name: result.name,
-              description: result.description,
-              coverUrl: result.coverUrl,
-              isPublic: result.isPublic,
-            );
-            if (!mounted) return;
-            setState(() => _playlists.insert(0, playlist));
-            messenger.showSnackBar(
-              SnackBar(content: Text('Created playlist "${result.name}"')),
-            );
-          } catch (e) {
-            if (!mounted) return;
-            messenger.showSnackBar(
-              SnackBar(content: Text('Failed to create playlist: $e')),
-            );
-          }
-        },
-      ),
+    await showPlaylistCreationDialog(
+      context,
+      playlistService: _playlistService,
+      playlistImportService: _playlistImportService,
+      onBlankCreated: (playlist) {
+        if (!mounted) return;
+        setState(() => _playlists.insert(0, playlist));
+        messenger.showSnackBar(
+          SnackBar(content: Text('Created playlist "${playlist.name}"')),
+        );
+      },
     );
   }
 
@@ -348,9 +339,9 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
         title: const Text('Playlists'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.video_library_outlined),
-            onPressed: () => context.push('/playlists/import'),
-            tooltip: 'Import YouTube playlist',
+            icon: const Icon(Icons.add),
+            onPressed: _showCreatePlaylistDialog,
+            tooltip: 'Create playlist',
           ),
           IconButton(
             icon: Icon(_isGridView ? Icons.list : Icons.grid_view),
@@ -423,12 +414,6 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               onPressed: _showCreatePlaylistDialog,
               icon: const Icon(Icons.add),
               label: const Text('Create Playlist'),
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: () => context.push('/playlists/import'),
-              icon: const Icon(Icons.video_library_outlined),
-              label: const Text('Import YouTube playlist'),
             ),
           ],
         ),
