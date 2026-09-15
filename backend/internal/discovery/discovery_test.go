@@ -103,8 +103,8 @@ func TestNewServiceAppliesTimeoutDefaults(t *testing.T) {
 	if svc.perProviderTimeout != DefaultPerProviderTimeout {
 		t.Fatalf("per-provider timeout = %s, want %s", svc.perProviderTimeout, DefaultPerProviderTimeout)
 	}
-	if svc.soundCloudTimeout != DefaultSoundCloudTimeout {
-		t.Fatalf("SoundCloud timeout = %s, want %s", svc.soundCloudTimeout, DefaultSoundCloudTimeout)
+	if svc.soundCloudTimeout != 0 {
+		t.Fatalf("SoundCloud timeout = %s, want unset without SoundCloud", svc.soundCloudTimeout)
 	}
 	if svc.overallTimeout != DefaultOverallTimeout {
 		t.Fatalf("overall timeout = %s, want %s", svc.overallTimeout, DefaultOverallTimeout)
@@ -121,6 +121,38 @@ func TestNewServiceKeepsOverallTimeoutAtLeastPerProviderTimeout(t *testing.T) {
 	})
 	if svc.overallTimeout != svc.perProviderTimeout {
 		t.Fatalf("overall timeout = %s, want it clamped to per-provider timeout %s", svc.overallTimeout, svc.perProviderTimeout)
+	}
+}
+
+func TestNewServiceWithoutSoundCloudKeepsExplicitOverallTimeout(t *testing.T) {
+	svc := NewService(ServiceConfig{
+		Providers:          []Provider{fakeProvider{name: "youtube"}},
+		DefaultProviders:   []string{"youtube"},
+		PerProviderTimeout: 5 * time.Second,
+		OverallTimeout:     5 * time.Second,
+	})
+	if svc.overallTimeout != 5*time.Second {
+		t.Fatalf("overall timeout = %s, want explicit 5s without SoundCloud", svc.overallTimeout)
+	}
+	if svc.soundCloudTimeout != 0 {
+		t.Fatalf("SoundCloud timeout = %s, want unset without SoundCloud", svc.soundCloudTimeout)
+	}
+}
+
+func TestDefaultServiceAppliesSoundCloudTimeout(t *testing.T) {
+	svc := NewDefaultService()
+	if svc.soundCloudTimeout != DefaultSoundCloudTimeout {
+		t.Fatalf("SoundCloud timeout = %s, want %s", svc.soundCloudTimeout, DefaultSoundCloudTimeout)
+	}
+}
+
+func TestDefaultServiceClampsOverallTimeoutToSoundCloudTimeout(t *testing.T) {
+	svc := NewDefaultServiceWithConfig(ServiceConfig{
+		OverallTimeout:    5 * time.Second,
+		SoundCloudTimeout: 14 * time.Second,
+	})
+	if svc.overallTimeout != svc.soundCloudTimeout {
+		t.Fatalf("overall timeout = %s, want SoundCloud timeout %s", svc.overallTimeout, svc.soundCloudTimeout)
 	}
 }
 

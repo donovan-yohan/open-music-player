@@ -71,7 +71,7 @@ func TestDiscoveryServiceConfigFromEnvInvalidValuesUseDefaultsAndClampMaximum(t 
 	}
 }
 
-func TestDiscoveryServiceConfigEnvAndServiceEnforceTimeoutInvariant(t *testing.T) {
+func TestDiscoveryServiceConfigFromEnvLeavesProviderClampingToService(t *testing.T) {
 	values := map[string]string{
 		"DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS":           "12",
 		"DISCOVERY_SOUNDCLOUD_TIMEOUT_SECONDS":             "14",
@@ -79,8 +79,8 @@ func TestDiscoveryServiceConfigEnvAndServiceEnforceTimeoutInvariant(t *testing.T
 		"DISCOVERY_YOUTUBE_MUSIC_METADATA_TIMEOUT_SECONDS": "15",
 	}
 	cfg := discoveryServiceConfigFromEnv(func(key string) string { return values[key] })
-	if cfg.OverallTimeout != cfg.SoundCloudTimeout {
-		t.Fatalf("overall timeout = %s, want it clamped to SoundCloud timeout %s", cfg.OverallTimeout, cfg.SoundCloudTimeout)
+	if cfg.OverallTimeout != cfg.PerProviderTimeout {
+		t.Fatalf("overall timeout = %s, want generic provider timeout %s before providers are registered", cfg.OverallTimeout, cfg.PerProviderTimeout)
 	}
 	if cfg.YouTubeMusicMetadataEnrichmentTimeout != cfg.PerProviderTimeout {
 		t.Fatalf("metadata timeout = %s, want it clamped to per-provider timeout %s", cfg.YouTubeMusicMetadataEnrichmentTimeout, cfg.PerProviderTimeout)
