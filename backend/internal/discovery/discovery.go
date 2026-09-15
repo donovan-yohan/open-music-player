@@ -135,6 +135,7 @@ type Service struct {
 	acousticBrainzHints AcousticBrainzHintSource
 	overallTimeout      time.Duration
 	perProviderTimeout  time.Duration
+	soundCloudTimeout   time.Duration
 }
 
 type ServiceConfig struct {
@@ -149,17 +150,21 @@ type ServiceConfig struct {
 	AcousticBrainzHints                       AcousticBrainzHintSource
 	OverallTimeout                            time.Duration
 	PerProviderTimeout                        time.Duration
+	SoundCloudTimeout                         time.Duration
 	YouTubeMusicMetadataEnrichmentTimeout     time.Duration
 	YouTubeMusicMetadataEnrichmentConcurrency int
 }
 
 const (
-	// DefaultPerProviderTimeout leaves room for a cold or contended yt-dlp
-	// SoundCloud search to complete.
+	// DefaultPerProviderTimeout bounds ordinary source providers. SoundCloud has
+	// a separate budget because its remote search extractor has a slower tail.
 	DefaultPerProviderTimeout = 8 * time.Second
+	// DefaultSoundCloudTimeout gives the slower remote search extractor its own
+	// budget without making every provider failure take longer to surface.
+	DefaultSoundCloudTimeout = 12 * time.Second
 	// DefaultOverallTimeout leaves explicit merge headroom after the slowest
 	// provider while bounding the whole discovery request.
-	DefaultOverallTimeout = 12 * time.Second
+	DefaultOverallTimeout = 16 * time.Second
 
 	// DefaultYouTubeMusicMetadataEnrichmentConcurrency bounds the follow-up
 	// yt-dlp processes started after a flat YouTube Music Songs search. Search
@@ -199,6 +204,7 @@ func NewService(cfg ServiceConfig) *Service {
 		acousticBrainzHints: cfg.AcousticBrainzHints,
 		overallTimeout:      cfg.OverallTimeout,
 		perProviderTimeout:  cfg.PerProviderTimeout,
+		soundCloudTimeout:   cfg.SoundCloudTimeout,
 	}
 }
 
@@ -210,6 +216,9 @@ func NormalizeServiceConfig(cfg ServiceConfig) ServiceConfig {
 	}
 	if cfg.PerProviderTimeout <= 0 {
 		cfg.PerProviderTimeout = DefaultPerProviderTimeout
+	}
+	if hasProvider(cfg.Providers, "soundcloud") && cfg.SoundCloudTimeout <= 0 {
+		cfg.SoundCloudTimeout = DefaultSoundCloudTimeout
 	}
 	if cfg.YouTubeMusicMetadataEnrichmentTimeout <= 0 {
 		cfg.YouTubeMusicMetadataEnrichmentTimeout = DefaultYouTubeMusicMetadataEnrichmentTimeout
@@ -226,7 +235,19 @@ func NormalizeServiceConfig(cfg ServiceConfig) ServiceConfig {
 	if cfg.OverallTimeout < cfg.PerProviderTimeout {
 		cfg.OverallTimeout = cfg.PerProviderTimeout
 	}
+	if hasProvider(cfg.Providers, "soundcloud") && cfg.OverallTimeout < cfg.SoundCloudTimeout {
+		cfg.OverallTimeout = cfg.SoundCloudTimeout
+	}
 	return cfg
+}
+
+func hasProvider(providers []Provider, name string) bool {
+	for _, provider := range providers {
+		if provider != nil && provider.Name() == name {
+			return true
+		}
+	}
+	return false
 }
 
 func NewDefaultService() *Service {
@@ -246,7 +267,6 @@ func NewDefaultServiceWithCatalogAndSourceQualityJudge(catalog MusicCatalog, jud
 // NewDefaultServiceWithConfig constructs the standard source provider set and
 // applies the supplied service configuration, including request timeouts.
 func NewDefaultServiceWithConfig(cfg ServiceConfig) *Service {
-	cfg = NormalizeServiceConfig(cfg)
 	providers := []Provider{
 		newYouTubeProviderWithMetadataEnrichment(
 			cfg.YouTubeMusicMetadataEnrichmentConcurrency,
@@ -368,7 +388,11 @@ func (s *Service) searchSourcesWithContext(ctx context.Context, query string, so
 		go func(p Provider) {
 			defer wg.Done()
 			start := time.Now()
-			providerCtx, providerCancel := context.WithTimeout(ctx, s.perProviderTimeout)
+			providerTimeout := s.perProviderTimeout
+			if p.Name() == "soundcloud" {
+				providerTimeout = s.soundCloudTimeout
+			}
+			providerCtx, providerCancel := context.WithTimeout(ctx, providerTimeout)
 			defer providerCancel()
 			items, err := p.Search(providerCtx, query, limit)
 			ch <- result{provider: p.Name(), items: items, err: err, elapsed: time.Since(start)}
