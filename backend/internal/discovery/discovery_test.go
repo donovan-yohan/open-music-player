@@ -103,6 +103,9 @@ func TestNewServiceAppliesTimeoutDefaults(t *testing.T) {
 	if svc.perProviderTimeout != DefaultPerProviderTimeout {
 		t.Fatalf("per-provider timeout = %s, want %s", svc.perProviderTimeout, DefaultPerProviderTimeout)
 	}
+	if svc.soundCloudTimeout != DefaultSoundCloudTimeout {
+		t.Fatalf("SoundCloud timeout = %s, want %s", svc.soundCloudTimeout, DefaultSoundCloudTimeout)
+	}
 	if svc.overallTimeout != DefaultOverallTimeout {
 		t.Fatalf("overall timeout = %s, want %s", svc.overallTimeout, DefaultOverallTimeout)
 	}
@@ -118,6 +121,20 @@ func TestNewServiceKeepsOverallTimeoutAtLeastPerProviderTimeout(t *testing.T) {
 	})
 	if svc.overallTimeout != svc.perProviderTimeout {
 		t.Fatalf("overall timeout = %s, want it clamped to per-provider timeout %s", svc.overallTimeout, svc.perProviderTimeout)
+	}
+}
+
+func TestServiceUsesIndependentSoundCloudTimeout(t *testing.T) {
+	svc := NewService(ServiceConfig{
+		Providers:          []Provider{fakeProvider{name: "soundcloud", delay: 15 * time.Millisecond}},
+		DefaultProviders:   []string{"soundcloud"},
+		PerProviderTimeout: 5 * time.Millisecond,
+		SoundCloudTimeout:  30 * time.Millisecond,
+		OverallTimeout:     50 * time.Millisecond,
+	})
+	resp := svc.Search(context.Background(), "track", nil, 10)
+	if got := resp.Providers[0].Status; got != ProviderStatusOK {
+		t.Fatalf("SoundCloud status = %s, want ok with its independent timeout", got)
 	}
 }
 

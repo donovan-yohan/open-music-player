@@ -119,6 +119,7 @@ func newSourceQualityJudge(cfg *config.Config) discovery.SourceQualityJudge {
 // overrides. Invalid and absent values deliberately retain library defaults.
 func discoveryServiceConfigFromEnv(getenv func(string) string) discovery.ServiceConfig {
 	perProviderTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS", discovery.DefaultPerProviderTimeout)
+	soundCloudTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_SOUNDCLOUD_TIMEOUT_SECONDS", discovery.DefaultSoundCloudTimeout)
 	overallTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_OVERALL_TIMEOUT_SECONDS", discovery.DefaultOverallTimeout)
 	metadataTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_YOUTUBE_MUSIC_METADATA_TIMEOUT_SECONDS", discovery.DefaultYouTubeMusicMetadataEnrichmentTimeout)
 	metadataConcurrency := discoveryPositiveIntFromEnv(
@@ -129,6 +130,7 @@ func discoveryServiceConfigFromEnv(getenv func(string) string) discovery.Service
 	)
 	return discovery.NormalizeServiceConfig(discovery.ServiceConfig{
 		PerProviderTimeout:                        perProviderTimeout,
+		SoundCloudTimeout:                         soundCloudTimeout,
 		OverallTimeout:                            overallTimeout,
 		YouTubeMusicMetadataEnrichmentTimeout:     metadataTimeout,
 		YouTubeMusicMetadataEnrichmentConcurrency: metadataConcurrency,
