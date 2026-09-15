@@ -242,9 +242,7 @@ class _PlaylistCreationDialogState extends State<PlaylistCreationDialog> {
   }
 
   Future<void> _submit() async {
-    if (_isSubmitting ||
-        _kind == null ||
-        !_formKey.currentState!.validate()) {
+    if (_isSubmitting || _kind == null || !_formKey.currentState!.validate()) {
       return;
     }
 
