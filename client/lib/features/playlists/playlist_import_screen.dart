@@ -182,14 +182,7 @@ class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
     }
   }
 
-  String _apiErrorMessage(DioException error) {
-    final data = error.response?.data;
-    if (data is Map<String, dynamic>) {
-      final message = data['message'] ?? data['error'];
-      if (message is String && message.isNotEmpty) return message;
-    }
-    return error.message ?? 'server request failed';
-  }
+  String _apiErrorMessage(DioException error) => apiErrorMessage(error);
 
   @override
   Widget build(BuildContext context) {

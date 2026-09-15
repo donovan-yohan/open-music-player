@@ -1,6 +1,8 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/api/api_client.dart';
 import '../../core/models/playlist_import.dart';
 import '../../core/services/playlist_import_service.dart';
 import '../../core/services/playlist_service.dart';
@@ -187,6 +189,20 @@ class PlaylistImportForm extends StatelessWidget {
   }
 }
 
+/// Renders any submit failure as an actionable message.
+///
+/// API failures carry the backend's own message in the response body; a bare
+/// `toString()` buries it under transport boilerplate. Shared with the route
+/// import screen so the modal and the route cannot disagree about the same
+/// failure.
+String playlistCreationErrorMessage(Object error) {
+  if (error is DioException) return apiErrorMessage(error);
+  final message = error.toString();
+  return message.startsWith('Exception: ')
+      ? message.substring('Exception: '.length)
+      : message;
+}
+
 /// A single modal shell for blank playlist creation and supported imports.
 class PlaylistCreationDialog extends StatefulWidget {
   final Future<PlaylistCreationOutcome> Function(PlaylistCreationIntent intent)
@@ -285,54 +301,55 @@ class _PlaylistCreationDialogState extends State<PlaylistCreationDialog> {
     return value.isEmpty ? null : value;
   }
 
-  String _errorMessage(Object error) {
-    final message = error.toString();
-    return message.startsWith('Exception: ')
-        ? message.substring('Exception: '.length)
-        : message;
-  }
+  String _errorMessage(Object error) => playlistCreationErrorMessage(error);
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return AlertDialog(
-      key: const ValueKey('playlist_creation_dialog'),
-      title: Row(
-        children: [
+    return PopScope(
+      // While a submit is in flight the modal owns the outcome: dismissing it
+      // would silently drop a playlist or import job the server already
+      // created. Back-navigation is blocked for the same reason as the scrim.
+      canPop: !_isSubmitting,
+      child: AlertDialog(
+        key: const ValueKey('playlist_creation_dialog'),
+        title: Row(
+          children: [
+            if (_kind != null)
+              IconButton(
+                key: const ValueKey('playlist_creation_back'),
+                onPressed: _isSubmitting ? null : _goBackToSourceChoices,
+                tooltip: 'Choose another playlist type',
+                icon: const Icon(Icons.arrow_back),
+              ),
+            Expanded(child: Text(_kind == null ? 'Create Playlist' : _title)),
+          ],
+        ),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: SingleChildScrollView(
+            child: _kind == null ? _buildSourceChoices(theme) : _buildForm(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
           if (_kind != null)
-            IconButton(
-              key: const ValueKey('playlist_creation_back'),
-              onPressed: _isSubmitting ? null : _goBackToSourceChoices,
-              tooltip: 'Choose another playlist type',
-              icon: const Icon(Icons.arrow_back),
+            FilledButton(
+              key: const ValueKey('playlist_creation_submit'),
+              onPressed: _isSubmitting ? null : _submit,
+              child: _isSubmitting
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Text(_submitLabel),
             ),
-          Expanded(child: Text(_kind == null ? 'Create Playlist' : _title)),
         ],
       ),
-      content: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 520),
-        child: SingleChildScrollView(
-          child: _kind == null ? _buildSourceChoices(theme) : _buildForm(),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        if (_kind != null)
-          FilledButton(
-            key: const ValueKey('playlist_creation_submit'),
-            onPressed: _isSubmitting ? null : _submit,
-            child: _isSubmitting
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : Text(_submitLabel),
-          ),
-      ],
     );
   }
 
@@ -499,6 +516,12 @@ Future<PlaylistCreationOutcome?> showPlaylistCreationDialog(
 }) async {
   final outcome = await showDialog<PlaylistCreationOutcome>(
     context: context,
+    // A scrim tap must not dismiss the modal: the outcome of a submit is
+    // delivered by popping this dialog, and no client surface lists
+    // playlist-import jobs, so a dismissed modal would silently drop a playlist
+    // or import job the server already created. Cancel (idle only) and the
+    // dialog's own PopScope cover the dismissal paths instead.
+    barrierDismissible: false,
     builder: (_) => PlaylistCreationDialog(
       onSubmit: (intent) async {
         if (intent is BlankPlaylistCreationIntent) {
