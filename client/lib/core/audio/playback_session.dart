@@ -682,20 +682,27 @@ class MixSession {
   /// zero-default application. Callers can start after the active clip so a
   /// live settings change never moves the transition that is currently
   /// sounding.
+  ///
+  /// Re-applying an unchanged zero default still re-derives the contiguous
+  /// auto-managed prefix, so a restored session written before the zero default
+  /// was end-to-start heals its analysis-derived overlaps instead of keeping
+  /// them. [startIndex] bounds that heal the same way it bounds a change.
   MixSession withDefaultCrossfadeMs(int value, {int startIndex = 0}) {
     final normalized = math.max(0, value);
     if (normalized == defaultCrossfadeMs) {
-      if (!_adoptLegacyDefaultCrossfade) return this;
-      return MixSession(
-        sessionId: sessionId,
-        schemaVersion: schemaVersion,
-        clips: clips,
-        nextClipOrdinal: nextClipOrdinal,
-        transitionSnapMode: transitionSnapMode,
-        defaultCrossfadeMs: defaultCrossfadeMs,
-        deferredDefaultTransitionClipIds: _deferredDefaultTransitionClipIds,
-        explicitPlacementClipIds: _explicitPlacementClipIds,
-      );
+      if (_adoptLegacyDefaultCrossfade) {
+        return MixSession(
+          sessionId: sessionId,
+          schemaVersion: schemaVersion,
+          clips: clips,
+          nextClipOrdinal: nextClipOrdinal,
+          transitionSnapMode: transitionSnapMode,
+          defaultCrossfadeMs: defaultCrossfadeMs,
+          deferredDefaultTransitionClipIds: _deferredDefaultTransitionClipIds,
+          explicitPlacementClipIds: _explicitPlacementClipIds,
+        );
+      }
+      if (normalized != 0) return this;
     }
     final autoManagedDefaults = <int>{
       defaultCrossfadeMs,
@@ -723,6 +730,18 @@ class MixSession {
               )),
       onReflowed: reflowedIndices.add,
     );
+    final retainedDeferredClipIds = {
+      for (var index = 0; index < clips.length; index++)
+        if (!reflowedIndices.contains(index) &&
+            _deferredDefaultTransitionClipIds.contains(clips[index].clipId))
+          clips[index].clipId,
+    };
+    if (normalized == defaultCrossfadeMs &&
+        _sameClipPlacements(clips, reflowed) &&
+        retainedDeferredClipIds.length ==
+            _deferredDefaultTransitionClipIds.length) {
+      return this;
+    }
     return MixSession(
       sessionId: sessionId,
       schemaVersion: schemaVersion,
@@ -730,12 +749,7 @@ class MixSession {
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
       defaultCrossfadeMs: normalized,
-      deferredDefaultTransitionClipIds: {
-        for (var index = 0; index < clips.length; index++)
-          if (!reflowedIndices.contains(index) &&
-              _deferredDefaultTransitionClipIds.contains(clips[index].clipId))
-            clips[index].clipId,
-      },
+      deferredDefaultTransitionClipIds: retainedDeferredClipIds,
       explicitPlacementClipIds: _explicitPlacementClipIds,
     );
   }
@@ -782,6 +796,12 @@ class MixSession {
       explicitPlacementClipIds: _explicitPlacementClipIds,
     );
   }
+
+  /// Whether [other] carries this session's clip placements.
+  ///
+  /// Placement provenance may differ; the timeline does not.
+  bool hasSameClipPlacementsAs(MixSession other) =>
+      _sameClipPlacements(clips, other.clips);
 
   MixSessionClip? clipAt(int index) {
     if (index < 0 || index >= clips.length) return null;
@@ -1426,14 +1446,28 @@ bool _wasAutoManagedPlacement(
       (previous == null || defaultCrossfadeMs == 0)) {
     return true;
   }
-  return clip.timelineStartMs ==
+  if (clip.timelineStartMs ==
       _defaultTimelineStartAfter(
         previous,
         clip,
         fallbackStartMs,
         snapMode,
         defaultCrossfadeMs,
-      );
+      )) {
+    return true;
+  }
+  // Phrase overlaps written while the zero default still followed analysis
+  // metadata are auto-managed placements, not listener edits. Recognizing the
+  // legacy derivation lets a restore re-derive them as butt joints instead of
+  // reading them as an explicit timeline edit.
+  return defaultCrossfadeMs == 0 &&
+      clip.timelineStartMs ==
+          _analyzedPhraseTransitionStartMs(
+            previous,
+            clip,
+            fallbackStartMs,
+            snapMode,
+          );
 }
 
 bool _isButtJointPlacement(List<MixSessionClip> clips, int index) {
@@ -1460,30 +1494,55 @@ int _defaultTimelineStartAfter(
   int defaultCrossfadeMs,
 ) {
   if (previous == null) return math.max(0, fallbackStartMs);
+  final safeOverlapMs = math.min(
+    math.max(0, defaultCrossfadeMs),
+    math.min(
+      math.max(0, previous.selectedDurationMs) ~/ 2,
+      math.max(0, incoming.selectedDurationMs) ~/ 2,
+    ),
+  );
+  // The configured crossfade is the listener's opt-in. At zero every default
+  // transition is a butt joint: the outgoing clip reaches its authored end and
+  // the incoming clip starts there, whatever the analyzer knows about tempo.
+  if (safeOverlapMs == 0) {
+    return math.max(previous.timelineStartMs, fallbackStartMs);
+  }
+  // Precedence above zero: a phrase/downbeat-locked placement owns analyzed
+  // pairs, and the configured crossfade fills the untempo'd case.
+  final analyzedStartMs = _analyzedPhraseTransitionStartMs(
+    previous,
+    incoming,
+    fallbackStartMs,
+    snapMode,
+  );
+  if (analyzedStartMs != null) return analyzedStartMs;
+  return math.max(
+    previous.timelineStartMs,
+    fallbackStartMs - safeOverlapMs,
+  );
+}
+
+/// The analysis-derived default for a reliable analyzed pair: a phrase-length
+/// overlap snapped to the outgoing downbeat grid, or null when the pair has no
+/// usable tempo overlap.
+///
+/// Only the nonzero-crossfade default transition may use this. It stays a
+/// separate derivation because placement provenance still has to recognize
+/// sessions written by builds that applied it while the crossfade was zero.
+int? _analyzedPhraseTransitionStartMs(
+  MixSessionClip? previous,
+  MixSessionClip incoming,
+  int fallbackStartMs,
+  BeatSnapMode snapMode,
+) {
+  if (previous == null) return null;
   final tempoOverlapMs = defaultTransitionOverlapMsForTempo(
     outgoingSelectedDurationMs: previous.selectedDurationMs,
     outgoingTempo: previous.tempo,
     incomingSelectedDurationMs: incoming.selectedDurationMs,
     incomingTempo: incoming.tempo,
   );
-  // Precedence lives here: a nonzero tempo overlap owns the transition,
-  // including the existing snap/fallback decision. In free snap mode that
-  // tempo path resolves to a butt joint, while untempo'd pairs still use the
-  // configured crossfade. The setting only fills the untempo'd zero-overlap
-  // case, and 0 remains a butt joint.
-  if (tempoOverlapMs == 0) {
-    final safeOverlapMs = math.min(
-      math.max(0, defaultCrossfadeMs),
-      math.min(
-        math.max(0, previous.selectedDurationMs) ~/ 2,
-        math.max(0, incoming.selectedDurationMs) ~/ 2,
-      ),
-    );
-    return math.max(
-      previous.timelineStartMs,
-      fallbackStartMs - safeOverlapMs,
-    );
-  }
+  if (tempoOverlapMs == 0) return null;
   return defaultDownbeatLockedTransitionStartMs(
     outgoingTimelineStartMs: previous.timelineStartMs,
     outgoingTimelineEndMs: previous.timelineEndMs,

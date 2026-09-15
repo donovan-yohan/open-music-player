@@ -433,12 +433,24 @@ processes to exhaust memory or timing out behind the service semaphore.
 ## Beat-locked transition defaults
 
 Fresh queue sessions stay contiguous when analysis is missing or low
-confidence. When adjacent clips both have reliable BPM and downbeat metadata,
-the canonical session model creates a default 16-beat overlap, bounded between
-4s and 12s and never longer than half of either clip. The incoming clip's first
-usable downbeat is snapped onto the outgoing downbeat grid, so the default
-crossfade starts on a predictable musical boundary before the playback-rate
-automation above runs.
+confidence, and the zero Crossfade setting is an end-to-start join: the
+outgoing clip reaches its authored end and the next clip starts there,
+whatever tempo or downbeat metadata the analyzer produced. Analysis metadata
+never opts a listener into an overlap on its own.
+
+A nonzero Crossfade setting is the explicit opt-in. Above zero, adjacent clips
+that both have reliable BPM and downbeat metadata keep the default 16-beat
+overlap, bounded between 4s and 12s and never longer than half of either clip.
+The incoming clip's first usable downbeat is snapped onto the outgoing downbeat
+grid, so the transition starts on a predictable musical boundary before the
+playback-rate automation above runs. Untempo'd pairs use the configured
+duration instead, capped at half of either clip's selected length.
+
+Queue snapshots written before the zero default was end-to-start still store
+that analysis-derived overlap in their auto-managed placements. Applying the
+zero default again recognizes those placements as auto-managed and re-derives
+them as butt joints instead of keeping an overlap nobody opted into. Explicit
+timeline edits and saved mix plans keep their authored placements.
 
 Manual timeline edits still use the same downbeat snap math, and freeform timing
 remains available because persisted placements are preserved unless queue

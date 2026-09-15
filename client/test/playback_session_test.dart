@@ -152,28 +152,74 @@ void main() {
       expect(removed.clips.map((clip) => clip.timelineStartMs), [0, 5000]);
     });
 
-    test('analyzed queues default to phrase-length downbeat-locked overlaps',
-        () {
-      final timeline = CueTimeline.contiguousQueue(
-        sessionId: 'session_phrase',
-        queue: [
-          _item(
-            'a',
-            seconds: 20,
-            analysisSummary: _analysisSummary(
-              bpm: 120,
-              downbeatsMs: [0, 4000, 8000, 12000, 16000],
-            ),
+    test('zero crossfade keeps analyzed pairs end-to-start with no fades', () {
+      final queue = [
+        _item(
+          'a',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000],
           ),
-          _item(
-            'b',
-            seconds: 20,
-            analysisSummary: _analysisSummary(
-              bpm: 120,
-              downbeatsMs: [0, 4000, 8000, 12000],
-            ),
+        ),
+        _item(
+          'b',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000],
           ),
-        ],
+        ),
+      ];
+      final timeline = CueTimeline.fromSession(
+        session: MixSession.fromQueue(
+          sessionId: 'session_phrase_zero',
+          queue: queue,
+        ),
+        queue: queue,
+        playOrder: const [0, 1],
+      );
+
+      expect(timeline.cues[0].timelineStart, Duration.zero);
+      expect(timeline.cues[0].timelineEnd, const Duration(seconds: 20));
+      expect(timeline.cues[1].timelineStart, const Duration(seconds: 20));
+      expect(timeline.cues[1].timelineEnd, const Duration(seconds: 40));
+
+      final model = timeline.toTimelineModel();
+      expect(model.clips[0].envelope.fadeOutMs, 0);
+      expect(model.clips[1].envelope.fadeInMs, 0);
+      expect(model.overlapDepthAt(15000), 1);
+      expect(model.overlapDepthAt(20000), 1);
+    });
+
+    test(
+        'nonzero crossfade keeps analyzed phrase-length downbeat-locked '
+        'overlaps', () {
+      final queue = [
+        _item(
+          'a',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          ),
+        ),
+        _item(
+          'b',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000],
+          ),
+        ),
+      ];
+      final timeline = CueTimeline.fromSession(
+        session: MixSession.fromQueue(
+          sessionId: 'session_phrase',
+          queue: queue,
+          defaultCrossfadeMs: 8000,
+        ),
+        queue: queue,
         playOrder: const [0, 1],
       );
 
@@ -190,26 +236,28 @@ void main() {
 
     test('default transition aligns incoming offset downbeat to outgoing grid',
         () {
+      final queue = [
+        _item(
+          'a',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          ),
+        ),
+        _item(
+          'b',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [500, 4500, 8500, 12500],
+          ),
+        ),
+      ];
       final session = MixSession.fromQueue(
         sessionId: 'session_offset',
-        queue: [
-          _item(
-            'a',
-            seconds: 20,
-            analysisSummary: _analysisSummary(
-              bpm: 120,
-              downbeatsMs: [0, 4000, 8000, 12000, 16000],
-            ),
-          ),
-          _item(
-            'b',
-            seconds: 20,
-            analysisSummary: _analysisSummary(
-              bpm: 120,
-              downbeatsMs: [500, 4500, 8500, 12500],
-            ),
-          ),
-        ],
+        queue: queue,
+        defaultCrossfadeMs: 3000,
       );
 
       expect(session.clips[1].timelineStartMs, 11500);
@@ -218,6 +266,13 @@ void main() {
             session.clips[1].tempo.downbeatsMs.first,
         12000,
       );
+
+      final endedAtZero = MixSession.fromQueue(
+        sessionId: 'session_offset_zero',
+        queue: queue,
+      );
+
+      expect(endedAtZero.clips[1].timelineStartMs, 20000);
     });
 
     test('missing or low-confidence analysis keeps queue timing contiguous',
@@ -475,6 +530,95 @@ void main() {
       expect(changed.clips[1].timelineStartMs, 10000);
     });
 
+    test('restored zero-crossfade sessions heal analysis-derived overlaps', () {
+      final queue = [
+        _item(
+          'a',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          ),
+        ),
+        _item(
+          'b',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000],
+          ),
+        ),
+      ];
+      // A session persisted by a build that let analysis metadata own the zero
+      // default: auto-managed clips, but overlapped.
+      final overlapped = MixSession.fromQueue(
+        sessionId: 'session_legacy_zero_overlap',
+        queue: queue,
+        defaultCrossfadeMs: 8000,
+      );
+      final json = overlapped.toJson()..['defaultCrossfadeMs'] = 0;
+      final restored = MixSession.fromJson(json);
+
+      expect(restored.defaultCrossfadeMs, 0);
+      expect(restored.clips[1].timelineStartMs, 12000);
+
+      final healed = restored.withDefaultCrossfadeMs(0);
+
+      expect(healed.clips.map((clip) => clip.timelineStartMs), [0, 20000]);
+      expect(healed.defaultCrossfadeMs, 0);
+
+      final edited = restored.withPlacementAt(
+        1,
+        restored.clips[1].placement.withTimelineStartMs(11000),
+      );
+      final preserved = edited.withDefaultCrossfadeMs(0);
+
+      expect(preserved.clips[1].timelineStartMs, 11000);
+    });
+
+    test('late analysis hydration stays end-to-start at zero crossfade', () {
+      final queue = [_item('a', seconds: 24), _item('b', seconds: 24)];
+      final session = MixSession.fromQueue(
+        sessionId: 'session_hydrate_zero',
+        queue: queue,
+      );
+
+      expect(session.clips.map((clip) => clip.timelineStartMs), [0, 24000]);
+
+      final analyzed = [
+        _item(
+          'a',
+          seconds: 24,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
+          ),
+        ),
+        _item(
+          'b',
+          seconds: 24,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
+          ),
+        ),
+      ];
+      final hydrated = session.normalizedForQueue(analyzed);
+
+      expect(hydrated.clips[1].tempo.nativeBpm, 120);
+      expect(hydrated.clips.map((clip) => clip.timelineStartMs), [0, 24000]);
+
+      final model = CueTimeline.fromSession(
+        session: hydrated,
+        queue: analyzed,
+        playOrder: const [0, 1],
+      ).toTimelineModel();
+
+      expect(model.clips[0].envelope.fadeOutMs, 0);
+      expect(model.clips[1].envelope.fadeInMs, 0);
+      expect(model.overlapDepthAt(12000), 1);
+    });
+
     test('manual placement clears deferred-transition provenance', () {
       final queue = [
         _item('a', seconds: 10),
@@ -685,6 +829,7 @@ void main() {
       final session = MixSession.fromQueue(
         sessionId: 'session_reflow',
         queue: [a, c],
+        defaultCrossfadeMs: 8000,
       ).insertAt(1, b);
 
       expect(session.clips.map((clip) => clip.trackId), ['a', 'b', 'c']);
@@ -813,6 +958,7 @@ void main() {
       final session = MixSession.fromQueue(
         sessionId: 'session_snap',
         queue: queue,
+        defaultCrossfadeMs: 8000,
       );
 
       expect(session.transitionSnapMode, BeatSnapMode.downbeat);
@@ -1154,6 +1300,7 @@ void main() {
             },
           ),
         ],
+        defaultCrossfadeMs: 8000,
       );
 
       expect(session.clips.map((clip) => clip.tempo.bpmConfidence), [
@@ -1198,6 +1345,7 @@ void main() {
             ),
           ),
         ],
+        defaultCrossfadeMs: 8000,
       );
 
       expect(session.clips[1].timelineStartMs, 16000);

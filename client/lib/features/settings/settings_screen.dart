@@ -310,7 +310,7 @@ class SettingsPlaybackSection extends ConsumerWidget {
           title: const Text('Crossfade'),
           subtitle: Text(
             settings.crossfadeDuration == 0
-                ? 'Off · tracks play gaplessly'
+                ? 'Off · tracks play end-to-start'
                 : '${settings.crossfadeDuration} seconds for untempo’d tracks',
           ),
         ),
