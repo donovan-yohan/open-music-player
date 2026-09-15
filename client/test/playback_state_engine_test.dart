@@ -1249,8 +1249,7 @@ void main() {
       playback.dispose();
     });
 
-    test('analysis refresh backfills beat-aware overlap for default queue',
-        () async {
+    test('analysis refresh keeps the default queue end-to-start', () async {
       SharedPreferences.setMockInitialValues({});
       final playback = _playbackState();
 
@@ -1261,6 +1260,49 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(playback.timelineModel.clips[1].timelineStartMs, 20000);
+
+      await playback.refreshTrackAnalysis(
+        '1',
+        _analysis(
+          bpm: 120,
+          downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          hasManualTimingAuthority: true,
+        ),
+      );
+      await playback.refreshTrackAnalysis(
+        '2',
+        _analysis(
+          bpm: 120,
+          downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          hasManualTimingAuthority: true,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final clips = playback.timelineModel.clips;
+      expect(clips[0].tempo.nativeBpm, 120);
+      expect(clips[1].tempo.nativeBpm, 120);
+      expect(clips[1].timelineStartMs, 20000);
+      expect(clips[0].envelope.fadeOutMs, 0);
+      expect(clips[1].envelope.fadeInMs, 0);
+      playback.dispose();
+    });
+
+    test('analysis refresh backfills beat-aware overlap when crossfade is on',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final playback = _playbackState();
+      await playback.applyAudioDefaults(
+        const AudioPlaybackDefaults(defaultCrossfadeMs: 3000),
+      );
+
+      await playback.playQueue([
+        _track(1, seconds: 20),
+        _track(2, seconds: 20),
+      ]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.timelineModel.clips[1].timelineStartMs, 17000);
 
       await playback.refreshTrackAnalysis(
         '1',

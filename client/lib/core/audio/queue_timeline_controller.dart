@@ -615,7 +615,19 @@ class QueueTimelineController {
     if (_session.defaultCrossfadeMs == value) {
       final nextSession = _session.withDefaultCrossfadeMs(value);
       if (identical(nextSession, _session)) return;
+      // Re-applying an unchanged default can still heal pre-#461
+      // analysis-derived overlaps. Adopt that placement change before
+      // publishing, so the live model and the canonical session agree.
+      final placementsChanged = !_session.hasSameClipPlacementsAs(nextSession);
       _session = nextSession;
+      if (placementsChanged && _queue.isNotEmpty) {
+        if (!_canApplySession(_session)) return;
+        _session = _session.normalizedForQueue(_queue);
+        await _loadModel(
+          seekToCurrent: false,
+          preserveActivePlayback: true,
+        );
+      }
       _publishQueueState();
       return;
     }

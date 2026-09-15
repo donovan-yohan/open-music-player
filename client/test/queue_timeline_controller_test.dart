@@ -519,6 +519,7 @@ void main() {
     test('setQueue applies analyzed phrase/downbeat transition defaults',
         () async {
       final harness = _Harness();
+      await harness.controller.setDefaultCrossfadeMs(8000);
       await harness.controller.setQueue([
         _item(
           '1',
@@ -549,10 +550,90 @@ void main() {
       await harness.dispose();
     });
 
+    test('setQueue keeps analyzed pairs end-to-start at zero crossfade',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item(
+          '1',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          ),
+          hasManualTimingAuthority: true,
+        ),
+        _item(
+          '2',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000],
+          ),
+          hasManualTimingAuthority: true,
+        ),
+      ]);
+
+      expect(
+          harness.controller.timelineClipForIndex(1)?.timelineStartMs, 20000);
+      expect(harness.engine.model.clips[0].envelope.fadeOutMs, 0);
+      expect(harness.engine.model.clips[1].envelope.fadeInMs, 0);
+      expect(harness.engine.model.overlapDepthAt(15000), 1);
+
+      await harness.dispose();
+    });
+
+    test('restored zero-crossfade session heals to end-to-start', () async {
+      final harness = _Harness();
+      final items = [
+        _item(
+          '1',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          ),
+          hasManualTimingAuthority: true,
+        ),
+        _item(
+          '2',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000],
+          ),
+          hasManualTimingAuthority: true,
+        ),
+      ];
+      // Snapshot written by a build where analysis metadata owned the zero
+      // default: overlapped auto-managed clips with a stored zero crossfade.
+      final legacyJson = MixSession.fromQueue(
+        sessionId: 'session_restore_zero_overlap',
+        queue: items,
+        defaultCrossfadeMs: 8000,
+      ).toJson()
+        ..['defaultCrossfadeMs'] = 0;
+
+      await harness.controller.setQueue(
+        items,
+        session: MixSession.fromJson(legacyJson),
+      );
+
+      expect(
+        harness.controller.session.clips.map((clip) => clip.timelineStartMs),
+        [0, 20000],
+      );
+      expect(harness.engine.model.clips[0].envelope.fadeOutMs, 0);
+      expect(harness.engine.model.clips[1].envelope.fadeInMs, 0);
+
+      await harness.dispose();
+    });
+
     test('transition beat-lock selection rebuilds canonical queue timing',
         () async {
       final harness = _Harness();
       final downbeats = List<int>.generate(16, (index) => index * 2000);
+      await harness.controller.setDefaultCrossfadeMs(8000);
       await harness.controller.setQueue([
         _item(
           '1',
@@ -630,6 +711,7 @@ void main() {
     test('default transitions align offset downbeats at BPM-matched start rate',
         () async {
       final harness = _Harness();
+      await harness.controller.setDefaultCrossfadeMs(8000);
       await harness.controller.setQueue([
         _item(
           '1',
@@ -679,6 +761,7 @@ void main() {
 
     test('bulk refinement keeps a long analyzed queue beat locked', () async {
       final harness = _Harness();
+      await harness.controller.setDefaultCrossfadeMs(8000);
       final items = List<MediaItem>.generate(24, (index) {
         final firstDownbeatMs = (index % 4) * 125;
         return _item(
@@ -776,6 +859,7 @@ void main() {
     test('manual moves keep offset production downbeats runtime-aligned',
         () async {
       final harness = _Harness();
+      await harness.controller.setDefaultCrossfadeMs(8000);
       await harness.controller.setQueue([
         _item(
           'still-here',
@@ -822,6 +906,7 @@ void main() {
     test('refreshed manual analysis rebuilds tempo diagnostics and automation',
         () async {
       final harness = _Harness();
+      await harness.controller.setDefaultCrossfadeMs(8000);
       await harness.controller.setQueue([
         _item('1', seconds: 20),
         _item('2', seconds: 20),
@@ -1046,6 +1131,10 @@ void main() {
           return voice;
         },
       );
+      // A configured crossfade below the analyzed phrase makes hydration a
+      // placement change: the pair moves from the configured overlap onto the
+      // analysis-derived one.
+      await harness.controller.setDefaultCrossfadeMs(3000);
       await harness.controller.setQueue([
         _item(
           '1',
