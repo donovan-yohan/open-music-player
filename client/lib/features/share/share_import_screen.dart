@@ -153,7 +153,7 @@ class _ShareImportScreenState extends State<ShareImportScreen> {
       } else {
         setState(() {
           _error =
-              'Could not add this link to library: ${_apiErrorMessage(error)}';
+              'Could not add this link to library: ${apiErrorMessage(error)}';
         });
       }
     } catch (error) {
@@ -184,15 +184,6 @@ class _ShareImportScreenState extends State<ShareImportScreen> {
     return DownloadJobResponse.fromJson(
       response.data ?? <String, dynamic>{},
     );
-  }
-
-  String _apiErrorMessage(DioException error) {
-    final data = error.response?.data;
-    if (data is Map<String, dynamic>) {
-      final message = data['message'] ?? data['error'];
-      if (message is String && message.isNotEmpty) return message;
-    }
-    return error.message ?? 'server request failed';
   }
 
   String _shareRoute({bool autoSubmit = false}) {

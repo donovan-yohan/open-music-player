@@ -177,11 +177,12 @@ func TestStartImportResolvedSnapshotFailurePersistsNothing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newFakeStore()
+			playlists := &fakePlaylists{}
 			bindingStore := &fakeSourceBindingStore{}
 			downloader := &fakeDownloader{}
 			service := NewService(Config{
 				Store:          store,
-				Playlists:      &fakePlaylists{},
+				Playlists:      playlists,
 				SourceAdapter:  tt.adapter,
 				SourceBindings: bindingStore,
 				Downloader:     downloader,
@@ -196,6 +197,12 @@ func TestStartImportResolvedSnapshotFailurePersistsNothing(t *testing.T) {
 			}
 			if len(store.jobs) != 0 || len(store.items) != 0 || len(downloader.jobs) != 0 {
 				t.Fatalf("side effects after snapshot failure: jobs=%d items=%d downloads=%d, want 0/0/0", len(store.jobs), len(store.items), len(downloader.jobs))
+			}
+			// The regression this guards: a failed resolution must not leave a
+			// local playlist behind. Playlists are created only after the
+			// source resolves, so nothing should have been created at all.
+			if len(playlists.created) != 0 || len(playlists.deleted) != 0 {
+				t.Fatalf("playlist state after resolution failure: created=%d deleted=%d, want 0/0", len(playlists.created), len(playlists.deleted))
 			}
 		})
 	}
@@ -368,6 +375,316 @@ func TestStartImportEnumeratorOnlyPathDoesNotUseSourceBindingStore(t *testing.T)
 	}
 }
 
+func TestStartImportResolvesSourceMetadataBeforeCreatingThePlaylist(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	store := newFakeStore()
+	playlists := &fakePlaylists{}
+	adapter := &fakeSourceAdapter{snapshot: playlistsync.Snapshot{
+		Source:   playlistsync.Source{Provider: "youtube", PlaylistID: "PLresolved", CanonicalURL: "https://www.youtube.com/playlist?list=PLresolved", Metadata: playlistsync.SourceMetadata{Title: "Resolved Source Title"}},
+		Complete: true,
+		Entries:  []playlistsync.Entry{{StableID: "known", SourceURL: "https://www.youtube.com/watch?v=known"}},
+	}}
+	// The defect was that the local playlist existed before the provider was
+	// ever asked. Nothing local may exist at the moment Resolve is called.
+	adapter.beforeResolve = func() {
+		if len(playlists.created) != 0 {
+			t.Errorf("playlist created before source resolution: %+v", playlists.created)
+		}
+	}
+	service := NewService(Config{
+		Store:          store,
+		Playlists:      playlists,
+		Tracks:         &fakeTrackSources{bySourceID: map[string]*db.Track{"known": {ID: 42}}},
+		Library:        &fakeLibrary{},
+		Selections:     &fakeSourceSelections{},
+		SourceAdapter:  adapter,
+		SourceBindings: &fakeSourceBindingStore{},
+	})
+
+	result, err := service.StartImport(context.Background(), userID, ImportRequest{URL: "https://music.youtube.com/playlist?list=PLresolved"})
+	if err != nil {
+		t.Fatalf("StartImport returned error: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("adapter calls = %d, want 1", adapter.calls)
+	}
+	if len(playlists.created) != 1 {
+		t.Fatalf("created playlists = %d, want 1", len(playlists.created))
+	}
+	// No custom name was supplied, so the resolved source title is the name.
+	if got := playlists.created[0].Name; got != "Resolved Source Title" {
+		t.Fatalf("playlist name = %q, want the resolved source title", got)
+	}
+	if result.Job.PlaylistID != playlists.created[0].ID {
+		t.Fatalf("job playlist ID = %d, want the created playlist %d", result.Job.PlaylistID, playlists.created[0].ID)
+	}
+	if !result.Job.SourceTitle.Valid || result.Job.SourceTitle.String != "Resolved Source Title" {
+		t.Fatalf("job source title = %+v, want the resolved title", result.Job.SourceTitle)
+	}
+}
+
+func TestStartImportCustomNameOutranksResolvedSourceTitle(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	playlists := &fakePlaylists{}
+	service := NewService(Config{
+		Store:      newFakeStore(),
+		Playlists:  playlists,
+		Tracks:     &fakeTrackSources{bySourceID: map[string]*db.Track{"known": {ID: 42}}},
+		Library:    &fakeLibrary{},
+		Selections: &fakeSourceSelections{},
+		SourceAdapter: &fakeSourceAdapter{snapshot: playlistsync.Snapshot{
+			Source:   playlistsync.Source{Provider: "youtube", PlaylistID: "PLresolved", CanonicalURL: "https://www.youtube.com/playlist?list=PLresolved", Metadata: playlistsync.SourceMetadata{Title: "Resolved Source Title"}},
+			Complete: true,
+			Entries:  []playlistsync.Entry{{StableID: "known", SourceURL: "https://www.youtube.com/watch?v=known"}},
+		}},
+		SourceBindings: &fakeSourceBindingStore{},
+	})
+
+	result, err := service.StartImport(context.Background(), userID, ImportRequest{URL: "https://music.youtube.com/playlist?list=PLresolved", Name: "  My Custom Name  "})
+	if err != nil {
+		t.Fatalf("StartImport returned error: %v", err)
+	}
+	if len(playlists.created) != 1 {
+		t.Fatalf("created playlists = %d, want 1", len(playlists.created))
+	}
+	// The user's name is authoritative: the source title is recorded on the job
+	// but must not replace what the user typed.
+	if got := playlists.created[0].Name; got != "My Custom Name" {
+		t.Fatalf("playlist name = %q, want the custom name", got)
+	}
+	if !result.Job.SourceTitle.Valid || result.Job.SourceTitle.String != "Resolved Source Title" {
+		t.Fatalf("job source title = %+v, want the resolved title recorded alongside the custom name", result.Job.SourceTitle)
+	}
+}
+
+// A deterministically bad source URL (not a playlist URL at all, or a snapshot
+// whose identity does not match the request) can never succeed on retry, so it
+// must not be reported as a retryable provider failure. Before this split, the
+// API told the user to retry a request that could never work.
+func TestStartImportClassifiesDeterministicSourceRejectionAsInvalidURL(t *testing.T) {
+	store := newFakeStore()
+	playlists := &fakePlaylists{}
+	service := NewService(Config{
+		Store:          store,
+		Playlists:      playlists,
+		SourceAdapter:  &fakeSourceAdapter{err: fmt.Errorf("%w: YouTube playlist ID is missing", playlistsync.ErrInvalidSnapshot)},
+		SourceBindings: &fakeSourceBindingStore{},
+	})
+
+	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/watch?v=notaplaylist"})
+	if !errors.Is(err, ErrInvalidURL) {
+		t.Fatalf("StartImport error = %v, want ErrInvalidURL", err)
+	}
+	if errors.Is(err, ErrSourceResolution) {
+		t.Fatalf("StartImport error = %v, must not also classify as retryable ErrSourceResolution", err)
+	}
+	if len(playlists.created) != 0 || len(store.jobs) != 0 {
+		t.Fatalf("side effects after a deterministic rejection: playlists=%d jobs=%d, want 0/0", len(playlists.created), len(store.jobs))
+	}
+}
+
+// A provider-side failure is the retryable case: the same request can succeed
+// later, so it must not be flattened into ErrInvalidURL.
+func TestStartImportClassifiesProviderFailureAsRetryable(t *testing.T) {
+	service := NewService(Config{
+		Store:          newFakeStore(),
+		Playlists:      &fakePlaylists{},
+		SourceAdapter:  &fakeSourceAdapter{err: fmt.Errorf("%w: provider unavailable", playlistsync.ErrIncompleteSnapshot)},
+		SourceBindings: &fakeSourceBindingStore{},
+	})
+
+	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if !errors.Is(err, ErrSourceResolution) {
+		t.Fatalf("StartImport error = %v, want ErrSourceResolution", err)
+	}
+	if errors.Is(err, ErrInvalidURL) {
+		t.Fatalf("StartImport error = %v, must not classify a provider failure as an invalid URL", err)
+	}
+}
+
+func TestStartImportResolutionFailureLeavesNoOrphanPlaylist(t *testing.T) {
+	// The orphan-playlist regression is asserted against the shared resolution
+	// failure table in TestStartImportResolvedSnapshotFailurePersistsNothing.
+	// This case covers the enumerator path, whose failure returns before any
+	// local row exists and must still be classified as retryable rather than
+	// as a deterministic rejection.
+	store := newFakeStore()
+	playlists := &fakePlaylists{}
+	bindingStore := &fakeSourceBindingStore{}
+	service := NewService(Config{
+		Store:          store,
+		Playlists:      playlists,
+		SourceAdapter:  &fakeSourceAdapter{err: errors.New("provider unavailable")},
+		SourceBindings: bindingStore,
+		Downloader:     &fakeDownloader{},
+	})
+
+	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if err == nil {
+		t.Fatal("StartImport succeeded, want a resolution failure")
+	}
+	// Retryable and actionable: callers branch on this sentinel.
+	if !errors.Is(err, ErrSourceResolution) {
+		t.Fatalf("StartImport error = %v, want ErrSourceResolution", err)
+	}
+	if len(playlists.created) != 0 || len(playlists.deleted) != 0 {
+		t.Fatalf("orphan playlist state: created=%d deleted=%d, want 0/0", len(playlists.created), len(playlists.deleted))
+	}
+	if len(store.jobs) != 0 || len(store.items) != 0 || bindingStore.upsertCalls != 0 {
+		t.Fatalf("side effects after resolution failure: jobs=%d items=%d binding upserts=%d, want 0/0/0", len(store.jobs), len(store.items), bindingStore.upsertCalls)
+	}
+}
+
+// A resolution failure must be distinguishable from a generic enumeration
+// failure so the API can answer with a retryable status instead of a bare 500.
+func TestStartImportEnumeratorResolutionFailureIsRetryable(t *testing.T) {
+	store := newFakeStore()
+	playlists := &fakePlaylists{}
+	service := NewService(Config{
+		Store:      store,
+		Playlists:  playlists,
+		Enumerator: &fakeEnumerator{err: errors.New("yt-dlp is not installed")},
+	})
+
+	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if !errors.Is(err, ErrSourceResolution) {
+		t.Fatalf("StartImport error = %v, want ErrSourceResolution", err)
+	}
+	if !strings.Contains(err.Error(), "yt-dlp is not installed") {
+		t.Fatalf("StartImport error = %v, want the underlying cause preserved", err)
+	}
+	if len(playlists.created) != 0 || len(store.jobs) != 0 {
+		t.Fatalf("side effects after enumerate failure: playlists=%d jobs=%d, want 0/0", len(playlists.created), len(store.jobs))
+	}
+}
+
+// Provisioning that fails after the playlist exists must not strand an empty
+// playlist the user never asked for.
+func TestStartImportRollsBackPlaylistWhenLaterProvisioningFails(t *testing.T) {
+	tests := []struct {
+		name          string
+		bindingStore  *fakeSourceBindingStore
+		store         *fakeStore
+		wantErrSubstr string
+	}{
+		{name: "binding reservation fails", bindingStore: &fakeSourceBindingStore{upsertErr: errors.New("binding reservation failed")}, wantErrSubstr: "reserve playlist source binding"},
+		{name: "job creation fails", bindingStore: &fakeSourceBindingStore{}, store: func() *fakeStore {
+			s := newFakeStore()
+			s.createJobErr = errors.New("insert import job failed")
+			return s
+		}(), wantErrSubstr: "create playlist import job"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := tt.store
+			if store == nil {
+				store = newFakeStore()
+			}
+			playlists := &fakePlaylists{}
+			service := NewService(Config{
+				Store:      store,
+				Playlists:  playlists,
+				Tracks:     &fakeTrackSources{bySourceID: map[string]*db.Track{}},
+				Selections: &fakeSourceSelections{},
+				Downloader: &fakeDownloader{},
+				SourceAdapter: &fakeSourceAdapter{snapshot: playlistsync.Snapshot{
+					Source:   playlistsync.Source{Provider: "youtube", PlaylistID: "PLfixture", CanonicalURL: "https://www.youtube.com/playlist?list=PLfixture"},
+					Complete: true,
+					Entries:  []playlistsync.Entry{{StableID: "entry", SourceURL: "https://www.youtube.com/watch?v=entry"}},
+				}},
+				SourceBindings: tt.bindingStore,
+			})
+
+			_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErrSubstr) {
+				t.Fatalf("StartImport error = %v, want %q", err, tt.wantErrSubstr)
+			}
+			if len(playlists.created) != 1 {
+				t.Fatalf("created playlists = %d, want 1", len(playlists.created))
+			}
+			if len(playlists.deleted) != 1 || playlists.deleted[0] != playlists.created[0].ID {
+				t.Fatalf("playlist rollback = %v, want the created playlist %d deleted", playlists.deleted, playlists.created[0].ID)
+			}
+		})
+	}
+}
+
+// Import-into-existing keeps its own contract: the target playlist is owned by
+// the caller, so it is never created and never rolled back.
+func TestStartImportIntoExistingPlaylistDoesNotCreateOrRollBack(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	existingID := int64(777)
+	playlists := &fakePlaylists{}
+	bindingStore := &fakeSourceBindingStore{upsertErr: errors.New("binding reservation failed")}
+	service := NewService(Config{
+		Store:          newFakeStore(),
+		Playlists:      playlists,
+		Tracks:         &fakeTrackSources{bySourceID: map[string]*db.Track{}},
+		Selections:     &fakeSourceSelections{},
+		Downloader:     &fakeDownloader{},
+		SourceAdapter:  &fakeSourceAdapter{snapshot: playlistsync.Snapshot{Source: playlistsync.Source{Provider: "youtube", PlaylistID: "PLfixture", CanonicalURL: "https://www.youtube.com/playlist?list=PLfixture"}, Complete: true, Entries: []playlistsync.Entry{{StableID: "entry", SourceURL: "https://www.youtube.com/watch?v=entry"}}}},
+		SourceBindings: bindingStore,
+	})
+
+	_, err := service.StartImport(context.Background(), userID, ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture", PlaylistID: &existingID})
+	if err == nil || !strings.Contains(err.Error(), "reserve playlist source binding") {
+		t.Fatalf("StartImport error = %v, want binding reservation failure", err)
+	}
+	if len(playlists.created) != 0 || len(playlists.deleted) != 0 {
+		t.Fatalf("existing-playlist import created/deleted playlists: created=%d deleted=%d, want 0/0", len(playlists.created), len(playlists.deleted))
+	}
+}
+
+// A foreign playlist must be rejected before the provider is contacted.
+func TestStartImportIntoForeignPlaylistRejectsBeforeResolving(t *testing.T) {
+	foreignID := int64(888)
+	adapter := &fakeSourceAdapter{snapshot: playlistsync.Snapshot{Complete: true}}
+	playlists := &fakePlaylists{ownedBy: uuid.New()}
+	service := NewService(Config{Store: newFakeStore(), Playlists: playlists, SourceAdapter: adapter, SourceBindings: &fakeSourceBindingStore{}})
+
+	_, err := service.StartImport(context.Background(), uuid.MustParse("11111111-1111-1111-1111-111111111111"), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture", PlaylistID: &foreignID})
+	if !errors.Is(err, db.ErrPlaylistNotOwned) {
+		t.Fatalf("StartImport error = %v, want ErrPlaylistNotOwned", err)
+	}
+	if adapter.calls != 0 {
+		t.Fatalf("adapter calls = %d, want 0: ownership must be checked before provider work", adapter.calls)
+	}
+}
+
+// The legacy enumerator path keeps its established oversized-import contract:
+// the job records the failure rather than the whole request vanishing. Only the
+// ordering against playlist creation changed, so the playlist now exists at
+// that point and the recorded failure is still reachable by the user.
+func TestStartImportEnumeratorLimitFailureStillRecordsFailedJob(t *testing.T) {
+	store := newFakeStore()
+	playlists := &fakePlaylists{}
+	downloader := &fakeDownloader{}
+	service := NewService(Config{
+		Store:      store,
+		Playlists:  playlists,
+		Tracks:     &fakeTrackSources{bySourceID: map[string]*db.Track{}},
+		Downloader: downloader,
+		Enumerator: &fakeEnumerator{entries: []Entry{{SourceID: "1", SourceURL: "https://youtu.be/1"}, {SourceID: "2", SourceURL: "https://youtu.be/2"}}},
+		MaxItems:   1,
+	})
+
+	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("StartImport error = %v, want ErrLimitExceeded", err)
+	}
+	if len(downloader.jobs) != 0 {
+		t.Fatalf("downloads queued despite limit failure: %d", len(downloader.jobs))
+	}
+	if len(store.jobs) != 1 {
+		t.Fatalf("jobs created = %d, want the 1 failed job record", len(store.jobs))
+	}
+	for _, job := range store.jobs {
+		if job.Status != JobStatusFailed || !job.Error.Valid || job.Error.String != ErrLimitExceeded.Error() {
+			t.Fatalf("job = %+v, want failed job recording %q", job, ErrLimitExceeded.Error())
+		}
+	}
+}
+
 func TestStartImportRejectsPlaylistsOverLimitBeforeQueueing(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
@@ -527,6 +844,7 @@ type fakeStore struct {
 	associatedItemCount int
 	markQueuedErrs      []error
 	markQueuedCalls     int
+	createJobErr        error
 }
 
 func newFakeStore() *fakeStore {
@@ -534,6 +852,9 @@ func newFakeStore() *fakeStore {
 }
 
 func (s *fakeStore) CreateJob(_ context.Context, job *ImportJob) error {
+	if s.createJobErr != nil {
+		return s.createJobErr
+	}
 	now := time.Now()
 	job.CreatedAt = now
 	job.UpdatedAt = now
@@ -649,14 +970,31 @@ type fakePlaylists struct {
 		trackID  int64
 		position int
 	}
+	created   []*db.Playlist
+	deleted   []int64
+	createErr error
+	ownedBy   uuid.UUID
 }
 
 func (p *fakePlaylists) Create(_ context.Context, playlist *db.Playlist) error {
+	if p.createErr != nil {
+		return p.createErr
+	}
 	playlist.ID = 1001
+	copy := *playlist
+	p.created = append(p.created, &copy)
+	return nil
+}
+func (p *fakePlaylists) Delete(_ context.Context, id int64) error {
+	p.deleted = append(p.deleted, id)
 	return nil
 }
 func (p *fakePlaylists) GetByID(_ context.Context, id int64) (*db.Playlist, error) {
-	return &db.Playlist{ID: id, UserID: uuid.MustParse("11111111-1111-1111-1111-111111111111")}, nil
+	owner := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	if p.ownedBy != uuid.Nil {
+		owner = p.ownedBy
+	}
+	return &db.Playlist{ID: id, UserID: owner}, nil
 }
 func (p *fakePlaylists) AddTrackAtPosition(_ context.Context, _ int64, trackID int64, position int) error {
 	p.added = append(p.added, struct {
@@ -729,11 +1067,15 @@ func (s *fakeTrustedIngestion) EnqueueTrustedPlaylistDownload(ctx context.Contex
 
 type fakeEnumerator struct {
 	entries []Entry
+	err     error
 	calls   int
 }
 
 func (e *fakeEnumerator) Enumerate(_ context.Context, _ string, _ int) (PlaylistMetadata, []Entry, error) {
 	e.calls++
+	if e.err != nil {
+		return PlaylistMetadata{}, nil, e.err
+	}
 	return PlaylistMetadata{Title: "Fixture"}, e.entries, nil
 }
 
@@ -741,10 +1083,16 @@ type fakeSourceAdapter struct {
 	snapshot playlistsync.Snapshot
 	err      error
 	calls    int
+	// beforeResolve runs at the start of Resolve so a test can assert what
+	// local state exists at the moment the provider is contacted.
+	beforeResolve func()
 }
 
 func (a *fakeSourceAdapter) Resolve(_ context.Context, _ string) (playlistsync.Snapshot, error) {
 	a.calls++
+	if a.beforeResolve != nil {
+		a.beforeResolve()
+	}
 	return a.snapshot, a.err
 }
 

@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../core/storage/offline_database.dart';
 import '../../core/network/connectivity_service.dart';
@@ -14,12 +13,14 @@ import '../../core/commands/command_registry.dart';
 import '../../core/commands/command_widgets.dart';
 import '../../core/services/services.dart' as services;
 import '../../core/services/liked_tracks_state.dart';
+import '../../core/services/playlist_import_service.dart';
 import '../../core/services/playlist_service.dart';
 import '../../shared/models/models.dart';
 import '../../shared/widgets/widgets.dart';
 import '../discovery/screens/album_detail_screen.dart';
 import '../discovery/screens/artist_detail_screen.dart';
 import '../playlists/add_to_playlist.dart';
+import '../playlists/playlist_creation_dialog.dart';
 import 'library_filter_logic.dart';
 import 'liked_songs_screen.dart';
 import 'local_browse_navigation.dart';
@@ -338,6 +339,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
     };
   }
 
+  Future<void> _showCreatePlaylistDialog() async {
+    final messenger = ScaffoldMessenger.of(context);
+    await showPlaylistCreationDialog(
+      context,
+      playlistService: PlaylistService(api: _apiClient),
+      playlistImportService: PlaylistImportService(api: _apiClient),
+      onBlankCreated: (playlist) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Created playlist "${playlist.name}"')),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -350,9 +365,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
             tooltip: 'Liked Songs',
           ),
           IconButton(
-            icon: const Icon(Icons.video_library_outlined),
-            onPressed: () => context.push('/playlists/import'),
-            tooltip: 'Import YouTube playlist',
+            icon: const Icon(Icons.add),
+            onPressed: _showCreatePlaylistDialog,
+            tooltip: 'Create playlist',
           ),
           _buildSortControl(context),
           _buildVerificationFilter(context),
