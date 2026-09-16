@@ -83,6 +83,9 @@ class _DjScreenState extends State<DjScreen> {
   PlaybackState? _playback;
   StreamSubscription<DjPlaybackSignal>? _playbackSubscription;
 
+  /// Serializes deck seeds so two voices never load concurrently.
+  Future<void> _seedChain = Future<void>.value();
+
   /// Last analysis revision already pushed onto the decks. QueueProvider also
   /// notifies for queue/position changes, which must not re-seed anything.
   int _lastAnalysisRevision = -1;
@@ -167,7 +170,19 @@ class _DjScreenState extends State<DjScreen> {
   /// replaced: this is a performance surface, and a track change under a loaded
   /// lane must not silence it (a picked local file, a downloaded track, or the
   /// previous track still under the fader).
-  Future<void> _seedDecksFromPlayback() async {
+  ///
+  /// Calls are serialized through [_seedChain]. Seed loads are awaited per deck
+  /// and the snapshot stream can emit while one is still in flight, so without
+  /// this a second pass would see deck B still empty and load it concurrently —
+  /// two voices' loads overlapping on the one shared audio session, which the
+  /// prototype's voices cannot do.
+  Future<void> _seedDecksFromPlayback() {
+    final next = _seedChain.then((_) => _seedEmptyDecks());
+    _seedChain = next.then((_) {}, onError: (_) {});
+    return next;
+  }
+
+  Future<void> _seedEmptyDecks() async {
     final playback = _playback;
     final session = _session;
     if (!mounted || playback == null || session == null) return;
