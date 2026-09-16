@@ -693,7 +693,19 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// separate Redis edit-queue.
   Future<void> enqueue(Map<String, dynamic> track) async {
     if (queue.isEmpty) {
-      await playQueue([track]);
+      // Route through the bulk manual path rather than playQueue([track]).
+      // playQueue tags everything `context` (it is the context-starting verb),
+      // so a user-initiated "Add to queue" on an empty queue used to land as
+      // ambient listening state and sort behind manual items.
+      //
+      // insertAllIntoQueue prepares the session but does not start transport, so
+      // this must start explicitly: the user asked for this track and nothing
+      // was playing, so the expectation is that it begins. Use PlaybackState.play
+      // (not _queueController.play): play() also advances the transport command
+      // generation, which is the same observable effect a replacement had via
+      // playQueue, and it refreshes an expiring signed URL first.
+      await enqueueAll([track], origin: queueOriginManual);
+      await play();
       return;
     }
     final item = markOrigin(
@@ -758,7 +770,12 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// Starts a fresh queue when nothing is playing.
   Future<void> playNext(Map<String, dynamic> track) async {
     if (queue.isEmpty) {
-      await playQueue([track]);
+      // Same reasoning as [enqueue]: playQueue would tag this `context`, but the
+      // user explicitly asked for this track, so it is manual — and it must
+      // actually start, since nothing was playing. PlaybackState.play also
+      // advances the transport command generation, matching a replacement.
+      await enqueueAll([track], origin: queueOriginManual);
+      await play();
       return;
     }
     final item = markOrigin(

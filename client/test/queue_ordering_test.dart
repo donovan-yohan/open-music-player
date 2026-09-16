@@ -2,7 +2,10 @@ import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/audio/playback_queue_projection.dart';
 import 'package:open_music_player/core/audio/queue_ordering.dart';
+
+import 'support/playback_fixtures.dart';
 
 MediaItem _item(String id, {String? origin}) => MediaItem(
       id: id,
@@ -176,6 +179,57 @@ void main() {
       );
 
       expect(merged.map((item) => item.id), ['b1', 'm1']);
+    });
+  });
+
+  group('queuing while nothing is playing', () {
+    // Reported from the field: "if I queue a song and nothing is playing it will
+    // put it as the first playing song but not actually play it."
+    //
+    // Two separate defects lived here. playQueue is the *context-starting* verb
+    // and tags everything `context`, so an explicit user "Add to queue" on an
+    // empty queue landed as ambient listening state that sorts behind manual
+    // items. And insertAllIntoQueue prepares the session without starting
+    // transport, so nothing actually played.
+    test('a manually queued track is MANUAL even when the queue was empty',
+        () async {
+      final playback = testPlaybackState();
+      addTearDown(() => disposeTestPlaybackState(playback));
+
+      await playback.enqueue(playbackTrackPayload(9001));
+
+      expect(playback.queue, hasLength(1));
+      expect(
+        itemOrigin(playback.queue.first),
+        queueOriginManual,
+        reason: 'a user-initiated add-to-queue is manual regardless of whether '
+            'the queue happened to be empty; tagging it context makes it '
+            'ambient listening state and it sorts behind manual items',
+      );
+    });
+
+    test('queuing on an empty queue actually starts playback', () async {
+      final playback = testPlaybackState();
+      addTearDown(() => disposeTestPlaybackState(playback));
+
+      await playback.enqueue(playbackTrackPayload(9001));
+
+      expect(playback.isPlaying, isTrue);
+      expect(
+        currentTrackFor(playback.snapshot)?.playbackTrackId,
+        '9001',
+        reason: 'the queued track must be the playing track, not just present',
+      );
+    });
+
+    test('play next on an empty queue is manual and starts', () async {
+      final playback = testPlaybackState();
+      addTearDown(() => disposeTestPlaybackState(playback));
+
+      await playback.playNext(playbackTrackPayload(9002));
+
+      expect(itemOrigin(playback.queue.first), queueOriginManual);
+      expect(playback.isPlaying, isTrue);
     });
   });
 }
