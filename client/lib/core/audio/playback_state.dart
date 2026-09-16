@@ -12,6 +12,7 @@ import '../engine/tempo_automation.dart';
 import '../engine/timeline_model.dart';
 import '../../models/mix_plan.dart';
 import '../../models/timeline_clip.dart';
+import '../../models/track.dart' show QueueTrack;
 import '../../models/track_analysis.dart';
 import '../../models/trim_range.dart';
 import '../models/settings_model.dart';
@@ -19,6 +20,7 @@ import 'audio_focus_playback.dart';
 import 'queue_continuation.dart';
 import 'local_audio_artifact_resolver.dart';
 import 'playback_media_item_source.dart';
+import 'playback_queue_projection.dart';
 import 'playback_session.dart';
 import 'playback_context.dart';
 import 'playback_source_resolver.dart';
@@ -117,6 +119,44 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   bool get hasTrack => currentItem != null;
   String? get playbackError => _playbackError;
   bool get isResolvingSignedUrl => _isResolvingSignedUrl;
+
+  /// Projects [DjPlaybackSignal] from a snapshot the caller already holds.
+  ///
+  /// Pure and cheap: two cue lookups and the queue length. The next cue comes
+  /// from [nextQueueIndexInPlayOrder], so it is the track that will actually
+  /// play under shuffle rather than the next queue slot.
+  DjPlaybackSignal djPlaybackSignalFor(PlaybackSnapshot snapshot) {
+    final currentIndex = snapshot.currentQueueIndex;
+    final currentCue = currentCueFor(snapshot);
+    final nextCue = currentIndex == null
+        ? null
+        : cueForQueueIndex(
+            snapshot,
+            nextQueueIndexInPlayOrder(currentIndex),
+          );
+    return DjPlaybackSignal(
+      currentCueId: currentCue?.cueId,
+      nextCueId: nextCue?.cueId,
+      queueItemCount: queue.length,
+    );
+  }
+
+  /// The playing track as a queue row, or null when nothing is loaded.
+  QueueTrack? currentPlaybackTrack() => currentTrackFor(snapshot);
+
+  /// The queue row that plays after the current one in **play order**, or null
+  /// at the end of the play order.
+  QueueTrack? nextPlaybackTrack() {
+    final current = snapshot.currentQueueIndex;
+    if (current == null) return null;
+    return queueTrackForQueueIndex(
+      snapshot,
+      nextQueueIndexInPlayOrder(current),
+    );
+  }
+
+  /// The numeric backend track id at the tail of the playback queue, or null.
+  int? playbackQueueTailTrackId() => queueTailTrackId(queue);
 
   /// Where the current listening queue was launched from (album, playlist, ...),
   /// or null when the queue was started without a context. Drives the
@@ -666,6 +706,54 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     );
   }
 
+  /// Adds every track in [tracks] to the active listening queue as **manual**
+  /// items, in the order given, skipping tracks already queued. Returns how
+  /// many items were added.
+  ///
+  /// This exists because looping [enqueue] cannot express a bulk manual add.
+  /// [enqueue] on an empty queue falls through to [playQueue], which tags
+  /// everything `context` — so the first track of a bulk add would land with
+  /// the opposite origin to the rest of its own batch, and an "Add to queue"
+  /// would be sorted behind the context tail it was meant to precede
+  /// (PR #448's origin semantics). Here the whole batch is inserted at once, so
+  /// every item carries [origin] and the batch stays contiguous.
+  ///
+  /// Resolution is one batched pass ([PlaybackSourceResolver.resolveQueue]), so
+  /// the batch costs a single signed-URL request rather than one per track, and
+  /// the insert is atomic: a resolution failure adds nothing rather than
+  /// leaving a prefix of the batch queued.
+  ///
+  /// Dedupe is by backend track id against the queue as it is *now*, plus ids
+  /// already claimed inside this batch.
+  Future<int> enqueueAll(
+    List<Map<String, dynamic>> tracks, {
+    String origin = queueOriginManual,
+  }) async {
+    if (tracks.isEmpty) return 0;
+    final claimed = <String>{
+      for (final item in queue)
+        if (item.id.trim().isNotEmpty) item.id.trim(),
+    };
+    final pending = <Map<String, dynamic>>[];
+    for (final track in tracks) {
+      final id = PlaybackSourceResolver.readTrackId(track).toString();
+      if (!claimed.add(id)) continue;
+      pending.add(track);
+    }
+    if (pending.isEmpty) return 0;
+
+    final resolved = await _sourceResolver.resolveQueue(pending);
+    final items = origin == queueOriginContext
+        ? resolved
+        : [for (final item in resolved) markOrigin(item, origin)];
+    if (items.isEmpty) return 0;
+    await _queueController.insertAllIntoQueue(
+      manualEnqueueIndex(queue, currentIndex),
+      items,
+    );
+    return items.length;
+  }
+
   /// Inserts [track] to play immediately after the current item ("Play next").
   /// Starts a fresh queue when nothing is playing.
   Future<void> playNext(Map<String, dynamic> track) async {
@@ -1144,6 +1232,56 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     unawaited(_queueController.dispose());
     super.dispose();
   }
+}
+
+/// The DJ deck's lane signal, projected from one [PlaybackSnapshot].
+///
+/// A value type with `==` so a `Selector` can gate on real change instead of
+/// rebuilding on every position tick: the snapshot loop publishes continuously
+/// while audio plays, and the deck's entry chrome cares about identity, not
+/// position. See ADR 0012 step 3 and `client/test/perf/`.
+@immutable
+class DjPlaybackSignal {
+  const DjPlaybackSignal({
+    required this.currentCueId,
+    required this.nextCueId,
+    required this.queueItemCount,
+  });
+
+  /// Nothing playing and nothing queued.
+  static const DjPlaybackSignal empty = DjPlaybackSignal(
+    currentCueId: null,
+    nextCueId: null,
+    queueItemCount: 0,
+  );
+
+  /// Cue identity of the playing track, or null when nothing is playing.
+  final String? currentCueId;
+
+  /// Cue identity of the track that plays after the current one in **play
+  /// order**, or null at the end of the play order.
+  final String? nextCueId;
+
+  /// How many items the listening queue holds.
+  final int queueItemCount;
+
+  /// Whether the playback queue holds anything at all — the fact an empty-deck
+  /// lane needs before it tells the listener to add a track.
+  bool get hasQueue => queueItemCount > 0;
+
+  @override
+  bool operator ==(Object other) =>
+      other is DjPlaybackSignal &&
+      other.currentCueId == currentCueId &&
+      other.nextCueId == nextCueId &&
+      other.queueItemCount == queueItemCount;
+
+  @override
+  int get hashCode => Object.hash(currentCueId, nextCueId, queueItemCount);
+
+  @override
+  String toString() => 'DjPlaybackSignal(current: $currentCueId, '
+      'next: $nextCueId, queue: $queueItemCount)';
 }
 
 /// The listening queue captured before a seam preview takes over playback.

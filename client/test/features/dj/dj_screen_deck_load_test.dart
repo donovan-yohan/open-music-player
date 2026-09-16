@@ -8,13 +8,9 @@ import 'package:open_music_player/features/dj/dj_screen.dart';
 import 'package:open_music_player/features/dj/engine/deck_controller.dart';
 import 'package:open_music_player/features/dj/models/dj_deck_state.dart';
 import 'package:open_music_player/features/dj/providers/dj_session_provider.dart';
-import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/track.dart';
-import 'package:open_music_player/models/track_analysis.dart';
-import 'package:open_music_player/providers/queue_provider.dart';
-import 'package:provider/provider.dart';
 
-import '../../support/mock_dio_client.dart';
+import '../../support/playback_fixtures.dart';
 
 void main() {
   // Pixel 10 Pro class landscape: 2856 x 1280 at dpr 3 -> 952 x 426.7 dp.
@@ -62,13 +58,10 @@ void main() {
   });
 
   testWidgets(
-      'deck entry loads the queue once and does not prompt for a '
+      'deck entry seeds from playback truth and does not prompt for a '
       'local file', (tester) async {
     pinViewport(tester);
-    final api = _CountingQueueApiClient(
-      QueueState(tracks: [_track('4242')], currentIndex: 0),
-    );
-    final queue = QueueProvider(api);
+    final playback = testPlaybackStateForRows([_track('4242')]);
     final session = DjSessionProvider(
       deckA: _deck(DjDeckId.a, const _LocalResolver()),
       deckB: _deck(DjDeckId.b, const _LocalResolver()),
@@ -76,8 +69,8 @@ void main() {
     var pickerCalls = 0;
 
     await tester.pumpWidget(
-      ChangeNotifierProvider<QueueProvider>.value(
-        value: queue,
+      djPlaybackProviders(
+        playback: playback,
         child: MaterialApp(
           home: DjScreen(
             session: session,
@@ -93,7 +86,6 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(api.getQueueCalls, 1);
     expect(pickerCalls, 0);
     expect(find.text('Load local audio file'), findsNothing);
     expect(session.deckA.isLoaded, isTrue);
@@ -105,16 +97,14 @@ void main() {
     // The session is built inside the test body, so its 30 Hz snapshot timer
     // is a FakeTimer that must be cancelled before the binding's invariants.
     session.dispose();
-    // QueueProvider's analysis retry timer is a FakeTimer too.
-    queue.dispose();
+    await disposeTestPlaybackState(playback);
   });
 
   testWidgets(
       'a genuinely empty queue renders the inline load affordance '
       'instead of a modal', (tester) async {
     pinViewport(tester);
-    final api = _CountingQueueApiClient(QueueState.empty());
-    final queue = QueueProvider(api);
+    final playback = testPlaybackStateForRows(const []);
     final session = DjSessionProvider(
       deckA: _deck(DjDeckId.a, const _LocalResolver()),
       deckB: _deck(DjDeckId.b, const _LocalResolver()),
@@ -122,8 +112,8 @@ void main() {
     var pickerCalls = 0;
 
     await tester.pumpWidget(
-      ChangeNotifierProvider<QueueProvider>.value(
-        value: queue,
+      djPlaybackProviders(
+        playback: playback,
         child: MaterialApp(
           home: DjScreen(
             session: session,
@@ -145,7 +135,6 @@ void main() {
 
     // #414: an empty queue is answered in the lane, not by a modal that
     // ambushes a session that may already be playing.
-    expect(api.getQueueCalls, 1);
     expect(pickerCalls, 0);
     expect(find.text('Load local audio file'), findsNothing);
     expect(find.byKey(const ValueKey('dj_deck_load_file_a')), findsOneWidget);
@@ -162,7 +151,7 @@ void main() {
     // The session is built inside the test body, so its 30 Hz snapshot timer
     // is a FakeTimer that must be cancelled before the binding's invariants.
     session.dispose();
-    queue.dispose();
+    await disposeTestPlaybackState(playback);
   });
 
   // #414 review: the lane draws this affordance on whichever deck is empty, and
@@ -173,11 +162,7 @@ void main() {
   testWidgets("deck B's load affordance loads deck B and leaves deck A playing",
       (tester) async {
     pinViewport(tester);
-    final queue = QueueProvider(
-      _CountingQueueApiClient(
-        QueueState(tracks: [_track('11')], currentIndex: 0),
-      ),
-    );
+    final playback = testPlaybackStateForRows([_track('11')]);
     final session = DjSessionProvider(
       deckA: _deck(DjDeckId.a, const _LocalResolver()),
       deckB: _deck(DjDeckId.b, const _LocalResolver()),
@@ -185,8 +170,8 @@ void main() {
     var pickerCalls = 0;
 
     await tester.pumpWidget(
-      ChangeNotifierProvider<QueueProvider>.value(
-        value: queue,
+      djPlaybackProviders(
+        playback: playback,
         child: MaterialApp(
           home: DjScreen(
             session: session,
@@ -236,7 +221,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 20));
     session.dispose();
-    queue.dispose();
+    await disposeTestPlaybackState(playback);
   });
 }
 
@@ -258,22 +243,6 @@ DeckController _deck(DjDeckId deckId, EngineAudioSourceResolver resolver) =>
       resolver: resolver,
       slew: const Duration(milliseconds: 1),
     );
-
-class _CountingQueueApiClient extends EmptyQueueApiClient {
-  _CountingQueueApiClient(this.state);
-  final QueueState state;
-  int getQueueCalls = 0;
-
-  @override
-  Future<QueueState> getQueue() async {
-    getQueueCalls++;
-    return state;
-  }
-
-  @override
-  Future<TrackAnalysis> getTrackAnalysis(int trackId) async =>
-      TrackAnalysis.fromJson(status: 'analyzed', summary: const {});
-}
 
 class _LocalResolver implements EngineAudioSourceResolver {
   const _LocalResolver();

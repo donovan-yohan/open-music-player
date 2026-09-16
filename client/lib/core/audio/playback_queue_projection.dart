@@ -92,19 +92,38 @@ QueueTrack playbackTrackForMediaItem(
   );
 }
 
-/// The cue for the snapshot's current queue position, or null when there is no
-/// current position or no cue describes it.
+/// The cue for [queueIndex], or null when the index is null or no cue
+/// describes it.
 ///
 /// `PlaybackSnapshot.cues` is built by `CueTimeline.fromSession` in **play
-/// order**, so `cues[currentQueueIndex]` is wrong the moment shuffle is on.
-/// Current is resolved by matching [PlaybackCue.queueIndex] instead.
-PlaybackCue? currentCueFor(PlaybackSnapshot snapshot) {
-  final index = snapshot.currentQueueIndex;
-  if (index == null) return null;
+/// order**, so `cues[queueIndex]` is wrong the moment shuffle is on. A queue
+/// index is resolved by matching [PlaybackCue.queueIndex] instead.
+PlaybackCue? cueForQueueIndex(PlaybackSnapshot snapshot, int? queueIndex) {
+  if (queueIndex == null) return null;
   for (final cue in snapshot.cues) {
-    if (cue.queueIndex == index) return cue;
+    if (cue.queueIndex == queueIndex) return cue;
   }
   return null;
+}
+
+/// The cue for the snapshot's current queue position, or null when there is no
+/// current position or no cue describes it.
+PlaybackCue? currentCueFor(PlaybackSnapshot snapshot) =>
+    cueForQueueIndex(snapshot, snapshot.currentQueueIndex);
+
+/// The queue row sitting at [queueIndex] as the model playback surfaces pass
+/// around, or null when no cue describes it.
+///
+/// Reads the item and its queue item id from the *same* cue. Taking the media
+/// item from somewhere else would pair one row's bytes with another row's
+/// identity during a crossfade, when two cues are sounding at once.
+QueueTrack? queueTrackForQueueIndex(
+  PlaybackSnapshot snapshot,
+  int? queueIndex,
+) {
+  final cue = cueForQueueIndex(snapshot, queueIndex);
+  if (cue == null) return null;
+  return playbackTrackForMediaItem(cue.mediaItem, queueItemId: cue.queueItemId);
 }
 
 /// The playing track as the queue-row model, or null when nothing is loaded.
@@ -114,12 +133,26 @@ PlaybackCue? currentCueFor(PlaybackSnapshot snapshot) {
 /// mutation and the next cue rebuild. Track ids are not used as the fallback
 /// key because they are not unique across duplicate queued occurrences.
 QueueTrack? currentTrackFor(PlaybackSnapshot snapshot) {
+  final byIndex = queueTrackForQueueIndex(snapshot, snapshot.currentQueueIndex);
+  if (byIndex != null) return byIndex;
   final item = snapshot.currentMediaItem;
   if (item == null) return null;
-  final cue = currentCueFor(snapshot);
   return playbackTrackForMediaItem(
     item,
-    queueItemId: cue?.queueItemId ??
-        'unresolved_${snapshot.currentQueueIndex}_${item.id}',
+    queueItemId: 'unresolved_${snapshot.currentQueueIndex}_${item.id}',
   );
+}
+
+/// The numeric backend track id at the tail of the *playback* queue, or null
+/// when the queue is empty or its tail carries no numeric id.
+///
+/// The DJ session's harmonic anchor reads this (ADR 0008). The anchor is a
+/// client-asserted queue-tail fact, and the queue it describes is the listening
+/// queue, not the import queue whose `currentPosition` never advances
+/// (ADR 0012). A tail item with no numeric id — a local file, a source-backed
+/// row — anchors nothing rather than anchoring a fabricated id.
+int? queueTailTrackId(List<MediaItem> queue) {
+  if (queue.isEmpty) return null;
+  final parsed = int.tryParse(queue.last.id.trim());
+  return parsed != null && parsed > 0 ? parsed : null;
 }

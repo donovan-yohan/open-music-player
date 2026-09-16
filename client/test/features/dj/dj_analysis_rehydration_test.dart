@@ -15,9 +15,9 @@ import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
-import 'package:provider/provider.dart';
 
 import '../../support/dj_analysis_fixtures.dart';
+import '../../support/playback_fixtures.dart';
 import '../../support/dj_viewport_fixtures.dart';
 
 TimelineWaveformPainter lanePainter(WidgetTester tester, DjDeckId deck) =>
@@ -191,11 +191,16 @@ void main() {
     });
   });
 
-  group('DjScreen re-seeds from QueueProvider.analysisRevision (#410)', () {
+  group('DjScreen re-seeds from hydrated analysis (#410)', () {
     testWidgets('the lane gains frames once the per-track analysis lands',
         (tester) async {
       final api = _HydratingAnalysisApi();
       final queue = QueueProvider(api);
+      // The deck seeds from playback truth (#453); QueueProvider is still the
+      // client's analysis cache, which is what this group is about.
+      final playback = testPlaybackStateForRows([
+        djAnalysisTrack(analysis: djCompactAnalysis()),
+      ]);
       final voices = <CountingFakeVoice>[];
       final session = DjSessionProvider(
         deckA: DeckController(
@@ -212,8 +217,9 @@ void main() {
 
       landscapeReference.apply(tester);
       await tester.pumpWidget(
-        ChangeNotifierProvider<QueueProvider>.value(
-          value: queue,
+        djPlaybackProviders(
+          playback: playback,
+          importQueue: queue,
           child: MaterialApp(
             home: DjScreen(session: session, filePicker: () async => null),
           ),
@@ -254,18 +260,23 @@ void main() {
       expect(tester.takeException(), isNull);
 
       await djRetireSession(tester, session, queue: queue);
+      await disposeTestPlaybackState(playback);
     });
 
     testWidgets('a notify with an unchanged revision does not re-seed',
         (tester) async {
       final api = _HydratingAnalysisApi()..autoComplete = true;
       final queue = QueueProvider(api);
+      final playback = testPlaybackStateForRows([
+        djAnalysisTrack(analysis: djCompactAnalysis()),
+      ]);
       final session = _SpySession();
 
       landscapeReference.apply(tester);
       await tester.pumpWidget(
-        ChangeNotifierProvider<QueueProvider>.value(
-          value: queue,
+        djPlaybackProviders(
+          playback: playback,
+          importQueue: queue,
           child: MaterialApp(
             home: DjScreen(session: session, filePicker: () async => null),
           ),
@@ -292,6 +303,7 @@ void main() {
 
       session.dispose();
       queue.dispose();
+      await disposeTestPlaybackState(playback);
     });
   });
 }

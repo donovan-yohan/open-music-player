@@ -9,6 +9,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app/theme.dart';
 import '../../core/api/api_client.dart';
+import '../../core/audio/playback_state.dart';
+import '../../models/playback_payload.dart';
 import '../../providers/queue_provider.dart';
 import '../dj/dj_system_overlay_style.dart';
 import 'dj_session_filters.dart';
@@ -117,14 +119,26 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   bool get _isPinBusy =>
       _pendingPinBlockId != null || _loadingBlockIds.isNotEmpty;
 
-  /// The queue provider this screen observes for its anchor. QueueProvider is
-  /// hydrated lazily by whichever surface loads it first, so a cold start into
-  /// the DJ session reads an empty snapshot and omits anchorTrackId entirely.
-  QueueProvider? _queue;
+  /// The playback session this screen reads its harmonic anchor from.
+  ///
+  /// The anchor is a client-asserted *queue-tail* track id (ADR 0008), and the
+  /// queue it describes is the listening queue. It used to read the import
+  /// queue, whose `currentPosition` never advances (ADR 0012) — that object
+  /// cannot even answer where its own tail is in playback terms. Null in a
+  /// narrow harness that mounts this screen without app playback, and an
+  /// anchor-less request is the correct answer there.
+  PlaybackState? _playback;
 
-  /// True once a non-empty queue snapshot has been seen. Until then, the
-  /// first snapshot to arrive re-issues the lineup load so the anchor is
-  /// actually sent — this screen still never fetches the queue itself.
+  /// Subscription to the playback queue's identity, distinct on the tail id.
+  ///
+  /// Deliberately not a position stream: this screen reloads its lineup when
+  /// the anchor *settles*, which is an identity event. Distincting on the tail
+  /// id means a 33 Hz position loop cannot drive lineup fetches.
+  StreamSubscription<int?>? _anchorSubscription;
+
+  /// True once a non-empty playback queue has been seen. Until then, the first
+  /// tail to arrive re-issues the lineup load so the anchor is actually sent —
+  /// this screen still never fetches a queue itself.
   bool _anchorSettled = false;
 
   /// True while this screen is the one mutating the queue. Its own enqueues
@@ -139,28 +153,31 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
     _randomSeed = widget.randomSeed ?? () => Random().nextInt(1 << 31);
     _clock = widget.clock ?? DateTime.now;
     _requestController = TextEditingController();
-    final queue = context.read<QueueProvider>();
-    _queue = queue;
-    _anchorSettled = queue.queue.tracks.isNotEmpty;
-    queue.addListener(_onQueueChanged);
+    final playback = context.read<PlaybackState?>();
+    _playback = playback;
+    _anchorSettled = playback?.playbackQueueTailTrackId() != null;
+    _anchorSubscription = playback?.snapshotStream
+        .map((_) => playback.playbackQueueTailTrackId())
+        .distinct()
+        .listen(_onAnchorChanged);
     _loadAll();
     _maybeShowCoachMark();
   }
 
   @override
   void dispose() {
-    _queue?.removeListener(_onQueueChanged);
+    unawaited(_anchorSubscription?.cancel() ?? Future<void>.value());
     _requestController.dispose();
     _requestFocusNode.dispose();
     super.dispose();
   }
 
-  /// Reloads the lineup the first time the queue hydrates, so a session opened
-  /// before the queue snapshot existed still gets a queue-tail-anchored lineup.
+  /// Reloads the lineup the first time the playback queue's tail appears, so a
+  /// session opened before anything was queued still gets an anchored lineup.
   /// Fires at most once, and never for this screen's own queue mutations.
-  void _onQueueChanged() {
+  void _onAnchorChanged(int? tailTrackId) {
     if (!mounted || _anchorSettled) return;
-    if (_queue?.queue.tracks.isEmpty ?? true) return;
+    if (tailTrackId == null) return;
     _anchorSettled = true;
     if (_mutatingQueue) return;
     _loadAll();
@@ -182,16 +199,13 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
       _loadedAllOnce &&
       _blocks.every((block) => block.tracks.isEmpty);
 
-  /// Last enqueued track id from the queue snapshot this screen already has.
+  /// Last enqueued track id from the playback queue's tail.
+  ///
   /// The DJ session surface stays a discovery surface: it never triggers a
-  /// queue fetch and never becomes a queue authority.
-  int? _queueTailTrackId() {
-    if (!mounted) return null;
-    final tracks = context.read<QueueProvider>().queue.tracks;
-    if (tracks.isEmpty) return null;
-    final tail = tracks.last;
-    return int.tryParse(tail.playbackTrackId ?? tail.id);
-  }
+  /// queue fetch and never becomes a queue authority. It reads the tail of the
+  /// *listening* queue, which is the queue the anchor describes (ADR 0008,
+  /// ADR 0012).
+  int? _queueTailTrackId() => _playback?.playbackQueueTailTrackId();
 
   DjLineupRequest _requestForFilters({
     String? block,
@@ -428,54 +442,70 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   }
 
   /// Enqueues every track across all loaded blocks in visual order (block
-  /// order, card order within each block) through the canonical QueueProvider
-  /// path. Tracks already in the queue — including duplicates within the
-  /// lineup itself — are skipped, matching append (playNext: false) semantics.
+  /// order, card order within each block) onto the **playback** queue, tagged
+  /// `manual`. Tracks already queued — including duplicates within the lineup
+  /// itself — are skipped.
+  ///
+  /// The playlist POSTs used to go to the import queue, whose only reader was
+  /// the deck seeding from it. Retargeting the deck orphans that, so the
+  /// session enqueues where playback actually happens (#453).
   Future<void> _enqueueSession() async {
     if (_isAnySectionLoading) return;
-    final queue = context.read<QueueProvider>();
     _mutatingQueue = true;
     try {
-      await _enqueueSessionThrough(queue);
+      await _enqueueSessionThroughPlayback();
     } finally {
       _mutatingQueue = false;
     }
   }
 
-  Future<void> _enqueueSessionThrough(QueueProvider queue) async {
-    // Seed the provider's view of the queue so pre-existing tracks aren't
-    // re-added; a failed load falls back to an empty snapshot (append-only).
-    await queue.loadQueue();
-    final queuedIds = queue.queue.tracks
-        .map((track) => track.playbackTrackId ?? track.id)
-        .whereType<String>()
-        .toSet();
+  Future<void> _enqueueSessionThroughPlayback() async {
+    final playback = context.read<PlaybackState?>();
+    if (playback == null) return;
 
     final pending = <DjLineupTrack>[];
+    final claimed = <String>{};
     for (final block in _visibleBlocks) {
       for (final track in block.tracks) {
         final trackId = track.id.toString();
-        if (!queuedIds.add(trackId)) continue; // already queued or duplicate
+        if (!claimed.add(trackId)) continue; // duplicate within the lineup
         pending.add(track);
       }
     }
-
-    var enqueued = 0;
-    for (final track in pending) {
-      await queue.addToQueue([track.id.toString()], playNext: false);
-      if (queue.error != null) break; // transport/5xx: stop and report partial
-      enqueued++;
+    if (pending.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Everything here is already queued')),
+        );
+      }
+      return;
     }
 
+    // One bulk manual add: every track in the batch carries the same origin, so
+    // "Add to queue" ordering (manual before the context tail) holds for the
+    // whole set. Looping `enqueue` would start a fresh context queue for track
+    // 1 and mis-tag it (#448).
+    final enqueued = await playback.enqueueAll([
+      for (final track in pending)
+        buildPlaybackPayload(
+          id: track.id,
+          title: track.title,
+          artist: track.artist,
+          album: track.album,
+          duration: Duration(milliseconds: track.durationMs ?? 0),
+          artworkUrl: track.artworkUrl,
+        ),
+    ]);
     if (!mounted) return;
+
     final messenger = ScaffoldMessenger.of(context);
-    if (pending.isEmpty) {
+    if (enqueued == 0) {
       messenger.showSnackBar(
         const SnackBar(content: Text('Everything here is already queued')),
       );
       return;
     }
-    if (queue.error != null || enqueued < pending.length) {
+    if (enqueued < pending.length) {
       messenger.showSnackBar(
         SnackBar(content: Text('Queued $enqueued of ${pending.length} tracks')),
       );
@@ -487,23 +517,38 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   }
 
   Future<void> _enqueue(DjLineupTrack track, {bool playNext = false}) async {
-    final queue = context.read<QueueProvider>();
+    final playback = context.read<PlaybackState?>();
+    if (playback == null) return;
     _mutatingQueue = true;
     try {
-      await queue.addToQueue([track.id.toString()], playNext: playNext);
+      final payload = buildPlaybackPayload(
+        id: track.id,
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        duration: Duration(milliseconds: track.durationMs ?? 0),
+        artworkUrl: track.artworkUrl,
+      );
+      final wasEmpty = playback.queue.isEmpty;
+      // An empty queue goes through the bulk add even for one track: `enqueue`
+      // and `playNext` both fall through to `playQueue` there, which tags the
+      // item `context` — the item that starts the queue is the user's own pick,
+      // so it is `manual` (#448, #453). Playback still starts, matching what the
+      // single-track path did before.
+      if (wasEmpty) {
+        await playback.enqueueAll([payload]);
+        await playback.play();
+      } else if (playNext) {
+        await playback.playNext(payload);
+      } else {
+        await playback.enqueue(payload);
+      }
     } finally {
       _mutatingQueue = false;
     }
     if (!mounted) return;
 
-    final messenger = ScaffoldMessenger.of(context);
-    if (queue.error != null) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text("Couldn't add that track")),
-      );
-      return;
-    }
-    messenger.showSnackBar(
+    ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(playNext ? 'Playing next' : 'Added to queue'),
       ),

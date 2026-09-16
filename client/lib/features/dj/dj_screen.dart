@@ -67,7 +67,23 @@ class _DjScreenState extends State<DjScreen> {
 
   /// The QueueProvider the seed actually read, pinned so dispose removes the
   /// listener from the same object addListener was called on (#410).
+  ///
+  /// Its remaining job is analysis hydration: waveform peak arrays live on the
+  /// per-track analysis endpoint, and QueueProvider is the client's cache of
+  /// them. It is *not* the deck's source of "what is playing" any more — that
+  /// is the playback queue (ADR 0012).
   QueueProvider? _queue;
+
+  /// The canonical playback session, or null in a narrow harness that mounts
+  /// the deck without app playback. Never watched directly: its snapshot loop
+  /// publishes continuously while audio plays, so the deck subscribes to
+  /// [PlaybackState.snapshotStream] and gates on the distilled
+  /// [DjPlaybackSignal] instead.
+  PlaybackState? _playback;
+  StreamSubscription<DjPlaybackSignal>? _playbackSubscription;
+
+  /// Serializes deck seeds so two voices never load concurrently.
+  Future<void> _seedChain = Future<void>.value();
 
   /// Last analysis revision already pushed onto the decks. QueueProvider also
   /// notifies for queue/position changes, which must not re-seed anything.
@@ -111,38 +127,31 @@ class _DjScreenState extends State<DjScreen> {
       }
       if (!mounted) return;
       final queue = context.read<QueueProvider?>();
-      // Match dj_session_screen.dart:449 / queue_screen.dart:314: a cold deck
-      // entry must see the real queue before deciding it is empty, or it
-      // prompts for a local file over a track that is already playing (#409).
-      // QueueProvider.loadQueue records transport failures in `error` and does
-      // not throw (queue_provider.dart:403-445), so no try/catch here.
-      if (queue != null) await queue.loadQueue();
-      if (!mounted) return;
-      final rawCurrent = queue?.currentTrack;
-      final rawNext =
-          queue?.upNext.isEmpty ?? true ? null : queue!.upNext.first;
-      // Register both visible lanes with QueueProvider's bounded hydration
-      // path before passing their rich analysis snapshots to the session.
-      final current = rawCurrent == null || queue == null
-          ? rawCurrent
-          : queue.trackWithAnalysis(rawCurrent);
-      final next = rawNext == null || queue == null
-          ? rawNext
-          : queue.trackWithAnalysis(rawNext);
-      // No filePicker: an empty queue is answered by an inline affordance in
-      // the deck lane, not by a modal that ambushes a playing session (#414).
-      await _session!.seed(current: current, next: next);
-      // Resolve stem availability for whatever actually landed on deck A. A
-      // local-file fallback load has no library track id, so the panel says so
-      // rather than offering a separation that cannot be queued.
-      await _stems?.bindTrack(_libraryTrackId(_session!.deckA.trackRef));
+      final playback = context.read<PlaybackState?>();
+      _queue = queue;
+      _playback = playback;
+      // The deck reads the *playback* queue, not the import queue whose
+      // `currentPosition` never advances (#453). It is subscribed rather than
+      // read once: `main.dart` restores the saved queue with
+      // `unawaited(restore())`, so at first frame the playback queue can still
+      // be empty and a one-shot read would reopen #409.
+      //
+      // Distinct on the distilled signal, so the 33 Hz position loop cannot
+      // drive re-seeds or widget work: only a real change of playing/next cue
+      // or queue length gets through.
+      _playbackSubscription = playback?.snapshotStream
+          .map(playback.djPlaybackSignalFor)
+          .distinct()
+          .listen(_onPlaybackSignal);
+      // A queue that already hydrated still seeds immediately, so the deck is
+      // not left waiting for the next cue change.
+      await _seedDecksFromPlayback();
       if (!mounted) return;
       // Attached only after the seed: a listener that fired mid-seed would race
       // DeckController.load. Waveform peak arrays are never in the queue
       // collection payload (queue_provider.dart:197-199), so the deck's first
       // read is always a cold cache and this subscription is the only thing
       // that lets the hydrated arrays reach the lane (#410).
-      _queue = queue;
       queue?.addListener(_onQueueAnalysisChanged);
       // A hydration that completed while the seed above was awaiting fired
       // before this listener existed, and recording the current revision as
@@ -153,7 +162,61 @@ class _DjScreenState extends State<DjScreen> {
     });
   }
 
-  /// Re-seeds both decks from QueueProvider when hydrated analysis lands.
+  /// Seeds whichever deck is still empty from the playing track and its
+  /// play-order successor.
+  ///
+  /// Only empty decks are filled. A deck already holding audio is never
+  /// replaced: this is a performance surface, and a track change under a loaded
+  /// lane must not silence it (a picked local file, a downloaded track, or the
+  /// previous track still under the fader).
+  ///
+  /// Calls are serialized through [_seedChain]. Seed loads are awaited per deck
+  /// and the snapshot stream can emit while one is still in flight, so without
+  /// this a second pass would see deck B still empty and load it concurrently —
+  /// two voices' loads overlapping on the one shared audio session, which the
+  /// prototype's voices cannot do.
+  Future<void> _seedDecksFromPlayback() {
+    final next = _seedChain.then((_) => _seedEmptyDecks());
+    _seedChain = next.then((_) {}, onError: (_) {});
+    return next;
+  }
+
+  Future<void> _seedEmptyDecks() async {
+    final playback = _playback;
+    final session = _session;
+    if (!mounted || playback == null || session == null) return;
+    final current = _hydrated(playback.currentPlaybackTrack());
+    final next = _hydrated(playback.nextPlaybackTrack());
+    // Deck A is awaited before deck B: the prototype's two voices share one
+    // audio session, so their loads must not overlap.
+    if (current != null && !session.deckA.isLoaded) {
+      final seeds = DjSessionProvider.queueSeeds(current, null);
+      if (seeds.isNotEmpty) await session.load(DjDeckId.a, seeds.first);
+      // Resolve stem availability for whatever actually landed on deck A. A
+      // local-file fallback load has no library track id, so the panel says so
+      // rather than offering a separation that cannot be queued.
+      await _stems?.bindTrack(_libraryTrackId(session.deckA.trackRef));
+      if (!mounted) return;
+    }
+    if (next != null && !session.deckB.isLoaded) {
+      final seeds = DjSessionProvider.queueSeeds(next, null);
+      if (seeds.isNotEmpty) await session.load(DjDeckId.b, seeds.first);
+    }
+  }
+
+  /// [track] with whatever hydrated analysis the client already holds, and with
+  /// hydration interest re-armed so the deck's peaks arrive (#410).
+  QueueTrack? _hydrated(QueueTrack? track) {
+    if (track == null) return null;
+    return _queue?.trackWithAnalysis(track) ?? track;
+  }
+
+  void _onPlaybackSignal(DjPlaybackSignal signal) {
+    if (!mounted) return;
+    unawaited(_seedDecksFromPlayback());
+  }
+
+  /// Re-seeds both decks from queue analysis when hydrated analysis lands.
   void _onQueueAnalysisChanged() {
     final queue = _queue;
     final session = _session;
@@ -162,8 +225,10 @@ class _DjScreenState extends State<DjScreen> {
     // Position/queue-only notifications leave the revision alone.
     if (revision == _lastAnalysisRevision) return;
     _lastAnalysisRevision = revision;
-    final current = queue.currentTrack;
-    final next = queue.upNext.isEmpty ? null : queue.upNext.first;
+    final playback = _playback;
+    if (playback == null) return;
+    final current = playback.currentPlaybackTrack();
+    final next = playback.nextPlaybackTrack();
     // trackWithAnalysis re-arms hydration interest (queue_provider.dart:215-218),
     // so a deck whose analysis was purged by another screen's
     // setAnalysisHydrationInterest re-requests it instead of staying blank.
@@ -222,6 +287,7 @@ class _DjScreenState extends State<DjScreen> {
 
   @override
   void dispose() {
+    unawaited(_playbackSubscription?.cancel() ?? Future<void>.value());
     _queue?.removeListener(_onQueueAnalysisChanged);
     _stems?.dispose();
     if (_ownsSession) {
@@ -237,17 +303,17 @@ class _DjScreenState extends State<DjScreen> {
     super.dispose();
   }
 
-  /// The queue row still standing behind [deck], or null.
+  /// The playback queue row still standing behind [deck], or null.
   ///
   /// A refused deck keeps its `queueItemId` (deck_controller.dart), so the
   /// candidate is accepted only when it still matches: a queue that moved out
   /// from under the deck yields null rather than downloading the wrong track.
   QueueTrack? _queueTrackFor(DjDeckId deck) {
-    final queue = context.read<QueueProvider?>();
-    if (queue == null) return null;
+    final playback = _playback;
+    if (playback == null) return null;
     final candidate = deck == DjDeckId.a
-        ? queue.currentTrack
-        : (queue.upNext.isEmpty ? null : queue.upNext.first);
+        ? playback.currentPlaybackTrack()
+        : playback.nextPlaybackTrack();
     if (candidate == null) return null;
     return candidate.queueItemId == _session!.stateFor(deck).queueItemId
         ? candidate
@@ -330,26 +396,55 @@ class _DjScreenState extends State<DjScreen> {
     // Watched, not read: the lane's download affordance has to follow the
     // transfer's progress and its completion without the user leaving /dj.
     final downloads = context.watch<DownloadState?>();
-    // Watched for the same reason: an unseeded deck beside a non-empty queue
-    // says something different from an unseeded deck beside an empty one, and
-    // the queue can change under an open deck.
-    final queue = context.watch<QueueProvider?>();
     return ChangeNotifierProvider<DjSessionProvider>.value(
       value: _session!,
       child: AnnotatedRegion<SystemUiOverlayStyle>(
         value: djSystemOverlayStyle(context),
-        child: DjDeckActions(
-          onPickLocalFile: _pickLocalFile,
-          onDownload: downloads == null ? null : _downloadDeck,
-          downloadFor: (deck) => _downloadForDeck(deck, downloads),
-          queueHasTracks: queue != null &&
-              (queue.currentTrack != null || queue.upNext.isNotEmpty),
-          child: const Scaffold(
-            key: ValueKey('dj_screen'),
-            body: DjLayout(),
+        child: _PlaybackSignalBuilder(
+          builder: (signal) => DjDeckActions(
+            onPickLocalFile: _pickLocalFile,
+            onDownload: downloads == null ? null : _downloadDeck,
+            downloadFor: (deck) => _downloadForDeck(deck, downloads),
+            // "Is anything queued" is a *playback* queue fact (#453), and it is
+            // selected rather than watched: `Selector` rebuilds only when the
+            // distilled signal changes, so the 33 Hz snapshot loop cannot
+            // dirty this subtree.
+            queueHasTracks: signal.hasQueue,
+            child: const Scaffold(
+              key: ValueKey('dj_screen'),
+              body: DjLayout(),
+            ),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Rebuilds its subtree only when the distilled [DjPlaybackSignal] changes.
+///
+/// The snapshot loop publishes continuously while audio plays; watching
+/// [PlaybackState] here would rebuild the deck chrome ~33 times a second, which
+/// `client/test/perf/` gates against. [Selector] compares the projected signal
+/// and rebuilds when it differs, so a position tick costs nothing.
+///
+/// Null-tolerant: a narrow harness that mounts the deck without app playback
+/// gets [DjPlaybackSignal.empty] rather than a `ProviderNotFoundException`,
+/// which is a supported state for the deck's lane tests.
+class _PlaybackSignalBuilder extends StatelessWidget {
+  const _PlaybackSignalBuilder({required this.builder});
+
+  final Widget Function(DjPlaybackSignal signal) builder;
+
+  @override
+  Widget build(BuildContext context) {
+    if (context.read<PlaybackState?>() == null) {
+      return builder(DjPlaybackSignal.empty);
+    }
+    return Selector<PlaybackState, DjPlaybackSignal>(
+      selector: (_, playback) =>
+          playback.djPlaybackSignalFor(playback.snapshot),
+      builder: (context, signal, _) => builder(signal),
     );
   }
 }
