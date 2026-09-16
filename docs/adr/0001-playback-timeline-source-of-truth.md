@@ -67,9 +67,8 @@ caches permitted above do not trip them.
   `setPitchMode`, `applyMixPlanClips`. Calling them, or passing them as
   tear-offs, is fine.
 
-R1 and R2 carry a dated exemption table for the pre-existing violations that
-ADR 0012 is unwinding. The table is self-removing: an exemption that stops
-tripping its rule fails the harness until the row is deleted.
+R1 and R2 are enforced with zero exemptions. Any declaration that violates
+either rule fails the harness.
 
 `scripts/agentic-harness --self-test` exercises R1 and R2 against synthetic
 compliant and violating fixtures, so a regex that drifts from

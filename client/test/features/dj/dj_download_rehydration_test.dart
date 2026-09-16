@@ -134,7 +134,6 @@ Future<_DownloadHarness> _pumpRefusedDeck(WidgetTester tester) async {
   final api = _HeldAnalysisQueueApi(
     QueueState(
       tracks: [djAnalysisTrack(id: '4242', analysis: djCompactAnalysis())],
-      currentIndex: 0,
     ),
   );
   final queue = QueueProvider(api);

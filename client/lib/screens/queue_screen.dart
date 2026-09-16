@@ -306,16 +306,8 @@ class _QueueScreenState extends State<QueueScreen> {
 
               return Column(
                 children: [
-                  _buildQueueHeader(context, provider),
-                  Expanded(
-                    child: _viewMode == _QueueViewMode.list
-                        ? _buildListView(context, provider)
-                        : _buildTimelineView(
-                            context,
-                            provider,
-                            playbackView,
-                          ),
-                  ),
+                  _buildImportQueueHeader(context, provider),
+                  Expanded(child: _buildListView(context, provider)),
                 ],
               );
             },
@@ -325,6 +317,57 @@ class _QueueScreenState extends State<QueueScreen> {
     );
     if (MediaQuery.sizeOf(context).width >= 960) return queue;
     return Theme(data: AppTheme.darkTheme, child: queue);
+  }
+
+  /// The import queue's own header.
+  ///
+  /// This view lists server download jobs, so it must not claim playback
+  /// language: "Playback Queue", the playback row counter, and the Timeline
+  /// switch all describe the listening queue. The Timeline editor for this view
+  /// is deleted (ADR 0012 step 4), so the view is list-only and ships no switch
+  /// to a mode it no longer has. `Clear queue` is the import queue's own
+  /// destructive action and stays here.
+  Widget _buildImportQueueHeader(BuildContext context, QueueProvider provider) {
+    final colors = Theme.of(context).colorScheme;
+    final usesMobileHeader = MediaQuery.sizeOf(context).width < 960;
+    final headerForeground = usesMobileHeader ? colors.onPrimary : null;
+    final title = Text(
+      'Import Queue',
+      key: const ValueKey('import_queue_title'),
+      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+            color: headerForeground,
+            fontWeight: FontWeight.w700,
+          ),
+    );
+    final menu = PopupMenuButton<String>(
+      key: const ValueKey('queue_header_menu'),
+      tooltip: 'Queue actions',
+      iconColor: headerForeground,
+      onSelected: (value) => _handleMenuAction(context, value),
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          value: 'clear',
+          child: ListTile(
+            leading: Icon(Icons.clear_all),
+            title: Text('Clear queue'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+      ],
+    );
+
+    return Container(
+      key: const ValueKey('import_queue_header'),
+      color: usesMobileHeader ? AppTheme.orange : Colors.transparent,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
+      child: Row(
+        children: [
+          Expanded(child: title),
+          const SizedBox(width: 8),
+          menu,
+        ],
+      ),
+    );
   }
 
   Widget _buildPlaybackQueueView(
@@ -1255,122 +1298,6 @@ class _QueueScreenState extends State<QueueScreen> {
     );
   }
 
-  Widget _buildQueueHeader(BuildContext context, QueueProvider provider) {
-    final colors = Theme.of(context).colorScheme;
-    final stackedHeader = _usesStackedQueueHeader(context);
-    final usesMobileHeader = MediaQuery.sizeOf(context).width < 960;
-    final headerForeground = usesMobileHeader ? colors.onPrimary : null;
-    final status = Selector<PlaybackState, Duration>(
-      selector: (_, playback) => playback.position,
-      builder: (context, position, _) =>
-          _buildQueueStatusPill(context, provider, position),
-    );
-    final menu = PopupMenuButton<String>(
-      key: const ValueKey('queue_header_menu'),
-      tooltip: 'Queue actions',
-      iconColor: headerForeground,
-      onSelected: (value) => _handleMenuAction(context, value),
-      itemBuilder: (context) => [
-        const PopupMenuItem(
-          value: 'clear',
-          child: ListTile(
-            leading: Icon(Icons.clear_all),
-            title: Text('Clear queue'),
-            contentPadding: EdgeInsets.zero,
-          ),
-        ),
-      ],
-    );
-    return Container(
-      key: const ValueKey('queue_header'),
-      color: usesMobileHeader ? AppTheme.orange : Colors.transparent,
-      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
-      child: stackedHeader
-          ? Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(child: status),
-                    menu,
-                  ],
-                ),
-                const SizedBox(height: 8),
-                _buildViewSwitch(
-                  context,
-                  expanded: true,
-                  foregroundColor: headerForeground,
-                ),
-              ],
-            )
-          : Row(
-              children: [
-                Expanded(child: status),
-                const SizedBox(width: 8),
-                _buildViewSwitch(
-                  context,
-                  foregroundColor: headerForeground,
-                ),
-                menu,
-              ],
-            ),
-    );
-  }
-
-  Widget _buildQueueStatusPill(
-    BuildContext context,
-    QueueProvider provider,
-    Duration playbackPosition,
-  ) {
-    final tracks = provider.queue.tracks;
-    final currentIndex = provider.queue.currentIndex;
-    final firstRemainingIndex = currentIndex >= 0 ? currentIndex : 0;
-    var totalMs = 0;
-    for (var i = firstRemainingIndex; i < tracks.length; i++) {
-      final track = tracks[i];
-      final trim = provider.trimRangeFor(track);
-      if (i == firstRemainingIndex && currentIndex >= 0) {
-        final currentRemainingMs =
-            trim.endOffsetMs - playbackPosition.inMilliseconds;
-        totalMs += currentRemainingMs.clamp(0, trim.selectedDurationMs).toInt();
-      } else {
-        totalMs += trim.selectedDurationMs;
-      }
-    }
-    final count = tracks.length - firstRemainingIndex;
-    final countLabel = count == 1 ? '1 track' : '$count tracks';
-    final runtimeLabel = _formatQueueRuntime(totalMs);
-    final suffix = currentIndex >= 0 ? 'remaining' : 'until silence';
-
-    return Semantics(
-      label: '$countLabel, $runtimeLabel $suffix',
-      child: Container(
-        key: const ValueKey('queue_summary_pill'),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.secondaryContainer,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.graphic_eq, size: 16),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                '$countLabel · $runtimeLabel $suffix',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(
-                  context,
-                ).textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w700),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   bool _usesStackedQueueHeader(BuildContext context) =>
       MediaQuery.sizeOf(context).width < 960 ||
       MediaQuery.textScalerOf(context).scale(1) >= 1.3;
@@ -1420,106 +1347,6 @@ class _QueueScreenState extends State<QueueScreen> {
           setState(() => _viewMode = next);
         },
       ),
-    );
-  }
-
-  Widget _buildTimelineView(
-    BuildContext context,
-    QueueProvider provider,
-    _PlaybackViewState playbackView,
-  ) {
-    final currentIndex = provider.queue.currentIndex;
-    final sourceTracks = provider.queue.tracks;
-    if (currentIndex < 0 || currentIndex >= sourceTracks.length) {
-      _clearAnalysisHydration(provider);
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.timeline,
-                size: 48,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'Start playback to use Timeline view',
-                style: Theme.of(context).textTheme.titleMedium,
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'List view is still available for reorder and remove actions.',
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    final firstRenderedIndex = currentIndex > 0 ? currentIndex - 1 : 0;
-    final hydrationSources = sourceTracks.sublist(firstRenderedIndex);
-    _prepareAnalysisHydration(
-      provider: provider,
-      queueIdentity: sourceTracks,
-      currentIndex: currentIndex,
-      usesPlaybackQueue: false,
-      sources: hydrationSources,
-      pinnedSources: [
-        sourceTracks[currentIndex],
-        ...sourceTracks.skip(currentIndex + 1).take(1),
-      ],
-    );
-    final tracks = hydrationSources
-        .map(
-          (track) => provider.trackWithAnalysis(track, requestHydration: false),
-        )
-        .toList(growable: false);
-    final renderedCurrentIndex = currentIndex - firstRenderedIndex;
-    final currentTrack = tracks[renderedCurrentIndex];
-    final upNext =
-        tracks.skip(renderedCurrentIndex + 1).toList(growable: false);
-    final previousTrack =
-        renderedCurrentIndex > 0 ? tracks[renderedCurrentIndex - 1] : null;
-
-    final playback = playbackView.playback;
-    return StackedWaveformTimeline(
-      key: const ValueKey('queue_surface'),
-      previousTrack: previousTrack,
-      currentTrack: currentTrack,
-      upcomingTracks: upNext,
-      peaksFor: provider.waveformPeaksFor,
-      waveformFor: provider.waveformFor,
-      trimRangeFor: provider.trimRangeFor,
-      clipFor: provider.timelineClipFor,
-      pitchModeFor: provider.pitchModeFor,
-      timelineModel: playbackView.timelineModel,
-      pitchFallbackClipIds: playbackView.pitchFallbackClipIds,
-      playheadPositionMs: playbackView.timelinePositionMs,
-      positionMsStream: playback.timelinePositionMsStream,
-      onScrubStart: playback.beginTimelineScrub,
-      onScrubUpdate: playback.updateTimelineScrub,
-      onScrubEnd: playback.endTimelineScrub,
-      onTimelineStartChanged: provider.setTimelineStartMs,
-      onTrimStartChanged: provider.setStartOffsetMs,
-      onTrimEndChanged: provider.setEndOffsetMs,
-      onMoveEarlier: (track) =>
-          _moveTimelineTrack(provider, upNext, currentIndex, track, -1),
-      onMoveLater: (track) =>
-          _moveTimelineTrack(provider, upNext, currentIndex, track, 1),
-      onPitchModeChanged: provider.setPitchMode,
-      onEditAnalysis: (track, {currentSourcePositionMs}) =>
-          _showAnalysisCorrectionSheet(
-        context,
-        provider,
-        track,
-        currentSourcePositionMs: currentSourcePositionMs,
-      ),
-      onVisibleTracksChanged: (tracks) =>
-          _updateVisibleAnalysisHydration(provider, tracks),
     );
   }
 
@@ -1617,10 +1444,7 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   Widget _buildListView(BuildContext context, QueueProvider provider) {
-    final currentIndex = provider.queue.currentIndex;
     final tracks = provider.queue.tracks;
-    final hasActiveTrack =
-        currentIndex >= 0 && currentIndex < provider.queue.tracks.length;
 
     return ReorderableListView.builder(
       key: const PageStorageKey('queue_list_view'),
@@ -1633,39 +1457,28 @@ class _QueueScreenState extends State<QueueScreen> {
       },
       itemBuilder: (context, absoluteIndex) {
         final track = tracks[absoluteIndex];
-        final isCurrent = hasActiveTrack && absoluteIndex == currentIndex;
-        final canEdit = !hasActiveTrack || absoluteIndex > currentIndex;
 
         return _buildSwipeToRemoveQueueItem(
           context: context,
           key: ValueKey('remove_queue_${track.queueItemId}'),
-          enabled: canEdit,
+          enabled: true,
           label: track.title,
           onRemove: () => provider.removeFromQueue(absoluteIndex),
           child: QueueItem(
             key: ValueKey('queue_item_${track.queueItemId}'),
             track: track,
-            isPlaying: isCurrent,
+            isPlaying: false,
             reorderHandle: _buildReorderHandle(
               queueItemId: track.queueItemId,
               title: track.title,
               index: absoluteIndex,
             ),
-            showTrimControls: canEdit,
-            trimRange: canEdit ? provider.trimRangeFor(track) : null,
-            waveformPeaks:
-                canEdit ? provider.waveformPeaksFor(track) : const [],
-            onTrimStartChanged:
-                canEdit ? (ms) => provider.setStartOffsetMs(track, ms) : null,
-            onTrimEndChanged:
-                canEdit ? (ms) => provider.setEndOffsetMs(track, ms) : null,
             onPlay:
                 track.queueStatus == TrackQueueStatus.playable && track.canPlay
                     ? () => _playFromQueue(context, provider, track)
                     : null,
             onRetry: track.canRetry ? () => provider.retryTrack(track) : null,
-            onRemove:
-                canEdit ? () => provider.removeFromQueue(absoluteIndex) : null,
+            onRemove: () => provider.removeFromQueue(absoluteIndex),
             onEditAnalysis: _canEditAnalysis(track)
                 ? () => _showAnalysisCorrectionSheet(context, provider, track)
                 : null,
@@ -1673,33 +1486,6 @@ class _QueueScreenState extends State<QueueScreen> {
         );
       },
     );
-  }
-
-  void _moveTimelineTrack(
-    QueueProvider provider,
-    List<QueueTrack> upNext,
-    int currentIndex,
-    QueueTrack track,
-    int delta,
-  ) {
-    final relativeIndex = upNext.indexWhere(
-      (candidate) => candidate.id == track.id,
-    );
-    if (relativeIndex < 0) return;
-
-    final relativeNewIndex = (relativeIndex + delta).clamp(
-      0,
-      upNext.length - 1,
-    );
-    if (relativeNewIndex == relativeIndex) return;
-
-    final (oldIndex, newIndex) = queueListReorderIndices(
-      relativeOldIndex: relativeIndex,
-      relativeNewIndex: relativeNewIndex,
-      currentIndex: currentIndex,
-      hasActiveTrack: true,
-    );
-    provider.reorderQueue(oldIndex, newIndex);
   }
 
   Future<void> _playFromQueue(

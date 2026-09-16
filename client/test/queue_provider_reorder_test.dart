@@ -137,7 +137,7 @@ void main() {
   );
 
   test(
-    'reorderQueue moves the current occurrence and its current index',
+    'reorderQueue moves the requested occurrence',
     () async {
       final initialItems = [
         _track('history', '1'),
@@ -174,8 +174,7 @@ void main() {
       await provider.loadQueue();
       await provider.reorderQueue(1, 0);
 
-      expect(provider.queue.currentIndex, 0);
-      expect(provider.queue.currentTrack?.queueItemId, 'current');
+      expect(provider.queue.tracks.first.queueItemId, 'current');
     },
   );
 }
