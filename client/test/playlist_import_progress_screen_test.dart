@@ -3,29 +3,23 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/models/playlist_import.dart';
 import 'package:open_music_player/core/services/playlist_import_service.dart';
-import 'package:open_music_player/features/playlists/playlist_import_screen.dart';
+import 'package:open_music_player/features/playlists/playlist_import_progress_screen.dart';
 
 void main() {
   testWidgets(
-      'malformed playlist URLs show validation error instead of throwing',
-      (tester) async {
+      'arriving without an import job points at Create Playlist instead of '
+      'offering a second way to start one', (tester) async {
     await tester.pumpWidget(
-      const MaterialApp(home: PlaylistImportScreen()),
+      const MaterialApp(home: PlaylistImportProgressScreen()),
     );
-
-    await tester.enterText(
-      find.byType(TextField).first,
-      'https://www.youtube.com/playlist?list=%E0%A4%A',
-    );
-    await tester.tap(find.text('Import playlist'));
     await tester.pump();
 
-    expect(
-      find.text(
-        'Use a YouTube or YouTube Music URL with a playlist list= parameter.',
-      ),
-      findsOneWidget,
-    );
+    expect(find.text('No import in progress'), findsOneWidget);
+    // Starting an import is owned by the shared creation dialog. URL validation
+    // and the start form are covered by playlist_creation_dialog_test.dart;
+    // this screen must not re-introduce a competing entry point.
+    expect(find.byType(TextFormField), findsNothing);
+    expect(find.text('Import playlist'), findsNothing);
   });
 
   testWidgets('restored import jobs keep polling until terminal',
@@ -33,7 +27,7 @@ void main() {
     final service = _FakePlaylistImportService();
     await tester.pumpWidget(
       MaterialApp(
-        home: PlaylistImportScreen(
+        home: PlaylistImportProgressScreen(
           importJobId: 'job-1',
           importService: service,
           pollInterval: const Duration(milliseconds: 10),

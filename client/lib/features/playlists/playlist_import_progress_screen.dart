@@ -8,15 +8,21 @@ import 'package:provider/provider.dart';
 import '../../core/api/api_client.dart';
 import '../../core/models/playlist_import.dart';
 import '../../core/services/playlist_import_service.dart';
-import 'playlist_creation_dialog.dart';
 
-class PlaylistImportScreen extends StatefulWidget {
+/// Tracks an import job that has already been started.
+///
+/// This screen owns progress only: it polls an existing job (`importJobId`),
+/// renders its status, and retries status refreshes. Starting an import is
+/// owned by the shared playlist creation dialog
+/// (`playlist_creation_dialog.dart`), which is the only caller that navigates
+/// here.
+class PlaylistImportProgressScreen extends StatefulWidget {
   final Duration pollInterval;
   final PlaylistImportStatus? initialStatus;
   final String? importJobId;
   final PlaylistImportService? importService;
 
-  const PlaylistImportScreen({
+  const PlaylistImportProgressScreen({
     super.key,
     this.pollInterval = const Duration(seconds: 2),
     this.initialStatus,
@@ -25,21 +31,17 @@ class PlaylistImportScreen extends StatefulWidget {
   });
 
   @override
-  State<PlaylistImportScreen> createState() => _PlaylistImportScreenState();
+  State<PlaylistImportProgressScreen> createState() =>
+      _PlaylistImportProgressScreenState();
 }
 
-class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final _urlController = TextEditingController();
-  final _nameController = TextEditingController();
-  final _descriptionController = TextEditingController();
-  final _maxItemsController = TextEditingController(text: '500');
+class _PlaylistImportProgressScreenState
+    extends State<PlaylistImportProgressScreen> {
   String? _sourceImportJobId;
 
   PlaylistImportService? _service;
   PlaylistImportStatus? _importStatus;
   Timer? _pollTimer;
-  bool _isSubmitting = false;
   bool _isRefreshing = false;
   bool _isLoadingInitialStatus = false;
   int _statusRequestGeneration = 0;
@@ -72,7 +74,7 @@ class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
   }
 
   @override
-  void didUpdateWidget(covariant PlaylistImportScreen oldWidget) {
+  void didUpdateWidget(covariant PlaylistImportProgressScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.importJobId == widget.importJobId &&
         oldWidget.initialStatus == widget.initialStatus) {
@@ -98,45 +100,7 @@ class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
   @override
   void dispose() {
     _pollTimer?.cancel();
-    _urlController.dispose();
-    _nameController.dispose();
-    _descriptionController.dispose();
-    _maxItemsController.dispose();
     super.dispose();
-  }
-
-  Future<void> _submit() async {
-    if (!(_formKey.currentState?.validate() ?? false)) return;
-
-    setState(() {
-      _isSubmitting = true;
-      _error = null;
-    });
-
-    try {
-      final status = await _playlistImportService.createImport(
-        url: _urlController.text,
-        name: _nameController.text,
-        description: _descriptionController.text,
-        maxItems: int.tryParse(_maxItemsController.text.trim()),
-      );
-      if (!mounted) return;
-      setState(() => _importStatus = status);
-      _startPollingIfNeeded(status);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Playlist import started')));
-    } on DioException catch (error) {
-      if (!mounted) return;
-      setState(() => _error = _apiErrorMessage(error));
-    } catch (error) {
-      if (!mounted) return;
-      setState(() => _error = 'Could not start playlist import: $error');
-    } finally {
-      if (mounted) {
-        setState(() => _isSubmitting = false);
-      }
-    }
   }
 
   void _startPollingIfNeeded(PlaylistImportStatus status) {
@@ -168,7 +132,7 @@ class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
       }
     } on DioException catch (error) {
       if (!mounted || requestGeneration != _statusRequestGeneration) return;
-      if (manual) setState(() => _error = _apiErrorMessage(error));
+      if (manual) setState(() => _error = apiErrorMessage(error));
     } catch (error) {
       if (!mounted || requestGeneration != _statusRequestGeneration) return;
       if (manual) setState(() => _error = 'Could not refresh import: $error');
@@ -182,13 +146,11 @@ class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
     }
   }
 
-  String _apiErrorMessage(DioException error) => apiErrorMessage(error);
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Import YouTube playlist')),
+      appBar: AppBar(title: const Text('Import progress')),
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
@@ -200,31 +162,6 @@ class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Text(
-                        'Turn a YouTube playlist into an OMP playlist.',
-                        style: theme.textTheme.titleLarge,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Single-track imports still stay single-track; this path is the explicit bulk importer.',
-                        style: theme.textTheme.bodyMedium,
-                      ),
-                      const SizedBox(height: 16),
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: PlaylistImportForm(
-                            formKey: _formKey,
-                            sourceUrlController: _urlController,
-                            nameController: _nameController,
-                            descriptionController: _descriptionController,
-                            maxItemsController: _maxItemsController,
-                            isSubmitting: _isSubmitting,
-                            showSubmitButton: true,
-                            onSubmit: _submit,
-                          ),
-                        ),
-                      ),
                       if (_error != null) ...[
                         const SizedBox(height: 12),
                         _ErrorCard(
@@ -269,6 +206,32 @@ class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
                                     '/playlists/${_importStatus!.playlistId}',
                                   )
                               : null,
+                        ),
+                      ],
+                      // Deep-link arrival with nothing to show. Starting an
+                      // import belongs to the shared creation dialog, which is
+                      // also the only caller that reaches this route with a job.
+                      if (_importStatus == null &&
+                          !_isLoadingInitialStatus) ...[
+                        const SizedBox(height: 16),
+                        Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'No import in progress',
+                                  style: theme.textTheme.titleMedium,
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Start one from Create Playlist on the Playlists or Library screen.',
+                                  style: theme.textTheme.bodyMedium,
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                       ],
                     ],
