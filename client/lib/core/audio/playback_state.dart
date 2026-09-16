@@ -158,7 +158,6 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// The numeric backend track id at the tail of the playback queue, or null.
   int? playbackQueueTailTrackId() => queueTailTrackId(queue);
 
-
   /// Where the current listening queue was launched from (album, playlist, ...),
   /// or null when the queue was started without a context. Drives the
   /// "Playing from <label>" attribution in the mini/full player.

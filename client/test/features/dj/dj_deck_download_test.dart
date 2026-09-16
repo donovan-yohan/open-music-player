@@ -9,16 +9,12 @@ import 'package:open_music_player/features/dj/dj_screen.dart';
 import 'package:open_music_player/features/dj/engine/deck_controller.dart';
 import 'package:open_music_player/features/dj/models/dj_deck_state.dart';
 import 'package:open_music_player/features/dj/providers/dj_session_provider.dart';
-import 'package:open_music_player/models/queue_state.dart';
-import 'package:open_music_player/models/track_analysis.dart';
-import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:open_music_player/shared/models/downloaded_track.dart';
 import 'package:open_music_player/shared/models/track.dart' as library_models;
-import 'package:provider/provider.dart';
 
 import '../../support/dj_viewport_fixtures.dart';
 import '../../support/fake_voice.dart';
-import '../../support/mock_dio_client.dart';
+import '../../support/playback_fixtures.dart';
 
 /// #414 acceptance criterion (d) in widget form: a refused deck offers a
 /// download, the transfer runs without the user leaving `/dj`, and the deck
@@ -33,8 +29,7 @@ void main() {
       (tester) async {
     landscapeReference.apply(tester);
     final track = djLoadedQueueTrack(id: '4242', title: 'phantom parade');
-    final api = _QueueApiClient(QueueState(tracks: [track], currentIndex: 0));
-    final queue = QueueProvider(api);
+    final playback = testPlaybackStateForRows([track]);
     final resolver = _SwitchableResolver();
     final session = DjSessionProvider(
       deckA: _deck(DjDeckId.a, resolver),
@@ -43,11 +38,9 @@ void main() {
     final downloads = _RecordingDownloadState();
 
     await tester.pumpWidget(
-      MultiProvider(
-        providers: [
-          ChangeNotifierProvider<QueueProvider>.value(value: queue),
-          ChangeNotifierProvider<DownloadState>.value(value: downloads),
-        ],
+      djPlaybackProviders(
+        playback: playback,
+        downloads: downloads,
         child: MaterialApp(home: DjScreen(session: session)),
       ),
     );
@@ -99,7 +92,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 20));
     session.dispose();
-    queue.dispose();
+    await disposeTestPlaybackState(playback);
     downloads.dispose();
   });
 
@@ -107,8 +100,7 @@ void main() {
       (tester) async {
     landscapeReference.apply(tester);
     final track = djLoadedQueueTrack(id: '4242', title: 'phantom parade');
-    final api = _QueueApiClient(QueueState(tracks: [track], currentIndex: 0));
-    final queue = QueueProvider(api);
+    final playback = testPlaybackStateForRows([track]);
     final session = DjSessionProvider(
       deckA: _deck(DjDeckId.a, _SwitchableResolver()),
       deckB: _deck(DjDeckId.b, _SwitchableResolver()),
@@ -116,11 +108,9 @@ void main() {
     final downloads = _RecordingDownloadState()..throwOnDownload = true;
 
     await tester.pumpWidget(
-      MultiProvider(
-        providers: [
-          ChangeNotifierProvider<QueueProvider>.value(value: queue),
-          ChangeNotifierProvider<DownloadState>.value(value: downloads),
-        ],
+      djPlaybackProviders(
+        playback: playback,
+        downloads: downloads,
         child: MaterialApp(home: DjScreen(session: session)),
       ),
     );
@@ -148,7 +138,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 20));
     session.dispose();
-    queue.dispose();
+    await disposeTestPlaybackState(playback);
     downloads.dispose();
   });
 
@@ -156,16 +146,15 @@ void main() {
       (tester) async {
     landscapeReference.apply(tester);
     final track = djLoadedQueueTrack(id: '4242', title: 'phantom parade');
-    final api = _QueueApiClient(QueueState(tracks: [track], currentIndex: 0));
-    final queue = QueueProvider(api);
+    final playback = testPlaybackStateForRows([track]);
     final session = DjSessionProvider(
       deckA: _deck(DjDeckId.a, _SwitchableResolver()),
       deckB: _deck(DjDeckId.b, _SwitchableResolver()),
     );
 
     await tester.pumpWidget(
-      ChangeNotifierProvider<QueueProvider>.value(
-        value: queue,
+      djPlaybackProviders(
+        playback: playback,
         child: MaterialApp(home: DjScreen(session: session)),
       ),
     );
@@ -185,7 +174,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 20));
     session.dispose();
-    queue.dispose();
+    await disposeTestPlaybackState(playback);
   });
 }
 
@@ -211,18 +200,6 @@ class _SwitchableResolver implements EngineAudioSourceResolver {
   @override
   Future<void> warm(String audioSourceRef,
       {required Set<String> protect}) async {}
-}
-
-class _QueueApiClient extends EmptyQueueApiClient {
-  _QueueApiClient(this.state);
-  final QueueState state;
-
-  @override
-  Future<QueueState> getQueue() async => state;
-
-  @override
-  Future<TrackAnalysis> getTrackAnalysis(int trackId) async =>
-      djLoadedAnalysis();
 }
 
 /// Records what the deck asked the pipeline for and lets the test drive the

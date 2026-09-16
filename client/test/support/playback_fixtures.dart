@@ -5,9 +5,16 @@ import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:just_audio/just_audio.dart' show ProcessingState;
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/audio/queue_persistence.dart';
+import 'package:open_music_player/core/download/download_state.dart';
+import 'package:open_music_player/models/track.dart' show QueueTrack;
+import 'package:open_music_player/models/track_analysis.dart'
+    show analysisPlaybackFields;
+import 'package:open_music_player/providers/queue_provider.dart';
+import 'package:provider/provider.dart';
 import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -288,6 +295,7 @@ class TestPlaybackState extends PlaybackState {
       ),
     );
   }
+
   /// Installs [items] as the playback queue and republishes at index 0.
   ///
   /// This is the shape of `PlaybackState.restore()` completing after the deck
@@ -311,4 +319,70 @@ class TestPlaybackState extends PlaybackState {
     unawaited(_subject.close());
     super.dispose();
   }
+}
+
+/// A [TestPlaybackState] built from queue rows a DJ test already has.
+///
+/// The deck seeds from playback truth now, so a DJ widget test needs playback
+/// state rather than a `QueueProvider` snapshot. This adapts rows — which carry
+/// the analysis, title, artist and duration the deck lanes assert on — into the
+/// media items a real controller would hold, preserving the numeric id the
+/// resolver and the download pipeline key on.
+///
+/// Analysis is carried into the item's extras the same way
+/// `PlaybackSourceResolver._mediaItem` does it, because
+/// `playbackTrackForMediaItem` reads it back from there. Dropping it would
+/// strand the deck header on `-- BPM` while the deck itself looked healthy.
+///
+/// [rows] order becomes the queue order; [currentIndex] picks the playing row.
+TestPlaybackState testPlaybackStateForRows(
+  List<QueueTrack> rows, {
+  int currentIndex = 0,
+  List<int>? playOrder,
+}) {
+  final items = <MediaItem>[];
+  for (final row in rows) {
+    final item = playbackMediaItem(
+      int.tryParse(row.playbackTrackId ?? row.id) ?? 0,
+      title: row.title,
+      artist: row.artist ?? '',
+      // QueueTrack.duration is whole seconds; the fixture helper takes seconds.
+      seconds: row.duration,
+    );
+    final analysisFields = analysisPlaybackFields(row.analysis);
+    items.add(
+      analysisFields.isEmpty
+          ? item
+          : item.copyWith(extras: {...?item.extras, ...analysisFields}),
+    );
+  }
+  return TestPlaybackState(
+    queue: items,
+    currentIndex: currentIndex,
+    playOrder: playOrder,
+  );
+}
+
+/// Installs [playback] and, optionally, [importQueue] / [downloads] above
+/// [child].
+///
+/// The two queues stay separate on purpose: playback truth answers "what is
+/// playing", and the import queue answers "which analysis has hydrated". A deck
+/// test that needs waveform peaks passes both.
+Widget djPlaybackProviders({
+  required TestPlaybackState playback,
+  QueueProvider? importQueue,
+  DownloadState? downloads,
+  required Widget child,
+}) {
+  return MultiProvider(
+    providers: [
+      ChangeNotifierProvider<PlaybackState>.value(value: playback),
+      if (importQueue != null)
+        ChangeNotifierProvider<QueueProvider>.value(value: importQueue),
+      if (downloads != null)
+        ChangeNotifierProvider<DownloadState>.value(value: downloads),
+    ],
+    child: child,
+  );
 }

@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/audio/queue_ordering.dart';
 import 'package:open_music_player/features/dj_session/dj_session_screen.dart';
 import 'package:open_music_player/features/dj_session/dj_session_models.dart';
 import 'package:open_music_player/features/dj_session/dj_session_service.dart';
@@ -11,31 +13,26 @@ import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:provider/provider.dart';
 
 import 'support/mock_dio_client.dart';
+import 'support/playback_fixtures.dart';
 
 void main() {
   testWidgets(
       'renders the fixture lineup, swaps a block, and queues from the card sheet',
       (tester) async {
     final lineupRequests = <http.Request>[];
-    final queueBodies = <Map<String, Object?>>[];
     final apiClient = mockQueueApiClient((request) async {
       if (request.url.path.endsWith('/dj/lineup')) {
         lineupRequests.add(request);
         return http.Response(
             _lineupFixture(request.url.queryParameters['block']), 200);
       }
-      if (request.method == 'POST' &&
-          request.url.path.endsWith('/queue/items')) {
-        queueBodies.add(jsonDecode(request.body) as Map<String, Object?>);
-        return http.Response(_queueAfterAdding(), 200);
-      }
       return http.Response('{}', 404);
     });
-    final queueProvider = QueueProvider(apiClient);
+    final playback = testPlaybackState();
 
     await tester.pumpWidget(
-      ChangeNotifierProvider<QueueProvider>.value(
-        value: queueProvider,
+      ChangeNotifierProvider<PlaybackState>.value(
+        value: playback,
         child: MaterialApp(
           home: DjSessionScreen(
             service: DjSessionService(apiClient),
@@ -79,24 +76,94 @@ void main() {
     await tester.tap(find.text('Play next'));
     await tester.pumpAndSettle();
 
-    expect(queueProvider.queue.tracks, hasLength(1));
-    expect(queueProvider.queue.tracks.single.playbackTrackId, '101');
+    expect(
+      [for (final item in playback.queue) item.id],
+      ['101'],
+      reason: 'Play next landed the track on the listening queue',
+    );
+    expect(itemOrigin(playback.queue.first), queueOriginManual);
     expect(find.text('Playing next'), findsOneWidget);
-    expect(queueBodies.single['position'], 'next');
-    expect(queueBodies.single['trackId'], 101);
 
-    // The card's Add-to-queue button appends (position: last), matching the
-    // "Added to queue" snackbar. Advance past the previous snackbar's timer
-    // first so the new one is on screen for its assertion.
+    // The card's Add-to-queue action appends, matching the "Added to queue"
+    // snackbar. Advance past the previous snackbar's timer first so the new one
+    // is on screen for its assertion.
     await tester.pump(const Duration(seconds: 5));
     await tester.tap(find.byTooltip('Add to queue').first);
     await tester.pump();
     await tester.pumpAndSettle();
 
-    expect(queueBodies, hasLength(2));
-    expect(queueBodies.last['position'], 'last');
-    expect(queueBodies.last['trackId'], 101);
+    // Both actions landed on the listening queue. `Play next` seeded it (manual
+    // origin, since the item that starts a queue is the user's own pick), then
+    // `Add to queue` appended a second occurrence: `enqueue` dedupes nothing on
+    // its own, it only decides where the item goes.
+    expect([for (final item in playback.queue) item.id], ['101', '101']);
     expect(find.text('Added to queue'), findsOneWidget);
+
+    // Retire inside the body, in the real-async zone: PlaybackState.dispose
+    // starts controller teardown with `unawaited(...)`, so the voice pool's
+    // periodic timers are still on their way out when the fake-async
+    // pending-timer check runs.
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.runAsync(() async {
+      await disposeTestPlaybackState(playback);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+  });
+
+  testWidgets(
+      'the card actions land on the playback queue, not the import queue',
+      (tester) async {
+    // #453: the card's Play next / Add to queue used to POST to the import
+    // queue. That object is not what plays, so the actions now mutate the
+    // listening queue directly; the import queue must see no writes at all.
+    final importPosts = <Map<String, Object?>>[];
+    final apiClient = mockQueueApiClient((request) async {
+      if (request.url.path.endsWith('/dj/lineup')) {
+        return http.Response(_lineupFixture(null), 200);
+      }
+      if (request.method == 'POST' &&
+          request.url.path.endsWith('/queue/items')) {
+        importPosts.add(jsonDecode(request.body) as Map<String, Object?>);
+        return http.Response(_queueAfterAdding(), 200);
+      }
+      return http.Response('{}', 404);
+    });
+    final playback = testPlaybackState();
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<PlaybackState>.value(
+        value: playback,
+        child: MaterialApp(
+          home: DjSessionScreen(
+            service: DjSessionService(apiClient),
+            randomSeed: () => 77,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('dj_track_101')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Play next'));
+    await tester.pumpAndSettle();
+
+    expect(
+      [for (final item in playback.queue) item.id],
+      ['101'],
+      reason: 'Play next put the track on the listening queue',
+    );
+    expect(itemOrigin(playback.queue.first), queueOriginManual);
+    expect(importPosts, isEmpty,
+        reason: 'the import queue is not the playback queue (#453)');
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.runAsync(() async {
+      await disposeTestPlaybackState(playback);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
   });
 
   testWidgets('hero pill rerolls the full lineup with fresh seeds',

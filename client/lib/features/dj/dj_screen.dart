@@ -1,6 +1,5 @@
 import 'dart:async';
 
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -443,7 +442,8 @@ class _PlaybackSignalBuilder extends StatelessWidget {
       return builder(DjPlaybackSignal.empty);
     }
     return Selector<PlaybackState, DjPlaybackSignal>(
-      selector: (_, playback) => playback.djPlaybackSignalFor(playback.snapshot),
+      selector: (_, playback) =>
+          playback.djPlaybackSignalFor(playback.snapshot),
       builder: (context, signal, _) => builder(signal),
     );
   }

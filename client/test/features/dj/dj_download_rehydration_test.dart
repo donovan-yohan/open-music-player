@@ -14,9 +14,9 @@ import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:open_music_player/shared/models/track.dart' as library_models;
 import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
-import 'package:provider/provider.dart';
 
 import '../../support/dj_analysis_fixtures.dart';
+import '../../support/playback_fixtures.dart';
 import '../../support/dj_viewport_fixtures.dart';
 import '../../support/mock_dio_client.dart';
 
@@ -123,8 +123,12 @@ TimelineWaveformPainter _lanePainter(WidgetTester tester, DjDeckId deck) =>
         .whereType<TimelineWaveformPainter>()
         .first;
 
-/// Mounts the real [DjScreen] over a one-row queue the resolver refuses, which
-/// is the state the deck's Download affordance exists for.
+/// Mounts the real [DjScreen] over a one-row playback queue the resolver
+/// refuses, which is the state the deck's Download affordance exists for.
+///
+/// Playback truth supplies *what is playing* (#453); the import queue is still
+/// mounted because it is the client's analysis cache, and the held per-track
+/// fetch is what these cases assert on.
 Future<_DownloadHarness> _pumpRefusedDeck(WidgetTester tester) async {
   landscapeReference.apply(tester);
   final api = _HeldAnalysisQueueApi(
@@ -134,6 +138,9 @@ Future<_DownloadHarness> _pumpRefusedDeck(WidgetTester tester) async {
     ),
   );
   final queue = QueueProvider(api);
+  final playback = testPlaybackStateForRows([
+    djAnalysisTrack(id: '4242', analysis: djCompactAnalysis()),
+  ]);
   final resolver = _SwitchableResolver();
   final voices = <CountingFakeVoice>[];
   CountingFakeVoice voice(String id) {
@@ -159,11 +166,10 @@ Future<_DownloadHarness> _pumpRefusedDeck(WidgetTester tester) async {
   final downloads = _RecordingDownloadState();
 
   await tester.pumpWidget(
-    MultiProvider(
-      providers: [
-        ChangeNotifierProvider<QueueProvider>.value(value: queue),
-        ChangeNotifierProvider<DownloadState>.value(value: downloads),
-      ],
+    djPlaybackProviders(
+      playback: playback,
+      importQueue: queue,
+      downloads: downloads,
       child: MaterialApp(home: DjScreen(session: session)),
     ),
   );
@@ -177,6 +183,7 @@ Future<_DownloadHarness> _pumpRefusedDeck(WidgetTester tester) async {
   return _DownloadHarness(
     api: api,
     queue: queue,
+    playback: playback,
     resolver: resolver,
     session: session,
     downloads: downloads,
@@ -188,6 +195,7 @@ class _DownloadHarness {
   _DownloadHarness({
     required this.api,
     required this.queue,
+    required this.playback,
     required this.resolver,
     required this.session,
     required this.downloads,
@@ -196,6 +204,7 @@ class _DownloadHarness {
 
   final _HeldAnalysisQueueApi api;
   final QueueProvider queue;
+  final TestPlaybackState playback;
   final _SwitchableResolver resolver;
   final DjSessionProvider session;
   final _RecordingDownloadState downloads;
@@ -218,6 +227,7 @@ class _DownloadHarness {
     session.dispose();
     queue.dispose();
     downloads.dispose();
+    await disposeTestPlaybackState(playback);
   }
 }
 

@@ -57,8 +57,7 @@ void main() {
     }
   }
 
-  testWidgets(
-      'album playing + empty import queue: deck A is the playing track',
+  testWidgets('album playing + empty import queue: deck A is the playing track',
       (tester) async {
     final playback = TestPlaybackState(
       queue: [playbackMediaItem(7001), playbackMediaItem(7002)],

@@ -529,7 +529,16 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
         duration: Duration(milliseconds: track.durationMs ?? 0),
         artworkUrl: track.artworkUrl,
       );
-      if (playNext) {
+      final wasEmpty = playback.queue.isEmpty;
+      // An empty queue goes through the bulk add even for one track: `enqueue`
+      // and `playNext` both fall through to `playQueue` there, which tags the
+      // item `context` — the item that starts the queue is the user's own pick,
+      // so it is `manual` (#448, #453). Playback still starts, matching what the
+      // single-track path did before.
+      if (wasEmpty) {
+        await playback.enqueueAll([payload]);
+        await playback.play();
+      } else if (playNext) {
         await playback.playNext(payload);
       } else {
         await playback.enqueue(payload);
