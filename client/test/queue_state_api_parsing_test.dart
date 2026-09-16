@@ -23,14 +23,12 @@ void main() {
             'addedAt': '2026-06-03T00:00:00Z',
           },
         ],
-        'currentPosition': 0,
         // Legacy server fields are deliberately ignored. PlaybackState's
         // QueueTimelineController is the only repeat/shuffle authority.
         'repeatMode': 'all',
         'shuffled': true,
       });
 
-      expect(state.currentIndex, 0);
       expect(state.tracks, hasLength(1));
       expect(state.tracks.single.id, 'q_42');
       expect(state.tracks.single.playbackTrackId, '42');
@@ -75,7 +73,6 @@ void main() {
             'canPlay': true,
           },
         ],
-        'currentPosition': 0,
       });
 
       expect(state.tracks[0].queueStatus, TrackQueueStatus.pending);

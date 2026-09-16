@@ -271,7 +271,6 @@ class _ImportedQueueApiClient extends EmptyQueueApiClient {
             addedAt: DateTime.utc(2026),
           ),
         ],
-        currentIndex: 0,
       );
 }
 
@@ -319,7 +318,6 @@ class _ImportingQueueApiClient extends EmptyQueueApiClient {
           queueStatus: TrackQueueStatus.downloading,
         ),
       ],
-      currentIndex: 0,
     );
   }
 }

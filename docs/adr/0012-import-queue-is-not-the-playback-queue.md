@@ -102,7 +102,8 @@ step both moves callers and deletes their target.
 1. **Guardrail and adapter.** R1, R2, `--self-test`, and
    `playback_queue_projection.dart`, with the moved-not-duplicated helpers. Both
    rules are red on arrival, so they land with a dated exemption table naming
-   exactly the files above. Zero behavior change; no caller is retargeted.
+   exactly the files above. The table is removed in step 4; zero behavior
+   change; no caller is retargeted.
 2. **Server-truth alignment.** Make the import queue's own surfaces honest about
    what `currentPosition` means, or stop sending it.
 3. **Retarget the readers.** Move the surfaces that ask `QueueProvider` "what is
@@ -112,18 +113,16 @@ step both moves callers and deletes their target.
    unless "next" comes from `PlaybackState.nextQueueIndexInPlayOrder` and
    "current" is resolved by matching `cue.queueIndex == currentQueueIndex`.
    Both seams are added in step 1 for this reason.
-4. **Delete.** Remove the four fictional getters and the duplicate timeline
-   editor, and with them the exemption table. The harness fails if the table
-   outlives the code it excuses.
+4. **Delete (shipped).** The four fictional getters and duplicate timeline
+   editor are removed, along with the exemption table. The harness now enforces
+   both rules with zero exemptions.
 5. **Re-home the import queue.** Name and place `QueueProvider` for the job it
    actually has.
 
 ## Consequences
 
-- The guardrail is red on the day it lands. The exemption table is dated and
-  self-removing: if an exempted file stops tripping its rule, the harness fails
-  until the row is deleted. Adding a row is the tell that a second authority is
-  being introduced.
+- The guardrail is enforced with zero exemptions. Any new second authority or
+  duplicate timeline editor fails the harness immediately.
 - Steps 0 and 1 are provably inert. The moved helpers keep their behavior, no
   call site changes target, and the two new seams
   (`PlaybackState.nextQueueIndexInPlayOrder`, the projection) have no production
@@ -135,5 +134,6 @@ step both moves callers and deletes their target.
   client-asserted queue-tail track id. Only its justification changes — the
   anchor is client-supplied because the *listening* queue is client-side, not
   because `QueueProvider` is the playback authority.
-- `QueueState.currentIndex` and the server's `currentPosition` stay wired until
-  step 2, so nothing in this ADR requires a backend change to be true.
+- The client no longer carries `QueueState.currentIndex` or parses
+  `currentPosition`; the server field remains unchanged until step 2. No
+  backend change is required for this step.

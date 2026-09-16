@@ -332,7 +332,6 @@ class _HydratingAnalysisApi extends ApiClient {
   @override
   Future<QueueState> getQueue() async => QueueState(
         tracks: [djAnalysisTrack(analysis: djCompactAnalysis())],
-        currentIndex: 0,
       );
 
   @override

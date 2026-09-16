@@ -2,19 +2,13 @@ import 'dart:async';
 import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
-import '../models/mix_plan.dart';
 import '../models/queue_state.dart';
-import '../models/timeline_clip.dart';
 import '../models/track.dart';
 import '../models/track_analysis.dart';
-import '../models/trim_range.dart';
 import '../models/waveform.dart';
 import '../core/api/api_client.dart';
-import '../core/engine/tempo_automation.dart';
-import '../core/engine/timeline_model.dart';
 
 class QueueProvider extends ChangeNotifier {
-  static const String queueTimingMixPlanName = 'Queue timing';
   static const Duration defaultAnalysisRetryCooldown = Duration(seconds: 15);
 
   /// Root used by callers that own the whole hydration surface rather than one
@@ -44,15 +38,6 @@ class QueueProvider extends ChangeNotifier {
   bool _queueServiceDisabled = false;
   bool _disposed = false;
 
-  String? _activeMixPlanId;
-  int? _activeMixPlanVersion;
-  String _activeMixPlanName = queueTimingMixPlanName;
-  Future<void>? _mixPlanSaveFuture;
-  bool _mixPlanSaveQueued = false;
-
-  Map<String, TrimRange> _trimRanges = {};
-  Map<String, int> _timelineStartOverrides = {};
-  Map<String, MixPlanClip> _mixPlanClips = {};
   final LinkedHashMap<_TimelineWaveformCacheKey, _CachedTimelineWaveform>
       _timelineWaveforms = LinkedHashMap();
   final Map<String, TrackAnalysis> _analysisByTrackId = {};
@@ -103,8 +88,6 @@ class QueueProvider extends ChangeNotifier {
   /// callers should avoid polling or presenting download-state controls.
   bool get queueServiceDisabled => _queueServiceDisabled;
 
-  QueueTrack? get currentTrack => _queue.currentTrack;
-  List<QueueTrack> get upNext => _queue.upNext;
   bool get isEmpty => _queue.isEmpty;
   int get analysisRevision => _analysisRevision;
 
@@ -125,59 +108,6 @@ class QueueProvider extends ChangeNotifier {
         0,
         (total, entry) => total + entry.estimatedByteSize,
       );
-
-  Map<String, TrimRange> get trimRanges => Map.unmodifiable(_trimRanges);
-  Map<String, MixPlanClip> get mixPlanClips => Map.unmodifiable(_mixPlanClips);
-
-  /// Trim range for a track, defaulting to the full track when untrimmed.
-  TrimRange trimRangeFor(QueueTrack track) {
-    final local = _firstTrimRange(track);
-    if (local != null) return local;
-
-    final clip = _mixPlanClipFor(track);
-    if (clip != null) {
-      return TrimRange.clamped(
-        trackDurationMs: track.durationMs,
-        startOffsetMs: clip.sourceStartMs,
-        endOffsetMs: clip.sourceEndMs,
-      );
-    }
-
-    return TrimRange.full(track.durationMs);
-  }
-
-  /// Timeline placement for a track, using the durable mix-plan timing contract
-  /// when one has been loaded and falling back to the caller's synthesized clip.
-  TimelineClip timelineClipFor(QueueTrack track, TimelineClip fallback) {
-    final range = trimRangeFor(track);
-    final mixClip = _mixPlanClipFor(track);
-    final localStart = _firstTimelineStart(track);
-    final timelineStartMs =
-        localStart ?? mixClip?.timelineStartMs ?? fallback.timelineStartMs;
-
-    return TimelineClip.clamped(
-      id: fallback.id,
-      trackId: fallback.trackId,
-      sourceDurationMs: fallback.sourceDurationMs,
-      sourceStartMs: range.startOffsetMs,
-      sourceEndMs: range.endOffsetMs,
-      timelineStartMs: timelineStartMs,
-    );
-  }
-
-  String pitchModeFor(QueueTrack track) =>
-      _mixPlanClipFor(track)?.pitchMode ?? pitchModePreserve;
-
-  /// Load durable #57 mix-plan clip timing into the queue editing surface.
-  /// The UI can still edit optimistically when no saved plan is present.
-  void applyMixPlanClips(Iterable<MixPlanClip> clips) {
-    _mixPlanClips = {};
-    for (final clip in clips) {
-      _storeMixPlanClip(clip);
-    }
-    _pruneTimingState(clearWhenEmpty: false);
-    _notifyListeners();
-  }
 
   /// Deterministic mock waveform peaks for a track until backend peak data is
   /// available.
@@ -501,7 +431,6 @@ class QueueProvider extends ChangeNotifier {
               ? queuedTrack.copyWith(analysis: analysis)
               : queuedTrack,
       ],
-      currentIndex: _queue.currentIndex,
     );
     _pruneAnalysisAuthorityState();
     _notifyListeners();
@@ -534,8 +463,7 @@ class QueueProvider extends ChangeNotifier {
       _queueServiceDisabled = false;
       _queue = _queueWithAuthoritativeAnalysis(loadedQueue);
       _rememberQueueAnalyses();
-      _pruneTimingState();
-      await _loadQueueTimingMixPlan(operationGeneration: operationGeneration);
+      _pruneTimelineWaveformsForQueue();
       if (!_isCurrentQueueOperation(operationGeneration)) return;
     } catch (e) {
       if (!_isCurrentQueueOperation(operationGeneration)) return;
@@ -575,7 +503,7 @@ class QueueProvider extends ChangeNotifier {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
         _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
         _rememberQueueAnalyses();
-        _pruneTimingState();
+        _pruneTimelineWaveformsForQueue();
         _notifyListeners();
       } catch (e) {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
@@ -611,7 +539,7 @@ class QueueProvider extends ChangeNotifier {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
         _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
         _rememberQueueAnalyses();
-        _pruneTimingState();
+        _pruneTimelineWaveformsForQueue();
         _notifyListeners();
       } catch (e) {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
@@ -636,29 +564,11 @@ class QueueProvider extends ChangeNotifier {
 
       final operationGeneration = _beginQueueOperation();
       final previousQueue = _queue;
-      final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
-      final previousTimelineStarts = Map<String, int>.from(
-        _timelineStartOverrides,
-      );
-      final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
 
       final newTracks = List<QueueTrack>.from(_queue.tracks);
-      final removedTrack = newTracks.removeAt(currentPosition);
-      _trimRanges = Map<String, TrimRange>.from(_trimRanges);
-      _timelineStartOverrides = Map<String, int>.from(_timelineStartOverrides);
-      for (final key in _trackTimingKeys(removedTrack)) {
-        _trimRanges.remove(key);
-        _timelineStartOverrides.remove(key);
-      }
-
-      int newCurrentIndex = _queue.currentIndex;
-      if (currentPosition < _queue.currentIndex) {
-        newCurrentIndex--;
-      } else if (currentPosition == _queue.currentIndex) {
-        newCurrentIndex = newCurrentIndex.clamp(-1, newTracks.length - 1);
-      }
-      _queue = QueueState(tracks: newTracks, currentIndex: newCurrentIndex);
-      _pruneTimingState();
+      newTracks.removeAt(currentPosition);
+      _queue = QueueState(tracks: newTracks);
+      _pruneTimelineWaveformsForQueue();
       _pruneAnalysisAuthorityState();
       _notifyListeners();
 
@@ -667,7 +577,7 @@ class QueueProvider extends ChangeNotifier {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
         _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
         _rememberQueueAnalyses();
-        _pruneTimingState();
+        _pruneTimelineWaveformsForQueue();
         _notifyListeners();
       } catch (e) {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
@@ -680,9 +590,6 @@ class QueueProvider extends ChangeNotifier {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
         _queue = _queueWithAuthoritativeAnalysis(previousQueue);
         _rememberQueueAnalyses();
-        _trimRanges = previousTrimRanges;
-        _timelineStartOverrides = previousTimelineStarts;
-        _mixPlanClips = previousMixPlanClips;
         _error = e.toString();
         _notifyListeners();
       }
@@ -701,7 +608,7 @@ class QueueProvider extends ChangeNotifier {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
         _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
         _rememberQueueAnalyses();
-        _pruneTimingState();
+        _pruneTimelineWaveformsForQueue();
         _notifyListeners();
       } catch (e) {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
@@ -733,18 +640,7 @@ class QueueProvider extends ChangeNotifier {
       final movedTrack = newTracks.removeAt(currentOldIndex);
       newTracks.insert(currentNewIndex, movedTrack);
 
-      int newCurrentIndex = _queue.currentIndex;
-      if (currentOldIndex == _queue.currentIndex) {
-        newCurrentIndex = currentNewIndex;
-      } else if (currentOldIndex < _queue.currentIndex &&
-          currentNewIndex >= _queue.currentIndex) {
-        newCurrentIndex--;
-      } else if (currentOldIndex > _queue.currentIndex &&
-          currentNewIndex <= _queue.currentIndex) {
-        newCurrentIndex++;
-      }
-
-      _queue = QueueState(tracks: newTracks, currentIndex: newCurrentIndex);
+      _queue = QueueState(tracks: newTracks);
       _notifyListeners();
 
       try {
@@ -755,7 +651,7 @@ class QueueProvider extends ChangeNotifier {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
         _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
         _rememberQueueAnalyses();
-        _pruneTimingState();
+        _pruneTimelineWaveformsForQueue();
         _notifyListeners();
       } catch (e) {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
@@ -778,16 +674,8 @@ class QueueProvider extends ChangeNotifier {
     await _runQueueMutation(() async {
       final operationGeneration = _beginQueueOperation();
       final previousQueue = _queue;
-      final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
-      final previousTimelineStarts = Map<String, int>.from(
-        _timelineStartOverrides,
-      );
-      final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
 
       _queue = QueueState.empty();
-      _trimRanges = {};
-      _timelineStartOverrides = {};
-      _mixPlanClips = {};
       _pruneAnalysisAuthorityState();
       _notifyListeners();
 
@@ -804,92 +692,10 @@ class QueueProvider extends ChangeNotifier {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
         _queue = _queueWithAuthoritativeAnalysis(previousQueue);
         _rememberQueueAnalyses();
-        _trimRanges = previousTrimRanges;
-        _timelineStartOverrides = previousTimelineStarts;
-        _mixPlanClips = previousMixPlanClips;
         _error = e.toString();
         _notifyListeners();
       }
     });
-  }
-
-  /// Move a track's entry point to [ms]. Clamped via [TrimRange].
-  Future<void> setStartOffsetMs(QueueTrack track, int ms) =>
-      setTrimRange(track, trimRangeFor(track).withStart(ms));
-
-  /// Move a track's exit point to [ms]. Clamped via [TrimRange].
-  Future<void> setEndOffsetMs(QueueTrack track, int ms) =>
-      setTrimRange(track, trimRangeFor(track).withEnd(ms));
-
-  /// Move a clip along the timeline without changing source trim.
-  void setTimelineStartMs(QueueTrack track, int ms) {
-    final start = ms < 0 ? 0 : ms;
-    _timelineStartOverrides = Map<String, int>.from(_timelineStartOverrides);
-    for (final key in _localTimingKeys(track)) {
-      _timelineStartOverrides[key] = start;
-    }
-
-    final mixClip = _mixPlanClipFor(track);
-    if (mixClip != null) {
-      _storeMixPlanClip(mixClip.withTimelineStartMs(start));
-    }
-    _notifyListeners();
-    unawaited(_enqueueQueueTimingMixPlanSave());
-  }
-
-  void setPitchMode(QueueTrack track, String pitchMode) {
-    final normalized = normalizePitchMode(pitchMode);
-    final existing = _mixPlanClipFor(track);
-    if (existing != null && existing.pitchMode == normalized) return;
-    if (existing != null) {
-      _storeMixPlanClip(existing.withPitchMode(normalized));
-    } else {
-      final trackId = _mixPlanTrackId(track);
-      if (trackId == null) return;
-      final range = trimRangeFor(track);
-      final fallbackClip = TimelineClip.clamped(
-        id: track.queueItemId.isNotEmpty ? track.queueItemId : track.id,
-        trackId: trackId,
-        sourceDurationMs: track.durationMs,
-        sourceStartMs: range.startOffsetMs,
-        sourceEndMs: range.endOffsetMs,
-        timelineStartMs: _firstTimelineStart(track) ?? 0,
-      );
-      _storeMixPlanClip(
-        MixPlanClip(
-          clipId: fallbackClip.id,
-          queueItemId: track.queueItemId.isNotEmpty
-              ? track.queueItemId
-              : fallbackClip.id,
-          trackId: trackId,
-          sourceStartMs: fallbackClip.sourceStartMs,
-          sourceEndMs: fallbackClip.sourceEndMs,
-          timelineStartMs: fallbackClip.timelineStartMs,
-          pitchMode: normalized,
-        ),
-      );
-    }
-    _notifyListeners();
-    unawaited(_enqueueQueueTimingMixPlanSave());
-  }
-
-  Future<void> setTrimRange(QueueTrack track, TrimRange range) async {
-    _trimRanges = Map<String, TrimRange>.from(_trimRanges);
-    for (final key in _localTimingKeys(track)) {
-      _trimRanges[key] = range;
-    }
-
-    final mixClip = _mixPlanClipFor(track);
-    if (mixClip != null) {
-      _storeMixPlanClip(
-        mixClip.withSourceRange(
-          sourceStartMs: range.startOffsetMs,
-          sourceEndMs: range.endOffsetMs,
-        ),
-      );
-    }
-    _notifyListeners();
-    await _enqueueQueueTimingMixPlanSave();
   }
 
   void clearError() {
@@ -931,324 +737,10 @@ class QueueProvider extends ChangeNotifier {
       if (!_isCurrentQueueOperation(generation)) return false;
       _queue = _queueWithAuthoritativeAnalysis(loadedQueue);
       _rememberQueueAnalyses();
-      _pruneTimingState();
-      await _loadQueueTimingMixPlan(operationGeneration: generation);
+      _pruneTimelineWaveformsForQueue();
       return _isCurrentQueueOperation(generation);
     } catch (_) {
       return false;
-    }
-  }
-
-  Future<void> _loadQueueTimingMixPlan({
-    required int operationGeneration,
-  }) async {
-    if (!_isCurrentQueueOperation(operationGeneration)) return;
-    if (_queue.tracks.isEmpty) {
-      _activeMixPlanId = null;
-      _activeMixPlanVersion = null;
-      _activeMixPlanName = queueTimingMixPlanName;
-      return;
-    }
-
-    try {
-      final plans = await _apiClient.listMixPlans();
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      final plan = plans.cast<MixPlan?>().firstWhere(
-            (plan) => plan?.name == queueTimingMixPlanName,
-            orElse: () => null,
-          );
-      if (plan == null) {
-        _activeMixPlanId = null;
-        _activeMixPlanVersion = null;
-        _activeMixPlanName = queueTimingMixPlanName;
-        return;
-      }
-
-      _activeMixPlanId = plan.id;
-      _activeMixPlanVersion = plan.version;
-      _activeMixPlanName = plan.name;
-      _mixPlanClips = {};
-      for (final clip in _queueTimingClipsFromPlan(plan)) {
-        _storeMixPlanClip(clip);
-      }
-      _pruneTimingState(clearWhenEmpty: false);
-    } catch (_) {
-      // Mix-plan persistence is progressive enhancement for queue editing. Queue
-      // loading should not fail just because an older backend/proxy lacks the
-      // durable timing endpoint.
-    }
-  }
-
-  Future<void> _enqueueQueueTimingMixPlanSave() {
-    final activeSave = _mixPlanSaveFuture;
-    if (activeSave != null) {
-      _mixPlanSaveQueued = true;
-      return activeSave;
-    }
-
-    final saveFuture = _drainQueueTimingMixPlanSaves();
-    _mixPlanSaveFuture = saveFuture;
-    return saveFuture;
-  }
-
-  Future<void> _drainQueueTimingMixPlanSaves() async {
-    try {
-      do {
-        _mixPlanSaveQueued = false;
-        await _saveQueueTimingMixPlan();
-      } while (_mixPlanSaveQueued && !_disposed);
-    } finally {
-      _mixPlanSaveFuture = null;
-    }
-  }
-
-  Future<void> _saveQueueTimingMixPlan() async {
-    if (_queue.tracks.isEmpty) return;
-
-    final clips = _queueTimingClips();
-    if (clips.isEmpty) return;
-
-    try {
-      final planId = _activeMixPlanId;
-      final version = _activeMixPlanVersion;
-      final saved = planId == null || version == null
-          ? await _apiClient.createMixPlan(
-              name: _activeMixPlanName,
-              clips: clips,
-            )
-          : await _apiClient.updateMixPlan(
-              id: planId,
-              version: version,
-              name: _activeMixPlanName,
-              clips: clips,
-            );
-      if (_disposed) return;
-      _activeMixPlanId = saved.id;
-      _activeMixPlanVersion = saved.version;
-      _activeMixPlanName = saved.name;
-      _mixPlanClips = {};
-      for (final clip in _queueTimingClipsFromPlan(saved)) {
-        _storeMixPlanClip(clip);
-      }
-      _pruneTimingState(clearWhenEmpty: false);
-    } catch (_) {
-      // Keep the optimistic UI edit even when persistence is unavailable. The
-      // next explicit edit or reload can retry against the durable API.
-    }
-  }
-
-  List<MixPlanClip> _queueTimingClips() {
-    final clips = <MixPlanClip>[];
-    for (final track in _queue.tracks) {
-      final trackId = _mixPlanTrackId(track);
-      if (trackId == null) continue;
-
-      final existing = _mixPlanClipFor(track);
-      final existingClipId = existing != null &&
-              existing.hasExplicitQueueItemId &&
-              existing.queueItemId == track.queueItemId
-          ? existing.clipId
-          : track.queueItemId;
-      final range = trimRangeFor(track);
-      clips.add(
-        MixPlanClip(
-          clipId: existingClipId,
-          queueItemId: track.queueItemId,
-          trackId: trackId,
-          sourceStartMs: range.startOffsetMs,
-          sourceEndMs: range.endOffsetMs,
-          timelineStartMs:
-              _firstTimelineStart(track) ?? existing?.timelineStartMs ?? 0,
-          gainDb: existing?.gainDb ?? 0,
-          fadeInMs: existing?.fadeInMs,
-          fadeOutMs: existing?.fadeOutMs,
-          pitchMode: existing?.pitchMode ?? pitchModePreserve,
-        ),
-      );
-    }
-    if (clips.isEmpty) return clips;
-    return _queueTimingModelFromPlan(_mixPlanShell(clips)).toMixPlanClips();
-  }
-
-  TimelineModel _queueTimingModelFromPlan(MixPlan plan) {
-    final orderedTracks = [
-      for (final track in _queue.tracks)
-        if (_mixPlanTrackId(track) != null) track,
-    ];
-    final trackOrder = orderedTracks
-        .map((track) => _mixPlanTrackId(track)!)
-        .toList(growable: false);
-    return TimelineModel.fromQueuePlan(
-      plan,
-      trackOrder: trackOrder,
-      sourceDurationMsFor: _sourceDurationMsForTrackId,
-      tempoMetadataForEntry: (_, index) =>
-          _tempoMetadataForTrack(orderedTracks[index]),
-      clipIdFor: (trackId, index) {
-        final queueItemId = orderedTracks[index].queueItemId;
-        return queueItemId.isNotEmpty ? queueItemId : 'clip_${index}_$trackId';
-      },
-      queueItemIdFor: (_, index) => orderedTracks[index].queueItemId,
-      useTempoDefaultStarts: true,
-    );
-  }
-
-  List<MixPlanClip> _queueTimingClipsFromPlan(MixPlan plan) {
-    final normalized = _queueTimingModelFromPlan(plan).toMixPlanClips();
-    final legacyClips = plan.clips
-        .where((clip) => !clip.hasExplicitQueueItemId)
-        .toList(growable: true);
-    if (legacyClips.isEmpty) return normalized;
-
-    return [
-      for (final clip in normalized)
-        _restoreLegacyTrackFallback(clip, legacyClips) ?? clip,
-    ];
-  }
-
-  MixPlanClip? _restoreLegacyTrackFallback(
-    MixPlanClip normalized,
-    List<MixPlanClip> legacyClips,
-  ) {
-    final legacyIndex = legacyClips.indexWhere(
-      (clip) => clip.trackId == normalized.trackId,
-    );
-    if (legacyIndex == -1) return null;
-    legacyClips.removeAt(legacyIndex);
-    return MixPlanClip(
-      clipId: normalized.clipId,
-      queueItemId: normalized.queueItemId,
-      hasExplicitQueueItemId: false,
-      trackId: normalized.trackId,
-      sourceStartMs: normalized.sourceStartMs,
-      sourceEndMs: normalized.sourceEndMs,
-      timelineStartMs: normalized.timelineStartMs,
-      gainDb: normalized.gainDb,
-      fadeInMs: normalized.fadeInMs,
-      fadeOutMs: normalized.fadeOutMs,
-      pitchMode: normalized.pitchMode,
-    );
-  }
-
-  MixPlan _mixPlanShell(List<MixPlanClip> clips) {
-    final now = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
-    return MixPlan(
-      id: _activeMixPlanId ?? 'queue-timing-draft',
-      schemaVersion: 1,
-      name: _activeMixPlanName,
-      clips: clips,
-      summary: MixPlanSummary(
-        clipCount: clips.length,
-        trackIds: clips.map((clip) => clip.trackId).toList(),
-        durationMs: clips.fold<int>(
-          0,
-          (maxEnd, clip) =>
-              maxEnd > clip.timelineEndMs ? maxEnd : clip.timelineEndMs,
-        ),
-      ),
-      version: _activeMixPlanVersion ?? 1,
-      createdAt: now,
-      updatedAt: now,
-    );
-  }
-
-  int _sourceDurationMsForTrackId(String trackId) {
-    for (final track in _queue.tracks) {
-      if (_mixPlanTrackId(track) == trackId) return track.durationMs;
-    }
-    return 0;
-  }
-
-  ClipTempoMetadata _tempoMetadataForTrack(QueueTrack track) {
-    final analysisTrackId = _analysisTrackId(track);
-    final analysis = track.analysis ??
-        (analysisTrackId == null
-            ? null
-            : _analysisByTrackId[analysisTrackId.toString()]);
-    return analysis == null
-        ? ClipTempoMetadata.empty
-        : ClipTempoMetadata.fromTrackAnalysis(analysis);
-  }
-
-  String? _mixPlanTrackId(QueueTrack track) {
-    final candidates = [track.playbackTrackId, track.id];
-    for (final candidate in candidates) {
-      if (candidate == null) continue;
-      final parsed = int.tryParse(candidate);
-      if (parsed != null && parsed > 0) return parsed.toString();
-    }
-    return null;
-  }
-
-  void _pruneTimingState({bool clearWhenEmpty = true}) {
-    if (_queue.tracks.isEmpty) {
-      if (clearWhenEmpty) {
-        _trimRanges = {};
-        _timelineStartOverrides = {};
-        _mixPlanClips = {};
-        _timelineWaveforms.clear();
-      }
-      return;
-    }
-
-    final localTimingKeys = _queue.tracks.expand(_localTimingKeys).toSet();
-    final waveformSourceKeys =
-        _queue.tracks.map(_trackWaveformSourceKey).toSet();
-    final queueItemIds = _queue.tracks
-        .map((track) => track.queueItemId)
-        .where((id) => id.isNotEmpty)
-        .toSet();
-    _trimRanges = {
-      for (final entry in _trimRanges.entries)
-        if (localTimingKeys.contains(entry.key)) entry.key: entry.value,
-    };
-    _timelineStartOverrides = {
-      for (final entry in _timelineStartOverrides.entries)
-        if (localTimingKeys.contains(entry.key)) entry.key: entry.value,
-    };
-    final clips = _mixPlanClips.values.toSet();
-    _mixPlanClips = {};
-    Set<String>? playbackTrackIds;
-    for (final clip in clips) {
-      final hasQueueItemIdentity = queueItemIds.contains(clip.queueItemId);
-      final hasLegacyTrackIdentity = !clip.hasExplicitQueueItemId &&
-          (playbackTrackIds ??= _queue.tracks
-                  .map(_mixPlanTrackId)
-                  .whereType<String>()
-                  .toSet())
-              .contains(clip.trackId);
-      if (hasQueueItemIdentity || hasLegacyTrackIdentity) {
-        _storeMixPlanClip(clip);
-      }
-    }
-    _timelineWaveforms.removeWhere(
-      (cacheKey, _) => waveformSourceKeys.every(
-        (sourceKey) => !cacheKey.trackRevision.startsWith('$sourceKey|'),
-      ),
-    );
-  }
-
-  Iterable<String> _localTimingKeys(QueueTrack track) sync* {
-    if (track.queueItemId.isNotEmpty) {
-      yield track.queueItemId;
-      return;
-    }
-    yield* _trackTimingKeys(track);
-  }
-
-  Iterable<String> _trackTimingKeys(QueueTrack track) sync* {
-    final seen = <String>{};
-    if (track.queueItemId.isNotEmpty && seen.add(track.queueItemId)) {
-      yield track.queueItemId;
-    }
-    if (track.id.isNotEmpty && seen.add(track.id)) {
-      yield track.id;
-    }
-    final playbackTrackId = track.playbackTrackId;
-    if (playbackTrackId != null &&
-        playbackTrackId.isNotEmpty &&
-        seen.add(playbackTrackId)) {
-      yield playbackTrackId;
     }
   }
 
@@ -1314,6 +806,20 @@ class QueueProvider extends ChangeNotifier {
     }
   }
 
+  void _pruneTimelineWaveformsForQueue() {
+    if (_queue.tracks.isEmpty) {
+      _timelineWaveforms.clear();
+      return;
+    }
+    final waveformSourceKeys =
+        _queue.tracks.map(_trackWaveformSourceKey).toSet();
+    _timelineWaveforms.removeWhere(
+      (cacheKey, _) => waveformSourceKeys.every(
+        (sourceKey) => !cacheKey.trackRevision.startsWith('$sourceKey|'),
+      ),
+    );
+  }
+
   void _rememberQueueAnalyses() {
     for (final track in _queue.tracks) {
       _rememberTrackAnalysis(track);
@@ -1346,7 +852,7 @@ class QueueProvider extends ChangeNotifier {
             : track.copyWith(analysis: resolved),
       );
     }
-    return QueueState(tracks: tracks, currentIndex: queue.currentIndex);
+    return QueueState(tracks: tracks);
   }
 
   void _rememberTrackAnalysis(QueueTrack track) {
@@ -2196,40 +1702,6 @@ class QueueProvider extends ChangeNotifier {
     _enrichedTrackCache.removeWhere(
       (cacheKey, _) => cacheKey.endsWith('|$trackId'),
     );
-  }
-
-  int? _firstTimelineStart(QueueTrack track) {
-    for (final key in _trackTimingKeys(track)) {
-      final value = _timelineStartOverrides[key];
-      if (value != null) return value;
-    }
-    return null;
-  }
-
-  TrimRange? _firstTrimRange(QueueTrack track) {
-    for (final key in _trackTimingKeys(track)) {
-      final value = _trimRanges[key];
-      if (value != null) return value;
-    }
-    return null;
-  }
-
-  MixPlanClip? _mixPlanClipFor(QueueTrack track) {
-    for (final key in _trackTimingKeys(track)) {
-      final clip = _mixPlanClips[key];
-      if (clip != null) return clip;
-    }
-    return null;
-  }
-
-  void _storeMixPlanClip(MixPlanClip clip) {
-    _mixPlanClips[clip.queueItemId] = clip;
-    if (!clip.hasExplicitQueueItemId) {
-      _mixPlanClips[clip.trackId] = clip;
-    }
-    if (clip.clipId != clip.queueItemId) {
-      _mixPlanClips[clip.clipId] = clip;
-    }
   }
 
   void _notifyListeners() {

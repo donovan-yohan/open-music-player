@@ -188,8 +188,6 @@ void main() {
       session: session,
     );
 
-    expect(importQueue.currentTrack?.playbackTrackId, '9001',
-        reason: 'the import queue still reports its own head as current');
     expect(session.deckA.trackRef, '9101',
         reason: 'the deck must read playback truth, not the import queue head');
     expect(session.deckB.trackRef, '9102');
@@ -325,7 +323,6 @@ class _HeadPinnedQueueApiClient extends EmptyQueueApiClient {
               addedAt: DateTime.utc(2026, 9, 1),
             ),
         ],
-        currentIndex: 0,
       );
 }
 

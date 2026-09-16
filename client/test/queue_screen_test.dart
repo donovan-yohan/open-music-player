@@ -46,94 +46,6 @@ import 'package:open_music_player/widgets/timeline_clip_widget.dart';
 
 import 'support/analysis_envelope_fixture.dart';
 
-List<int> _expectedTimelineHydrationTrackIds(
-  WidgetTester tester,
-  Finder laneScroll, {
-  required List<int> laneTrackIds,
-}) {
-  if (laneTrackIds.length < 3) {
-    throw ArgumentError.value(
-      laneTrackIds,
-      'laneTrackIds',
-      'must contain previous, current, and up-next lanes',
-    );
-  }
-  final viewport = tester.getRect(laneScroll);
-  final lanes = <({TimelineClipWidget widget, Rect bounds})>[];
-  for (final clipElement in find
-      .descendant(
-        of: laneScroll,
-        matching: find.byType(TimelineClipWidget),
-      )
-      .evaluate()) {
-    Element? laneElement;
-    clipElement.visitAncestorElements((ancestor) {
-      final widget = ancestor.widget;
-      if (widget is SizedBox &&
-          widget.width == double.infinity &&
-          widget.height != null) {
-        laneElement = ancestor;
-        return false;
-      }
-      return true;
-    });
-    if (laneElement == null) {
-      throw StateError('TimelineClipWidget has no rendered lane SizedBox');
-    }
-    final laneBox = laneElement!.renderObject! as RenderBox;
-    lanes.add((
-      widget: clipElement.widget as TimelineClipWidget,
-      bounds: laneBox.localToGlobal(Offset.zero) & laneBox.size,
-    ));
-  }
-  lanes.sort((left, right) => left.bounds.top.compareTo(right.bounds.top));
-
-  int analysisTrackId(TimelineClipWidget lane) =>
-      int.parse(lane.track.playbackTrackId ?? lane.track.id);
-  final visibleLaneIndices = [
-    for (var index = 0; index < lanes.length; index++)
-      if (lanes[index].bounds.bottom > viewport.top &&
-          lanes[index].bounds.top < viewport.bottom)
-        index,
-  ];
-  if (visibleLaneIndices.isEmpty) {
-    throw StateError('No rendered timeline lanes overlap the viewport');
-  }
-  final visibleTrackIndices = [
-    for (final laneIndex in visibleLaneIndices)
-      laneTrackIds.indexOf(analysisTrackId(lanes[laneIndex].widget)),
-  ];
-  if (visibleTrackIndices.any((index) => index < 0)) {
-    throw StateError(
-        'Rendered timeline lane is absent from fixture lane order');
-  }
-  final firstLookahead =
-      visibleTrackIndices.first == 0 ? 0 : visibleTrackIndices.first - 1;
-  final lastLookahead =
-      (visibleTrackIndices.last + 1).clamp(0, laneTrackIds.length - 1).toInt();
-  final current = lanes.where(
-    (lane) => lane.widget.role == LaneRole.current,
-  );
-  final upNext = lanes.where(
-    (lane) => lane.widget.role == LaneRole.upcoming,
-  );
-  final currentTrackId = current.isEmpty
-      ? laneTrackIds[1]
-      : analysisTrackId(current.single.widget);
-  final upNextTrackId =
-      upNext.isEmpty ? laneTrackIds[2] : analysisTrackId(upNext.first.widget);
-  final seen = <int>{};
-  return [
-    for (final trackId in [
-      currentTrackId,
-      upNextTrackId,
-      for (var index = firstLookahead; index <= lastLookahead; index++)
-        laneTrackIds[index],
-    ])
-      if (seen.add(trackId)) trackId,
-  ];
-}
-
 void main() {
   late _FakeQueueApiClient apiClient;
   late _FakePlaybackState playbackState;
@@ -945,7 +857,8 @@ void main() {
     expect(find.byKey(const PageStorageKey('queue_list_view')), findsOneWidget);
     expect(find.text('Current Song'), findsOneWidget);
     expect(find.text('Live playback only'), findsNothing);
-    expect(find.text('Playback Queue'), findsNothing);
+    expect(find.text('Playback Queue'), findsOneWidget);
+    expect(find.text('1 of 1 • 2:00 remaining'), findsOneWidget);
   });
 
   testWidgets('playback queue list preserves provider artwork provenance', (
@@ -1041,25 +954,34 @@ void main() {
     }
   });
 
-  testWidgets('mobile import queue header controls contrast with orange', (
+  testWidgets('mobile import queue header is labelled for imports', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [_mediaItem(99, 'Live playback only', seconds: 120)]
+      ..fakeCurrentIndex = 0;
 
     await pumpQueueScreen(tester, showImportJobs: true);
 
     final header = tester.widget<Container>(
-      find.byKey(const ValueKey('queue_header')),
+      find.byKey(const ValueKey('import_queue_header')),
     );
-    for (final finder in [find.text('List'), find.text('Timeline')]) {
-      expect(
-        _contrastRatio(_effectiveTextColor(tester, finder), header.color!),
-        greaterThanOrEqualTo(4.5),
-      );
-    }
+    // The import view lists download jobs, so it must not borrow the
+    // listening queue's title or row counter (ADR 0012).
+    expect(find.text('Import Queue'), findsOneWidget);
+    expect(find.text('Playback Queue'), findsNothing);
+    expect(find.textContaining('remaining'), findsNothing);
+    expect(
+      _contrastRatio(
+        _effectiveTextColor(tester, find.text('Import Queue')),
+        header.color!,
+      ),
+      greaterThanOrEqualTo(4.5),
+    );
   });
 
   testWidgets('2x text stacks queue view labels without wrapping', (
@@ -1258,7 +1180,7 @@ void main() {
     expect(playbackState.removeFromQueueCalls, isEmpty);
   });
 
-  testWidgets('defaults to 390px list view with a one tap Timeline switch', (
+  testWidgets('imports remain in list view', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(390, 844);
@@ -1268,13 +1190,14 @@ void main() {
 
     await pumpQueueScreen(tester, showImportJobs: true);
 
-    expect(find.byKey(const ValueKey('queue_view_switch')), findsOneWidget);
-    expect(find.text('List'), findsOneWidget);
-    expect(find.text('Timeline'), findsOneWidget);
+    // The import view is list-only: its Timeline editor was deleted with the
+    // duplicate timeline editor (ADR 0012 step 4), so it must not offer a
+    // switch to a mode it no longer has.
+    expect(find.byKey(const ValueKey('queue_view_switch')), findsNothing);
+    expect(find.text('Timeline'), findsNothing);
     expect(find.byKey(const PageStorageKey('queue_list_view')), findsOneWidget);
     expect(find.byKey(const ValueKey('queue_surface')), findsNothing);
-    expect(find.byKey(const ValueKey('queue_summary_pill')), findsOneWidget);
-    expect(find.text('3 tracks · 10:41 remaining'), findsOneWidget);
+    expect(find.byKey(const ValueKey('queue_summary_pill')), findsNothing);
 
     expect(find.text('Current'), findsNothing);
     expect(find.text('Up Next'), findsNothing);
@@ -1314,32 +1237,6 @@ void main() {
         hint: 'Drag vertically to move this queued track',
       ),
     );
-
-    await tester.tap(find.text('Timeline'));
-    await tester.pumpAndSettle();
-
-    expect(find.byKey(const ValueKey('queue_surface')), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('stacked_waveform_timeline')),
-      findsOneWidget,
-    );
-    expect(find.byKey(const ValueKey('timeline_options_fab')), findsOneWidget);
-  });
-
-  testWidgets('server queue timeline hydrates compact waveform analysis', (
-    tester,
-  ) async {
-    apiClient.useCompactAnalysisFixture();
-
-    await pumpQueueScreen(tester, showImportJobs: true);
-    await tester.tap(find.text('Timeline'));
-    await tester.pumpAndSettle();
-
-    expect(apiClient.analysisRequests, containsAll(<int>[101, 202]));
-    final currentHeader = tester.widget<TimelineLaneHeader>(
-      find.byKey(const ValueKey('timeline_lane_header_t1')),
-    );
-    expect(currentHeader.track.analysis?.summary?.waveform?.peaks, isNotEmpty);
   });
 
   testWidgets(
@@ -1370,14 +1267,11 @@ void main() {
         ]
         ..fakeCurrentIndex = 0;
       final provider = _TrackingQueueProvider(apiClient);
-
       await pumpQueueScreen(tester, queueProvider: provider);
       await tester.pump(const Duration(seconds: 30));
       expect(apiClient.analysisRequests, isEmpty);
-
       await tester.tap(find.text('Timeline'));
       await tester.pumpAndSettle();
-
       expect(apiClient.analysisRequests.toSet(), <int>{101, 202});
       expect(apiClient.analysisRequests, hasLength(2));
       final currentHeader = tester
@@ -1385,192 +1279,35 @@ void main() {
           .singleWhere((header) => header.role == LaneRole.current);
       final rich = richWaveformForTrack(currentHeader.track, sampleCount: 4);
       expect(rich.frames, hasLength(4));
-      expect(
-        rich.frames.map((frame) => frame.resolvedMaxPeak).toSet().length,
-        greaterThan(1),
-      );
+      expect(rich.frames.map((frame) => frame.resolvedMaxPeak).toSet().length,
+          greaterThan(1));
       expect(rich.frames.first.resolvedChannels['low'], 0.9);
       final clearCallsAfterHydration = provider.clearCalls;
-
       for (var index = 0; index < 6; index++) {
         playbackState.emitReconstructedQueueSnapshot();
         await tester.pumpAndSettle();
       }
       await tester.pump(const Duration(seconds: 30));
-
       expect(apiClient.analysisRequests, hasLength(2));
       expect(provider.clearCalls, clearCallsAfterHydration);
       for (final item in playbackState.fakeQueue) {
-        final compact = Map<String, dynamic>.from(
-          item.extras?['analysisSummary'] as Map,
-        );
+        final compact =
+            Map<String, dynamic>.from(item.extras?['analysisSummary'] as Map);
         expect(compact.containsKey('waveform'), isFalse);
       }
-
       await playbackState.removeFromQueue(0);
       await tester.pumpAndSettle();
-
       expect(provider.lastInterestTrackIds, <int>[202]);
       expect(apiClient.analysisRequests, hasLength(2));
       expect(provider.clearCalls, clearCallsAfterHydration);
-
       await tester.tap(find.text('List'));
       await tester.pumpAndSettle();
       await tester.pump(const Duration(seconds: 30));
-
       expect(apiClient.analysisRequests, hasLength(2));
       expect(provider.lastInterestTrackIds, isEmpty);
       expect(provider.clearCalls, greaterThan(clearCallsAfterHydration));
     },
   );
-
-  testWidgets('server timeline does not hydrate before playback starts', (
-    tester,
-  ) async {
-    apiClient.useCompactAnalysisFixture(currentIndex: -1);
-
-    await pumpQueueScreen(tester, showImportJobs: true);
-    await tester.tap(find.text('Timeline'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Start playback to use Timeline view'), findsOneWidget);
-    expect(apiClient.analysisRequests, isEmpty);
-  });
-
-  testWidgets(
-    '32-track queue fetches zero detail in list mode and only viewport interest '
-    'in timeline mode',
-    (tester) async {
-      apiClient.useCompactAnalysisFixture(currentIndex: 10, trackCount: 32);
-      final provider = _TrackingQueueProvider(apiClient);
-
-      await pumpQueueScreen(
-        tester,
-        queueProvider: provider,
-        showImportJobs: true,
-      );
-      await tester.pumpAndSettle();
-
-      expect(apiClient.analysisRequests, isEmpty);
-
-      await tester.tap(find.text('Timeline'));
-      await tester.pumpAndSettle();
-
-      final laneScroll =
-          find.byKey(const PageStorageKey('timeline_lane_scroll'));
-      final initialExpected = _expectedTimelineHydrationTrackIds(
-        tester,
-        laneScroll,
-        laneTrackIds: apiClient.renderedTimelineAnalysisTrackIds,
-      );
-      expect(initialExpected, <int>[1111, 1212, 1010, 1313, 1414]);
-      expect(initialExpected.take(2), <int>[1111, 1212]);
-      expect(provider.lastInterestTrackIds, initialExpected);
-      expect(apiClient.analysisRequests, initialExpected);
-      expect(apiClient.analysisRequests, hasLength(initialExpected.length));
-      expect(initialExpected.length, lessThan(32));
-    },
-  );
-
-  testWidgets(
-    'scrolling held hydration cancels departed lanes but pins current and next',
-    (tester) async {
-      apiClient
-        ..useCompactAnalysisFixture(currentIndex: 10, trackCount: 32)
-        ..holdAnalysisRequests = true;
-      final provider = _TrackingQueueProvider(apiClient);
-      await pumpQueueScreen(
-        tester,
-        queueProvider: provider,
-        showImportJobs: true,
-      );
-      expect(apiClient.analysisRequests, isEmpty);
-
-      await tester.tap(find.text('Timeline'));
-      await tester.pumpAndSettle();
-
-      final heldLaneScroll =
-          find.byKey(const PageStorageKey('timeline_lane_scroll'));
-      final heldInitialExpected = _expectedTimelineHydrationTrackIds(
-        tester,
-        heldLaneScroll,
-        laneTrackIds: apiClient.renderedTimelineAnalysisTrackIds,
-      );
-      expect(provider.lastInterestTrackIds, heldInitialExpected);
-      expect(
-        apiClient.analysisRequests,
-        heldInitialExpected.take(3),
-        reason: 'the cap admits current, next, then the first visible lane',
-      );
-
-      await tester.drag(
-        heldLaneScroll,
-        const Offset(0, -1200),
-      );
-      await tester.pumpAndSettle();
-
-      final scrolledInterest = provider.lastInterestTrackIds;
-      final scrolledExpected = _expectedTimelineHydrationTrackIds(
-        tester,
-        heldLaneScroll,
-        laneTrackIds: apiClient.renderedTimelineAnalysisTrackIds,
-      );
-      expect(scrolledInterest, scrolledExpected);
-      expect(scrolledInterest.length, lessThan(32));
-      expect(scrolledInterest.take(2), <int>[1111, 1212]);
-      expect(
-        scrolledInterest.skip(2).every((trackId) => trackId > 1414),
-        isTrue,
-        reason: 'the held non-pinned initial lanes must have left the viewport',
-      );
-
-      final departedQueued = heldInitialExpected.skip(3).toSet();
-      expect(departedQueued, <int>{1313, 1414});
-      expect(scrolledInterest.where(departedQueued.contains), isEmpty);
-
-      apiClient.releaseHeldAnalysisRequests();
-      await tester.pumpAndSettle();
-
-      expect(apiClient.analysisRequests, containsAll(scrolledInterest));
-      expect(
-        apiClient.analysisRequests.where(departedQueued.contains),
-        isEmpty,
-        reason:
-            'queued lanes that scrolled away must be cancelled before fetch',
-      );
-      expect(provider.lastInterestTrackIds.take(2), <int>[1111, 1212]);
-      expect(
-        apiClient.analysisRequests.where((trackId) => trackId == 1111),
-        hasLength(1),
-      );
-      expect(
-        apiClient.analysisRequests.where((trackId) => trackId == 1212),
-        hasLength(1),
-      );
-    },
-  );
-
-  testWidgets('server timeline hydrates visible lanes as the user scrolls', (
-    tester,
-  ) async {
-    apiClient.useCompactAnalysisFixture(currentIndex: 2, trackCount: 10);
-
-    await pumpQueueScreen(tester, showImportJobs: true);
-    await tester.tap(find.text('Timeline'));
-    await tester.pumpAndSettle();
-
-    expect(apiClient.analysisRequests, containsAll(<int>[202, 303, 404, 505]));
-    expect(apiClient.analysisRequests, isNot(contains(101)));
-    expect(apiClient.analysisRequests, isNot(contains(1010)));
-
-    await tester.drag(
-      find.byKey(const PageStorageKey('timeline_lane_scroll')),
-      const Offset(0, -2000),
-    );
-    await tester.pumpAndSettle();
-
-    expect(apiClient.analysisRequests, contains(1010));
-  });
 
   testWidgets(
     'playback clock updates header and playhead without rebuilding waveforms',
@@ -1583,172 +1320,26 @@ void main() {
         ]
         ..fakeCurrentIndex = 0;
       final provider = _CountingQueueProvider(apiClient);
-
       await pumpQueueScreen(tester, queueProvider: provider);
       await tester.tap(find.text('Timeline'));
       await tester.pumpAndSettle();
-
       final callsBeforeTick = provider.waveformCalls;
       final playheadBefore = tester.getRect(
         find.byKey(const ValueKey('timeline_playhead')),
       );
       expect(callsBeforeTick, greaterThan(0));
       expect(find.text('1 of 3 • 3:00 remaining'), findsOneWidget);
-
       playbackState.emitPlaybackPosition(
         localPosition: const Duration(seconds: 30),
         timelinePositionMs: 30000,
       );
       await tester.pump();
-
       expect(find.text('1 of 3 • 2:30 remaining'), findsOneWidget);
       expect(
         tester.getRect(find.byKey(const ValueKey('timeline_playhead'))).left,
         isNot(playheadBefore.left),
       );
       expect(provider.waveformCalls, callsBeforeTick);
-    },
-  );
-
-  testWidgets('timeline visibility debounce coalesces rapid scroll updates', (
-    tester,
-  ) async {
-    apiClient.useCompactAnalysisFixture(currentIndex: 1, trackCount: 30);
-    final provider = _TrackingQueueProvider(apiClient);
-
-    await pumpQueueScreen(
-      tester,
-      queueProvider: provider,
-      showImportJobs: true,
-    );
-    await tester.tap(find.text('Timeline'));
-    await tester.pumpAndSettle();
-    final interestCount = provider.distinctInterestSignatures.length;
-
-    final scroll = find.byKey(const PageStorageKey('timeline_lane_scroll'));
-    await tester.drag(scroll, const Offset(0, -500));
-    await tester.drag(scroll, const Offset(0, -500));
-    await tester.drag(scroll, const Offset(0, -500));
-    await tester.pump(const Duration(milliseconds: 119));
-
-    expect(provider.distinctInterestSignatures.length, interestCount);
-    await tester.pump(const Duration(milliseconds: 2));
-    await tester.pump();
-    expect(provider.distinctInterestSignatures.length, interestCount + 1);
-  });
-
-  testWidgets('stale held hydration is discarded after lanes leave view', (
-    tester,
-  ) async {
-    apiClient
-      ..useCompactAnalysisFixture(currentIndex: 2, trackCount: 20)
-      ..holdAnalysisRequests = true;
-
-    await pumpQueueScreen(tester, showImportJobs: true);
-    await tester.tap(find.text('Timeline'));
-    await tester.pump(const Duration(milliseconds: 150));
-    expect(apiClient.analysisRequests, contains(202));
-
-    final scroll = find.byKey(const PageStorageKey('timeline_lane_scroll'));
-    await tester.drag(scroll, const Offset(0, -3000));
-    await tester.pump(const Duration(milliseconds: 121));
-    apiClient.releaseHeldAnalysisRequests();
-    await tester.pumpAndSettle();
-    expect(
-      apiClient.analysisRequests.any((trackId) => trackId >= 1515),
-      isTrue,
-    );
-
-    await tester.drag(scroll, const Offset(0, 3000));
-    await tester.pump(const Duration(milliseconds: 121));
-    await tester.pumpAndSettle();
-    expect(
-      apiClient.analysisRequests.where((trackId) => trackId == 202).length,
-      greaterThanOrEqualTo(2),
-    );
-  });
-
-  testWidgets('replacing queue provider releases prior hydration ownership', (
-    tester,
-  ) async {
-    final firstApi = _FakeQueueApiClient()
-      ..useCompactAnalysisFixture(trackCount: 12);
-    final secondApi = _FakeQueueApiClient()
-      ..useCompactAnalysisFixture(trackCount: 12);
-    final first = _TrackingQueueProvider(firstApi);
-    final second = _TrackingQueueProvider(secondApi);
-    addTearDown(first.dispose);
-    addTearDown(second.dispose);
-    await second.loadQueue();
-
-    Widget host(QueueProvider provider) => MultiProvider(
-          providers: [
-            ChangeNotifierProvider<QueueProvider>.value(value: provider),
-            ListenableProvider<PlaybackState>.value(value: playbackState),
-          ],
-          child: const MaterialApp(home: QueueScreen(showImportJobs: true)),
-        );
-
-    await tester.pumpWidget(host(first));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Timeline'));
-    await tester.pumpAndSettle();
-    final clearsBeforeSwap = first.clearCalls;
-    expect(first.distinctInterestSignatures, isNotEmpty);
-
-    await tester.pumpWidget(host(second));
-    await tester.pumpAndSettle();
-
-    expect(first.clearCalls, clearsBeforeSwap + 1);
-    expect(second.distinctInterestSignatures, isNotEmpty);
-  });
-
-  testWidgets('long timeline virtualizes offscreen waveform lanes', (
-    tester,
-  ) async {
-    apiClient.useCompactAnalysisFixture(trackCount: 100);
-    final provider = _CountingQueueProvider(apiClient);
-
-    await pumpQueueScreen(
-      tester,
-      queueProvider: provider,
-      showImportJobs: true,
-    );
-    await tester.tap(find.text('Timeline'));
-    await tester.pumpAndSettle();
-
-    final builtLanes = find.byType(TimelineClipWidget).evaluate().length;
-    expect(builtLanes, greaterThan(0));
-    expect(builtLanes, lessThan(20));
-    expect(provider.waveformCalls, lessThan(20));
-    expect(find.byKey(const ValueKey('timeline_clip_t100')), findsNothing);
-  });
-
-  testWidgets(
-    'queue summary subtracts elapsed playback from remaining runtime',
-    (tester) async {
-      playbackState.fakePosition = const Duration(seconds: 30);
-
-      await pumpQueueScreen(tester, showImportJobs: true);
-
-      expect(find.text('3 tracks · 10:11 remaining'), findsOneWidget);
-    },
-  );
-
-  testWidgets(
-    'queue summary uses source-relative playback for trimmed current track',
-    (tester) async {
-      playbackState.fakePosition = const Duration(seconds: 45);
-
-      await pumpQueueScreen(tester, showImportJobs: true);
-      final provider =
-          tester.element(find.byType(QueueScreen)).read<QueueProvider>();
-      final currentTrack = provider.currentTrack!;
-      await provider.setStartOffsetMs(currentTrack, 30000);
-      await provider.setEndOffsetMs(currentTrack, 90000);
-      await tester.pumpAndSettle();
-
-      expect(find.text('3 tracks · 8:21 remaining'), findsOneWidget);
     },
   );
 
@@ -2455,58 +2046,12 @@ void main() {
     playbackState.fakeTimelineModel = TimelineModel(
       clips: [MixClip(placement: placement)],
     );
-    final provider =
-        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
-    provider.applyMixPlanClips(const <MixPlanClip>[]);
+    playbackState.emitReconstructedQueueSnapshot();
     await tester.pumpAndSettle();
 
     expect(playbackState.analysisRefreshes, hasLength(1));
     expect(playbackState.analysisRefreshes.single.trackId, '101');
   });
-
-  testWidgets(
-    'timeline analysis correction does not use playhead as an implicit anchor',
-    (tester) async {
-      tester.view.physicalSize = const Size(390, 2000);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      apiClient.useAnalysisFixture();
-      playbackState.fakeTimelinePositionMs = 16000;
-
-      await pumpQueueScreen(tester, showImportJobs: true);
-      await tester.tap(find.text('Timeline'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
-      await tester.pumpAndSettle();
-      playbackState.emitPlaybackPosition(
-        localPosition: const Duration(seconds: 32),
-        timelinePositionMs: 32000,
-      );
-      await tester.pump();
-      await tester.tap(find.byKey(const ValueKey('timeline_track_actions_t1')));
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(const ValueKey('timeline_correct_analysis_t1')),
-      );
-      await tester.pumpAndSettle();
-
-      expect(
-        tester
-            .widget<TextField>(
-              find.byKey(const ValueKey('analysis_correction_anchor')),
-            )
-            .controller
-            ?.text,
-        '',
-      );
-
-      await tester.tap(find.text('Cancel'));
-      await settleAnalysisWorkflow(tester);
-
-      expect(apiClient.analysisOverrideUpdates, isEmpty);
-    },
-  );
 
   testWidgets(
     'timeline analysis correction refreshes the active playback tempo',
@@ -2609,61 +2154,6 @@ void main() {
     expect(apiClient.retriedQueueItemIds, ['t3']);
   });
 
-  testWidgets('dragging trim handles updates the queued track label', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(390, 844);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await pumpQueueScreen(tester, showImportJobs: true);
-
-    String trimLabel() =>
-        tester.widget<Text>(find.byKey(const ValueKey('trim_label_t2'))).data!;
-
-    expect(trimLabel(), '0:00 → 3:35 · 3:35');
-
-    await tester.drag(
-      find.byKey(const ValueKey('trim_start_handle_t2')),
-      const Offset(60, 0),
-    );
-    await tester.pumpAndSettle();
-
-    expect(trimLabel(), isNot('0:00 → 3:35 · 3:35'));
-    final afterStartDrag = trimLabel();
-
-    await tester.drag(
-      find.byKey(const ValueKey('trim_end_handle_t2')),
-      const Offset(-60, 0),
-    );
-    await tester.pumpAndSettle();
-
-    expect(trimLabel(), isNot(afterStartDrag));
-  });
-
-  testWidgets('removing a queued track clears its trim state', (tester) async {
-    tester.view.physicalSize = const Size(390, 1400);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await pumpQueueScreen(tester, showImportJobs: true);
-
-    final provider =
-        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
-    final track = provider.upNext.first;
-
-    await provider.setStartOffsetMs(track, 42000);
-    expect(provider.trimRanges.containsKey(track.id), isTrue);
-
-    await tester.tap(find.byKey(ValueKey('remove_${track.id}')));
-    await tester.pumpAndSettle();
-
-    expect(provider.trimRanges.containsKey(track.id), isFalse);
-    expect(apiClient.removedPositions, [1]);
-  });
-
   testWidgets('swiping editable queue item left removes it', (tester) async {
     tester.view.physicalSize = const Size(390, 1400);
     tester.view.devicePixelRatio = 1;
@@ -2680,71 +2170,6 @@ void main() {
 
     expect(apiClient.removedPositions, [1]);
     expect(find.text('Paper Planes'), findsNothing);
-  });
-
-  testWidgets(
-    'timeline move buttons reorder upcoming tracks after switching modes',
-    (tester) async {
-      await pumpQueueScreen(tester, showImportJobs: true);
-
-      await tester.tap(find.text('Timeline'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('timeline_track_actions_t2')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('timeline_move_later_t2')));
-      await tester.pumpAndSettle();
-
-      expect(apiClient.reorders, [const (1, 2)]);
-    },
-  );
-
-  testWidgets('provider timeline pitch toggle updates saved mix metadata', (
-    tester,
-  ) async {
-    apiClient.useMixTimingFixture();
-    await pumpQueueScreen(tester, showImportJobs: true);
-
-    await tester.tap(find.text('Timeline'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('timeline_pitch_mode_t2')));
-    await tester.pumpAndSettle();
-    await tester.tap(
-      find.byKey(const ValueKey('timeline_pitch_follows_tempo_t2')),
-    );
-    await tester.pumpAndSettle();
-
-    final provider =
-        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
-    expect(
-      provider.pitchModeFor(provider.queue.tracks[1]),
-      pitchModeFollowTempo,
-    );
-  });
-
-  testWidgets('timeline drag uses scrub lifecycle instead of direct seek', (
-    tester,
-  ) async {
-    await pumpQueueScreen(tester, showImportJobs: true);
-
-    await tester.tap(find.text('Timeline'));
-    await tester.pumpAndSettle();
-    await tester.drag(
-      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
-      const Offset(120, 0),
-    );
-    await tester.pumpAndSettle();
-
-    expect(playbackState.scrubEvents.first, 'begin');
-    expect(
-      playbackState.scrubEvents.where((event) => event.startsWith('update:')),
-      isNotEmpty,
-    );
-    expect(playbackState.scrubEvents.last, startsWith('end:'));
-    expect(playbackState.seekCalls, 0);
   });
 
   testWidgets('live timeline pitch toggle updates queue pitch mode', (
@@ -3376,8 +2801,6 @@ void main() {
   testWidgets('renders queued tracks when there is no active track', (
     tester,
   ) async {
-    apiClient.moveBeforePlaybackStarts();
-
     await pumpQueueScreen(tester, showImportJobs: true);
 
     expect(find.text('Current'), findsNothing);
@@ -4272,7 +3695,6 @@ class _FakeQueueApiClient extends ApiClient {
         addedAt: DateTime(2026),
       ),
     ],
-    currentIndex: 0,
   );
 
   final List<int> removedPositions = [];
@@ -4296,26 +3718,6 @@ class _FakeQueueApiClient extends ApiClient {
   bool Function()? analysisAuditionDisposedProbe;
   bool? analysisAuditionDisposedAtUpdate;
   Completer<QueueState>? _loadCompleter;
-
-  List<int> get renderedTimelineAnalysisTrackIds {
-    final firstLaneIndex =
-        _state.currentIndex > 0 ? _state.currentIndex - 1 : _state.currentIndex;
-    if (firstLaneIndex < 0) {
-      return const [];
-    }
-    return [
-      for (final track in _state.tracks.skip(firstLaneIndex))
-        if (int.tryParse(track.playbackTrackId ?? track.id) case final trackId?)
-          trackId,
-    ];
-  }
-
-  void moveBeforePlaybackStarts() {
-    _state = QueueState(
-      tracks: _state.tracks,
-      currentIndex: -1,
-    );
-  }
 
   void useEmptyQueue() {
     _state = QueueState.empty();
@@ -4367,7 +3769,6 @@ class _FakeQueueApiClient extends ApiClient {
           queueStatus: TrackQueueStatus.playable,
         ),
       ],
-      currentIndex: 0,
     );
   }
 
@@ -4399,7 +3800,6 @@ class _FakeQueueApiClient extends ApiClient {
           addedAt: DateTime(2026),
         ),
       ],
-      currentIndex: 0,
     );
   }
 
@@ -4472,11 +3872,10 @@ class _FakeQueueApiClient extends ApiClient {
           ),
         ),
       ],
-      currentIndex: 0,
     );
   }
 
-  void useCompactAnalysisFixture({int currentIndex = 0, int trackCount = 2}) {
+  void useCompactAnalysisFixture({int trackCount = 2}) {
     hydrateAnalysisFixture = true;
     TrackAnalysis compact(double bpm) => TrackAnalysis.fromJson(
           status: 'analyzed',
@@ -4505,7 +3904,6 @@ class _FakeQueueApiClient extends ApiClient {
             analysis: compact(124 + index.toDouble()),
           ),
       ],
-      currentIndex: currentIndex,
     );
   }
 
@@ -4566,16 +3964,7 @@ class _FakeQueueApiClient extends ApiClient {
     );
     removedPositions.add(position);
     final tracks = List<QueueTrack>.from(_state.tracks)..removeAt(position);
-    var currentIndex = _state.currentIndex;
-    if (position < currentIndex) {
-      currentIndex--;
-    } else if (position == currentIndex) {
-      currentIndex = currentIndex.clamp(-1, tracks.length - 1);
-    }
-    _state = QueueState(
-      tracks: tracks,
-      currentIndex: currentIndex,
-    );
+    _state = QueueState(tracks: tracks);
     return _state;
   }
 
@@ -4598,10 +3987,7 @@ class _FakeQueueApiClient extends ApiClient {
     final tracks = List<QueueTrack>.from(_state.tracks);
     final track = tracks.removeAt(fromIndex);
     tracks.insert(toIndex, track);
-    _state = QueueState(
-      tracks: tracks,
-      currentIndex: _state.currentIndex,
-    );
+    _state = QueueState(tracks: tracks);
     return _state;
   }
 
@@ -4640,7 +4026,6 @@ class _FakeQueueApiClient extends ApiClient {
               ? item.copyWith(analysis: analysis)
               : item,
       ],
-      currentIndex: _state.currentIndex,
     );
     return analysis;
   }

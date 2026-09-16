@@ -97,21 +97,6 @@ TIMELINE_EDIT_DECL_RE = re.compile(
 )
 TIMELINE_EDIT_OWNER_PREFIX = "client/lib/core/audio/"
 
-# TEMPORARY, dated 2026-09-12. Step 4 of the queue-authority reconciliation
-# deletes the import queue's fictional current-track getters and its duplicate
-# ~466-line timeline editor; when that lands, both entries below stop tripping
-# and the stale-exemption check underneath forces this table to be deleted with
-# them. Do not add rows here — a new row means a new second authority.
-QUEUE_AUTHORITY_EXEMPTIONS = {
-    "R1": {
-        "client/lib/models/queue_state.dart",
-        "client/lib/providers/queue_provider.dart",
-    },
-    "R2": {
-        "client/lib/providers/queue_provider.dart",
-    },
-}
-
 
 def fail(message: str) -> None:
     FAILURES.append(message)
@@ -629,7 +614,7 @@ def check_architecture_guardrails(files: list[Path]) -> None:
 
 
 def queue_authority_violations(path_rel: str, text: str) -> list[tuple[str, str]]:
-    """Declaration-keyed ADR 0001/0012 rules for one file, before exemptions."""
+    """Declaration-keyed ADR 0001/0012 rules for one file."""
     if not (path_rel.startswith("client/lib/") and path_rel.endswith(".dart")):
         return []
 
@@ -664,24 +649,13 @@ def queue_authority_violations(path_rel: str, text: str) -> list[tuple[str, str]
 
 
 def check_queue_authority_declarations(files: list[Path]) -> None:
-    tripped: dict[str, set[str]] = {rule: set() for rule in QUEUE_AUTHORITY_EXEMPTIONS}
     for path in files:
         if path.suffix.lower() != ".dart":
             continue
         path_rel = rel(path)
         text = read_text(path) or ""
         for rule, message in queue_authority_violations(path_rel, text):
-            if path_rel in QUEUE_AUTHORITY_EXEMPTIONS.get(rule, ()):
-                tripped[rule].add(path_rel)
-                continue
             fail(message)
-
-    for rule, exempted in QUEUE_AUTHORITY_EXEMPTIONS.items():
-        for stale in sorted(exempted - tripped[rule]):
-            fail(
-                f"{stale}: queue-authority exemption {rule} no longer trips; "
-                "delete the row (and the table, once it is empty) in scripts/agentic-harness"
-            )
 
 
 def check_agentic_cycle_contracts() -> None:
@@ -811,16 +785,6 @@ def run_self_test() -> int:
         actual = [rule for rule, _ in queue_authority_violations(path_rel, text)]
         if sorted(actual) != sorted(expected):
             failures.append(f"{label}: expected {expected or 'no rules'}, got {actual or 'no rules'}")
-
-    for rule, exempted in QUEUE_AUTHORITY_EXEMPTIONS.items():
-        for path_rel in sorted(exempted):
-            path = ROOT / path_rel
-            text = read_text(path) if path.exists() else None
-            if text is None:
-                failures.append(f"{rule} exemption {path_rel}: file is unreadable or gone")
-                continue
-            if rule not in [r for r, _ in queue_authority_violations(path_rel, text)]:
-                failures.append(f"{rule} exemption {path_rel}: no longer trips the rule")
 
     if failures:
         print("AGENTIC HARNESS SELF-TEST FAILED")
