@@ -177,11 +177,12 @@ func TestStartImportResolvedSnapshotFailurePersistsNothing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newFakeStore()
+			playlists := &fakePlaylists{}
 			bindingStore := &fakeSourceBindingStore{}
 			downloader := &fakeDownloader{}
 			service := NewService(Config{
 				Store:          store,
-				Playlists:      &fakePlaylists{},
+				Playlists:      playlists,
 				SourceAdapter:  tt.adapter,
 				SourceBindings: bindingStore,
 				Downloader:     downloader,
@@ -196,6 +197,12 @@ func TestStartImportResolvedSnapshotFailurePersistsNothing(t *testing.T) {
 			}
 			if len(store.jobs) != 0 || len(store.items) != 0 || len(downloader.jobs) != 0 {
 				t.Fatalf("side effects after snapshot failure: jobs=%d items=%d downloads=%d, want 0/0/0", len(store.jobs), len(store.items), len(downloader.jobs))
+			}
+			// The regression this guards: a failed resolution must not leave a
+			// local playlist behind. Playlists are created only after the
+			// source resolves, so nothing should have been created at all.
+			if len(playlists.created) != 0 || len(playlists.deleted) != 0 {
+				t.Fatalf("playlist state after resolution failure: created=%d deleted=%d, want 0/0", len(playlists.created), len(playlists.deleted))
 			}
 		})
 	}
@@ -450,42 +457,81 @@ func TestStartImportCustomNameOutranksResolvedSourceTitle(t *testing.T) {
 	}
 }
 
-func TestStartImportResolutionFailureLeavesNoOrphanPlaylist(t *testing.T) {
-	failing := []struct {
-		name    string
-		adapter *fakeSourceAdapter
-	}{
-		{name: "adapter error", adapter: &fakeSourceAdapter{err: errors.New("provider unavailable")}},
-		{name: "incomplete snapshot", adapter: &fakeSourceAdapter{snapshot: playlistsync.Snapshot{Complete: false}}},
-	}
-	for _, tt := range failing {
-		t.Run(tt.name, func(t *testing.T) {
-			store := newFakeStore()
-			playlists := &fakePlaylists{}
-			bindingStore := &fakeSourceBindingStore{}
-			service := NewService(Config{
-				Store:          store,
-				Playlists:      playlists,
-				SourceAdapter:  tt.adapter,
-				SourceBindings: bindingStore,
-				Downloader:     &fakeDownloader{},
-			})
+// A deterministically bad source URL (not a playlist URL at all, or a snapshot
+// whose identity does not match the request) can never succeed on retry, so it
+// must not be reported as a retryable provider failure. Before this split, the
+// API told the user to retry a request that could never work.
+func TestStartImportClassifiesDeterministicSourceRejectionAsInvalidURL(t *testing.T) {
+	store := newFakeStore()
+	playlists := &fakePlaylists{}
+	service := NewService(Config{
+		Store:          store,
+		Playlists:      playlists,
+		SourceAdapter:  &fakeSourceAdapter{err: fmt.Errorf("%w: YouTube playlist ID is missing", playlistsync.ErrInvalidSnapshot)},
+		SourceBindings: &fakeSourceBindingStore{},
+	})
 
-			_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
-			if err == nil {
-				t.Fatal("StartImport succeeded, want a resolution failure")
-			}
-			// Retryable and actionable: callers branch on this sentinel.
-			if !errors.Is(err, ErrSourceResolution) {
-				t.Fatalf("StartImport error = %v, want ErrSourceResolution", err)
-			}
-			if len(playlists.created) != 0 || len(playlists.deleted) != 0 {
-				t.Fatalf("orphan playlist state: created=%d deleted=%d, want 0/0", len(playlists.created), len(playlists.deleted))
-			}
-			if len(store.jobs) != 0 || len(store.items) != 0 || bindingStore.upsertCalls != 0 {
-				t.Fatalf("side effects after resolution failure: jobs=%d items=%d binding upserts=%d, want 0/0/0", len(store.jobs), len(store.items), bindingStore.upsertCalls)
-			}
-		})
+	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/watch?v=notaplaylist"})
+	if !errors.Is(err, ErrInvalidURL) {
+		t.Fatalf("StartImport error = %v, want ErrInvalidURL", err)
+	}
+	if errors.Is(err, ErrSourceResolution) {
+		t.Fatalf("StartImport error = %v, must not also classify as retryable ErrSourceResolution", err)
+	}
+	if len(playlists.created) != 0 || len(store.jobs) != 0 {
+		t.Fatalf("side effects after a deterministic rejection: playlists=%d jobs=%d, want 0/0", len(playlists.created), len(store.jobs))
+	}
+}
+
+// A provider-side failure is the retryable case: the same request can succeed
+// later, so it must not be flattened into ErrInvalidURL.
+func TestStartImportClassifiesProviderFailureAsRetryable(t *testing.T) {
+	service := NewService(Config{
+		Store:          newFakeStore(),
+		Playlists:      &fakePlaylists{},
+		SourceAdapter:  &fakeSourceAdapter{err: fmt.Errorf("%w: provider unavailable", playlistsync.ErrIncompleteSnapshot)},
+		SourceBindings: &fakeSourceBindingStore{},
+	})
+
+	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if !errors.Is(err, ErrSourceResolution) {
+		t.Fatalf("StartImport error = %v, want ErrSourceResolution", err)
+	}
+	if errors.Is(err, ErrInvalidURL) {
+		t.Fatalf("StartImport error = %v, must not classify a provider failure as an invalid URL", err)
+	}
+}
+
+func TestStartImportResolutionFailureLeavesNoOrphanPlaylist(t *testing.T) {
+	// The orphan-playlist regression is asserted against the shared resolution
+	// failure table in TestStartImportResolvedSnapshotFailurePersistsNothing.
+	// This case covers the enumerator path, whose failure returns before any
+	// local row exists and must still be classified as retryable rather than
+	// as a deterministic rejection.
+	store := newFakeStore()
+	playlists := &fakePlaylists{}
+	bindingStore := &fakeSourceBindingStore{}
+	service := NewService(Config{
+		Store:          store,
+		Playlists:      playlists,
+		SourceAdapter:  &fakeSourceAdapter{err: errors.New("provider unavailable")},
+		SourceBindings: bindingStore,
+		Downloader:     &fakeDownloader{},
+	})
+
+	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if err == nil {
+		t.Fatal("StartImport succeeded, want a resolution failure")
+	}
+	// Retryable and actionable: callers branch on this sentinel.
+	if !errors.Is(err, ErrSourceResolution) {
+		t.Fatalf("StartImport error = %v, want ErrSourceResolution", err)
+	}
+	if len(playlists.created) != 0 || len(playlists.deleted) != 0 {
+		t.Fatalf("orphan playlist state: created=%d deleted=%d, want 0/0", len(playlists.created), len(playlists.deleted))
+	}
+	if len(store.jobs) != 0 || len(store.items) != 0 || bindingStore.upsertCalls != 0 {
+		t.Fatalf("side effects after resolution failure: jobs=%d items=%d binding upserts=%d, want 0/0/0", len(store.jobs), len(store.items), bindingStore.upsertCalls)
 	}
 }
 

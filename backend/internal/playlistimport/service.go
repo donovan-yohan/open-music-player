@@ -156,13 +156,14 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 	// fails. Resolve the source here, then create the playlist with the
 	// resolved title, and only then enqueue per-item downloads (they need the
 	// playlist ID).
-	var existingPlaylistID *int64
+	// targetPlaylistID is the playlist the import lands in: the caller's
+	// validated playlist when one was named, otherwise the one created below.
+	var targetPlaylistID *int64
 	if req.PlaylistID != nil {
-		playlistID, err := s.resolveExistingPlaylist(ctx, userID, *req.PlaylistID)
-		if err != nil {
+		if err := s.validateOwnedPlaylist(ctx, userID, *req.PlaylistID); err != nil {
 			return nil, err
 		}
-		existingPlaylistID = &playlistID
+		targetPlaylistID = req.PlaylistID
 	}
 
 	var metadata PlaylistMetadata
@@ -172,10 +173,10 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 	if adapterBacked {
 		resolved, resolveErr := s.adapter.Resolve(ctx, strings.TrimSpace(req.URL))
 		if resolveErr != nil {
-			return nil, fmt.Errorf("%w: resolve playlist source: %w", ErrSourceResolution, resolveErr)
+			return nil, resolutionError("resolve playlist source", resolveErr)
 		}
 		if validateErr := playlistsync.ValidateComplete(resolved); validateErr != nil {
-			return nil, fmt.Errorf("%w: validate playlist source snapshot: %w", ErrSourceResolution, validateErr)
+			return nil, resolutionError("validate playlist source snapshot", validateErr)
 		}
 		metadata = PlaylistMetadata{Title: resolved.Source.Metadata.Title}
 		entries = entriesFromSnapshot(resolved)
@@ -187,14 +188,19 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 		var enumerateErr error
 		metadata, entries, enumerateErr = s.enumerator.Enumerate(ctx, strings.TrimSpace(req.URL), limit+1)
 		if enumerateErr != nil {
-			return nil, fmt.Errorf("%w: enumerate playlist: %w", ErrSourceResolution, enumerateErr)
+			return nil, resolutionError("enumerate playlist", enumerateErr)
 		}
 	}
 
-	playlistID, created, err := s.ensurePlaylist(ctx, userID, req, existingPlaylistID, metadata.Title)
-	if err != nil {
-		return nil, err
+	created := targetPlaylistID == nil
+	if created {
+		playlistID, createErr := s.createImportPlaylist(ctx, userID, req, metadata.Title)
+		if createErr != nil {
+			return nil, createErr
+		}
+		targetPlaylistID = &playlistID
 	}
+	playlistID := *targetPlaylistID
 
 	var binding *db.PlaylistSourceBinding
 	if snapshot != nil {
@@ -558,47 +564,35 @@ func (s *Service) effectiveLimit(requested int) int {
 	return limit
 }
 
-// resolveExistingPlaylist validates an import-into-existing target. The
-// ownership guard runs before any provider work so a foreign playlist is
-// rejected without contacting the source.
-func (s *Service) resolveExistingPlaylist(ctx context.Context, userID uuid.UUID, playlistID int64) (int64, error) {
+// validateOwnedPlaylist confirms an import-into-existing target exists and
+// belongs to the caller. It runs before any provider work so a foreign playlist
+// is rejected without contacting the source.
+func (s *Service) validateOwnedPlaylist(ctx context.Context, userID uuid.UUID, playlistID int64) error {
 	playlist, err := s.playlists.GetByID(ctx, playlistID)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if playlist.UserID != userID {
-		return 0, db.ErrPlaylistNotOwned
+		return db.ErrPlaylistNotOwned
 	}
-	return playlistID, nil
+	return nil
 }
 
-// ensurePlaylist returns the target playlist for an import. An
-// import-into-existing request reuses the validated playlist untouched. A new
-// playlist is created only after the source resolved, and is named in
-// precedence order: explicit user name, then resolved source title, then the
-// legacy fallback for sources that carry no title. created reports whether this
-// call owns the row, so later failures can roll it back.
-func (s *Service) ensurePlaylist(ctx context.Context, userID uuid.UUID, req ImportRequest, existingPlaylistID *int64, sourceTitle string) (playlistID int64, created bool, err error) {
-	if existingPlaylistID != nil {
-		return *existingPlaylistID, false, nil
-	}
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		name = strings.TrimSpace(sourceTitle)
-	}
-	if name == "" {
-		name = defaultImportPlaylistName
-	}
+// createImportPlaylist creates the playlist for an import that has no target
+// yet. It is only called after the source resolved, and is named in precedence
+// order: explicit user name, then resolved source title, then the legacy
+// fallback for sources that carry no title.
+func (s *Service) createImportPlaylist(ctx context.Context, userID uuid.UUID, req ImportRequest, sourceTitle string) (int64, error) {
 	description := strings.TrimSpace(req.Description)
 	playlist := &db.Playlist{
 		UserID:      userID,
-		Name:        name,
+		Name:        firstNonEmpty(req.Name, sourceTitle, defaultImportPlaylistName),
 		Description: sql.NullString{String: description, Valid: description != ""},
 	}
 	if err := s.playlists.Create(ctx, playlist); err != nil {
-		return 0, false, err
+		return 0, err
 	}
-	return playlist.ID, true, nil
+	return playlist.ID, nil
 }
 
 // discardPlaylist rolls back a playlist this request created when a later
@@ -609,6 +603,18 @@ func (s *Service) discardPlaylist(ctx context.Context, playlistID int64) {
 		return
 	}
 	_ = s.playlists.Delete(ctx, playlistID)
+}
+
+// resolutionError classifies a failed source resolution for the caller. A
+// deterministic rejection -- a URL that is not a YouTube playlist URL at all,
+// or an identity that does not match what was requested -- can never succeed on
+// retry, so it reports ErrInvalidURL and the API answers 400. Everything else
+// is a provider-side or transient failure that a retry can fix.
+func resolutionError(action string, cause error) error {
+	if errors.Is(cause, playlistsync.ErrInvalidSnapshot) {
+		return fmt.Errorf("%w: %s: %w", ErrInvalidURL, action, cause)
+	}
+	return fmt.Errorf("%w: %s: %w", ErrSourceResolution, action, cause)
 }
 
 func validatePlaylistURL(raw string) error {
