@@ -1953,6 +1953,34 @@ exit 7
 	}
 }
 
+// TestRunYTDLPCommandKeepsSingleTrackMode pins the guard that stops a single
+// track download from expanding into a playlist. The command has always passed
+// --no-playlist; this makes its removal fail a test instead of silently
+// queueing every track in the URL's playlist.
+func TestRunYTDLPCommandKeepsSingleTrackMode(t *testing.T) {
+	fakeYTDLP := writeFakeYTDLP(t, `
+set -eu
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then out="$arg"; fi
+  prev="$arg"
+done
+case " $* " in
+  *" --no-playlist "*) : ;;
+  *) echo "single track mode missing --no-playlist" >&2; exit 9 ;;
+esac
+[ -n "$out" ]
+audio="${out%.*}.mp3"
+printf 'fake mp3 data' > "$audio"
+`)
+	path, _, err := runYTDLPCommand(context.Background(), fakeYTDLP, "https://www.youtube.com/watch?v=single", &TrackMetadata{}, maxYTDLPOutputBytes)
+	if err != nil {
+		t.Fatalf("runYTDLPCommand failed: %v", err)
+	}
+	defer os.Remove(path)
+}
+
 func writeFakeYTDLP(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "yt-dlp-fake")

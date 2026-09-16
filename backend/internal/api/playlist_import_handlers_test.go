@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/playlistimport"
 )
 
 func playlistImportRequest(body string) *http.Request {
@@ -49,6 +52,50 @@ func TestCreateImportLogsUnknownFields(t *testing.T) {
 // TestCreateImportRejectsUnparseableBodies covers the guard this handler gained
 // when it moved onto the shared decoder: it used to read the first JSON value
 // and ignore whatever followed, which is now a 400 like everywhere else.
+// A source-resolution failure must be retryable. Before this, a provider
+// failure surfaced as a generic INTERNAL_ERROR/500 even though nothing local
+// was created and the same request could simply be retried.
+func TestCreateImportReportsSourceResolutionFailureAsRetryable(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{name: "provider resolve failure", err: fmt.Errorf("%w: resolve playlist source: %w", playlistimport.ErrSourceResolution, errors.New("boom")), wantCode: "SOURCE_RESOLUTION_FAILED"},
+		{name: "incomplete snapshot", err: fmt.Errorf("%w: validate playlist source snapshot: %w", playlistimport.ErrSourceResolution, errors.New("incomplete")), wantCode: "SOURCE_RESOLUTION_FAILED"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handlePlaylistImportError(rec, tt.err)
+
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadGateway, rec.Body.String())
+			}
+			if got := decodePlaylistError(t, rec).Code; got != tt.wantCode {
+				t.Fatalf("error code = %q, want %q", got, tt.wantCode)
+			}
+			if !strings.Contains(rec.Body.String(), "retry") {
+				t.Fatalf("body = %s, want an actionable retry message", rec.Body.String())
+			}
+		})
+	}
+}
+
+// The limit contract must survive the reordering: an oversized playlist is a
+// request-level rejection, not a source-resolution failure.
+func TestCreateImportKeepsLimitExceededAsRequestRejection(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handlePlaylistImportError(rec, fmt.Errorf("wrapped: %w", playlistimport.ErrLimitExceeded))
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	if got := decodePlaylistError(t, rec).Code; got != "PLAYLIST_TOO_LARGE" {
+		t.Fatalf("error code = %q, want PLAYLIST_TOO_LARGE", got)
+	}
+}
+
 func TestCreateImportRejectsUnparseableBodies(t *testing.T) {
 	for name, body := range map[string]string{
 		"malformed json":       `{"url":`,
