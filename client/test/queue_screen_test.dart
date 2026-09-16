@@ -857,8 +857,11 @@ void main() {
     expect(find.byKey(const PageStorageKey('queue_list_view')), findsOneWidget);
     expect(find.text('Current Song'), findsOneWidget);
     expect(find.text('Live playback only'), findsNothing);
-    expect(find.text('Playback Queue'), findsOneWidget);
-    expect(find.text('1 of 1 • 2:00 remaining'), findsOneWidget);
+    // The import view keeps its own identity: it lists download jobs, so it
+    // must not borrow the listening queue's title or row counter (ADR 0012).
+    expect(find.text('Import Queue'), findsOneWidget);
+    expect(find.text('Playback Queue'), findsNothing);
+    expect(find.textContaining('remaining'), findsNothing);
   });
 
   testWidgets('playback queue list preserves provider artwork provenance', (
