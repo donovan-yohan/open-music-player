@@ -662,3 +662,18 @@ class ApiException implements Exception {
   @override
   String toString() => '$message (status: $statusCode)';
 }
+
+/// Extracts the backend's actionable message from a failed API request.
+///
+/// The server returns `{"message": ...}` (or `{"error": ...}`) on failure; a
+/// bare `DioException.toString()` buries that under transport boilerplate.
+/// Shared so screens and modals cannot drift into different error text for the
+/// same failure.
+String apiErrorMessage(DioException error) {
+  final data = error.response?.data;
+  if (data is Map<String, dynamic>) {
+    final message = data['message'] ?? data['error'];
+    if (message is String && message.isNotEmpty) return message;
+  }
+  return error.message ?? 'server request failed';
+}

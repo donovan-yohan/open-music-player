@@ -24,6 +24,7 @@ import '../features/downloads/downloads_screen.dart';
 import '../features/playlists/playlists_screen.dart';
 import '../features/playlists/playlist_detail_screen.dart';
 import '../features/playlists/playlist_import_screen.dart';
+import '../core/models/playlist_import.dart';
 import '../screens/queue_screen.dart';
 import 'theme.dart';
 
@@ -132,8 +133,14 @@ GoRouter createRouter(
           ),
           GoRoute(
             path: '/playlists/import',
-            pageBuilder: (context, state) =>
-                const NoTransitionPage(child: PlaylistImportScreen()),
+            pageBuilder: (context, state) => NoTransitionPage(
+              child: PlaylistImportScreen(
+                importJobId: state.uri.queryParameters['importJobId'],
+                initialStatus: state.extra is PlaylistImportStatus
+                    ? state.extra as PlaylistImportStatus
+                    : null,
+              ),
+            ),
           ),
           GoRoute(
             path: '/playlists/:id',

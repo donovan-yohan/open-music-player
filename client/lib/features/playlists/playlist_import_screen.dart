@@ -8,14 +8,20 @@ import 'package:provider/provider.dart';
 import '../../core/api/api_client.dart';
 import '../../core/models/playlist_import.dart';
 import '../../core/services/playlist_import_service.dart';
-import '../../core/share/shared_url_parser.dart';
+import 'playlist_creation_dialog.dart';
 
 class PlaylistImportScreen extends StatefulWidget {
   final Duration pollInterval;
+  final PlaylistImportStatus? initialStatus;
+  final String? importJobId;
+  final PlaylistImportService? importService;
 
   const PlaylistImportScreen({
     super.key,
     this.pollInterval = const Duration(seconds: 2),
+    this.initialStatus,
+    this.importJobId,
+    this.importService,
   });
 
   @override
@@ -23,35 +29,84 @@ class PlaylistImportScreen extends StatefulWidget {
 }
 
 class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
+  final _formKey = GlobalKey<FormState>();
   final _urlController = TextEditingController();
   final _nameController = TextEditingController();
+  final _descriptionController = TextEditingController();
   final _maxItemsController = TextEditingController(text: '500');
+  String? _sourceImportJobId;
 
   PlaylistImportService? _service;
   PlaylistImportStatus? _importStatus;
   Timer? _pollTimer;
   bool _isSubmitting = false;
   bool _isRefreshing = false;
+  bool _isLoadingInitialStatus = false;
+  int _statusRequestGeneration = 0;
   String? _error;
 
+  @override
+  void initState() {
+    super.initState();
+    _importStatus = widget.initialStatus;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final routeJobId = widget.importJobId;
+    if (_sourceImportJobId == routeJobId) {
+      if (_importStatus != null &&
+          !_importStatus!.isTerminal &&
+          _pollTimer == null) {
+        _startPollingIfNeeded(_importStatus!);
+      }
+      return;
+    }
+    _sourceImportJobId = routeJobId;
+    if (_importStatus != null) {
+      _startPollingIfNeeded(_importStatus!);
+    } else if (routeJobId != null && routeJobId.isNotEmpty) {
+      _refreshStatus(importId: routeJobId, manual: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant PlaylistImportScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.importJobId == widget.importJobId &&
+        oldWidget.initialStatus == widget.initialStatus) {
+      return;
+    }
+
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    _statusRequestGeneration++;
+    _importStatus = widget.initialStatus;
+    _sourceImportJobId = widget.importJobId;
+    if (_importStatus != null) {
+      _startPollingIfNeeded(_importStatus!);
+    } else if (widget.importJobId != null && widget.importJobId!.isNotEmpty) {
+      _refreshStatus(importId: widget.importJobId!, manual: true);
+    }
+  }
+
   PlaylistImportService get _playlistImportService =>
-      _service ??= PlaylistImportService(api: context.read<ApiClient>());
+      _service ??= widget.importService ??
+          PlaylistImportService(api: context.read<ApiClient>());
 
   @override
   void dispose() {
     _pollTimer?.cancel();
     _urlController.dispose();
     _nameController.dispose();
+    _descriptionController.dispose();
     _maxItemsController.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
-    final validationError = _validateForm();
-    if (validationError != null) {
-      setState(() => _error = validationError);
-      return;
-    }
+    if (!(_formKey.currentState?.validate() ?? false)) return;
 
     setState(() {
       _isSubmitting = true;
@@ -62,6 +117,7 @@ class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
       final status = await _playlistImportService.createImport(
         url: _urlController.text,
         name: _nameController.text,
+        description: _descriptionController.text,
         maxItems: int.tryParse(_maxItemsController.text.trim()),
       );
       if (!mounted) return;
@@ -83,65 +139,50 @@ class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
     }
   }
 
-  String? _validateForm() {
-    final url = _urlController.text.trim();
-    if (url.isEmpty) return 'Paste a YouTube playlist URL first.';
-    if (!isYouTubePlaylistUrl(url)) {
-      return 'Use a YouTube or YouTube Music URL with a playlist list= parameter.';
-    }
-
-    final maxItemsText = _maxItemsController.text.trim();
-    if (maxItemsText.isNotEmpty) {
-      final maxItems = int.tryParse(maxItemsText);
-      if (maxItems == null || maxItems < 1 || maxItems > 1000) {
-        return 'Max items must be between 1 and 1000.';
-      }
-    }
-    return null;
-  }
-
   void _startPollingIfNeeded(PlaylistImportStatus status) {
     _pollTimer?.cancel();
     if (status.isTerminal || status.id.isEmpty) return;
     _pollTimer = Timer.periodic(widget.pollInterval, (_) => _refreshStatus());
   }
 
-  Future<void> _refreshStatus({bool manual = false}) async {
-    final importId = _importStatus?.id;
-    if (importId == null || importId.isEmpty || _isRefreshing) return;
+  Future<void> _refreshStatus({String? importId, bool manual = false}) async {
+    final id = importId ?? _importStatus?.id;
+    if (id == null || id.isEmpty || (_isRefreshing && importId == null)) return;
 
+    final requestGeneration = ++_statusRequestGeneration;
     setState(() {
       _isRefreshing = true;
+      _isLoadingInitialStatus = _importStatus == null;
       if (manual) _error = null;
     });
 
     try {
-      final status = await _playlistImportService.getImport(importId);
-      if (!mounted) return;
+      final status = await _playlistImportService.getImport(id);
+      if (!mounted || requestGeneration != _statusRequestGeneration) return;
       setState(() => _importStatus = status);
       if (status.isTerminal) {
         _pollTimer?.cancel();
         _pollTimer = null;
+      } else if (_pollTimer == null) {
+        _startPollingIfNeeded(status);
       }
     } on DioException catch (error) {
-      if (!mounted) return;
+      if (!mounted || requestGeneration != _statusRequestGeneration) return;
       if (manual) setState(() => _error = _apiErrorMessage(error));
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || requestGeneration != _statusRequestGeneration) return;
       if (manual) setState(() => _error = 'Could not refresh import: $error');
     } finally {
-      if (mounted) setState(() => _isRefreshing = false);
+      if (mounted && requestGeneration == _statusRequestGeneration) {
+        setState(() {
+          _isRefreshing = false;
+          _isLoadingInitialStatus = false;
+        });
+      }
     }
   }
 
-  String _apiErrorMessage(DioException error) {
-    final data = error.response?.data;
-    if (data is Map<String, dynamic>) {
-      final message = data['message'] ?? data['error'];
-      if (message is String && message.isNotEmpty) return message;
-    }
-    return error.message ?? 'server request failed';
-  }
+  String _apiErrorMessage(DioException error) => apiErrorMessage(error);
 
   @override
   Widget build(BuildContext context) {
@@ -169,16 +210,53 @@ class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
                         style: theme.textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 16),
-                      _ImportFormCard(
-                        urlController: _urlController,
-                        nameController: _nameController,
-                        maxItemsController: _maxItemsController,
-                        isSubmitting: _isSubmitting,
-                        onSubmit: _submit,
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: PlaylistImportForm(
+                            formKey: _formKey,
+                            sourceUrlController: _urlController,
+                            nameController: _nameController,
+                            descriptionController: _descriptionController,
+                            maxItemsController: _maxItemsController,
+                            isSubmitting: _isSubmitting,
+                            showSubmitButton: true,
+                            onSubmit: _submit,
+                          ),
+                        ),
                       ),
                       if (_error != null) ...[
                         const SizedBox(height: 12),
-                        _ErrorCard(message: _error!),
+                        _ErrorCard(
+                          message: _error!,
+                          onRetry: widget.importJobId?.isNotEmpty == true
+                              ? () => _refreshStatus(
+                                    importId: widget.importJobId,
+                                    manual: true,
+                                  )
+                              : null,
+                        ),
+                      ],
+                      if (_isLoadingInitialStatus) ...[
+                        const SizedBox(height: 16),
+                        const Card(
+                          child: Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Row(
+                              children: [
+                                SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                ),
+                                SizedBox(width: 12),
+                                Text('Loading import progress…'),
+                              ],
+                            ),
+                          ),
+                        ),
                       ],
                       if (_importStatus != null) ...[
                         const SizedBox(height: 16),
@@ -199,89 +277,6 @@ class _PlaylistImportScreenState extends State<PlaylistImportScreen> {
               ),
             );
           },
-        ),
-      ),
-    );
-  }
-}
-
-class _ImportFormCard extends StatelessWidget {
-  final TextEditingController urlController;
-  final TextEditingController nameController;
-  final TextEditingController maxItemsController;
-  final bool isSubmitting;
-  final VoidCallback onSubmit;
-
-  const _ImportFormCard({
-    required this.urlController,
-    required this.nameController,
-    required this.maxItemsController,
-    required this.isSubmitting,
-    required this.onSubmit,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TextField(
-              controller: urlController,
-              enabled: !isSubmitting,
-              keyboardType: TextInputType.url,
-              textInputAction: TextInputAction.next,
-              decoration: const InputDecoration(
-                labelText: 'YouTube playlist URL',
-                hintText: 'https://music.youtube.com/playlist?list=...',
-                prefixIcon: Icon(Icons.link),
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: nameController,
-              enabled: !isSubmitting,
-              textInputAction: TextInputAction.next,
-              decoration: const InputDecoration(
-                labelText: 'Playlist name (optional)',
-                hintText: 'Use the source playlist title by default',
-                prefixIcon: Icon(Icons.edit_note),
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: maxItemsController,
-              enabled: !isSubmitting,
-              keyboardType: TextInputType.number,
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => isSubmitting ? null : onSubmit(),
-              decoration: const InputDecoration(
-                labelText: 'Max items',
-                helperText:
-                    'Keeps massive playlists bounded. Backend hard limit: 1000.',
-                prefixIcon: Icon(Icons.format_list_numbered),
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: isSubmitting ? null : onSubmit,
-              icon: isSubmitting
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.playlist_add),
-              label: Text(
-                isSubmitting ? 'Starting import…' : 'Import playlist',
-              ),
-            ),
-          ],
         ),
       ),
     );
@@ -506,8 +501,9 @@ class _StatusPill extends StatelessWidget {
 
 class _ErrorCard extends StatelessWidget {
   final String message;
+  final VoidCallback? onRetry;
 
-  const _ErrorCard({required this.message});
+  const _ErrorCard({required this.message, this.onRetry});
 
   @override
   Widget build(BuildContext context) {
@@ -525,9 +521,21 @@ class _ErrorCard extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Text(
-                message,
-                style: TextStyle(color: theme.colorScheme.onErrorContainer),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    message,
+                    style: TextStyle(color: theme.colorScheme.onErrorContainer),
+                  ),
+                  if (onRetry != null) ...[
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: onRetry,
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ],
               ),
             ),
           ],
