@@ -63,11 +63,33 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _playTracks(List<Track> tracks, int startIndex) {
-    context.read<PlaybackState>().playQueue(
-          tracks.map((t) => t.toPlaybackJson()).toList(),
-          startIndex: startIndex,
-        );
+  /// Plays a Home row, surfacing a failure instead of swallowing it.
+  ///
+  /// Home's "Recently played" feed comes from the user's play *history*, which
+  /// can contain tracks that are no longer in their library. `/playback/urls`
+  /// correctly refuses those (404 `TRACK_NOT_FOUND`, deliberately
+  /// indistinguishable from a missing track), and `playQueue` throws. This was
+  /// fire-and-forget, so the exception escaped unhandled and the tap looked like
+  /// it had done nothing at all — no snackbar, no state change. Every other
+  /// list surface (Library, Liked Songs, Listening History, local browse,
+  /// queue) already catches and reports; Home was the outlier.
+  Future<void> _playTracks(List<Track> tracks, int startIndex) async {
+    final playback = context.read<PlaybackState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await playback.playQueue(
+        tracks.map((t) => t.toPlaybackJson()).toList(),
+        startIndex: startIndex,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(playback.playbackError ?? 'Could not play this track.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   Future<void> _enqueueTrack(Track track) async {
