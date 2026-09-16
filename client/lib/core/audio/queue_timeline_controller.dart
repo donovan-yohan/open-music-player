@@ -272,6 +272,57 @@ class QueueTimelineController {
     await _enqueueCommand(() => _insertIntoQueue(index, item));
   }
 
+  /// Inserts [items] contiguously at [index] in a single command, preserving
+  /// their given order.
+  ///
+  /// The bulk form of [insertIntoQueue]. Looping it would rebuild the mix model
+  /// — and re-run the O(queue) downbeat-alignment refinement — once per item,
+  /// so a bulk add would cost a quadratic reload storm; it would also let a
+  /// context tail sort itself between two items of the same batch, because each
+  /// single insert recomputes where the *next* manual item belongs. Splice
+  /// order here is the caller's order.
+  Future<void> insertAllIntoQueue(int index, List<MediaItem> items) async {
+    if (items.isEmpty) return;
+    await _enqueueCommand(() => _insertAllIntoQueue(index, items));
+  }
+
+  Future<void> _insertAllIntoQueue(int index, List<MediaItem> items) async {
+    if (items.isEmpty) return;
+    final insertIndex = index.clamp(0, _queue.length).toInt();
+    final previousCurrent = _currentIndex;
+    final previousCurrentQueueItemId = previousCurrent == null
+        ? null
+        : _session.clipAt(previousCurrent)?.queueItemId;
+    final localPosition = livePosition.inMilliseconds;
+    final preserveActivePlayback = _canPreserveActivePlaybackForFutureInsert(
+      insertIndex,
+      previousCurrent,
+      previousCurrentQueueItemId,
+    );
+    final nextQueue = List<MediaItem>.from(_queue)
+      ..insertAll(insertIndex, items);
+    _queue = List.unmodifiable(nextQueue);
+    var session = _session;
+    for (var offset = 0; offset < items.length; offset++) {
+      session = session.insertAt(insertIndex + offset, items[offset]);
+    }
+    _session = session.normalizedForQueue(_queue);
+    if (previousCurrent == null) {
+      _currentIndex = 0;
+    } else if (insertIndex <= previousCurrent) {
+      _currentIndex = previousCurrent + items.length;
+    }
+    _rebuildPlayOrderKeepCurrent();
+    _session = _refineSessionRuntimeBeatAlignments(_session);
+    _processingState = ProcessingState.ready;
+    await _loadModel(
+      seekToCurrent: !preserveActivePlayback,
+      localPositionMs: localPosition,
+      preserveActivePlayback: preserveActivePlayback,
+    );
+    _publishQueueState();
+  }
+
   /// Appends [items] to the tail of the queue in a single command.
   ///
   /// This is the bulk, tail-only form of [insertIntoQueue]. Looping
