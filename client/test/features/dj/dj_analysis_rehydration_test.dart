@@ -15,7 +15,6 @@ import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
-import 'package:provider/provider.dart';
 
 import '../../support/dj_analysis_fixtures.dart';
 import '../../support/playback_fixtures.dart';
