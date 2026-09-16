@@ -211,7 +211,14 @@ class _PlaylistImportProgressScreenState
                       // Deep-link arrival with nothing to show. Starting an
                       // import belongs to the shared creation dialog, which is
                       // also the only caller that reaches this route with a job.
+                      //
+                      // Gate on the absence of an ERROR too: a failed status
+                      // fetch says nothing about whether the job exists, so
+                      // claiming "no import in progress" alongside an error card
+                      // would be a second, contradictory answer. The error card
+                      // owns that state and offers retry.
                       if (_importStatus == null &&
+                          _error == null &&
                           !_isLoadingInitialStatus) ...[
                         const SizedBox(height: 16),
                         Card(
