@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/audio/playback_queue_projection.dart';
+import '../../core/audio/playback_state.dart';
 import '../../core/download/download_state.dart';
-import '../../providers/queue_provider.dart';
 import 'dj_deck_copy.dart';
 import 'providers/dj_session_provider.dart';
 
@@ -26,14 +27,21 @@ String? djDeckEntryHint({
 /// Reads the hint from the provider tree.
 ///
 /// Null-tolerant on both providers, so a narrow harness that mounts the player
-/// without downloads or a queue simply gets null.
+/// without downloads simply gets null.
 /// `DownloadState.downloadedTrackIds` is synchronous and is refreshed on every
 /// completion, so this needs no `FutureBuilder`.
+///
+/// The playing track comes from playback truth, not the import queue. This used
+/// to read `QueueProvider.currentTrack`, whose `currentPosition` the backend
+/// never advances (ADR 0012), so the hint judged "is the playing track
+/// downloaded?" from the import queue's pinned head — and advertised a download
+/// for a track that was not playing.
 String? djDeckEntryHintFor(
   BuildContext context, {
   required bool djModeEnabled,
 }) {
-  final current = context.watch<QueueProvider?>()?.currentTrack;
+  final snapshot = context.watch<PlaybackState?>()?.snapshot;
+  final current = snapshot == null ? null : currentTrackFor(snapshot);
   final downloaded = context.watch<DownloadState?>()?.downloadedTrackIds;
   final ref =
       current == null ? null : DjSessionProvider.djDeckTrackRef(current);
