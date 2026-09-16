@@ -115,6 +115,11 @@ func handlePlaylistImportError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, playlistimport.ErrInvalidURL):
 		writePlaylistImportError(w, http.StatusBadRequest, "INVALID_URL", "url must be a YouTube/YouTube Music playlist http(s) URL")
+	case errors.Is(err, playlistimport.ErrSourceResolution):
+		// Nothing local was created, so retrying the same request is safe and
+		// is the intended recovery. 502 matches the provider-failure status
+		// this codebase already uses for failed upstream resolution.
+		writePlaylistImportError(w, http.StatusBadGateway, "SOURCE_RESOLUTION_FAILED", "could not resolve playlist source; retry the import")
 	case errors.Is(err, playlistimport.ErrLimitExceeded):
 		writePlaylistImportError(w, http.StatusRequestEntityTooLarge, "PLAYLIST_TOO_LARGE", "playlist exceeds maxItems limit")
 	case errors.Is(err, playlistimport.ErrNoImportableItem):
