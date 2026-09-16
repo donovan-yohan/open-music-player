@@ -8,6 +8,7 @@ import 'package:open_music_player/core/audio/queue_persistence.dart';
 import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
+import 'package:flutter_test/flutter_test.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -70,15 +71,22 @@ MediaItem playbackMediaItem(
 /// The clock's periodic UI tick is parked an hour out, so tests drive position
 /// by hand or not at all. Use in plain `test()`s; see the library doc for why
 /// widget tests want [TestPlaybackState] instead.
+///
+/// The engine only disposes a clock it created itself, so this fixture keeps
+/// the clock alongside the state it hands back and retires both together —
+/// otherwise the clock's periodic tick survives the test as a pending timer.
 PlaybackState testPlaybackState({PlaybackEngine? engine}) {
   SharedPreferences.setMockInitialValues({});
-  return PlaybackState(
+  final clock = engine == null
+      ? DefaultTimelineClock(
+          now: () => DateTime.utc(2026),
+          uiTickInterval: const Duration(hours: 1),
+        )
+      : null;
+  final playback = PlaybackState(
     engine ??
         PlaybackEngine.withClock(
-          clock: DefaultTimelineClock(
-            now: () => DateTime.utc(2026),
-            uiTickInterval: const Duration(hours: 1),
-          ),
+          clock: clock!,
           voiceFactory: () => FakeVoice('playback'),
         ),
     signedAudioUrlService: SignedAudioUrlService.withRequester((body) async {
@@ -98,6 +106,37 @@ PlaybackState testPlaybackState({PlaybackEngine? engine}) {
     persistence: QueuePersistenceStore(),
     persistenceDebounce: Duration.zero,
   );
+  if (clock != null) testOwnedClocks[playback] = clock;
+  return playback;
+}
+
+/// The clocks owned by [testPlaybackState], keyed by the state they drive.
+final Map<PlaybackState, DefaultTimelineClock> testOwnedClocks =
+    <PlaybackState, DefaultTimelineClock>{};
+
+/// Disposes [playback] and the clock this library injected into its engine.
+///
+/// Use instead of `playback.dispose()` in widget tests: the binding asserts no
+/// timers are pending after the tree is torn down, and the engine deliberately
+/// leaves an injected clock alone.
+///
+/// Pass [tester] from a widget test. `PlaybackState.dispose()` starts the
+/// controller's teardown with `unawaited(...)`, and the voice pool's periodic
+/// timers are only cancelled partway down that chain — so without pumping here
+/// the binding's pending-timer check fires on timers that are already on their
+/// way out.
+Future<void> disposeTestPlaybackState(
+  PlaybackState playback, {
+  WidgetTester? tester,
+}) async {
+  playback.dispose();
+  if (tester != null) {
+    for (var i = 0; i < 3; i++) {
+      await tester.pump();
+    }
+  }
+  final clock = testOwnedClocks.remove(playback);
+  if (clock != null) await clock.dispose();
 }
 
 /// Plays [ids] as a collection — the "play an album" path, which populates the
