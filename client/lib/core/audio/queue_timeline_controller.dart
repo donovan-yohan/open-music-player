@@ -288,6 +288,7 @@ class QueueTimelineController {
 
   Future<void> _insertAllIntoQueue(int index, List<MediaItem> items) async {
     if (items.isEmpty) return;
+    await start();
     final insertIndex = index.clamp(0, _queue.length).toInt();
     final previousCurrent = _currentIndex;
     final previousCurrentQueueItemId = previousCurrent == null

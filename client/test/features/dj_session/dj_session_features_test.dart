@@ -5,11 +5,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:open_music_player/features/dj_session/dj_session_screen.dart';
 import 'package:open_music_player/features/dj_session/dj_session_filters.dart';
+import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/audio/queue_ordering.dart';
 import 'package:open_music_player/features/dj_session/dj_session_service.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../../support/mock_dio_client.dart';
+import '../../support/playback_fixtures.dart';
 
 /// Fixture with three blocks of two tracks each; block 1's track ids overlap
 /// block 0's to exercise duplicate skipping, and the queue starts empty.
@@ -63,26 +66,23 @@ String _queueResponse(List<int> trackIds) => jsonEncode({
     });
 
 void main() {
-  testWidgets('Play session queues every unique track in visual order',
-      (tester) async {
-    final queuedIds = <int>[];
+  testWidgets(
+      'Play session adds every unique track to the playback queue, in visual '
+      'order and tagged manual', (tester) async {
+    // A real PlaybackState over fake voices: this path exercises the actual
+    // enqueueAll (batched resolve + one bulk insert), not a stand-in for it.
+    final playback = testPlaybackState();
+    addTearDown(playback.dispose);
     final apiClient = mockQueueApiClient((request) async {
       if (request.url.path.endsWith('/dj/lineup')) {
         return http.Response(_sessionFixture(), 200);
       }
-      if (request.method == 'POST' &&
-          request.url.path.endsWith('/queue/items')) {
-        final body = jsonDecode(request.body) as Map<String, Object?>;
-        queuedIds.add(body['trackId'] as int);
-        return http.Response(_queueResponse(queuedIds), 200);
-      }
       return http.Response('{}', 404);
     });
-    final queueProvider = QueueProvider(apiClient);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider<QueueProvider>.value(
-        value: queueProvider,
+      ChangeNotifierProvider<PlaybackState>.value(
+        value: playback,
         child: MaterialApp(
           home: DjSessionScreen(service: DjSessionService(apiClient)),
         ),
@@ -94,44 +94,69 @@ void main() {
     await tester.pumpAndSettle();
 
     // Visual order across blocks, duplicates skipped: 101 appears once.
-    expect(queuedIds, [101, 102, 201, 301]);
+    expect(
+      [for (final item in playback.queue) item.id],
+      ['101', '102', '201', '301'],
+    );
+    // Track 1 must be tagged like the rest of its batch. Looping `enqueue`
+    // would have started a fresh context queue on the first track and mis-tagged
+    // it (#448), which is why the bulk add exists.
+    expect(
+      [for (final item in playback.queue) itemOrigin(item)],
+      [
+        queueOriginManual,
+        queueOriginManual,
+        queueOriginManual,
+        queueOriginManual,
+      ],
+      reason: 'the whole session is a manual batch, track 1 included',
+    );
     expect(find.text('Session queued · 4 tracks'), findsOneWidget);
   });
 
-  testWidgets('Play session skips tracks already in the queue before tapping',
-      (tester) async {
-    final queuedIds = <int>[102];
+  testWidgets(
+      'Play session adds only the tracks the playback queue does not already '
+      'hold', (tester) async {
+    final playback = testPlaybackState();
+    addTearDown(playback.dispose);
+    // 102 is already on the playback queue.
+    await tester.runAsync(
+      () => playback.enqueueAll([playbackTrackPayload(102)]),
+    );
+    await tester.pump();
+
     final apiClient = mockQueueApiClient((request) async {
       if (request.url.path.endsWith('/dj/lineup')) {
         return http.Response(_sessionFixture(), 200);
       }
-      if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
-        return http.Response(_queueResponse(queuedIds), 200);
-      }
-      if (request.method == 'POST' &&
-          request.url.path.endsWith('/queue/items')) {
-        final body = jsonDecode(request.body) as Map<String, Object?>;
-        queuedIds.add(body['trackId'] as int);
-        return http.Response(_queueResponse(queuedIds), 200);
-      }
       return http.Response('{}', 404);
     });
-    final queueProvider = QueueProvider(apiClient);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider<QueueProvider>.value(
-        value: queueProvider,
+      ChangeNotifierProvider<PlaybackState>.value(
+        value: playback,
         child: MaterialApp(
           home: DjSessionScreen(service: DjSessionService(apiClient)),
         ),
       ),
     );
-    await tester.pumpAndSettle();
+    // Bounded pumps, not pumpAndSettle: once the queue holds an item the
+    // playback engine keeps publishing, so the tree never reaches a still frame.
+    for (var i = 0; i < 6; i++) {
+      await tester.pump();
+    }
 
     await tester.tap(find.byKey(const ValueKey('dj_play_session')));
-    await tester.pumpAndSettle();
+    for (var i = 0; i < 6; i++) {
+      await tester.pump();
+    }
 
-    expect(queuedIds, [102, 101, 201, 301]);
+    // 102 was already queued, so it is not re-added; the rest of the lineup
+    // lands after it in visual order.
+    expect(
+      [for (final item in playback.queue) item.id],
+      ['102', '101', '201', '301'],
+    );
     expect(find.text('Session queued · 3 tracks'), findsOneWidget);
   });
 
