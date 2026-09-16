@@ -59,6 +59,12 @@ class TrackAnalysisStore {
   /// half used to call `notifyListeners()`.
   final VoidCallback? _onChanged;
 
+  /// The live import-queue rows. Retention treats those track ids as active so
+  /// bounded authority state can never evict a row the user can still see.
+  /// Read-only, and the store never uses it to recover compact analysis — that
+  /// only ever arrives through [ingestCompact].
+  final List<QueueTrack> Function()? _queueTracks;
+
   final WaveformPeakCache _waveforms;
 
   final Map<String, TrackAnalysis> _analysisByTrackId = {};
@@ -90,10 +96,6 @@ class TrackAnalysisStore {
   final Set<String> _permanentFailures = {};
   final Map<String, _EnrichedTrackCacheEntry> _enrichedTrackCache = {};
 
-  /// Keys the import queue currently holds. Refreshed by the provider on every
-  /// queue mutation so a prune here never needs provider state.
-  Set<String> _queueKeys = {};
-
   int _revision = 0;
   bool _disposed = false;
 
@@ -104,11 +106,13 @@ class TrackAnalysisStore {
     Duration retryCooldown = defaultRetryCooldown,
     void Function(int trackId, TrackAnalysis analysis)? onAnalysisApplied,
     VoidCallback? onChanged,
+    List<QueueTrack> Function()? queueTracks,
   })  : _waveforms = waveforms,
         _clock = clock ?? DateTime.now,
         _retryCooldown = retryCooldown,
         _onAnalysisApplied = onAnalysisApplied,
-        _onChanged = onChanged;
+        _onChanged = onChanged,
+        _queueTracks = queueTracks;
 
   int get analysisRevision => _revision;
 
@@ -230,18 +234,12 @@ class TrackAnalysisStore {
     return resolvedTracks;
   }
 
-  /// Remembers the analysis currently carried by the import queue rows and
-  /// refreshes the keys an authority prune treats as active.
+  /// Remembers the analysis currently carried by the import queue rows.
   ///
   /// Called by the provider at the same points its `_rememberQueueAnalyses`
-  /// ran, so bounded retention keeps counting live queue members.
+  /// ran, so a mutation's payload is ingested exactly once per response.
   void rememberQueueAnalyses(Iterable<QueueTrack> tracks) {
-    final queueTracks = tracks.toList(growable: false);
-    _queueKeys = {
-      for (final track in queueTracks)
-        if (_analysisTrackId(track) case final trackId?) trackId.toString(),
-    };
-    for (final track in queueTracks) {
+    for (final track in tracks) {
       _rememberTrackAnalysis(track);
     }
     _pruneAuthorityState();
@@ -937,8 +935,12 @@ class TrackAnalysisStore {
       ..._hydrationInterest,
       ..._overrideMutationTails.keys,
       ..._requestsInFlight,
-      ..._queueKeys,
     };
+    for (final track in _queueTracks?.call() ?? const <QueueTrack>[]) {
+      if (_analysisTrackId(track) case final trackId?) {
+        active.add(trackId.toString());
+      }
+    }
     return active;
   }
 
@@ -948,18 +950,10 @@ class TrackAnalysisStore {
       ..add(key);
   }
 
-  /// Bounds retained authority state. When [queueTracks] is given the import
-  /// queue's active keys are refreshed first, which is what the provider's
-  /// direct prune call sites need after they mutate the queue locally.
-  void prune([Iterable<QueueTrack>? queueTracks]) {
-    if (queueTracks != null) {
-      _queueKeys = {
-        for (final track in queueTracks)
-          if (_analysisTrackId(track) case final trackId?) trackId.toString(),
-      };
-    }
-    _pruneAuthorityState();
-  }
+  /// Bounds retained authority state. The provider calls this after it mutates
+  /// the import queue locally; live queue rows are read through the
+  /// `queueTracks` callback, so nothing needs to be pushed in.
+  void prune() => _pruneAuthorityState();
 
   void _pruneAuthorityState() {
     if (_disposed) return;

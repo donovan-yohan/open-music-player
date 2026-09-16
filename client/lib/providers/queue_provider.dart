@@ -59,6 +59,7 @@ class QueueProvider extends ChangeNotifier {
       retryCooldown: analysisRetryCooldown,
       onAnalysisApplied: _applyOverrideToQueue,
       onChanged: _notifyListeners,
+      queueTracks: () => _queue.tracks,
     );
   }
 
@@ -453,7 +454,7 @@ class QueueProvider extends ChangeNotifier {
   void _pruneTimelineWaveformsForQueue() =>
       _waveformCache.pruneForQueue(_queue.tracks);
 
-  void _pruneAnalysisAuthorityState() => _analysis.prune(_queue.tracks);
+  void _pruneAnalysisAuthorityState() => _analysis.prune();
 
   /// An accepted correction replaces the row the user is looking at.
   void _applyOverrideToQueue(int trackId, TrackAnalysis analysis) {
