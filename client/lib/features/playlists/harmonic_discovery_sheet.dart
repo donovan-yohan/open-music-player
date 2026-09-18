@@ -1,3 +1,4 @@
+import '../../shared/widgets/now_playing_row.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -492,25 +493,27 @@ class _HarmonicDiscoverySheetState extends State<HarmonicDiscoverySheet> {
           itemCount: matches.length,
           itemBuilder: (context, index) {
             final match = matches[index];
-            return ListTile(
-              key: ValueKey('harmonic_result_${match.id}'),
-              contentPadding: EdgeInsets.zero,
-              title: Text(
-                match.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: Text(
-                match.artist ?? 'Unknown artist',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              trailing: MixMetadataBadges(
-                bpm: match.bpm,
-                camelot: match.camelot,
-              ),
-              onTap: () => unawaited(_showResultActions(match)),
-            );
+            return NowPlayingRow(
+                trackId: match.id.toString(),
+                child: ListTile(
+                  key: ValueKey('harmonic_result_${match.id}'),
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(
+                    match.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    match.artist ?? 'Unknown artist',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: MixMetadataBadges(
+                    bpm: match.bpm,
+                    camelot: match.camelot,
+                  ),
+                  onTap: () => unawaited(_showResultActions(match)),
+                ));
           },
         ),
       ],

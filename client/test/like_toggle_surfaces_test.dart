@@ -1,3 +1,4 @@
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -109,6 +110,8 @@ class _StubDownloadState extends ChangeNotifier implements DownloadState {
 }
 
 class _FakePlayback extends Fake implements PlaybackState {
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
   @override
   MediaItem? get currentItem => null;
 

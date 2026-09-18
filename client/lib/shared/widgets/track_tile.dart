@@ -1,3 +1,4 @@
+import 'now_playing_row.dart';
 import 'package:flutter/material.dart';
 import '../../models/track_analysis.dart';
 import '../models/track.dart';
@@ -5,6 +6,8 @@ import 'song_metadata_chips.dart';
 import 'track_artwork.dart';
 
 class TrackTile extends StatelessWidget {
+  final String? trackId;
+  final String? queueItemId;
   final String title;
   final String? artist;
   final String? album;
@@ -22,13 +25,13 @@ class TrackTile extends StatelessWidget {
   /// duration text.
   final Widget? action;
   final bool showDragHandle;
-  final bool isCurrent;
-  final String? activeLabel;
   final TrackAnalysis? analysis;
 
   const TrackTile({
     super.key,
     required this.title,
+    this.trackId,
+    this.queueItemId,
     this.artist,
     this.album,
     required this.duration,
@@ -40,8 +43,6 @@ class TrackTile extends StatelessWidget {
     this.trailing,
     this.action,
     this.showDragHandle = false,
-    this.isCurrent = false,
-    this.activeLabel,
     this.analysis,
   });
 
@@ -53,10 +54,9 @@ class TrackTile extends StatelessWidget {
     Widget? trailing,
     Widget? action,
     bool showDragHandle = false,
-    bool isCurrent = false,
-    String? activeLabel,
   }) {
     return TrackTile(
+      trackId: track.id.toString(),
       title: track.title,
       artist: track.artist,
       album: track.album,
@@ -69,27 +69,24 @@ class TrackTile extends StatelessWidget {
       trailing: trailing,
       action: action,
       showDragHandle: showDragHandle,
-      isCurrent: isCurrent,
-      activeLabel: activeLabel,
       analysis: track.analysis,
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    return NowPlayingRow(
+      trackId: trackId,
+      queueItemId: queueItemId,
+      child: Builder(builder: _buildContent),
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
     final theme = Theme.of(context);
-    final activeColor = theme.colorScheme.primary;
-    final titleStyle = isCurrent
-        ? theme.textTheme.bodyLarge?.copyWith(
-            color: activeColor,
-            fontWeight: FontWeight.w700,
-          )
-        : theme.textTheme.bodyLarge;
-    final subtitleStyle = isCurrent
-        ? theme.textTheme.bodySmall?.copyWith(
-            color: activeColor.withValues(alpha: 0.85),
-          )
-        : theme.textTheme.bodySmall;
+    final titleStyle =
+        ListTileTheme.of(context).titleTextStyle ?? theme.textTheme.bodyLarge;
+    final subtitleStyle = theme.textTheme.bodySmall;
     final subtitle = [
       artist,
       album,
@@ -107,10 +104,13 @@ class TrackTile extends StatelessWidget {
         final trailingMaxWidth =
             (availableWidth * 0.38).clamp(96.0, 168.0).toDouble();
         final enlargedText = MediaQuery.textScalerOf(context).scale(1) > 1.3;
-        final hasNowPlayingBadge = isCurrent && activeLabel != null;
+        final hasNowPlayingBadge = SongRowTreatment.presentationOf(context) !=
+            SongRowPresentation.none;
 
-        final useExpandedLayout = hasMetadata &&
-            (hasNowPlayingBadge || (enlargedText && availableWidth < 480));
+        final useExpandedLayout = (hasMetadata &&
+                (hasNowPlayingBadge ||
+                    (enlargedText && availableWidth < 480))) ||
+            (hasNowPlayingBadge && enlargedText);
 
         if (useExpandedLayout) {
           final expandedMetadataMaxWidth =
@@ -118,7 +118,6 @@ class TrackTile extends StatelessWidget {
           return _buildExpandedTextTile(
             context,
             theme: theme,
-            activeColor: activeColor,
             titleStyle: titleStyle,
             subtitleStyle: subtitleStyle,
             subtitle: subtitle,
@@ -126,38 +125,29 @@ class TrackTile extends StatelessWidget {
           );
         }
 
-        return Container(
-          decoration: BoxDecoration(
-            border: isCurrent
-                ? Border(left: BorderSide(color: activeColor, width: 3))
-                : null,
+        return ListTile(
+          onTap: onTap,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          leading: leading ?? _buildCoverArt(),
+          title: Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: titleStyle,
           ),
-          child: ListTile(
-            onTap: onTap,
-            selected: isCurrent,
-            selectedTileColor: activeColor.withValues(alpha: 0.10),
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            leading: leading ?? _buildCoverArt(),
-            title: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: titleStyle,
-            ),
-            subtitle: subtitle.isEmpty
-                ? null
-                : Text(
-                    subtitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: subtitleStyle,
-                  ),
-            trailing: _buildTrailing(
-              context,
-              hasMetadata,
-              trailingMaxWidth,
-            ),
+          subtitle: subtitle.isEmpty
+              ? null
+              : Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: subtitleStyle,
+                ),
+          trailing: _buildTrailing(
+            context,
+            hasMetadata,
+            trailingMaxWidth,
           ),
         );
       },
@@ -210,74 +200,65 @@ class TrackTile extends StatelessWidget {
   Widget _buildExpandedTextTile(
     BuildContext context, {
     required ThemeData theme,
-    required Color activeColor,
     required TextStyle? titleStyle,
     required TextStyle? subtitleStyle,
     required String subtitle,
     required double metadataMaxWidth,
   }) {
-    return Container(
-      decoration: BoxDecoration(
-        color: isCurrent ? activeColor.withValues(alpha: 0.10) : null,
-        border: isCurrent
-            ? Border(left: BorderSide(color: activeColor, width: 3))
-            : null,
-      ),
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              leading ?? _buildCoverArt(),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            leading ?? _buildCoverArt(),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: titleStyle,
+                  ),
+                  if (subtitle.isNotEmpty)
                     Text(
-                      title,
+                      subtitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: titleStyle,
+                      style: subtitleStyle,
                     ),
-                    if (subtitle.isNotEmpty)
-                      Text(
-                        subtitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: subtitleStyle,
+                  const SizedBox(height: 4),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: ConstrainedBox(
+                      key: const ValueKey('track_tile_trailing'),
+                      constraints: BoxConstraints(
+                        maxWidth: metadataMaxWidth,
                       ),
-                    const SizedBox(height: 4),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: ConstrainedBox(
-                        key: const ValueKey('track_tile_trailing'),
-                        constraints: BoxConstraints(
-                          maxWidth: metadataMaxWidth,
-                        ),
-                        child: Align(
-                          widthFactor: 1,
-                          alignment: Alignment.centerRight,
-                          child: SongMetadataChips(
-                            analysis: analysis,
-                            singleLine: true,
-                            compact: true,
-                          ),
+                      child: Align(
+                        widthFactor: 1,
+                        alignment: Alignment.centerRight,
+                        child: SongMetadataChips(
+                          analysis: analysis,
+                          singleLine: true,
+                          compact: true,
                         ),
                       ),
                     ),
-                    const SizedBox(height: 2),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: _buildTrailingActions(context),
-                    ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(height: 2),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: _buildTrailingActions(context),
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -293,26 +274,16 @@ class TrackTile extends StatelessWidget {
       spacing: 8,
       runSpacing: 2,
       children: [
+        if (SongRowTreatment.presentationOf(context) !=
+            SongRowPresentation.none)
+          const SongRowStatusBadge(),
         if (trailing != null)
           trailing!
         else ...[
-          if (isCurrent && activeLabel != null)
-            _NowPlayingBadge(
-              label: activeLabel!,
-              color: theme.colorScheme.primary,
-            )
-          else if (isCurrent) ...[
-            Icon(Icons.equalizer, size: 18, color: theme.colorScheme.primary),
-          ],
           if (action != null) action!,
           Text(
             duration,
-            style: isCurrent
-                ? theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.w600,
-                  )
-                : theme.textTheme.bodySmall,
+            style: theme.textTheme.bodySmall,
           ),
           if (onMorePressed != null)
             IconButton(
@@ -327,46 +298,6 @@ class TrackTile extends StatelessWidget {
             ),
         ],
       ],
-    );
-  }
-}
-
-class _NowPlayingBadge extends StatelessWidget {
-  const _NowPlayingBadge({required this.label, required this.color});
-
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      label: label,
-      child: Container(
-        key: const ValueKey('track_tile_now_playing_badge'),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.16),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: color.withValues(alpha: 0.7)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.equalizer, size: 14, color: color),
-            const SizedBox(width: 4),
-            Flexible(
-              child: Text(
-                label,
-                style: TextStyle(
-                  color: color,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

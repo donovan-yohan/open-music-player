@@ -1,3 +1,4 @@
+import '../../shared/widgets/now_playing_row.dart';
 import 'dart:async';
 import 'dart:math';
 
@@ -1470,71 +1471,73 @@ class _DjTrackCard extends StatelessWidget {
       child: Card(
         clipBehavior: Clip.antiAlias,
         margin: EdgeInsets.zero,
-        child: InkWell(
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(
-                  width: double.infinity,
-                  height: 148,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      _TrackArtwork(track: track),
-                      Positioned(
-                        right: 8,
-                        bottom: 8,
-                        child: SizedBox(
-                          width: 48,
-                          height: 48,
-                          child: IconButton.filledTonal(
-                            tooltip: 'Add to queue',
-                            icon: const Icon(Icons.playlist_add, size: 22),
-                            onPressed: onEnqueue,
+        child: NowPlayingRow(
+            trackId: track.id.toString(),
+            child: InkWell(
+              onTap: onTap,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: double.infinity,
+                      height: 148,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          _TrackArtwork(track: track),
+                          Positioned(
+                            right: 8,
+                            bottom: 8,
+                            child: SizedBox(
+                              width: 48,
+                              height: 48,
+                              child: IconButton.filledTonal(
+                                tooltip: 'Add to queue',
+                                icon: const Icon(Icons.playlist_add, size: 22),
+                                onPressed: onEnqueue,
+                              ),
+                            ),
                           ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      track.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: theme.colorScheme.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      track.artist.isEmpty ? 'Unknown artist' : track.artist,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    if (track.djMeta.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        track.djMeta.join(' • '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
                     ],
-                  ),
+                  ],
                 ),
-                const SizedBox(height: 10),
-                Text(
-                  track.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    color: theme.colorScheme.onSurface,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  track.artist.isEmpty ? 'Unknown artist' : track.artist,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                if (track.djMeta.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    track.djMeta.join(' • '),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.primary,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ),
+              ),
+            )),
       ),
     );
   }

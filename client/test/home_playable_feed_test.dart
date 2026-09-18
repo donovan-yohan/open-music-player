@@ -1,3 +1,4 @@
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -248,6 +249,8 @@ Track _track(int id, String title, {required bool? inLibrary}) => Track(
 /// Records exactly what Home asked playback to do, and can fail the way a
 /// signed-URL refusal does.
 class _RecordingPlayback extends Fake implements PlaybackState {
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
   _RecordingPlayback({this.error, this.throwOnPlay = false});
 
   final String? error;

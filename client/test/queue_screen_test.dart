@@ -566,12 +566,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-        tester
-            .widget<TrackTile>(find.byKey(
-              const ValueKey('playback_queue_5'),
-            ))
-            .isCurrent,
-        isTrue);
+        find.descendant(
+          of: find.byKey(const ValueKey('playback_queue_5')),
+          matching: find.byKey(const ValueKey('song_row_current')),
+        ),
+        findsOneWidget);
     expect(scrollable.controller!.offset, greaterThan(0));
     final currentRow = find.byKey(const ValueKey('playback_queue_5'));
     expect(
@@ -825,13 +824,11 @@ void main() {
 
     expect(scrollable.controller!.offset, lessThan(100));
     expect(
-      tester
-          .widget<TrackTile>(
-            find.byKey(const ValueKey('playback_queue_5')),
-          )
-          .isCurrent,
-      isTrue,
-    );
+        find.descendant(
+          of: find.byKey(const ValueKey('playback_queue_5')),
+          matching: find.byKey(const ValueKey('song_row_current')),
+        ),
+        findsOneWidget);
   });
 
   testWidgets('keeps playback and import queues separate when both have items',
@@ -1046,6 +1043,7 @@ void main() {
       FlutterError.onError = previousOnError;
     }
 
+    expect(flutterErrors, isEmpty);
     final segmented = tester.widget<SegmentedButton<dynamic>>(
       find.byKey(const ValueKey('queue_view_switch')),
     );

@@ -1,3 +1,4 @@
+import '../../shared/widgets/now_playing_row.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -241,47 +242,49 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
         itemBuilder: (context, index) {
           if (index == 0) return _buildHeader(context);
           final track = _tracks[index - 1];
-          return ListTile(
-            key: ValueKey('local_track_${track.id}'),
-            leading: TrackArtwork.fromTrack(track),
-            title: Text(
-              track.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            subtitle: Text(
-              track.displayArtist,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SongMetadataChips(
-                  analysis: track.analysis,
-                  singleLine: true,
-                  compact: true,
+          return NowPlayingRow(
+              trackId: track.id.toString(),
+              child: ListTile(
+                key: ValueKey('local_track_${track.id}'),
+                leading: TrackArtwork.fromTrack(track),
+                title: Text(
+                  track.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                LikeToggleButton(
-                  track: track,
-                  buttonKey: ValueKey('local_browse_like_${track.id}'),
+                subtitle: Text(
+                  track.displayArtist,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                Text(
-                  track.formattedDuration,
-                  style: Theme.of(context).textTheme.bodySmall,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SongMetadataChips(
+                      analysis: track.analysis,
+                      singleLine: true,
+                      compact: true,
+                    ),
+                    LikeToggleButton(
+                      track: track,
+                      buttonKey: ValueKey('local_browse_like_${track.id}'),
+                    ),
+                    Text(
+                      track.formattedDuration,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    IconButton(
+                      key: ValueKey('local_browse_more_${track.id}'),
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.more_vert),
+                      tooltip: 'More actions',
+                      onPressed: () => _showActions(track),
+                    ),
+                  ],
                 ),
-                IconButton(
-                  key: ValueKey('local_browse_more_${track.id}'),
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.more_vert),
-                  tooltip: 'More actions',
-                  onPressed: () => _showActions(track),
-                ),
-              ],
-            ),
-            onTap: () => _play(startIndex: index - 1),
-            onLongPress: () => _showActions(track),
-          );
+                onTap: () => _play(startIndex: index - 1),
+                onLongPress: () => _showActions(track),
+              ));
         },
       ),
     );

@@ -1,3 +1,4 @@
+import '../../shared/widgets/now_playing_row.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -416,45 +417,47 @@ class _DesktopPoster extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return Material(
       color: colors.surfaceContainerHigh,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: SizedBox.expand(
-                  child: item.track != null
-                      ? TrackArtwork.fromTrack(
-                          item.track!,
-                          width: double.infinity,
-                          height: double.infinity,
-                        )
-                      : item.imageUrl == null || item.imageUrl!.isEmpty
-                          ? const _CoverPlaceholder()
-                          : CachedNetworkImage(
-                              imageUrl: item.imageUrl!,
-                              fit: BoxFit.cover,
-                              errorWidget: (_, __, ___) =>
-                                  const _CoverPlaceholder(),
-                            ),
-                ),
+      child: NowPlayingRow(
+          trackId: item.track?.id.toString(),
+          child: InkWell(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: SizedBox.expand(
+                      child: item.track != null
+                          ? TrackArtwork.fromTrack(
+                              item.track!,
+                              width: double.infinity,
+                              height: double.infinity,
+                            )
+                          : item.imageUrl == null || item.imageUrl!.isEmpty
+                              ? const _CoverPlaceholder()
+                              : CachedNetworkImage(
+                                  imageUrl: item.imageUrl!,
+                                  fit: BoxFit.cover,
+                                  errorWidget: (_, __, ___) =>
+                                      const _CoverPlaceholder(),
+                                ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(item.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 2),
+                  Text(item.subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall),
+                ],
               ),
-              const SizedBox(height: 12),
-              Text(item.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 2),
-              Text(item.subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
-        ),
-      ),
+            ),
+          )),
     );
   }
 }
@@ -519,65 +522,68 @@ class _TrackTile extends StatelessWidget {
       actionKey: actionKey,
       onAddToQueue: onAddToQueue,
       enabled: playable,
-      child: ListTile(
-        onTap: onTap,
-        leading: ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: SizedBox(
-            width: 48,
-            height: 48,
-            child: TrackArtwork.fromTrack(
-              track,
-              width: 48,
-              height: 48,
-              borderRadius: BorderRadius.zero,
+      child: NowPlayingRow(
+          trackId: track.id.toString(),
+          child: ListTile(
+            onTap: onTap,
+            leading: ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: SizedBox(
+                width: 48,
+                height: 48,
+                child: TrackArtwork.fromTrack(
+                  track,
+                  width: 48,
+                  height: 48,
+                  borderRadius: BorderRadius.zero,
+                ),
+              ),
             ),
-          ),
-        ),
-        title: Text(
-          track.title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: playable ? null : TextStyle(color: muted),
-        ),
-        subtitle: playable
-            ? Text(
-                track.displayArtist,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              )
-            : Row(
-                children: [
-                  Icon(Icons.library_music_outlined, size: 13, color: muted),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      'Not in your library',
-                      key: ValueKey('home_not_in_library_${track.id}'),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: muted),
-                    ),
+            title: Text(
+              track.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: playable ? null : TextStyle(color: muted),
+            ),
+            subtitle: playable
+                ? Text(
+                    track.displayArtist,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  )
+                : Row(
+                    children: [
+                      Icon(Icons.library_music_outlined,
+                          size: 13, color: muted),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          'Not in your library',
+                          key: ValueKey('home_not_in_library_${track.id}'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: muted),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: SongMetadataChips(
-                analysis: track.analysis,
-                singleLine: true,
-                compact: true,
-              ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: SongMetadataChips(
+                    analysis: track.analysis,
+                    singleLine: true,
+                    compact: true,
+                  ),
+                ),
+                LikeToggleButton(
+                  track: track,
+                  buttonKey: ValueKey('home_like_${track.id}'),
+                ),
+              ],
             ),
-            LikeToggleButton(
-              track: track,
-              buttonKey: ValueKey('home_like_${track.id}'),
-            ),
-          ],
-        ),
-      ),
+          )),
     );
   }
 }

@@ -1,3 +1,5 @@
+import 'package:open_music_player/core/audio/playback_session.dart';
+import 'package:just_audio/just_audio.dart' show ProcessingState;
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -95,9 +97,7 @@ void main() {
       final trailing = find.byKey(
         const ValueKey('library_track_trailing_42'),
       );
-      final rowWidget = tester.widget<ListTile>(row);
-
-      expect(rowWidget.selected, isTrue);
+      expect(find.byKey(const ValueKey('song_row_current')), findsOneWidget);
       expect(tester.getSize(title).width, greaterThanOrEqualTo(48));
       expect(tester.getRect(title).right,
           lessThanOrEqualTo(tester.getRect(trailing).left));
@@ -184,6 +184,21 @@ void main() {
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot(
+        sessionId: 'layout',
+        cues: const [],
+        currentCueId: null,
+        currentQueueIndex: 0,
+        currentMediaItem: currentItem,
+        localPosition: Duration.zero,
+        localDuration: Duration.zero,
+        globalPosition: Duration.zero,
+        globalDuration: Duration.zero,
+        playing: false,
+        processingState: ProcessingState.ready,
+        activeVoiceCount: 0,
+      );
   @override
   MediaItem? get currentItem => const MediaItem(
         id: '42',

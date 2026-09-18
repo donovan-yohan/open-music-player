@@ -1,3 +1,4 @@
+import 'package:open_music_player/shared/widgets/now_playing_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/models/track_analysis.dart';
@@ -17,14 +18,14 @@ void main() {
     await tester.pumpWidget(
       const MaterialApp(
         home: Scaffold(
-          body: TrackTile(
-            title: 'Get Your Wish',
-            artist: 'Porter Robinson',
-            album: 'Nurture',
-            duration: '3:38',
-            isCurrent: true,
-            activeLabel: 'Now playing',
-          ),
+          body: SongRowTreatment(
+              presentation: SongRowPresentation.playing,
+              child: TrackTile(
+                title: 'Get Your Wish',
+                artist: 'Porter Robinson',
+                album: 'Nurture',
+                duration: '3:38',
+              )),
         ),
       ),
     );
@@ -96,14 +97,14 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: TrackTile(
-            title: title,
-            artist: artist,
-            duration: '3:38',
-            analysis: _analysis(),
-            isCurrent: true,
-            activeLabel: 'Now playing',
-          ),
+          body: SongRowTreatment(
+              presentation: SongRowPresentation.playing,
+              child: TrackTile(
+                title: title,
+                artist: artist,
+                duration: '3:38',
+                analysis: _analysis(),
+              )),
         ),
       ),
     );
@@ -190,14 +191,14 @@ void main() {
           home: Scaffold(
             body: MediaQuery(
               data: MediaQueryData(textScaler: TextScaler.linear(scale)),
-              child: TrackTile(
-                title: title,
-                artist: artist,
-                duration: '3:38',
-                analysis: _analysis(),
-                isCurrent: true,
-                activeLabel: 'Now playing',
-              ),
+              child: SongRowTreatment(
+                  presentation: SongRowPresentation.playing,
+                  child: TrackTile(
+                    title: title,
+                    artist: artist,
+                    duration: '3:38',
+                    analysis: _analysis(),
+                  )),
             ),
           ),
         ),
@@ -266,14 +267,14 @@ void main() {
             home: Scaffold(
               body: MediaQuery(
                 data: MediaQueryData(textScaler: TextScaler.linear(scale)),
-                child: TrackTile(
-                  title: title,
-                  artist: artist,
-                  duration: '3:38',
-                  analysis: _analysis(),
-                  isCurrent: true,
-                  activeLabel: 'Now playing',
-                ),
+                child: SongRowTreatment(
+                    presentation: SongRowPresentation.playing,
+                    child: TrackTile(
+                      title: title,
+                      artist: artist,
+                      duration: '3:38',
+                      analysis: _analysis(),
+                    )),
               ),
             ),
           ),

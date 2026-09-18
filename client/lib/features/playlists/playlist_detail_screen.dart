@@ -993,26 +993,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
   }
 
-  bool _isCurrentPlaylistQueue(PlaybackContext? playbackContext) {
-    final playlist = _playlist;
-    if (playlist == null) return false;
-    return playbackContext?.kind == PlaybackContextKind.playlist &&
-        playbackContext?.id == playlist.id.toString();
-  }
-
-  bool _isCurrentTrackInThisPlaylist(
-    PlaybackContext? playbackContext,
-    String? currentItemId,
-    Track track,
-  ) {
-    if (!_isCurrentPlaylistQueue(playbackContext)) return false;
-    return int.tryParse(currentItemId ?? '') == track.id;
-  }
-
-  String _activeTrackLabel(bool isPlaying) {
-    return isPlaying ? 'Now playing' : 'Paused here';
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1292,15 +1272,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
   Widget _buildTracksList() {
     final tracks = _playlist!.tracks ?? [];
-    final playbackContext = context.select<PlaybackState, PlaybackContext?>(
-      (playback) => playback.playbackContext,
-    );
-    final currentItemId = context.select<PlaybackState, String?>(
-      (playback) => playback.currentItem?.id,
-    );
-    final isPlaying = context.select<PlaybackState, bool>(
-      (playback) => playback.isPlaying,
-    );
 
     if (tracks.isEmpty) {
       return SliverFillRemaining(
@@ -1333,14 +1304,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           (context, index) {
             final track = tracks[index];
             final selected = _selection.contains(track.id);
-            final isCurrent = _isCurrentTrackInThisPlaylist(
-              playbackContext,
-              currentItemId,
-              track,
-            );
             return TrackTile.fromTrack(
               track,
-              isCurrent: isCurrent,
               onTap: () => _toggleTrackSelection(track.id),
               trailing: Checkbox(
                 value: selected,
@@ -1359,17 +1324,11 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         onReorderItem: _reorderTrack,
         itemBuilder: (context, index) {
           final track = tracks[index];
-          final isCurrent = _isCurrentTrackInThisPlaylist(
-            playbackContext,
-            currentItemId,
-            track,
-          );
           return ReorderableDragStartListener(
             key: Key('track_${track.id}'),
             index: index,
             child: TrackTile.fromTrack(
               track,
-              isCurrent: isCurrent,
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -1391,20 +1350,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       delegate: SliverChildBuilderDelegate(
         (context, index) {
           final track = tracks[index];
-          final isCurrent = _isCurrentTrackInThisPlaylist(
-            playbackContext,
-            currentItemId,
-            track,
-          );
           return QueueSwipeAction(
             actionKey:
                 Key('playlist_queue_${widget.playlistId}_${track.id}_$index'),
             onAddToQueue: () => _enqueueTrack(track),
             child: TrackTile.fromTrack(
               track,
-              isCurrent: isCurrent,
               onTap: () => _playFromIndex(index),
-              activeLabel: isCurrent ? _activeTrackLabel(isPlaying) : null,
               action: LikeToggleButton(
                 track: track,
                 buttonKey: ValueKey('playlist_like_${track.id}'),
@@ -1423,16 +1375,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   Widget _buildMixedTracksList() {
     final tracks = _playlist!.tracks ?? const <Track>[];
     if (tracks.isEmpty) return _buildTracksList();
-
-    final playbackContext = context.select<PlaybackState, PlaybackContext?>(
-      (playback) => playback.playbackContext,
-    );
-    final currentItemId = context.select<PlaybackState, String?>(
-      (playback) => playback.currentItem?.id,
-    );
-    final isPlaying = context.select<PlaybackState, bool>(
-      (playback) => playback.isPlaying,
-    );
 
     return SliverList(
       delegate: SliverChildBuilderDelegate(
@@ -1458,11 +1400,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
           final rowIndex = index ~/ 2;
           final track = tracks[rowIndex];
-          final isCurrent = _isCurrentTrackInThisPlaylist(
-            playbackContext,
-            currentItemId,
-            track,
-          );
           return Column(
             key: Key('mixed_track_${track.id}'),
             children: [
@@ -1470,14 +1407,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               // render its own metadata chips; the blended badges below are
               // the single metadata surface in this view.
               TrackTile(
+                trackId: track.id.toString(),
                 title: track.title,
                 artist: track.artist,
                 album: track.album,
                 duration: track.formattedDuration,
                 coverArtUrl: track.displayArtworkUrl,
                 artworkKind: track.artworkKind,
-                isCurrent: isCurrent,
-                activeLabel: isCurrent ? _activeTrackLabel(isPlaying) : null,
                 onTap: () => _playFromIndex(rowIndex),
                 action: LikeToggleButton(
                   track: track,

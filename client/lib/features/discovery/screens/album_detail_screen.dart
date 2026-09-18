@@ -1,3 +1,4 @@
+import '../../../shared/widgets/now_playing_row.dart';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -391,54 +392,56 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
       delegate: SliverChildBuilderDelegate(
         (context, index) {
           final track = _album!.tracks[index];
-          return ListTile(
-            leading: SizedBox(
-              width: 32,
-              child: Text(
-                '${track.position ?? index + 1}',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ),
-            title: Text(
-              track.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            subtitle: track.artist != null && track.artist != _album!.artist
-                ? Text(
-                    track.artist!,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+          return NowPlayingRow(
+              trackId: isAlbumTrackPlayable(track) ? track.id : null,
+              child: ListTile(
+                leading: SizedBox(
+                  width: 32,
+                  child: Text(
+                    '${track.position ?? index + 1}',
+                    textAlign: TextAlign.center,
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
-                  )
-                : null,
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  track.formattedDuration,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
-                if (track.inLibrary == true)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 8),
-                    child: Icon(
-                      Icons.check_circle,
-                      size: 16,
-                      color: Theme.of(context).colorScheme.primary,
+                title: Text(
+                  track.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: track.artist != null && track.artist != _album!.artist
+                    ? Text(
+                        track.artist!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      )
+                    : null,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      track.formattedDuration,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
-                  ),
-              ],
-            ),
-            onTap: () => _showTrackActions(track),
-          );
+                    if (track.inLibrary == true)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 8),
+                        child: Icon(
+                          Icons.check_circle,
+                          size: 16,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                  ],
+                ),
+                onTap: () => _showTrackActions(track),
+              ));
         },
         childCount: _album!.tracks.length,
       ),

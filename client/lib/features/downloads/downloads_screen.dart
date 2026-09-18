@@ -1,3 +1,4 @@
+import '../../shared/widgets/now_playing_row.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/download/download_state.dart';
@@ -179,48 +180,50 @@ class _DownloadListTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final track = download.track;
 
-    return ListTile(
-      leading: Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: const Icon(Icons.music_note),
-      ),
-      title: Text(
-        track?.title ?? 'Unknown Track',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Text(
-        track?.displayArtist ?? 'Unknown Artist',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            formatBytes(download.fileSizeBytes),
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          if (track != null)
-            LikeToggleButton(
-              track: track,
-              buttonKey: ValueKey('downloads_like_${track.id}'),
+    return NowPlayingRow(
+        trackId: track?.id.toString(),
+        child: ListTile(
+          leading: Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(4),
             ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            iconSize: 20,
-            visualDensity: VisualDensity.compact,
-            tooltip: 'Remove download',
-            onPressed: () => _showDeleteDialog(context),
+            child: const Icon(Icons.music_note),
           ),
-        ],
-      ),
-    );
+          title: Text(
+            track?.title ?? 'Unknown Track',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: Text(
+            track?.displayArtist ?? 'Unknown Artist',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                formatBytes(download.fileSizeBytes),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              if (track != null)
+                LikeToggleButton(
+                  track: track,
+                  buttonKey: ValueKey('downloads_like_${track.id}'),
+                ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline),
+                iconSize: 20,
+                visualDensity: VisualDensity.compact,
+                tooltip: 'Remove download',
+                onPressed: () => _showDeleteDialog(context),
+              ),
+            ],
+          ),
+        ));
   }
 
   void _showDeleteDialog(BuildContext context) {

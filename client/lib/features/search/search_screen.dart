@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../../shared/widgets/now_playing_row.dart';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -1941,72 +1942,78 @@ class _SearchScreenState extends State<SearchScreen> {
     return Card(
       key: stableKey,
       margin: const EdgeInsets.only(bottom: 8),
-      child: InkWell(
-        onTap: canPreview ? () => _previewSource(candidate) : null,
-        borderRadius: BorderRadius.circular(12),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final mobile = constraints.maxWidth < 520;
-            return Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  _buildThumb(
-                    candidate.thumbnailUrl,
-                    overlay: queueAvailable
-                        ? _queuedOverlay(queuedTrack, pending)
-                        : null,
-                    size: mobile ? 42 : 48,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          candidate.title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            height: 1.18,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          candidate.displaySubtitle,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurfaceVariant,
-                            fontSize: 12,
-                            height: 1.16,
-                          ),
-                        ),
-                      ],
+      child: NowPlayingRow(
+        trackId: queuedTrack?.queueStatus == TrackQueueStatus.playable
+            ? queuedTrack?.playbackTrackId
+            : null,
+        child: InkWell(
+          onTap: canPreview ? () => _previewSource(candidate) : null,
+          borderRadius: BorderRadius.circular(12),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final mobile = constraints.maxWidth < 520;
+              return Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    _buildThumb(
+                      candidate.thumbnailUrl,
+                      overlay: queueAvailable
+                          ? _queuedOverlay(queuedTrack, pending)
+                          : null,
+                      size: mobile ? 42 : 48,
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  _buildCandidateActions(
-                    queueProvider: queueProvider,
-                    candidate: candidate,
-                    queuedTrack: queuedTrack,
-                    pending: pending,
-                    mobile: mobile,
-                    canPreview: canPreview,
-                    selection: selection,
-                    onChoose: onChoose,
-                    queueAvailable: queueAvailable,
-                  ),
-                ],
-              ),
-            );
-          },
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            candidate.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              height: 1.18,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            candidate.displaySubtitle,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
+                              fontSize: 12,
+                              height: 1.16,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _buildCandidateActions(
+                      queueProvider: queueProvider,
+                      candidate: candidate,
+                      queuedTrack: queuedTrack,
+                      pending: pending,
+                      mobile: mobile,
+                      canPreview: canPreview,
+                      selection: selection,
+                      onChoose: onChoose,
+                      queueAvailable: queueAvailable,
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
         ),
       ),
     );

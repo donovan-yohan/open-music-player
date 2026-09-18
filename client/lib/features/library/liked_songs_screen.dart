@@ -339,9 +339,6 @@ class _LikedSongRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isCurrent = context.select<PlaybackState, bool>(
-      (playback) => playback.currentItem?.id == track.id.toString(),
-    );
     final liked = context.select<LikedTracksState, bool>(
       (tracks) => tracks.isLiked(track.id) ?? false,
     );
@@ -354,7 +351,6 @@ class _LikedSongRow extends StatelessWidget {
       onAddToQueue: onAddToQueue,
       child: TrackTile.fromTrack(
         track,
-        isCurrent: isCurrent,
         onTap: onTap,
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
