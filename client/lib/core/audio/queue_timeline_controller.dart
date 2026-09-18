@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'queue_ordering.dart';
 import 'dart:math' as math;
 
 import 'package:audio_service/audio_service.dart';
@@ -52,8 +53,37 @@ class QueueTimelineController {
   /// Fires when the mix clock runs off the end of a non-empty queue with repeat
   /// off. Deliberately not a [BehaviorSubject]: this is an event, and a late
   /// subscriber must not be handed a stale "the queue already ended".
-  final StreamController<void> _queueExhaustedController =
-      StreamController<void>.broadcast();
+  final StreamController<Object> _queueExhaustedController =
+      StreamController<Object>.broadcast();
+  Object? _exhaustion;
+  int _continuationRevision = 0;
+
+  bool _disposed = false;
+  ContinuationDisposition _continuationDisposition =
+      ContinuationDisposition.none;
+
+  bool isCurrentExhaustion(Object event) =>
+      !_disposed && identical(event, _exhaustion);
+
+  void beginContinuation(Object event) {
+    if (!isCurrentExhaustion(event)) return;
+    _continuationDisposition = ContinuationDisposition.waiting;
+    _publishSnapshot(_engine.positionMs);
+  }
+
+  void finishContinuation(Object event) {
+    if (!isCurrentExhaustion(event)) return;
+    _continuationDisposition = ContinuationDisposition.completed;
+    _processingState = ProcessingState.completed;
+    _publishPlayerState();
+  }
+
+  void cancelContinuation() {
+    _exhaustion = null;
+    _continuationRevision++;
+    _continuationDisposition = ContinuationDisposition.none;
+    if (!_disposed) _publishSnapshot(_engine.positionMs);
+  }
 
   List<MediaItem> _queue = const [];
   List<int> _playOrder = const [];
@@ -115,7 +145,7 @@ class QueueTimelineController {
   /// (they pause the clock, and the clock only completes by playing past its
   /// duration), and the clock latches its own completion so a queue that sits
   /// finished cannot re-emit without playing again.
-  Stream<void> get queueExhaustedStream => _queueExhaustedController.stream;
+  Stream<Object> get queueExhaustedStream => _queueExhaustedController.stream;
 
   Future<void> start() async {
     if (_started) return;
@@ -159,6 +189,7 @@ class QueueTimelineController {
     int? reflowDefaultTransitionsFromIndex,
     MixSession? session,
   }) async {
+    cancelContinuation();
     await start();
     final previousTimeline = _cueTimeline;
     final previousModel = _engine.model;
@@ -286,9 +317,11 @@ class QueueTimelineController {
     await _enqueueCommand(() => _insertAllIntoQueue(index, items));
   }
 
-  Future<void> _insertAllIntoQueue(int index, List<MediaItem> items) async {
+  Future<void> _insertAllIntoQueue(int index, List<MediaItem> items,
+      {bool appendOnly = false, bool Function()? guard}) async {
     if (items.isEmpty) return;
     await start();
+    if (guard != null && !guard()) return;
     final insertIndex = index.clamp(0, _queue.length).toInt();
     final previousCurrent = _currentIndex;
     final previousCurrentQueueItemId = previousCurrent == null
@@ -303,17 +336,22 @@ class QueueTimelineController {
     final nextQueue = List<MediaItem>.from(_queue)
       ..insertAll(insertIndex, items);
     _queue = List.unmodifiable(nextQueue);
-    var session = _session;
-    for (var offset = 0; offset < items.length; offset++) {
-      session = session.insertAt(insertIndex + offset, items[offset]);
-    }
-    _session = session.normalizedForQueue(_queue);
+    final minimumStartMs = _exhaustion == null ? 0 : _engine.positionMs;
     if (previousCurrent == null) {
       _currentIndex = 0;
     } else if (insertIndex <= previousCurrent) {
       _currentIndex = previousCurrent + items.length;
     }
-    _rebuildPlayOrderKeepCurrent();
+    _updatePlayOrderForInsert(insertIndex, items.length,
+        appendOnly: appendOnly);
+    _session = _session
+        .insertAllInPlayOrder(
+          insertIndex,
+          items,
+          _playOrder,
+          minimumStartMs: minimumStartMs,
+        )
+        .normalizedForQueue(_queue);
     _session = _refineSessionRuntimeBeatAlignments(_session);
     _processingState = ProcessingState.ready;
     await _loadModel(
@@ -330,78 +368,50 @@ class QueueTimelineController {
   /// [insertIntoQueue] would be correct but rebuilds the mix model — and re-runs
   /// the O(queue) downbeat-alignment refinement — once per item, so a
   /// continuation batch would cost a quadratic reload storm. Unlike [setQueue]
-  /// it keeps the existing session placements and rebuilds the play order
-  /// through [_rebuildPlayOrderKeepCurrent], so an active shuffle keeps covering
-  /// the whole queue instead of silently reverting to linear order.
+  /// it preserves the existing play order and places the new tail after its
+  /// actual chronological predecessor, not the last physical queue row.
   Future<void> appendToQueue(List<MediaItem> items) async {
     await _enqueueCommand(() => _appendToQueue(items));
   }
 
-  Future<void> _appendToQueue(List<MediaItem> items) async {
-    if (items.isEmpty) return;
-    await start();
-    final appendIndex = _queue.length;
-    final previousCurrent = _currentIndex;
-    final previousCurrentQueueItemId = previousCurrent == null
-        ? null
-        : _session.clipAt(previousCurrent)?.queueItemId;
-    final localPosition = livePosition.inMilliseconds;
-    final preserveActivePlayback = _canPreserveActivePlaybackForFutureInsert(
-      appendIndex,
-      previousCurrent,
-      previousCurrentQueueItemId,
-    );
-    final nextQueue = List<MediaItem>.from(_queue)..addAll(items);
-    _queue = List.unmodifiable(nextQueue);
-    var session = _session;
-    for (var offset = 0; offset < items.length; offset++) {
-      session = session.insertAt(appendIndex + offset, items[offset]);
-    }
-    _session = session.normalizedForQueue(_queue);
-    // A tail append never shifts an existing index, so the current item is
-    // unchanged; an empty queue starts at the first appended item.
-    _currentIndex = previousCurrent ?? 0;
-    _rebuildPlayOrderKeepCurrent();
-    _session = _refineSessionRuntimeBeatAlignments(_session);
-    _processingState = ProcessingState.ready;
-    await _loadModel(
-      seekToCurrent: !preserveActivePlayback,
-      localPositionMs: localPosition,
-      preserveActivePlayback: preserveActivePlayback,
-    );
-    _publishQueueState();
-  }
+  /// IO stays outside serialization. Mutation and next-occurrence selection
+  /// are one command, and user cancellation is rechecked after engine awaits.
+  Future<void> continueExhaustedQueue(Object event, List<MediaItem> items,
+          {required bool Function() stillCurrent}) =>
+      _enqueueCommand(() async {
+        bool valid() =>
+            isCurrentExhaustion(event) &&
+            stillCurrent() &&
+            _session.continuationAllowed &&
+            _loopMode == LoopMode.off;
+        if (!valid()) return;
+        final currentId = _session.clipAt(_currentIndex ?? -1)?.queueItemId;
+        final pending = _nextQueueIndex();
+        final pendingId =
+            pending == null ? null : _session.clipAt(pending)?.queueItemId;
+        final oldLength = _queue.length;
+        await _appendToQueue(items, guard: valid);
+        if (!valid()) return;
+        final nextId = pendingId ?? _session.clipAt(oldLength)?.queueItemId;
+        if (nextId == null || currentId == null) return;
+        final next =
+            _session.clips.indexWhere((clip) => clip.queueItemId == nextId);
+        if (next < 0) return;
+        await _skipToIndex(next);
+        if (!valid()) return;
+        await _engine.playGuarded(stillCurrent: valid);
+        if (!valid()) return;
+        _exhaustion = null;
+        _continuationDisposition = ContinuationDisposition.none;
+        _publishSnapshot(_engine.positionMs);
+      });
 
-  Future<void> _insertIntoQueue(int index, MediaItem item) async {
-    final insertIndex = index.clamp(0, _queue.length).toInt();
-    final previousCurrent = _currentIndex;
-    final previousCurrentQueueItemId = previousCurrent == null
-        ? null
-        : _session.clipAt(previousCurrent)?.queueItemId;
-    final localPosition = livePosition.inMilliseconds;
-    final preserveActivePlayback = _canPreserveActivePlaybackForFutureInsert(
-      insertIndex,
-      previousCurrent,
-      previousCurrentQueueItemId,
-    );
-    final nextQueue = List<MediaItem>.from(_queue)..insert(insertIndex, item);
-    _queue = List.unmodifiable(nextQueue);
-    _session = _session.insertAt(insertIndex, item).normalizedForQueue(_queue);
-    if (previousCurrent == null) {
-      _currentIndex = 0;
-    } else if (insertIndex <= previousCurrent) {
-      _currentIndex = previousCurrent + 1;
-    }
-    _rebuildPlayOrderKeepCurrent();
-    _session = _refineSessionRuntimeBeatAlignments(_session);
-    _processingState = ProcessingState.ready;
-    await _loadModel(
-      seekToCurrent: !preserveActivePlayback,
-      localPositionMs: localPosition,
-      preserveActivePlayback: preserveActivePlayback,
-    );
-    _publishQueueState();
-  }
+  Future<void> _appendToQueue(List<MediaItem> items,
+          {bool Function()? guard}) =>
+      _insertAllIntoQueue(_queue.length, items, appendOnly: true, guard: guard);
+
+  Future<void> _insertIntoQueue(int index, MediaItem item) =>
+      _insertAllIntoQueue(index, [item]);
 
   Future<void> removeFromQueue(int index) async {
     await _enqueueCommand(() => _removeFromQueue(index));
@@ -938,6 +948,10 @@ class QueueTimelineController {
   }
 
   Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    cancelContinuation();
+    await _commandChain;
     for (final sub in _subscriptions) {
       await sub.cancel();
     }
@@ -962,13 +976,13 @@ class QueueTimelineController {
       ..add(_engine.isPlayingStream.listen((_) => _publishPlayerState()))
       ..add(
         _engine.clipCompletionStream.listen((event) {
-          if (_suppressPositionSync) return;
+          if (_suppressPositionSync || _disposed) return;
           unawaited(_onClipCompleted(event));
         }),
       )
       ..add(
         _engine.clock.completedStream.listen((_) {
-          if (_suppressPositionSync) return;
+          if (_suppressPositionSync || _disposed) return;
           unawaited(_onCompleted());
         }),
       )
@@ -982,6 +996,9 @@ class QueueTimelineController {
   }
 
   Future<T> _enqueueCommand<T>(Future<T> Function() command) {
+    if (_disposed) {
+      return Future.error(StateError('Playback controller disposed'));
+    }
     final completer = Completer<T>();
     final next = _commandChain.then((_) async {
       try {
@@ -1126,7 +1143,36 @@ class QueueTimelineController {
     return model.clips.length == clips.length;
   }
 
+  void _updatePlayOrderForInsert(int index, int count,
+      {bool appendOnly = false}) {
+    if (!_shuffleEnabled || _playOrder.isEmpty) {
+      _playOrder = [for (var i = 0; i < _queue.length; i++) i];
+      return;
+    }
+    final order = [
+      for (final old in _playOrder) old >= index ? old + count : old
+    ];
+    var slot = order.length;
+    if (!appendOnly &&
+        _queue
+            .skip(index)
+            .take(count)
+            .every((item) => itemOrigin(item) == queueOriginManual)) {
+      slot = order.indexOf(_currentIndex!) + 1;
+      while (slot < order.length &&
+          order[slot] < index &&
+          itemOrigin(_queue[order[slot]]) == queueOriginManual) {
+        slot++;
+      }
+    } else if (!appendOnly && index + count < _queue.length) {
+      slot = order.indexOf(index + count);
+    }
+    order.insertAll(slot, [for (var i = 0; i < count; i++) index + i]);
+    _playOrder = order;
+  }
+
   void _rebuildPlayOrderKeepCurrent() {
+    // Explicit mode changes may reshuffle; insertion must not replay history.
     if (_queue.isEmpty) {
       _playOrder = const [];
       return;
@@ -1515,6 +1561,7 @@ class QueueTimelineController {
         localDuration: cue?.selectedDuration ?? Duration.zero,
         globalPosition: Duration(milliseconds: globalMs),
         globalDuration: Duration(milliseconds: _engine.durationMs),
+        continuationDisposition: _continuationDisposition,
         playing: _engine.isPlaying,
         processingState: _processingState,
         activeVoiceCount: _engine.pool.activeVoiceCount,
@@ -1572,7 +1619,7 @@ class QueueTimelineController {
   }
 
   Future<void> _handleClipCompleted(ClipCompletionEvent event) async {
-    if (_queue.isEmpty) return;
+    if (_disposed || _queue.isEmpty) return;
     final clip = _clipForCompletion(event);
     if (clip == null || clip.timelineEndMs >= _engine.durationMs) return;
     if (event.wasSkipped) {
@@ -1612,7 +1659,16 @@ class QueueTimelineController {
   }
 
   Future<void> _onCompleted() async {
-    await _enqueueCommand(_handleCompleted);
+    final revision = _continuationRevision;
+    final session = _session;
+    await _enqueueCommand(() async {
+      if (_disposed ||
+          revision != _continuationRevision ||
+          !identical(session, _session)) {
+        return;
+      }
+      await _handleCompleted();
+    });
   }
 
   Future<void> _handleCompleted() async {
@@ -1626,14 +1682,17 @@ class QueueTimelineController {
       await _engine.play();
       return;
     }
+    _continuationDisposition = ContinuationDisposition.completed;
     _processingState = ProcessingState.completed;
-    _publishPosition(_engine.positionMs);
-    _publishPlayerState();
+    _syncCurrentIndexFromGlobal(_engine.positionMs);
+    _publishQueueState(includeQueue: false);
     // The queue is published as completed *before* the notification so a
     // listener that declines to continue leaves the historical silent-stop
     // behavior exactly as it was.
     if (_queue.isNotEmpty && !_queueExhaustedController.isClosed) {
-      _queueExhaustedController.add(null);
+      final event = Object();
+      _exhaustion = event;
+      _queueExhaustedController.add(event);
     }
   }
 }

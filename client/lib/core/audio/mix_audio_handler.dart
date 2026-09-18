@@ -5,6 +5,7 @@ import 'package:just_audio/just_audio.dart' as just_audio;
 
 import '../services/liked_tracks_state.dart';
 import 'playback_session.dart';
+import 'player_presentation.dart';
 import 'playback_state.dart' as app_audio;
 
 const defaultNotificationStateThrottle = Duration(milliseconds: 750);
@@ -78,6 +79,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   Duration _position = Duration.zero;
   Duration _bufferedPosition = Duration.zero;
   bool _isPlaying = false;
+  PlayerPresentation _presentation = PlayerPresentation.empty;
   int _activeVoiceCount = 0;
   double _playbackSpeed = 1;
   bool _pitchPreservationFallback = false;
@@ -284,6 +286,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _applySnapshot(PlaybackSnapshot snapshot) {
+    _presentation = PlayerPresentation.fromSnapshot(snapshot);
     _queueItems = [for (final cue in snapshot.cues) cue.mediaItem];
     _queueItemIds = [for (final cue in snapshot.cues) cue.queueItemId];
     _currentItem = snapshot.currentMediaItem;
@@ -294,7 +297,11 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     _activeVoiceCount = snapshot.activeVoiceCount;
     _playbackSpeed = snapshot.playbackSpeed;
     _pitchPreservationFallback = snapshot.pitchPreservationFallback;
-    _processingState = _audioProcessingStateFor(snapshot.processingState);
+    _processingState = switch (_presentation) {
+      PlayerPresentation.waiting => audio_service.AudioProcessingState.loading,
+      PlayerPresentation.ended => audio_service.AudioProcessingState.completed,
+      _ => _audioProcessingStateFor(snapshot.processingState),
+    };
   }
 
   audio_service.MediaItem _mediaItem() {
@@ -315,12 +322,17 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
         : 'Open Music Player mix';
     return audio_service.MediaItem(
       id: item?.id ?? 'open-music-player-session',
-      title:
-          activeVoiceCount > 1 ? '$title · $activeVoiceCount layered' : title,
+      title: _presentation.interruptsTrack
+          ? _presentation.label
+          : activeVoiceCount > 1
+              ? '$title · $activeVoiceCount layered'
+              : title,
       artist: item?.artist ?? 'Open Music Player',
       album: item?.album,
       duration: item?.duration ?? _bufferedPosition,
       artUri: item?.artUri,
+      // Preserve only source-supplied artwork headers; never add API credentials.
+      artHeaders: item?.artHeaders,
       extras: extras,
     );
   }
@@ -375,29 +387,46 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     if (_disposed) return;
     _lastStatePushAt = _now();
     final liked = _currentLiked();
+    final hasQueue = _queueItems.isNotEmpty;
+    final controls = <audio_service.MediaControl>[
+      if (hasQueue && _playbackState.canSkipPrevious)
+        audio_service.MediaControl.skipToPrevious,
+      if (_presentation == PlayerPresentation.waiting)
+        const audio_service.MediaControl(
+            androidIcon: 'drawable/audio_service_pause',
+            label: 'Cancel',
+            action: audio_service.MediaAction.pause)
+      else if (hasQueue)
+        if (_isPlaying)
+          audio_service.MediaControl.pause
+        else if (_presentation == PlayerPresentation.ended)
+          const audio_service.MediaControl(
+              androidIcon: 'drawable/audio_service_play_arrow',
+              label: 'Replay',
+              action: audio_service.MediaAction.play)
+        else
+          audio_service.MediaControl.play,
+      if (hasQueue && _playbackState.canSkipNext)
+        audio_service.MediaControl.skipToNext,
+    ];
+    final compactCount = controls.length;
     playbackState.add(
       audio_service.PlaybackState(
         controls: [
-          // Transport occupies the first three slots so the compact
-          // notification stays prev / play-pause / next; the heart is an
-          // expanded-only extra.
-          audio_service.MediaControl.skipToPrevious,
-          if (_isPlaying)
-            audio_service.MediaControl.pause
-          else
-            audio_service.MediaControl.play,
-          audio_service.MediaControl.skipToNext,
-          audio_service.MediaControl.stop,
-          if (liked != null) _likeControl(liked),
+          ...controls,
+          if (hasQueue) audio_service.MediaControl.stop,
+          if (hasQueue && liked != null) _likeControl(liked),
         ],
-        androidCompactActionIndices: const [0, 1, 2],
-        systemActions: const {
-          audio_service.MediaAction.seek,
-          audio_service.MediaAction.seekForward,
-          audio_service.MediaAction.seekBackward,
-          audio_service.MediaAction.setShuffleMode,
-          audio_service.MediaAction.setRepeatMode,
-          audio_service.MediaAction.skipToQueueItem,
+        androidCompactActionIndices: List.generate(compactCount, (i) => i),
+        systemActions: {
+          if (hasQueue) ...{
+            audio_service.MediaAction.seek,
+            audio_service.MediaAction.seekForward,
+            audio_service.MediaAction.seekBackward,
+            audio_service.MediaAction.setShuffleMode,
+            audio_service.MediaAction.setRepeatMode,
+            audio_service.MediaAction.skipToQueueItem,
+          },
         },
         processingState: _processingState,
         playing: _isPlaying,
@@ -435,7 +464,9 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
       case just_audio.ProcessingState.ready:
         return audio_service.AudioProcessingState.ready;
       case just_audio.ProcessingState.completed:
-        return audio_service.AudioProcessingState.completed;
+        // Only canonical PlayerPresentation.ended exports terminal completion.
+        // Clip completion also survives a canceled continuation or a cue handoff.
+        return audio_service.AudioProcessingState.ready;
     }
   }
 }

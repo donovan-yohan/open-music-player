@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Monochrome Sound Q mark: three bars over the Q, transparent negative space. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M4,3H20V5H4Z M4,6H20V8H4Z M4,9H20V11H4Z M12,13C7,13 5,15 5,18C5,21 8,22 12,22C14,22 16,21.5 17,21L19,23L21,21L19,19C19.5,18 19,16 18,15C17,13.5 15,13 12,13Z M12,16C15,16 16,16.5 16,18C16,19.5 14,20 12,20C9,20 8,19.5 8,18C8,16.5 9,16 12,16Z"
+        android:fillType="evenOdd" />
+</vector>

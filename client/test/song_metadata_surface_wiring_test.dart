@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/services/home_service.dart';
 import 'package:open_music_player/core/services/playlist_service.dart';
 import 'package:open_music_player/features/home/home_screen.dart';
@@ -27,8 +28,8 @@ Track _analyzedTrack() => Track.fromJson({
       },
     });
 
-void _expectMetadata() {
-  expect(find.text('128 BPM'), findsOneWidget);
+void _expectMetadata({bool listRow = true}) {
+  expect(find.text(listRow ? '128' : '128 BPM'), findsOneWidget);
   expect(find.text('8A'), findsOneWidget);
 }
 
@@ -58,7 +59,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    _expectMetadata();
+    _expectMetadata(listRow: false);
   });
 
   testWidgets('Playlist rows render shared metadata chips', (tester) async {
@@ -114,6 +115,10 @@ class _PlaylistService extends PlaylistService {
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {
+  // These surface tests have no active playback session.
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
+
   @override
   PlaybackContext? get playbackContext => null;
 

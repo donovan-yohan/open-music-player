@@ -1,3 +1,4 @@
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -354,6 +355,8 @@ class _FakePlaylistService extends PlaylistService {
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
   @override
   void addListener(VoidCallback listener) {}
 

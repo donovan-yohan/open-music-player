@@ -80,7 +80,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// selected mode.
   final QueueContinuationSource? _continuationSource;
   final int _continuationBatchSize;
-  EndOfQueueMode _endOfQueueMode = EndOfQueueMode.off;
+  EndOfQueueMode _endOfQueueMode = EndOfQueueMode.shuffleLibrary;
   QueueInsertMode _swipeQueueMode = QueueInsertMode.addToQueue;
   bool _preserveManualQueue = true;
 
@@ -92,7 +92,11 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// Guards against a second continuation starting while one is still fetching
   /// or appending. The controller emits at most one exhaustion per completion,
   /// but the fetch is async and an appended batch can itself finish quickly.
-  bool _continuationInFlight = false;
+  Object? _continuationAttempt;
+  bool _disposed = false;
+  final List<String> _recentTrackIds = [];
+  final Duration _continuationTimeout;
+  final Future<String?> Function()? _accountIdProvider;
 
   @override
   bool get isPlaying => _queueController.snapshot.playing;
@@ -265,7 +269,11 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   ) =>
       _queueController.moveQueueItemByQueueItemId(queueItemId, delta);
 
-  void beginTimelineScrub() => _queueController.engine.beginScrub();
+  void beginTimelineScrub() {
+    _cancelContinuation();
+    _queueController.engine.beginScrub();
+  }
+
   void updateTimelineScrub(int globalMs) =>
       _queueController.engine.updateScrub(globalMs);
   Future<void> endTimelineScrub(int globalMs) =>
@@ -280,6 +288,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     Future<String?> Function()? accountIdProvider,
     QueueContinuationSource? continuationSource,
     int continuationBatchSize = defaultQueueContinuationBatchSize,
+    Duration continuationTimeout = const Duration(seconds: 15),
     Duration persistenceDebounce = const Duration(milliseconds: 500),
   })  : _queueController = QueueTimelineController(engine),
         _signedAudioUrlService = signedAudioUrlService,
@@ -288,6 +297,8 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         _persistenceDebounce = persistenceDebounce,
         _continuationSource = continuationSource,
         _continuationBatchSize = continuationBatchSize,
+        _continuationTimeout = continuationTimeout,
+        _accountIdProvider = accountIdProvider,
         _sourceResolver = PlaybackSourceResolver(
           signedAudioUrlService: signedAudioUrlService,
           localResolver: localResolver,
@@ -299,6 +310,10 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
 
   void _init() {
     _subscriptions = [
+      _queueController.snapshotStream
+          .map((snapshot) => snapshot.continuationDisposition)
+          .distinct()
+          .listen((_) => notifyListeners()),
       _queueController.playerStateStream.listen((state) {
         final wasPlaying = _isPlaying;
         _isPlaying = state.playing;
@@ -322,6 +337,11 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         notifyListeners();
       }),
       _queueController.currentMediaItemStream.listen((item) {
+        if (item != null) {
+          _recentTrackIds.remove(item.id);
+          _recentTrackIds.add(item.id);
+          if (_recentTrackIds.length > 20) _recentTrackIds.removeAt(0);
+        }
         notifyListeners();
       }),
       _queueController.queueStream.listen((q) {
@@ -350,8 +370,8 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         _persistQueue(isStartupSeed: isStartupSeed);
         notifyListeners();
       }),
-      _queueController.queueExhaustedStream.listen((_) {
-        unawaited(_handleQueueExhausted());
+      _queueController.queueExhaustedStream.listen((event) {
+        unawaited(_handleQueueExhausted(event));
       }),
     ];
   }
@@ -362,6 +382,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   EndOfQueueMode get endOfQueueMode => _endOfQueueMode;
 
   void setEndOfQueueMode(EndOfQueueMode mode) {
+    if (_endOfQueueMode != mode) _cancelContinuation();
     _endOfQueueMode = mode;
   }
 
@@ -412,62 +433,74 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// ask for this fetch, so an offline library must not raise a
   /// [playbackError] or a toast — the queue simply ends, exactly as it did
   /// before the feature existed.
-  Future<void> _handleQueueExhausted() async {
-    if (_endOfQueueMode == EndOfQueueMode.off) return;
-    if (_continuationInFlight) return;
-    final source = _continuationSource;
-    if (source == null) return;
-    final exhaustedQueue = queue;
-    if (exhaustedQueue.isEmpty) return;
+  void _cancelContinuation() {
+    _continuationAttempt = null;
+    _queueController.cancelContinuation();
+  }
 
-    _continuationInFlight = true;
+  Future<void> _handleQueueExhausted(Object event) async {
+    final source = _continuationSource;
+    if (_disposed ||
+        _endOfQueueMode == EndOfQueueMode.off ||
+        source == null ||
+        !_queueController.isCurrentExhaustion(event) ||
+        !_queueController.session.continuationAllowed ||
+        _mixPreview != null ||
+        _continuationAttempt != null ||
+        currentItem == null) {
+      return;
+    }
+    final attempt = Object();
+    _continuationAttempt = attempt;
+    _queueController.beginContinuation(event);
     final playGeneration = _playRequestGeneration;
     final transportGeneration = _transportCommandGeneration;
-    // Anything the user does while the batch is in flight (play, pause, stop,
-    // skip, starting a different queue) wins: an appended batch that lands
-    // afterwards would hijack a session the listener already redirected.
     bool stillCurrent() =>
+        !_disposed &&
+        identical(_continuationAttempt, attempt) &&
+        _endOfQueueMode != EndOfQueueMode.off &&
+        _queueController.isCurrentExhaustion(event) &&
         playGeneration == _playRequestGeneration &&
         transportGeneration == _transportCommandGeneration;
-
+    final hardExcluded = <String>{currentItem!.id};
+    var next =
+        currentIndex == null ? null : nextQueueIndexInPlayOrder(currentIndex!);
+    while (next != null) {
+      hardExcluded.add(queue[next].id);
+      next = nextQueueIndexInPlayOrder(next);
+    }
+    final deadline = DateTime.now().add(_continuationTimeout);
+    Duration remaining() => deadline.difference(DateTime.now());
     try {
-      final tracks = await source.fetch(
-        // Exclude everything already in the queue so a continuation never
-        // replays what the listener just heard. Once the source has nothing
-        // left to offer it returns empty and playback stops, which is the
-        // honest end of a shuffled library pass.
-        excludeTrackIds: {for (final item in exhaustedQueue) item.id},
-        limit: _continuationBatchSize,
-      );
-      if (tracks.isEmpty || !stillCurrent()) return;
-
-      final resolved = await _sourceResolver.resolveQueue(tracks);
-      if (resolved.isEmpty || !stillCurrent()) return;
-
-      final appendIndex = queue.length;
-      await _queueController.appendToQueue([
-        for (final item in resolved) markOrigin(item, queueOriginContinuation),
-      ]);
-      // Accepted asymmetry, not a race to "fix": a generation change landing
-      // between the append and this check leaves the batch in the queue while
-      // the skip and play below are abandoned. That is the intended graceful
-      // degradation — the append is an additive tail insert that keeps session
-      // placements, so the worst outcome is a labelled auto-continuation
-      // segment sitting unplayed after whatever the listener redirected to.
-      // Rolling it back would mean mutating a queue the user is now driving,
-      // which is strictly worse than leaving a visible, removable tail.
+      final account = await _accountIdProvider?.call();
       if (!stillCurrent()) return;
-      await _queueController.skipToIndex(appendIndex);
-      if (!stillCurrent()) return;
-      // Straight to the controller: PlaybackState.play() would bump the
-      // transport generation and cancel the guard we are still holding.
-      await _queueController.play();
+      Future<bool> sameAccount() async =>
+          _accountIdProvider == null ||
+          (account != null && account == await _accountIdProvider!.call());
+      final tracks = await source
+          .fetch(
+              excludeTrackIds: hardExcluded,
+              recentTrackIds: List.of(_recentTrackIds),
+              limit: _continuationBatchSize)
+          .timeout(remaining());
+      if (tracks.isEmpty || !await sameAccount() || !stillCurrent()) return;
+      final resolved =
+          await _sourceResolver.resolveQueue(tracks).timeout(remaining());
+      if (resolved.isEmpty || !await sameAccount() || !stillCurrent()) return;
+      await _queueController.continueExhaustedQueue(
+          event,
+          [
+            for (final item in resolved)
+              markOrigin(item, queueOriginContinuation),
+          ],
+          stillCurrent: stillCurrent);
     } catch (error) {
-      if (kDebugMode) {
-        debugPrint('End-of-queue continuation skipped: $error');
-      }
+      if (kDebugMode) debugPrint('End-of-queue continuation skipped: $error');
     } finally {
-      _continuationInFlight = false;
+      if (identical(_continuationAttempt, attempt)) {
+        _continuationAttempt = null;
+        _queueController.finishContinuation(event);
+      }
     }
   }
 
@@ -572,6 +605,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     if (seamIndex < 0 || seamIndex + 1 >= plan.clips.length) return;
     _validateMixPlanOrder(tracks, plan);
 
+    _cancelContinuation();
     _mixPreview ??= _MixPreviewSnapshot(
       queue: List<MediaItem>.from(_queueController.queue),
       session: _queueController.session,
@@ -610,6 +644,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// item, same position, and playing only if it was playing before. A no-op
   /// when no preview is running, so callers can always call it on teardown.
   Future<void> endMixSeamPreview() async {
+    _cancelContinuation();
     final snapshot = _mixPreview;
     if (snapshot == null) return;
     _mixPreview = null;
@@ -662,15 +697,28 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     required PlaybackContext? context,
   }) async {
     final generation = ++_playRequestGeneration;
+    _cancelContinuation();
     _transportCommandGeneration++;
     _playbackContext = context;
     _playbackError = null;
+
+    // Include the serialized clear in pending feedback, even on a cold start.
+    _isResolvingSignedUrl = true;
+    notifyListeners();
 
     // Stop/release the old session before waiting on signed URL resolution.
     // Otherwise Android keeps playing A while B is still preparing, which makes
     // the pause button appear to "stop A and start B" once the pending request
     // finally resolves.
-    await _queueController.setQueue(const []);
+    try {
+      await _queueController.setQueue(const []);
+    } catch (_) {
+      if (_isCurrentPlayRequest(generation)) {
+        _isResolvingSignedUrl = false;
+        notifyListeners();
+      }
+      rethrow;
+    }
     return generation;
   }
 
@@ -835,12 +883,14 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     Future<void> Function() action, {
     int? generation,
   }) async {
+    bool requestIsCurrent() =>
+        generation == null || _isCurrentPlayRequest(generation);
+
+    // A pause/stop or newer replacement may have won during the queue clear.
+    if (!requestIsCurrent()) return;
     _isResolvingSignedUrl = true;
     _playbackError = null;
     notifyListeners();
-
-    bool requestIsCurrent() =>
-        generation == null || _isCurrentPlayRequest(generation);
 
     try {
       await action();
@@ -887,6 +937,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
 
   @override
   Future<void> play() async {
+    _cancelContinuation();
     final commandGeneration = ++_transportCommandGeneration;
     await _refreshCurrentSignedUrlIfNeeded();
     if (commandGeneration != _transportCommandGeneration) return;
@@ -1071,29 +1122,41 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
 
   @override
   Future<void> pause() async {
+    _cancelContinuation();
     _transportCommandGeneration++;
     _cancelPendingPlayRequests();
     await _queueController.pause();
   }
 
   Future<void> stop() async {
+    _cancelContinuation();
     _transportCommandGeneration++;
     _cancelPendingPlayRequests();
     await _queueController.stop();
   }
 
-  Future<void> seek(Duration position) => _queueController.seek(position);
-  void beginLocalScrub() => _queueController.beginLocalScrub();
+  Future<void> seek(Duration position) {
+    _cancelContinuation();
+    return _queueController.seek(position);
+  }
+
+  void beginLocalScrub() {
+    _cancelContinuation();
+    _queueController.beginLocalScrub();
+  }
+
   void updateLocalScrub(Duration position) =>
       _queueController.updateLocalScrub(position);
   Future<void> endLocalScrub(Duration position) =>
       _queueController.endLocalScrub(position);
   Future<void> skipToNext() async {
+    _cancelContinuation();
     _transportCommandGeneration++;
     await _queueController.skipToNext();
   }
 
   Future<void> skipToPrevious() async {
+    _cancelContinuation();
     _transportCommandGeneration++;
     await _queueController.skipToPrevious();
   }
@@ -1226,11 +1289,13 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   }
 
   Future<void> skipToIndex(int index) async {
+    _cancelContinuation();
     _transportCommandGeneration++;
     await _queueController.skipToIndex(index);
   }
 
   Future<bool> playQueueItemByQueueItemId(String queueItemId) async {
+    _cancelContinuation();
     final commandGeneration = ++_transportCommandGeneration;
     final selected =
         await _queueController.selectQueueItemByQueueItemId(queueItemId);
@@ -1245,15 +1310,28 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       _queueController.removeFromQueue(index);
   Future<void> removeFromQueueByQueueItemId(String queueItemId) =>
       _queueController.removeFromQueueByQueueItemId(queueItemId);
-  Future<void> toggleShuffle() => _queueController.toggleShuffle();
-  Future<void> cycleLoopMode() => _queueController.cycleLoopMode();
+  Future<void> toggleShuffle() {
+    _cancelContinuation();
+    return _queueController.toggleShuffle();
+  }
+
+  Future<void> cycleLoopMode() {
+    _cancelContinuation();
+    return _queueController.cycleLoopMode();
+  }
 
   /// Idempotent absolute forms of [toggleShuffle] / [cycleLoopMode]. Restore
   /// and OS media-session commands both carry a target mode rather than a
   /// "next" intent, so they must not flip an already-correct mode.
-  Future<void> setShuffleEnabled(bool enabled) =>
-      _queueController.setShuffleMode(enabled);
-  Future<void> setLoopMode(LoopMode mode) => _queueController.setLoopMode(mode);
+  Future<void> setShuffleEnabled(bool enabled) {
+    if (enabled != _shuffleEnabled) _cancelContinuation();
+    return _queueController.setShuffleMode(enabled);
+  }
+
+  Future<void> setLoopMode(LoopMode mode) {
+    _cancelContinuation();
+    return _queueController.setLoopMode(mode);
+  }
 
   Future<void> togglePlayPause() async {
     if (isPlaying || _isResolvingSignedUrl) {
@@ -1265,6 +1343,8 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
 
   @override
   void dispose() {
+    _disposed = true;
+    _cancelContinuation();
     if (_persistenceTimer != null) _flushPersistence();
     for (final sub in _subscriptions) {
       sub.cancel();

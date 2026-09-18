@@ -1,3 +1,4 @@
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -133,6 +134,8 @@ class _StubPlaylistService extends PlaylistService {
 }
 
 class _FakePlayback extends Fake implements PlaybackState {
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
   _FakePlayback({this.rejectMixPlan = false});
 
   final bool rejectMixPlan;

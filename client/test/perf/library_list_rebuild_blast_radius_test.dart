@@ -1,5 +1,7 @@
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
+import 'package:just_audio/just_audio.dart' show ProcessingState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
@@ -123,6 +125,21 @@ Track _track(int id) => Track(
 
 class _TickingPlayback extends ChangeNotifier implements PlaybackState {
   Duration _position = Duration.zero;
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot(
+        sessionId: 'perf',
+        cues: const [],
+        currentCueId: null,
+        currentQueueIndex: 0,
+        currentMediaItem: currentItem,
+        localPosition: _position,
+        localDuration: duration,
+        globalPosition: _position,
+        globalDuration: duration,
+        playing: true,
+        processingState: ProcessingState.ready,
+        activeVoiceCount: 1,
+      );
 
   void tickPosition() {
     _position += const Duration(milliseconds: 150);

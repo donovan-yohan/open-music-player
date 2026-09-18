@@ -14,6 +14,39 @@ import 'support/fake_voice.dart';
 
 void main() {
   group('MixAudioHandler notification mapping', () {
+    test('real queue replacements clear absent and explicitly disabled artwork',
+        () async {
+      final harness = _PlaybackHarness();
+      final handler = MixAudioHandler(playbackState: harness.playback);
+      addTearDown(() async {
+        await handler.dispose();
+        await harness.dispose();
+      });
+      Map<String, dynamic> withArt(int id, String kind) => {
+            ..._track(id, seconds: 5),
+            'artworkUrl': 'https://covers.example/$id.jpg',
+            'artworkKind': kind,
+          };
+      await harness.playback.playQueue([withArt(1, 'provider_thumbnail')]);
+      await Future<void>.delayed(Duration.zero);
+      expect(handler.mediaItem.value?.artUri,
+          Uri.parse('https://covers.example/1.jpg'));
+      expect(handler.mediaItem.value?.artHeaders, isNull);
+      await harness.playback.playQueue([_track(2, seconds: 5)]);
+      await Future<void>.delayed(Duration.zero);
+      expect(handler.mediaItem.value?.id, '2');
+      expect(handler.mediaItem.value?.artUri, isNull);
+      await harness.playback.playQueue([withArt(3, 'provider_thumbnail')]);
+      await Future<void>.delayed(Duration.zero);
+      expect(handler.mediaItem.value?.artUri,
+          Uri.parse('https://covers.example/3.jpg'));
+      await harness.playback.playQueue([withArt(4, 'none')]);
+      await Future<void>.delayed(Duration.zero);
+      expect(handler.mediaItem.value?.id, '4');
+      expect(handler.mediaItem.value?.artUri, isNull);
+      expect(handler.mediaItem.value?.artHeaders, isNull);
+    });
+
     test(
       'snapshot-backed notification uses source-relative position, duration, queue, and index',
       () async {
@@ -455,7 +488,8 @@ void main() {
       await harness.dispose();
     });
 
-    test('the published state advertises the new OS capabilities', () async {
+    test('the published state advertises only available OS capabilities',
+        () async {
       final harness = _PlaybackHarness();
       final handler = MixAudioHandler(
         playbackState: harness.playback,
@@ -466,24 +500,23 @@ void main() {
       final stateSub = handler.playbackState.listen(states.add);
       await Future<void>.delayed(Duration.zero);
 
+      expect(states.last.systemActions, isEmpty);
+      expect(states.last.controls, isEmpty);
+      expect(states.last.androidCompactActionIndices, isEmpty);
+      await harness.playback.playQueue([
+        _track(1, seconds: 5),
+        _track(2, seconds: 5),
+        _track(3, seconds: 5),
+      ], startIndex: 1);
+      await Future<void>.delayed(Duration.zero);
       expect(
-        states.last.systemActions,
-        containsAll(<audio_service.MediaAction>[
-          audio_service.MediaAction.setShuffleMode,
-          audio_service.MediaAction.setRepeatMode,
-          audio_service.MediaAction.skipToQueueItem,
-        ]),
-      );
-      // Transport stays in the three compact notification slots.
+          states.last.systemActions, contains(audio_service.MediaAction.seek));
       expect(states.last.androidCompactActionIndices, [0, 1, 2]);
-      expect(
-        states.last.controls.take(3).map((control) => control.action),
-        [
-          audio_service.MediaAction.skipToPrevious,
-          audio_service.MediaAction.play,
-          audio_service.MediaAction.skipToNext,
-        ],
-      );
+      expect(states.last.controls.take(3).map((c) => c.action), [
+        audio_service.MediaAction.skipToPrevious,
+        audio_service.MediaAction.pause,
+        audio_service.MediaAction.skipToNext,
+      ]);
 
       await stateSub.cancel();
       await handler.dispose();

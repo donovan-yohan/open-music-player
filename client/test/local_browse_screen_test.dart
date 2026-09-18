@@ -1,3 +1,4 @@
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -356,6 +357,8 @@ class _RetryFake extends LibraryService {
 }
 
 class _RecordingPlaybackState extends Fake implements PlaybackState {
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
   int playQueueCalls = 0;
   int toggleShuffleCalls = 0;
   List<Map<String, dynamic>>? playedQueue;

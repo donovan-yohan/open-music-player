@@ -785,6 +785,112 @@ void main() {
       playback.dispose();
     });
 
+    for (final newestFirst in [false, true]) {
+      test('#477 rapid taps start latest once (newestFirst=$newestFirst)',
+          () async {
+        SharedPreferences.setMockInitialValues({});
+        final signed = _DelayedSignedRequester();
+        final clock = _GateableTimelineClock();
+        final playback = _playbackState(
+          engine: PlaybackEngine.withClock(
+              clock: clock, voiceFactory: () => FakeVoice('v')),
+          signedAudioUrlService: signed.service,
+        );
+        addTearDown(playback.dispose);
+        final a = playback.playQueue([_track(1, seconds: 60)]);
+        await signed.waitForRequestCount(1);
+        final b = playback.playTrack(_track(2, seconds: 60));
+        await signed.waitForRequestCount(2);
+        expect(playback.isPlaying, isFalse);
+        expect(playback.isResolvingSignedUrl, isTrue);
+        signed.completeRequest(newestFirst ? 1 : 0);
+        await (newestFirst ? b : a);
+        if (!newestFirst) {
+          expect(clock.playCalls, 0);
+          expect(playback.isResolvingSignedUrl, isTrue);
+        }
+        signed.completeRequest(newestFirst ? 0 : 1);
+        await Future.wait([a, b]);
+        expect(playback.currentItem?.id, '2');
+        expect(playback.isPlaying, isTrue);
+        expect(clock.playCalls, 1);
+        expect(playback.playbackError, isNull);
+        expect(playback.isResolvingSignedUrl, isFalse);
+      });
+    }
+
+    for (final stop in [false, true]) {
+      test('#477 cold pending tap cancelled by ${stop ? "stop" : "pause"}',
+          () async {
+        SharedPreferences.setMockInitialValues({});
+        final signed = _DelayedSignedRequester();
+        final clock = _GateableTimelineClock();
+        final playback = _playbackState(
+          engine: PlaybackEngine.withClock(
+              clock: clock, voiceFactory: () => FakeVoice('v')),
+          signedAudioUrlService: signed.service,
+        );
+        addTearDown(playback.dispose);
+        final pending = playback.playQueue([_track(1, seconds: 60)]);
+        await signed.waitForRequestCount(1);
+        await (stop ? playback.stop() : playback.pause());
+        signed.completeRequest(0);
+        await pending;
+        expect(clock.playCalls, 0);
+        expect(playback.isPlaying, isFalse);
+        expect(playback.isResolvingSignedUrl, isFalse);
+      });
+    }
+
+    for (final stop in [false, true]) {
+      test(
+          '#477 cancellation during serialized initial clear (${stop ? "stop" : "pause"})',
+          () async {
+        SharedPreferences.setMockInitialValues({});
+        final signed = _DelayedSignedRequester();
+        final clock = _GateableTimelineClock();
+        final playback = _playbackState(
+          engine: PlaybackEngine.withClock(
+              clock: clock, voiceFactory: () => FakeVoice('v')),
+          signedAudioUrlService: signed.service,
+        );
+        addTearDown(playback.dispose);
+        clock.delayNextSeek();
+        final pending = playback.playQueue([_track(1, seconds: 60)]);
+        await clock.waitForDelayedSeek();
+        final cancellation = stop ? playback.stop() : playback.pause();
+        clock.releaseDelayedSeek();
+        await Future.wait([pending, cancellation]);
+        expect(signed.requests, isEmpty);
+        expect(clock.playCalls, 0);
+        expect(playback.isPlaying, isFalse);
+        expect(playback.isResolvingSignedUrl, isFalse);
+      });
+    }
+
+    test('#477 expired first descriptor recovers without another tap',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final signed = _DelayedSignedRequester();
+      final clock = _GateableTimelineClock();
+      final playback = _playbackState(
+        engine: PlaybackEngine.withClock(
+            clock: clock, voiceFactory: () => FakeVoice('v')),
+        signedAudioUrlService: signed.service,
+      );
+      addTearDown(playback.dispose);
+      final pending = playback.playQueue([_track(1, seconds: 60)]);
+      await signed.waitForRequestCount(1);
+      signed.completeRequest(0, expiresAt: DateTime.utc(2000));
+      await signed.waitForRequestCount(2);
+      signed.completeRequest(1);
+      await pending;
+      expect(playback.currentItem?.id, '1');
+      expect(playback.isPlaying, isTrue);
+      expect(clock.playCalls, 1);
+      expect(playback.playbackError, isNull);
+    });
+
     test('direct replacement silences old audio while next URL resolves',
         () async {
       SharedPreferences.setMockInitialValues({});

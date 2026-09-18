@@ -21,6 +21,7 @@ class MixSession {
     required this.sessionId,
     required this.clips,
     this.schemaVersion = mixSessionSchemaVersion,
+    this.continuationAllowed = true,
     this.nextClipOrdinal = 0,
     this.transitionSnapMode = BeatSnapMode.downbeat,
     this.defaultCrossfadeMs = 0,
@@ -167,6 +168,7 @@ class MixSession {
 
     return MixSession(
       sessionId: 'mix_plan_${plan.id}_v${plan.version}',
+      continuationAllowed: false,
       clips: List.unmodifiable(clips),
       nextClipOrdinal: clips.length,
       transitionSnapMode: BeatSnapMode.free,
@@ -203,6 +205,8 @@ class MixSession {
 
     return MixSession(
       sessionId: rawSessionId?.isNotEmpty == true ? rawSessionId! : 'session_0',
+      continuationAllowed: json['continuationAllowed'] as bool? ??
+          !(rawSessionId?.startsWith('mix_plan_') ?? false),
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(clips),
       nextClipOrdinal: math.max(
@@ -220,6 +224,7 @@ class MixSession {
     );
   }
 
+  final bool continuationAllowed;
   final int schemaVersion;
   final String sessionId;
   final List<MixSessionClip> clips;
@@ -244,6 +249,7 @@ class MixSession {
     }
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: clips,
       nextClipOrdinal: nextClipOrdinal,
@@ -276,6 +282,7 @@ class MixSession {
     );
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
@@ -343,6 +350,7 @@ class MixSession {
               );
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: math.max(nextOrdinal, _nextOrdinalAfter(reflowed)),
@@ -397,6 +405,7 @@ class MixSession {
     }
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
@@ -404,6 +413,66 @@ class MixSession {
       defaultCrossfadeMs: defaultCrossfadeMs,
       adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
       deferredDefaultTransitionClipIds: retainedDeferredClipIds,
+      explicitPlacementClipIds: _explicitPlacementClipIds,
+    );
+  }
+
+  /// Insert queue rows while deriving placements in the controller's play order.
+  /// History before the insertion and authored placements remain untouched.
+  /// [minimumStartMs] fences an exhausted timeline: crossfade may join future
+  /// items, but must not rewind into audio that has already finished.
+  MixSession insertAllInPlayOrder(
+    int index,
+    List<MediaItem> items,
+    List<int> playOrder, {
+    int minimumStartMs = 0,
+  }) {
+    if (items.isEmpty) return this;
+    final next = List<MixSessionClip>.from(clips);
+    final inserted = [
+      for (var offset = 0; offset < items.length; offset++)
+        MixSessionClip.fromMediaItem(
+          sessionId: sessionId,
+          ordinal: nextClipOrdinal + offset,
+          item: items[offset],
+          timelineStartMs: 0,
+        ),
+    ];
+    next.insertAll(index, inserted);
+    final insertedIds = inserted.map((clip) => clip.clipId).toSet();
+    final reflowedIds = <String>{};
+    var reflow = false;
+    MixSessionClip? previous;
+    for (final queueIndex in playOrder) {
+      var clip = next[queueIndex];
+      if (insertedIds.contains(clip.clipId)) reflow = true;
+      if (reflow && !_explicitPlacementClipIds.contains(clip.clipId)) {
+        final start = _defaultTimelineStartAfter(
+          previous,
+          clip,
+          previous?.timelineEndMs ?? 0,
+          transitionSnapMode,
+          defaultCrossfadeMs,
+        );
+        clip = clip.withPlacement(clip.placement.withTimelineStartMs(
+          math.max(minimumStartMs, start),
+        ));
+        next[queueIndex] = clip;
+        reflowedIds.add(clip.clipId);
+      }
+      previous = clip;
+    }
+    return MixSession(
+      sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
+      schemaVersion: schemaVersion,
+      clips: List.unmodifiable(next),
+      nextClipOrdinal: nextClipOrdinal + items.length,
+      transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds:
+          _deferredDefaultTransitionClipIds.difference(reflowedIds),
       explicitPlacementClipIds: _explicitPlacementClipIds,
     );
   }
@@ -435,6 +504,7 @@ class MixSession {
     );
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal + 1,
@@ -469,6 +539,7 @@ class MixSession {
     );
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
@@ -498,6 +569,7 @@ class MixSession {
     nextClips.insert(newIndex, clip);
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
@@ -560,6 +632,7 @@ class MixSession {
 
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
@@ -579,6 +652,7 @@ class MixSession {
       ..[index] = clips[index].withPlacement(placement);
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
@@ -610,6 +684,7 @@ class MixSession {
     final nextClips = List<MixSessionClip>.from(clips)..[index] = nextClip;
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
@@ -653,6 +728,7 @@ class MixSession {
           );
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
@@ -693,6 +769,7 @@ class MixSession {
       if (_adoptLegacyDefaultCrossfade) {
         return MixSession(
           sessionId: sessionId,
+          continuationAllowed: continuationAllowed,
           schemaVersion: schemaVersion,
           clips: clips,
           nextClipOrdinal: nextClipOrdinal,
@@ -744,6 +821,7 @@ class MixSession {
     }
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
@@ -760,6 +838,7 @@ class MixSession {
     if (_deferredDefaultTransitionClipIds.contains(clipId)) return this;
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: clips,
       nextClipOrdinal: nextClipOrdinal,
@@ -786,6 +865,7 @@ class MixSession {
     }
     return MixSession(
       sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
       schemaVersion: schemaVersion,
       clips: clips,
       nextClipOrdinal: nextClipOrdinal,
@@ -810,6 +890,7 @@ class MixSession {
 
   Map<String, dynamic> toJson() => {
         'schemaVersion': schemaVersion,
+        'continuationAllowed': continuationAllowed,
         'sessionId': sessionId,
         'nextClipOrdinal': nextClipOrdinal,
         'transitionSnapMode': transitionSnapMode.name,
@@ -1311,6 +1392,9 @@ class CueTimeline {
   }
 }
 
+/// Radio lifecycle, independent of actual transport playing state.
+enum ContinuationDisposition { none, waiting, completed }
+
 class PlaybackSnapshot {
   const PlaybackSnapshot({
     required this.sessionId,
@@ -1325,6 +1409,7 @@ class PlaybackSnapshot {
     required this.playing,
     required this.processingState,
     required this.activeVoiceCount,
+    this.continuationDisposition = ContinuationDisposition.none,
     this.playbackSpeed = 1,
     this.pitchPreservationFallback = false,
     this.pitchFallbackClipIds = const {},
@@ -1356,6 +1441,7 @@ class PlaybackSnapshot {
   final Duration localDuration;
   final Duration globalPosition;
   final Duration globalDuration;
+  final ContinuationDisposition continuationDisposition;
   final bool playing;
   final ProcessingState processingState;
   final int activeVoiceCount;

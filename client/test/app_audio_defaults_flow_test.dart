@@ -65,7 +65,7 @@ void main() {
 
     // Seeded from the stored preference before the listener is armed, so a
     // relaunch honors the saved choice without the user touching settings.
-    expect(playback.appliedEndOfQueueModes, [EndOfQueueMode.off]);
+    expect(playback.appliedEndOfQueueModes, [EndOfQueueMode.shuffleLibrary]);
 
     final container = ProviderScope.containerOf(
       tester.element(find.byType(OpenMusicPlayerApp)),
@@ -73,10 +73,10 @@ void main() {
     );
     container
         .read(settingsProvider.notifier)
-        .setEndOfQueueMode(EndOfQueueMode.shuffleLibrary);
+        .setEndOfQueueMode(EndOfQueueMode.off);
     await tester.pump();
 
-    expect(playback.appliedEndOfQueueModes.last, EndOfQueueMode.shuffleLibrary);
+    expect(playback.appliedEndOfQueueModes.last, EndOfQueueMode.off);
   });
 
   testWidgets('settings provider queue behavior reaches playback',

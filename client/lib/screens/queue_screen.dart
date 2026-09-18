@@ -608,7 +608,8 @@ class _QueueScreenState extends State<QueueScreen> {
                 title: item.title,
                 index: index,
               ),
-              isCurrent: entry.isCurrent,
+              trackId: item.id,
+              queueItemId: queueItemId,
               onTap: entry.isCurrent
                   ? null
                   : () => _skipToPlaybackIndex(

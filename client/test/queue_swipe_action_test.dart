@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/shared/widgets/queue_swipe_action.dart';
-import 'package:open_music_player/shared/widgets/track_tile.dart';
 
 /// Travel the row reaches for a given post-slop drag distance, mirroring the
 /// widget's own rubber band so the expectations below read as numbers a user
@@ -283,27 +282,6 @@ void main() {
     expect(calls, 0);
     expect(tester.getTopLeft(find.byType(ListTile)), rest);
     expect(haptics, isEmpty);
-  });
-
-  testWidgets('current track tile renders selected now-playing state', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      const MaterialApp(
-        home: Scaffold(
-          body: TrackTile(
-            title: 'Current Song',
-            artist: 'Artist',
-            duration: '3:00',
-            isCurrent: true,
-          ),
-        ),
-      ),
-    );
-
-    final tile = tester.widget<ListTile>(find.byType(ListTile));
-    expect(tile.selected, isTrue);
-    expect(find.byIcon(Icons.equalizer), findsOneWidget);
   });
 }
 

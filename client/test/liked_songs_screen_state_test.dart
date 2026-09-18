@@ -1,3 +1,4 @@
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'dart:async';
 
 import 'package:audio_service/audio_service.dart' show MediaItem;
@@ -141,6 +142,8 @@ class _LibraryService extends LibraryService {
 }
 
 class _PlaybackState extends Fake implements PlaybackState {
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
   @override
   MediaItem? get currentItem => null;
 

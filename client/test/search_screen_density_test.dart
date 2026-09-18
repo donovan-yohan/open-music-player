@@ -8,6 +8,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/features/search/search_screen.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
@@ -95,6 +96,9 @@ void main() {
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
+
   @override
   void addListener(VoidCallback listener) {}
 

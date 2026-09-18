@@ -37,13 +37,14 @@ void main() {
     ).endOfQueueMode;
   }
 
-  testWidgets('end-of-queue defaults to off so playback still stops',
+  testWidgets('end-of-queue defaults to shuffle without writing preferences',
       (tester) async {
     final preferences = await pumpPlaybackSettings(tester);
 
     expect(find.text('End of queue'), findsOneWidget);
     expect(
-      find.textContaining('Off · Playback stops when the queue runs out'),
+      find.textContaining(
+          'Shuffle library · Keep playing shuffled tracks from your library'),
       findsOneWidget,
     );
     // Nothing has been chosen, so nothing has been written.
@@ -51,7 +52,10 @@ void main() {
   });
 
   testWidgets('choosing shuffle library persists the choice', (tester) async {
-    final preferences = await pumpPlaybackSettings(tester);
+    final preferences = await pumpPlaybackSettings(tester, initialValues: {
+      'app_settings': jsonEncode(
+          const SettingsModel(endOfQueueMode: EndOfQueueMode.off).toJson()),
+    });
 
     await tester.tap(find.byKey(const ValueKey('settings_end_of_queue')));
     await tester.pumpAndSettle();

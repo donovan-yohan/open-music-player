@@ -1,3 +1,4 @@
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -65,7 +66,7 @@ void main() {
     expect(find.text('Listening History'), findsOneWidget);
     expect(find.text('Repeat Song'), findsNWidgets(2));
     expect(find.text('5m ago'), findsOneWidget);
-    expect(find.text('126 BPM'), findsNWidgets(2));
+    expect(find.text('126'), findsNWidgets(2));
     expect(find.text('8A'), findsNWidgets(2));
 
     await tester.tap(find.text('Repeat Song').first);
@@ -98,6 +99,8 @@ class _HistoryApiClient extends ApiClient {
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
   final List<
       ({
         List<Map<String, dynamic>> tracks,

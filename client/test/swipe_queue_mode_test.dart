@@ -2,6 +2,7 @@ import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/models/settings_model.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
@@ -79,6 +80,10 @@ class _LibraryService extends LibraryService {
 }
 
 class _FakePlayback extends Fake implements PlaybackState {
+  // These surface tests have no active playback session.
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
+
   _FakePlayback(this._mode);
 
   final QueueInsertMode _mode;

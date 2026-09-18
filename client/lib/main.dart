@@ -86,8 +86,7 @@ void main() async {
     cacheManager: playbackCacheManager,
     persistence: queuePersistence,
     accountIdProvider: currentAccountId,
-    // End-of-queue continuation (#352). Inert until the listener picks a mode
-    // in Settings; the selected mode is pushed in from OpenMusicPlayerApp.
+    // The selected end-of-queue mode is pushed in from OpenMusicPlayerApp.
     continuationSource: LibraryShuffleContinuationSource(libraryService),
   );
   // Surface the app playback session as one OS media session/notification. The
@@ -109,6 +108,7 @@ void main() async {
       config: const audio_service.AudioServiceConfig(
         androidNotificationChannelId: 'com.openmusicplayer.app.channel.audio',
         androidNotificationChannelName: 'Playback',
+        androidNotificationIcon: 'drawable/omp_notification',
         androidNotificationOngoing: true,
         androidStopForegroundOnPause: true,
       ),
@@ -130,13 +130,20 @@ void main() async {
   )..start();
   var accountSyncGeneration = 0;
   var persistenceAuthStatus = authState.status;
+  var playbackAuthRevision = authState.sessionRevision;
   authState.addListener(() {
+    if (playbackAuthRevision != authState.sessionRevision) {
+      playbackAuthRevision = authState.sessionRevision;
+      queuePersistence.invalidateAccountId();
+      playRecorder.reset();
+      unawaited(playbackState.stop());
+    }
     if (authState.status != persistenceAuthStatus) {
       persistenceAuthStatus = authState.status;
       queuePersistence.invalidateAccountId();
     }
     final syncGeneration = ++accountSyncGeneration;
-    if (!authState.isAuthenticated) {
+    if (!authState.isAuthenticated || authState.isLoading) {
       playRecorder.reset();
       likedTracksState.setAccountId(null);
     } else {

@@ -1,0 +1,11 @@
+--- a/android/src/main/java/com/ryanheise/audioservice/AudioService.java
++++ b/android/src/main/java/com/ryanheise/audioservice/AudioService.java
+@@ -604,7 +604,7 @@
+         case loading: return PlaybackStateCompat.STATE_CONNECTING;
+         case buffering: return PlaybackStateCompat.STATE_BUFFERING;
+         case ready: return playing ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
+-        case completed: return playing ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
++        case completed: return playing ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_STOPPED;
+         case error: return PlaybackStateCompat.STATE_ERROR;
+         default: return PlaybackStateCompat.STATE_NONE;
+         }

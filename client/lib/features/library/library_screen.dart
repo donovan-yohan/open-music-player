@@ -1,3 +1,5 @@
+import '../../shared/widgets/now_playing_row.dart';
+import '../../shared/widgets/song_list_item.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -989,29 +991,16 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // Rows depend on *whether* they are the current track, not on the playback
-    // position. Watching the whole PlaybackState rebuilt every mounted row on
-    // every position tick, which is what made library scrolling stutter while
-    // audio played.
-    final isCurrent = context.select<PlaybackState, bool>(
-      (playback) => playback.currentItem?.id == track.id.toString(),
-    );
     final liked = context.select<LikedTracksState, bool>(
       (tracks) => tracks.isLiked(track.id) ?? false,
     );
-    final summary = track.analysis?.summary;
-    final hasMetadata = summary?.bpm?.numericValue != null ||
-        summary?.key?.textValue != null ||
-        summary?.camelot?.textValue != null;
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final compactActions =
             constraints.maxWidth < _compactActionBreakpoint ||
                 MediaQuery.textScalerOf(context).scale(1) > 1.3;
-        final subtitle = compactActions
-            ? '${track.displayArtist} • ${track.formattedDuration}'
-            : track.displayArtist;
+        final subtitle = track.displayArtist;
 
         return QueueSwipeAction(
           actionKey: ValueKey('library_queue_${track.id}'),
@@ -1022,142 +1011,122 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
             commandContext: _commandContext(context),
             position: details.globalPosition,
           ),
-          child: ListTile(
-            key: ValueKey('library_track_row_${track.id}'),
-            selected: isCurrent,
-            contentPadding: compactActions
-                ? const EdgeInsets.symmetric(horizontal: 10)
-                : null,
-            horizontalTitleGap: compactActions ? 8 : null,
-            minLeadingWidth: compactActions ? 40 : null,
-            selectedTileColor: theme.colorScheme.primaryContainer.withValues(
-              alpha: 0.28,
-            ),
-            leading: Stack(
-              children: [
-                Container(
-                  width: compactActions ? 40 : 48,
-                  height: compactActions ? 40 : 48,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: TrackArtwork.fromTrack(
-                    track,
-                    width: compactActions ? 40 : 48,
-                    height: compactActions ? 40 : 48,
-                    borderRadius: BorderRadius.zero,
-                  ),
-                ),
-                if (!track.mbVerified)
-                  Positioned(
-                    right: 0,
-                    bottom: 0,
-                    child: Container(
-                      width: 14,
-                      height: 14,
+          child: NowPlayingRow(
+              trackId: track.id.toString(),
+              child: SongListItem(
+                key: ValueKey('library_track_row_${track.id}'),
+                analysis: track.analysis,
+                leading: Stack(
+                  children: [
+                    Container(
+                      width: compactActions ? 40 : 48,
+                      height: compactActions ? 40 : 48,
                       decoration: BoxDecoration(
-                        color:
-                            track.hasSuggestions ? Colors.orange : Colors.grey,
-                        borderRadius: BorderRadius.circular(7),
-                        border: Border.all(
-                          color: theme.colorScheme.surface,
-                          width: 2,
+                        color: theme.colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: TrackArtwork.fromTrack(
+                        track,
+                        width: compactActions ? 40 : 48,
+                        height: compactActions ? 40 : 48,
+                        borderRadius: BorderRadius.zero,
+                      ),
+                    ),
+                    if (!track.mbVerified)
+                      Positioned(
+                        right: 0,
+                        bottom: 0,
+                        child: Container(
+                          width: 14,
+                          height: 14,
+                          decoration: BoxDecoration(
+                            color: track.hasSuggestions
+                                ? Colors.orange
+                                : Colors.grey,
+                            borderRadius: BorderRadius.circular(7),
+                            border: Border.all(
+                              color: theme.colorScheme.surface,
+                              width: 2,
+                            ),
+                          ),
+                          child: Icon(
+                            track.hasSuggestions
+                                ? Icons.auto_fix_high
+                                : Icons.help_outline,
+                            size: 8,
+                            color: Colors.white,
+                          ),
                         ),
                       ),
-                      child: Icon(
-                        track.hasSuggestions
-                            ? Icons.auto_fix_high
-                            : Icons.help_outline,
-                        size: 8,
-                        color: Colors.white,
+                  ],
+                ),
+                title: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        track.title,
+                        key: ValueKey('library_track_title_${track.id}'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                  ),
-              ],
-            ),
-            title: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    track.title,
-                    key: ValueKey('library_track_title_${track.id}'),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: isCurrent ? theme.colorScheme.primary : null,
-                      fontWeight: isCurrent ? FontWeight.w700 : null,
-                    ),
-                  ),
-                ),
-                if (track.needsVerification && !compactActions) ...[
-                  const SizedBox(width: 8),
-                  UnverifiedTrackIndicator(
-                    onTap: () => _showMatchSuggestions(context),
-                  ),
-                ],
-                if (track.hasMetadataOverride && !compactActions) ...[
-                  const SizedBox(width: 8),
-                  MetadataEditedBadge(
-                    key: ValueKey('track_metadata_edited_badge_${track.id}'),
-                  ),
-                ],
-              ],
-            ),
-            subtitle: Text(
-              subtitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            trailing: Row(
-              key: ValueKey('library_track_trailing_${track.id}'),
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SongMetadataChips(
-                  analysis: track.analysis,
-                  singleLine: true,
-                  compact: true,
-                ),
-                if (hasMetadata) const SizedBox(width: 6),
-                if (!compactActions) ...[
-                  if (isCurrent) ...[
-                    Icon(
-                      Icons.equalizer,
-                      size: 18,
-                      color: theme.colorScheme.primary,
-                    ),
-                    const SizedBox(width: 8),
+                    if (track.needsVerification && !compactActions) ...[
+                      const SizedBox(width: 8),
+                      UnverifiedTrackIndicator(
+                        onTap: () => _showMatchSuggestions(context),
+                      ),
+                    ],
+                    if (track.hasMetadataOverride && !compactActions) ...[
+                      const SizedBox(width: 8),
+                      MetadataEditedBadge(
+                        key:
+                            ValueKey('track_metadata_edited_badge_${track.id}'),
+                      ),
+                    ],
                   ],
-                  Text(
-                    track.formattedDuration,
-                    style: theme.textTheme.bodySmall,
-                  ),
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    icon: Icon(
-                      liked ? Icons.favorite : Icons.favorite_border,
-                      color: liked ? theme.colorScheme.primary : null,
-                    ),
-                    tooltip: liked ? 'Unlike' : 'Like',
-                    onPressed: _likeInFlight ? null : _toggleLike,
-                  ),
-                  DownloadButton(track: track),
-                ],
-                IconButton(
-                  key: ValueKey('library_track_more_${track.id}'),
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.more_vert),
-                  tooltip: 'More actions',
-                  onPressed: () => _showActions(context),
                 ),
-              ],
-            ),
-            onTap: () =>
-                widget.onPlay != null ? widget.onPlay!() : _playTrack(context),
-            onLongPress: track.needsVerification
-                ? () => _showMatchSuggestions(context)
-                : () => _showActions(context),
-          ),
+                subtitle: Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                trailing: Wrap(
+                  key: ValueKey('library_track_trailing_${track.id}'),
+                  spacing: 8,
+                  runSpacing: 2,
+                  alignment: WrapAlignment.end,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(track.formattedDuration,
+                        style: theme.textTheme.bodySmall),
+                    if (!compactActions) ...[
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        icon: Icon(
+                          liked ? Icons.favorite : Icons.favorite_border,
+                          color: liked ? theme.colorScheme.primary : null,
+                        ),
+                        tooltip: liked ? 'Unlike' : 'Like',
+                        onPressed: _likeInFlight ? null : _toggleLike,
+                      ),
+                      DownloadButton(track: track),
+                    ],
+                    IconButton(
+                      key: ValueKey('library_track_more_${track.id}'),
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.more_vert),
+                      tooltip: 'More actions',
+                      onPressed: () => _showActions(context),
+                    ),
+                  ],
+                ),
+                onTap: () => widget.onPlay != null
+                    ? widget.onPlay!()
+                    : _playTrack(context),
+                onLongPress: track.needsVerification
+                    ? () => _showMatchSuggestions(context)
+                    : () => _showActions(context),
+              )),
         );
       },
     );
