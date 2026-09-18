@@ -417,6 +417,66 @@ class MixSession {
     );
   }
 
+  /// Insert queue rows while deriving placements in the controller's play order.
+  /// History before the insertion and authored placements remain untouched.
+  /// [minimumStartMs] fences an exhausted timeline: crossfade may join future
+  /// items, but must not rewind into audio that has already finished.
+  MixSession insertAllInPlayOrder(
+    int index,
+    List<MediaItem> items,
+    List<int> playOrder, {
+    int minimumStartMs = 0,
+  }) {
+    if (items.isEmpty) return this;
+    final next = List<MixSessionClip>.from(clips);
+    final inserted = [
+      for (var offset = 0; offset < items.length; offset++)
+        MixSessionClip.fromMediaItem(
+          sessionId: sessionId,
+          ordinal: nextClipOrdinal + offset,
+          item: items[offset],
+          timelineStartMs: 0,
+        ),
+    ];
+    next.insertAll(index, inserted);
+    final insertedIds = inserted.map((clip) => clip.clipId).toSet();
+    final reflowedIds = <String>{};
+    var reflow = false;
+    MixSessionClip? previous;
+    for (final queueIndex in playOrder) {
+      var clip = next[queueIndex];
+      if (insertedIds.contains(clip.clipId)) reflow = true;
+      if (reflow && !_explicitPlacementClipIds.contains(clip.clipId)) {
+        final start = _defaultTimelineStartAfter(
+          previous,
+          clip,
+          previous?.timelineEndMs ?? 0,
+          transitionSnapMode,
+          defaultCrossfadeMs,
+        );
+        clip = clip.withPlacement(clip.placement.withTimelineStartMs(
+          math.max(minimumStartMs, start),
+        ));
+        next[queueIndex] = clip;
+        reflowedIds.add(clip.clipId);
+      }
+      previous = clip;
+    }
+    return MixSession(
+      sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
+      schemaVersion: schemaVersion,
+      clips: List.unmodifiable(next),
+      nextClipOrdinal: nextClipOrdinal + items.length,
+      transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds:
+          _deferredDefaultTransitionClipIds.difference(reflowedIds),
+      explicitPlacementClipIds: _explicitPlacementClipIds,
+    );
+  }
+
   MixSession insertAt(int index, MediaItem item) {
     final insertIndex = index.clamp(0, clips.length).toInt();
     final nextClips = <MixSessionClip>[];
