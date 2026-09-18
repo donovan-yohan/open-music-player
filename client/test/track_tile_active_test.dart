@@ -50,7 +50,7 @@ void main() {
         expect(artist.left, title.left);
         expect(metadata.left, greaterThanOrEqualTo(title.right));
         expect(actions.right, closeTo(width - 16, 0.01));
-        expect(find.text('128 BPM'), findsOneWidget);
+        expect(find.text(scale == 1 ? '128' : '128 BPM'), findsOneWidget);
         expect(find.text('8A'), findsOneWidget);
         if (scale == 1) {
           expect(height, 72);

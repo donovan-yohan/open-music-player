@@ -86,16 +86,23 @@ class TrackTile extends StatelessWidget {
     final subtitle = [artist, album]
         .where((value) => value != null && value.isNotEmpty)
         .join(' • ');
-    return SongListItem(
-      onTap: onTap,
-      leading: leading ?? _buildCoverArt(),
-      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: subtitle.isEmpty
-          ? null
-          : Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
-      analysis: analysis,
-      trailing: _buildTrailingActions(context),
-    );
+    return LayoutBuilder(
+        builder: (context, constraints) => SongListItem(
+              onTap: onTap,
+              leading: leading ?? _buildCoverArt(),
+              title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: subtitle.isEmpty
+                  ? null
+                  : Text(subtitle,
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
+              analysis: analysis,
+              trailing: _buildTrailingActions(context,
+                  hideDuration: constraints.maxWidth < 360 &&
+                      MediaQuery.textScalerOf(context).scale(1) <= 1.3 &&
+                      analysis != null &&
+                      action != null &&
+                      onMorePressed != null),
+            ));
   }
 
   Widget _buildCoverArt() {
@@ -110,37 +117,41 @@ class TrackTile extends StatelessWidget {
     );
   }
 
-  Widget _buildTrailingActions(BuildContext context) {
+  Widget _buildTrailingActions(BuildContext context,
+      {bool hideDuration = false}) {
     final theme = Theme.of(context);
 
-    return Wrap(
-      key: const ValueKey('track_tile_actions'),
-      alignment: WrapAlignment.end,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      spacing: 8,
-      runSpacing: 2,
-      children: [
-        if (trailing != null)
-          trailing!
-        else ...[
-          if (action != null) action!,
-          Text(
-            duration,
-            style: theme.textTheme.bodySmall,
-          ),
-          if (onMorePressed != null)
-            IconButton(
-              icon: const Icon(Icons.more_vert),
-              onPressed: onMorePressed,
-              iconSize: 20,
-            ),
-          if (showDragHandle)
-            const ReorderableDragStartListener(
-              index: 0,
-              child: Icon(Icons.drag_handle),
-            ),
-        ],
-      ],
-    );
+    return Semantics(
+        container: true,
+        label: hideDuration ? duration : null,
+        child: Wrap(
+          key: const ValueKey('track_tile_actions'),
+          alignment: WrapAlignment.end,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8,
+          runSpacing: 2,
+          children: [
+            if (trailing != null)
+              trailing!
+            else ...[
+              if (action != null) action!,
+              // Keep both buttons and a readable key at narrow phone widths.
+              // Duration remains exposed to assistive technology.
+              if (!hideDuration)
+                Text(duration, style: theme.textTheme.bodySmall),
+              if (onMorePressed != null)
+                IconButton(
+                  icon: const Icon(Icons.more_vert),
+                  onPressed: onMorePressed,
+                  iconSize: 20,
+                ),
+              if (showDragHandle)
+                const ReorderableDragStartListener(
+                  index: 0,
+                  child: Icon(Icons.drag_handle),
+                ),
+            ],
+          ],
+        ));
   }
 }

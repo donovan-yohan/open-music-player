@@ -61,8 +61,13 @@ class SongListItem extends StatelessWidget {
                 const SizedBox(width: 8),
                 ConstrainedBox(
                   key: const ValueKey('track_tile_trailing'),
-                  constraints:
-                      BoxConstraints(maxWidth: constraints.maxWidth * 0.60),
+                  // Reserve 72px of title plus its 8px separation. Let short
+                  // readable values use the remainder instead of shrinking.
+                  constraints: BoxConstraints(
+                      maxWidth: enlarged
+                          ? constraints.maxWidth * 0.60
+                          : (constraints.maxWidth - 80)
+                              .clamp(0, double.infinity)),
                   child: enlarged
                       ? Wrap(
                           alignment: WrapAlignment.end,
@@ -75,6 +80,7 @@ class SongListItem extends StatelessWidget {
                                   width: constraints.maxWidth * 0.60,
                                   child: SongMetadataChips(
                                       analysis: analysis,
+                                      listRow: true,
                                       singleLine: true,
                                       compact: true)),
                             if (trailing != null) trailing!,
@@ -85,6 +91,7 @@ class SongListItem extends StatelessWidget {
                             Flexible(
                                 child: SongMetadataChips(
                                     analysis: analysis,
+                                    listRow: true,
                                     singleLine: true,
                                     compact: true)),
                             const SizedBox(width: 6),

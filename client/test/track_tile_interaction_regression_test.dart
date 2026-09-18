@@ -15,8 +15,8 @@ FocusNode _focus(WidgetTester tester, String id) => Focus.of(tester.element(
     ));
 
 Future<void> _pump(WidgetTester tester, FakePlayback playback, bool metadata,
-    List<String> activated, double scale) async {
-  tester.view.physicalSize = const Size(390, 1000);
+    List<String> activated, double scale, double width) async {
+  tester.view.physicalSize = Size(width, 1400);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -60,69 +60,72 @@ Future<void> _pump(WidgetTester tester, FakePlayback playback, bool metadata,
 }
 
 void main() {
-  for (final scenario in [
-    (true, 1.0),
-    (false, 2.0),
-    (true, 2.0),
-    (true, 3.0)
-  ]) {
-    final (metadata, scale) = scenario;
-    final layout = 'metadata=$metadata scale=$scale';
-    for (final id in ['A', 'B']) {
-      testWidgets('$layout action $id retains element focus and keyboard',
-          (tester) async {
-        final playback = FakePlayback()..set(makeSnapshot(id: null));
-        final activated = <String>[];
-        await _pump(tester, playback, metadata, activated, scale);
-        final element = tester.element(_action(id));
-        final node = _focus(tester, id);
-        node.requestFocus();
-        await tester.pump();
-        expect(node.hasFocus, isTrue);
-        for (final selected in ['A', 'B', null]) {
-          playback.set(makeSnapshot(id: selected));
+  for (final width in [320.0, 390.0]) {
+    for (final scenario in [
+      (true, 1.0),
+      (false, 2.0),
+      (true, 2.0),
+      (true, 3.0)
+    ]) {
+      final (metadata, scale) = scenario;
+      final layout = 'width=$width metadata=$metadata scale=$scale';
+      for (final id in ['A', 'B']) {
+        testWidgets('$layout action $id retains element focus and keyboard',
+            (tester) async {
+          final playback = FakePlayback()..set(makeSnapshot(id: null));
+          final activated = <String>[];
+          await _pump(tester, playback, metadata, activated, scale, width);
+          final element = tester.element(_action(id));
+          final node = _focus(tester, id);
+          node.requestFocus();
           await tester.pump();
-          expect(tester.element(_action(id)), same(element));
-          expect(_focus(tester, id), same(node));
           expect(node.hasFocus, isTrue);
-          final before = activated.length;
-          await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-          await tester.pump();
-          expect(activated.length, before + 1);
-          expect(activated.last, id);
-          expect(tester.takeException(), isNull);
-        }
-        await tester.pumpWidget(const SizedBox.shrink());
-      });
-      testWidgets('$layout action $id completes held pointer across A B clear',
-          (tester) async {
-        final playback = FakePlayback()..set(makeSnapshot(id: null));
-        final activated = <String>[];
-        await _pump(tester, playback, metadata, activated, scale);
-        // One real press per transition, plus a press spanning the whole cycle.
-        for (final sequence in <List<String?>>[
-          ['A'],
-          ['B'],
-          [null],
-          ['A', 'B', null],
-        ]) {
-          final before = activated.length;
-          final gesture = await tester.startGesture(
-            tester.getCenter(_action(id)),
-          );
-          await tester.pump(const Duration(milliseconds: 100));
-          for (final selected in sequence) {
+          for (final selected in ['A', 'B', null]) {
             playback.set(makeSnapshot(id: selected));
             await tester.pump();
+            expect(tester.element(_action(id)), same(element));
+            expect(_focus(tester, id), same(node));
+            expect(node.hasFocus, isTrue);
+            final before = activated.length;
+            await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+            await tester.pump();
+            expect(activated.length, before + 1);
+            expect(activated.last, id);
+            expect(tester.takeException(), isNull);
           }
-          await gesture.up();
-          await tester.pump();
-          expect(activated.length, before + 1);
-          expect(activated.last, id);
-          expect(tester.takeException(), isNull);
-        }
-        await tester.pumpWidget(const SizedBox.shrink());
-      });
+          await tester.pumpWidget(const SizedBox.shrink());
+        });
+        testWidgets(
+            '$layout action $id completes held pointer across A B clear',
+            (tester) async {
+          final playback = FakePlayback()..set(makeSnapshot(id: null));
+          final activated = <String>[];
+          await _pump(tester, playback, metadata, activated, scale, width);
+          // One real press per transition, plus a press spanning the whole cycle.
+          for (final sequence in <List<String?>>[
+            ['A'],
+            ['B'],
+            [null],
+            ['A', 'B', null],
+          ]) {
+            final before = activated.length;
+            final gesture = await tester.startGesture(
+              tester.getCenter(_action(id)),
+            );
+            await tester.pump(const Duration(milliseconds: 100));
+            for (final selected in sequence) {
+              playback.set(makeSnapshot(id: selected));
+              await tester.pump();
+            }
+            await gesture.up();
+            await tester.pump();
+            expect(activated.length, before + 1);
+            expect(activated.last, id);
+            expect(tester.takeException(), isNull);
+          }
+          await tester.pumpWidget(const SizedBox.shrink());
+        });
+      }
     }
   }
 }

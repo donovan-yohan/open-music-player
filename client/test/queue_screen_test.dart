@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'song_list_metadata_legibility_test.dart' show expectReadableMetadata;
 import 'package:flutter_riverpod/flutter_riverpod.dart' show ProviderScope;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
@@ -215,6 +216,11 @@ void main() {
           }
           final row = find.byType(SongListItem);
           expect(row, findsOneWidget, reason: surface);
+          expectReadableMetadata(tester, row, scale);
+          if (width >= 390 && scale == 1) {
+            expect(find.text('128'), findsOneWidget, reason: surface);
+            expect(find.text('8A'), findsOneWidget, reason: surface);
+          }
           final height = tester.getSize(row).height;
           heights.add(height);
           final title = tester.getRect(find.text(track.title));
@@ -376,7 +382,7 @@ void main() {
     expect(find.text('Up Next'), findsNothing);
     expect(find.text('Already Played'), findsOneWidget);
     expect(find.text('Next Song'), findsOneWidget);
-    expect(find.text('132 BPM'), findsOneWidget);
+    expect(find.text('132'), findsOneWidget);
     expect(find.text('10A'), findsOneWidget);
     expect(find.byKey(const ValueKey('reorder_handle_1')), findsOneWidget);
     expect(find.byKey(const ValueKey('reorder_handle_2')), findsOneWidget);

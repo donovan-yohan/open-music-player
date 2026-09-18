@@ -101,7 +101,8 @@ void main() {
       expect(tester.getSize(title).width, greaterThanOrEqualTo(48));
       expect(tester.getRect(title).right,
           lessThanOrEqualTo(tester.getRect(trailing).left));
-      expect(find.text('128 BPM'), findsOneWidget);
+      expect(find.text('128'), findsNothing);
+      expect(find.byTooltip('Tempo 128 BPM, Key 8A'), findsOneWidget);
       expect(find.text('8A'), findsOneWidget);
       expect(find.text('Control-rich artist'), findsOneWidget);
       expect(find.text('3:00'), findsOneWidget);

@@ -73,12 +73,16 @@ class SongMetadataChips extends StatelessWidget {
     this.topSpacing = 0,
     this.singleLine = false,
     this.compact = false,
+    this.listRow = false,
   });
 
   final TrackAnalysis? analysis;
   final double topSpacing;
   final bool singleLine;
   final bool compact;
+
+  /// Whole-value, readable list policy; DJ/timeline chips retain their layout.
+  final bool listRow;
 
   @override
   Widget build(BuildContext context) {
@@ -97,6 +101,7 @@ class SongMetadataChips extends StatelessWidget {
         topSpacing: topSpacing,
         singleLine: singleLine,
         compact: compact,
+        listRow: listRow,
       );
     }
 
@@ -111,6 +116,7 @@ class SongMetadataChips extends StatelessWidget {
           topSpacing: topSpacing,
           singleLine: singleLine,
           compact: compact,
+          listRow: listRow,
         );
       },
     );
@@ -123,12 +129,16 @@ class _MetadataChipGroup extends StatelessWidget {
     required this.topSpacing,
     required this.singleLine,
     required this.compact,
+    required this.listRow,
   });
 
   final SongMetadataLabels labels;
   final double topSpacing;
   final bool singleLine;
   final bool compact;
+
+  /// Whole-value, readable list policy; DJ/timeline chips retain their layout.
+  final bool listRow;
 
   @override
   Widget build(BuildContext context) {
@@ -156,10 +166,13 @@ class _MetadataChipGroup extends StatelessWidget {
           constrain(
             _MetadataChip(
               key: const ValueKey('song_metadata_bpm_chip'),
-              label: labels.bpm!,
+              label: listRow && !allowWrap
+                  ? labels.bpm!.replaceFirst(' BPM', '')
+                  : labels.bpm!,
               allowWrap: allowWrap,
               compact: compact,
               dense: dense,
+              listRow: listRow,
             ),
           ),
         if (labels.key != null)
@@ -171,6 +184,7 @@ class _MetadataChipGroup extends StatelessWidget {
               camelot: labels.camelot,
               compact: compact,
               dense: dense,
+              listRow: listRow,
             ),
           ),
       ];
@@ -188,7 +202,8 @@ class _MetadataChipGroup extends StatelessWidget {
                       constraints.hasBoundedWidth && textScale > 1.3;
                   final maxChipWidth =
                       canWrapLabels ? constraints.maxWidth * 0.9 : null;
-                  final useDenseLabels = constraints.hasBoundedWidth &&
+                  final useDenseLabels = !listRow &&
+                      constraints.hasBoundedWidth &&
                       constraints.maxWidth < 150 &&
                       !canWrapLabels;
                   final chipWidgets = buildChipWidgets(
@@ -196,6 +211,51 @@ class _MetadataChipGroup extends StatelessWidget {
                     maxChipWidth: maxChipWidth,
                     dense: useDenseLabels,
                   );
+                  if (listRow && !canWrapLabels) {
+                    // Whole values only: harmonic key wins when both cannot fit.
+                    // Full tempo/key remain available to speech and long press.
+                    double widthOf(String label) {
+                      final painter = TextPainter(
+                        text: TextSpan(
+                            text: label, style: _listTextStyle(context)),
+                        textDirection: Directionality.of(context),
+                        textScaler: MediaQuery.textScalerOf(context),
+                      )..layout();
+                      final width = painter.width + 10;
+                      painter.dispose();
+                      return width;
+                    }
+
+                    final widths = [
+                      if (labels.bpm != null)
+                        widthOf(labels.bpm!.replaceFirst(' BPM', '')),
+                      if (labels.key != null) widthOf(labels.key!),
+                    ];
+                    final total = widths.fold(0.0, (a, b) => a + b) +
+                        (widths.length - 1) * 4;
+                    final visible = total <= constraints.maxWidth
+                        ? chipWidgets
+                        : [
+                            if (widths.last <= constraints.maxWidth)
+                              chipWidgets.last
+                            else if (widths.first <= constraints.maxWidth)
+                              chipWidgets.first,
+                          ];
+                    return Tooltip(
+                      message: semantics,
+                      excludeFromSemantics: true,
+                      child: Row(
+                        key: const ValueKey('song_metadata_chips'),
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          for (var i = 0; i < visible.length; i++) ...[
+                            if (i > 0) const SizedBox(width: 4),
+                            visible[i],
+                          ],
+                        ],
+                      ),
+                    );
+                  }
                   if (!canWrapLabels) {
                     return FittedBox(
                       alignment: Alignment.centerRight,
@@ -239,6 +299,16 @@ class _MetadataChipGroup extends StatelessWidget {
   }
 }
 
+// Match duration/subtitle typography rather than the old 9px dense label.
+TextStyle _listTextStyle(BuildContext context) {
+  final style = Theme.of(context).textTheme.bodySmall!;
+  return style.copyWith(
+    fontSize: (style.fontSize ?? 12) < 12 ? 12 : style.fontSize,
+    fontWeight: FontWeight.w600,
+    height: 1,
+  );
+}
+
 class _MetadataChip extends StatelessWidget {
   const _MetadataChip({
     super.key,
@@ -246,6 +316,7 @@ class _MetadataChip extends StatelessWidget {
     required this.allowWrap,
     required this.compact,
     required this.dense,
+    this.listRow = false,
     this.camelot,
   });
 
@@ -253,6 +324,7 @@ class _MetadataChip extends StatelessWidget {
   final bool allowWrap;
   final bool compact;
   final bool dense;
+  final bool listRow;
   final String? camelot;
 
   @override
@@ -261,7 +333,9 @@ class _MetadataChip extends StatelessWidget {
     final textScale = MediaQuery.textScalerOf(context).scale(1);
     final fixedCompactHeight = compact && textScale <= 1.3;
     final keyColors = _CamelotChipColors.resolve(theme, camelot);
-    final textStyle = theme.textTheme.labelSmall?.copyWith(
+    final textStyle =
+        (listRow ? _listTextStyle(context) : theme.textTheme.labelSmall)
+            ?.copyWith(
       color: keyColors?.foreground ?? theme.colorScheme.onSecondaryContainer,
       fontSize: dense ? 9 : null,
       fontWeight: FontWeight.w600,

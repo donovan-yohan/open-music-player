@@ -28,8 +28,8 @@ Track _analyzedTrack() => Track.fromJson({
       },
     });
 
-void _expectMetadata() {
-  expect(find.text('128 BPM'), findsOneWidget);
+void _expectMetadata({bool listRow = true}) {
+  expect(find.text(listRow ? '128' : '128 BPM'), findsOneWidget);
   expect(find.text('8A'), findsOneWidget);
 }
 
@@ -59,7 +59,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    _expectMetadata();
+    _expectMetadata(listRow: false);
   });
 
   testWidgets('Playlist rows render shared metadata chips', (tester) async {

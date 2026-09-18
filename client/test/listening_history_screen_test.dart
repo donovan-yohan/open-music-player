@@ -66,7 +66,7 @@ void main() {
     expect(find.text('Listening History'), findsOneWidget);
     expect(find.text('Repeat Song'), findsNWidgets(2));
     expect(find.text('5m ago'), findsOneWidget);
-    expect(find.text('126 BPM'), findsNWidgets(2));
+    expect(find.text('126'), findsNWidgets(2));
     expect(find.text('8A'), findsNWidgets(2));
 
     await tester.tap(find.text('Repeat Song').first);
