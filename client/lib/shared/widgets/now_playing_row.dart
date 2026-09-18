@@ -22,7 +22,6 @@ class NowPlayingRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (trackId == null || trackId!.isEmpty) return child;
     final presentation = context.select<PlaybackState?, SongRowPresentation>(
       (playback) => playback == null
           ? SongRowPresentation.none
@@ -53,7 +52,7 @@ class SongRowTreatment extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (presentation == SongRowPresentation.none) return child;
+    final selected = presentation != SongRowPresentation.none;
     final theme = Theme.of(context);
     final color = theme.colorScheme.primary;
     final titleStyle = theme.textTheme.bodyLarge?.copyWith(
@@ -63,23 +62,63 @@ class SongRowTreatment extends StatelessWidget {
     return _SongRowScope(
         presentation: presentation,
         child: Semantics(
-          selected: true,
-          label: presentation.label,
-          child: Ink(
-            key: const ValueKey('song_row_current'),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.primaryContainer.withValues(alpha: 0.28),
-              border: Border(left: BorderSide(color: color, width: 3)),
-            ),
-            child: ListTileTheme.merge(
-              titleTextStyle: titleStyle,
-              child: DefaultTextStyle.merge(
-                style: TextStyle(color: color, fontWeight: FontWeight.w700),
-                child: child,
+          selected: selected ? true : null,
+          label: selected ? presentation.label : null,
+          child: Stack(
+            fit: StackFit.passthrough,
+            children: [
+              // Decoration identity may change; the interactive sibling never does.
+              Positioned.fill(
+                child: Ink(
+                  key: selected ? const ValueKey('song_row_current') : null,
+                  decoration: selected
+                      ? BoxDecoration(
+                          color: theme.colorScheme.primaryContainer
+                              .withValues(alpha: 0.28),
+                          border:
+                              Border(left: BorderSide(color: color, width: 3)),
+                        )
+                      : const BoxDecoration(),
+                ),
               ),
-            ),
+              ListTileTheme.merge(
+                titleTextStyle: selected ? titleStyle : null,
+                child: DefaultTextStyle.merge(
+                  style: selected
+                      ? TextStyle(color: color, fontWeight: FontWeight.w700)
+                      : const TextStyle(),
+                  child: child,
+                ),
+              ),
+            ],
           ),
         ));
+  }
+}
+
+/// Applies the shared selected title emphasis to explicitly themed custom titles.
+/// Build below [SongRowTreatment] so selection is read from the row's scope.
+class SongRowTitle extends StatelessWidget {
+  const SongRowTitle(this.title,
+      {super.key, this.style, this.maxLines, this.overflow});
+
+  final String title;
+  final TextStyle? style;
+  final int? maxLines;
+  final TextOverflow? overflow;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected =
+        SongRowTreatment.presentationOf(context) != SongRowPresentation.none;
+    return Text(title,
+        maxLines: maxLines,
+        overflow: overflow,
+        style: selected
+            ? (style ?? DefaultTextStyle.of(context).style).copyWith(
+                color: Theme.of(context).colorScheme.primary,
+                fontWeight: FontWeight.w700)
+            : style);
   }
 }
 

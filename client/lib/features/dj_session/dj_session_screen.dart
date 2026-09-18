@@ -1505,7 +1505,7 @@ class _DjTrackCard extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 10),
-                    Text(
+                    SongRowTitle(
                       track.title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,

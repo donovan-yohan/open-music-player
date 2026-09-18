@@ -445,7 +445,7 @@ class _DesktopPoster extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  Text(item.title,
+                  SongRowTitle(item.title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.titleMedium),
