@@ -31,7 +31,14 @@ import 'support/fake_voice.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  for (final outcome in ['success', 'empty', 'error', 'cancel', 'off']) {
+  for (final outcome in [
+    'success',
+    'empty',
+    'error',
+    'cancel',
+    'cancel-off',
+    'off'
+  ]) {
     test(
         'presentation and media session: waiting to $outcome, replay vs resume',
         () async {
@@ -70,6 +77,15 @@ void main() {
                 .any((c) => c.label == 'Cancel'),
             isTrue);
         if (outcome == 'cancel') await handler.pause();
+        if (outcome == 'cancel-off') {
+          h.playback.setEndOfQueueMode(EndOfQueueMode.off);
+        }
+        if (outcome.startsWith('cancel')) {
+          await pumpEventQueue();
+          expect(handler.playbackState.value.processingState,
+              audio.AudioProcessingState.ready);
+          expect(handler.playbackState.value.playing, isFalse);
+        }
         if (outcome == 'error') {
           gate.completeError(StateError('offline'));
         } else {
@@ -83,10 +99,13 @@ void main() {
         expect(handler.mediaItem.value?.id, '90');
         expect(handler.playbackState.value.processingState,
             audio.AudioProcessingState.ready);
-      } else if (outcome == 'cancel') {
+      } else if (outcome.startsWith('cancel')) {
         expect(PlayerPresentation.fromSnapshot(h.playback.snapshot),
             PlayerPresentation.paused);
         expect(h.playback.isPlaying, isFalse);
+        expect(handler.playbackState.value.processingState,
+            audio.AudioProcessingState.ready);
+        expect(handler.playbackState.value.playing, isFalse);
         expect(h.playback.queue.map((i) => i.id), ['1']);
       } else {
         expect(PlayerPresentation.fromSnapshot(h.playback.snapshot),
@@ -107,6 +126,36 @@ void main() {
       }
     });
   }
+  test('multi-cue handler trace reserves completed for natural queue end',
+      () async {
+    final h = _Harness();
+    h.playback.setEndOfQueueMode(EndOfQueueMode.off);
+    final handler = MixAudioHandler(playbackState: h.playback);
+    final states = <audio.PlaybackState>[];
+    final sub = handler.playbackState.listen(states.add);
+    addTearDown(() async {
+      await sub.cancel();
+      await handler.dispose();
+      await h.dispose();
+    });
+    await h.playback.playQueue([_track(1, seconds: 5), _track(2, seconds: 5)]);
+    await pumpEventQueue();
+    h.advance(const Duration(seconds: 5));
+    await pumpEventQueue();
+    expect(h.playback.currentItem?.id, '2');
+    expect(h.playback.isPlaying, isTrue);
+    expect(
+        states.where(
+            (s) => s.processingState == audio.AudioProcessingState.completed),
+        isEmpty);
+    h.advance(const Duration(seconds: 5));
+    await pumpEventQueue();
+    expect(PlayerPresentation.fromSnapshot(h.playback.snapshot),
+        PlayerPresentation.ended);
+    expect(states.last.processingState, audio.AudioProcessingState.completed);
+    expect(states.last.playing, isFalse);
+  });
+
   group('end-of-queue continuation trigger', () {
     test('a natural completion continues playback exactly once', () async {
       final source = _RecordingContinuationSource(

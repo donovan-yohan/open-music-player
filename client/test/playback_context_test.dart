@@ -36,8 +36,7 @@ void main() {
   });
 
   group('PlaybackContextLabel widget', () {
-    testWidgets('renders "Playing from <label>" when a context is set',
-        (tester) async {
+    testWidgets('renders "From <label>" when a context is set', (tester) async {
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
@@ -51,7 +50,7 @@ void main() {
         ),
       );
 
-      expect(find.text('Playing from Discovery'), findsOneWidget);
+      expect(find.text('From Discovery'), findsOneWidget);
       expect(find.byKey(const ValueKey('playing_from_label')), findsOneWidget);
     });
 
@@ -64,7 +63,7 @@ void main() {
       );
 
       expect(find.byKey(const ValueKey('playing_from_label')), findsNothing);
-      expect(find.textContaining('Playing from'), findsNothing);
+      expect(find.textContaining('From'), findsNothing);
     });
   });
 }

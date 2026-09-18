@@ -58,10 +58,16 @@ class MiniPlayer extends StatelessWidget {
                 Expanded(
                   child: Semantics(
                     liveRegion: true,
-                    child: Text(
-                        snapshot.presentation == PlayerPresentation.waiting
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        PlaybackContextLabel(snapshot.playbackContext),
+                        Text(snapshot.presentation == PlayerPresentation.waiting
                             ? snapshot.presentation.label
                             : 'Starting playback…'),
+                      ],
+                    ),
                   ),
                 ),
                 IconButton(
@@ -145,17 +151,16 @@ class MiniPlayer extends StatelessWidget {
                                 PlayerPresentation.ended)
                               Semantics(
                                   liveRegion: true,
-                                  child: const Text('Queue ended'))
-                            else
-                              PlaybackContextLabel(
-                                snapshot.playbackContext,
-                                style: TextStyle(
-                                  color: playerTheme.playhead,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: 0,
-                                ),
+                                  child: const Text('Queue ended')),
+                            PlaybackContextLabel(
+                              snapshot.playbackContext,
+                              style: TextStyle(
+                                color: playerTheme.playhead,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 0,
                               ),
+                            ),
                             Text(
                               item.title,
                               style: TextStyle(

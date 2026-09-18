@@ -464,7 +464,9 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
       case just_audio.ProcessingState.ready:
         return audio_service.AudioProcessingState.ready;
       case just_audio.ProcessingState.completed:
-        return audio_service.AudioProcessingState.completed;
+        // Only canonical PlayerPresentation.ended exports terminal completion.
+        // Clip completion also survives a canceled continuation or a cue handoff.
+        return audio_service.AudioProcessingState.ready;
     }
   }
 }

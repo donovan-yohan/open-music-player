@@ -41,8 +41,10 @@ capabilities; compact indices follow the available transport controls. Hardware
 command implementations remain intact. Album art/header forwarding and native
 transport glyphs are preserved. Android/OEMs own media-card artwork placement,
 size and full-shade composition: app metadata cannot guarantee full-shade art.
-The stock audio_service 0.18.18 native completed mapping is paused, not stopped;
-its separate native integration and exact-head physical shade test remain gates.
+The pinned repository-local audio_service maps completed/nonplaying to STOPPED;
+only canonical exhaustion exports completed. Canceled waiting exports ready/false
+(PAUSED), preserving the controller cursor and replay semantics. Exact-head
+physical shade testing remains a gate.
 
 ## Limits and UI contract
 

@@ -65,7 +65,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             title: Column(
               children: [
                 Text(
-                  presentation.interruptsTrack ? 'PLAYBACK' : 'PLAYING FROM',
+                  'FROM',
                   style: TextStyle(
                     fontSize: 11,
                     color: colors.onSurfaceVariant,
@@ -73,11 +73,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ),
                 ),
                 Text(
-                  presentation.interruptsTrack
-                      ? presentation.label
-                      : playback.playbackContext?.label ??
-                          item?.album ??
-                          'Unknown Album',
+                  playback.playbackContext?.label ??
+                      item?.album ??
+                      'Unknown Album',
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
@@ -140,6 +138,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               ),
                               child: Column(
                                 children: [
+                                  if (presentation == PlayerPresentation.ended)
+                                    Semantics(
+                                      liveRegion: true,
+                                      child: Text(presentation.label),
+                                    ),
                                   const SizedBox(height: 12),
                                   SizedBox.square(
                                     dimension: artExtent,
