@@ -835,12 +835,14 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     Future<void> Function() action, {
     int? generation,
   }) async {
+    bool requestIsCurrent() =>
+        generation == null || _isCurrentPlayRequest(generation);
+
+    // A pause/stop or newer replacement may have won during the queue clear.
+    if (!requestIsCurrent()) return;
     _isResolvingSignedUrl = true;
     _playbackError = null;
     notifyListeners();
-
-    bool requestIsCurrent() =>
-        generation == null || _isCurrentPlayRequest(generation);
 
     try {
       await action();
