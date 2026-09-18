@@ -305,11 +305,15 @@ class VoicePool {
     return next;
   }
 
-  void beginCoordinatedResume() {
+  bool Function()? _resumeIntent;
+
+  void beginCoordinatedResume({bool Function()? stillCurrent}) {
+    _resumeIntent = stillCurrent;
     _coordinatedResumeInProgress = true;
   }
 
   void endCoordinatedResume() {
+    if (_resumeIntent?.call() ?? true) _resumeIntent = null;
     _coordinatedResumeInProgress = false;
   }
 
@@ -628,6 +632,7 @@ class VoicePool {
   }
 
   void _requestPlay(String clipId, Voice voice) {
+    if (!(_resumeIntent?.call() ?? true) || !_clock.isPlaying) return;
     unawaited(() async {
       try {
         await voice.play();

@@ -32,7 +32,13 @@ class _CapturingApiClient extends ApiClient {
     return Response<T>(
       requestOptions: RequestOptions(path: path),
       statusCode: 200,
-      data: envelope as T,
+      data: {
+        ...envelope,
+        'tracks': (envelope['tracks'] as List)
+            .skip(int.parse(queryParameters?['offset']?.toString() ?? '0'))
+            .take(int.parse(queryParameters?['limit']?.toString() ?? '100'))
+            .toList()
+      } as T,
     );
   }
 }
@@ -83,17 +89,56 @@ void main() {
       final source = LibraryShuffleContinuationSource(
         LibraryService(api),
         random: Random(7),
-        candidatePoolSize: 250,
       );
 
       await source.fetch(excludeTrackIds: const {}, limit: 2);
 
       expect(api.capturedEndpoint, '/library');
-      expect(api.capturedParams?['limit'], '250');
+      expect(api.capturedParams?['limit'], '100');
       expect(
         api.capturedParams?['fields'],
         LibraryService.libraryListFields.join(','),
       );
+    });
+
+    test('later pages remain reachable after the first 100 are excluded',
+        () async {
+      final api = _CapturingApiClient(_envelope(102));
+      final source = LibraryShuffleContinuationSource(LibraryService(api));
+      final batch = await source.fetch(
+          excludeTrackIds: {for (var i = 1; i <= 100; i++) '$i'}, limit: 20);
+      expect(batch.map((t) => t['id']).toSet(), {101, 102});
+      expect(api.getCalls, 2);
+    });
+
+    test(
+        'recent preference relaxes oldest but never the current hard exclusion',
+        () async {
+      final source = LibraryShuffleContinuationSource(
+          LibraryService(_CapturingApiClient(_envelope(4))));
+      final batch = await source.fetch(
+          excludeTrackIds: {'4'}, recentTrackIds: ['1', '2', '4'], limit: 3);
+      expect(batch.map((t) => t['id']), [3, 1, 2]);
+    });
+
+    test('invalid IDs, zero and subsecond durations cannot loop', () async {
+      final envelope = _envelope(1);
+      envelope['tracks'] = <Map<String, dynamic>>[
+        {'id': 0, 'duration_ms': 5000},
+        {'id': -1, 'duration_ms': 5000},
+        {'id': 2, 'duration_ms': 0},
+        {'id': 3, 'duration_ms': 999},
+        {'id': 4, 'duration_ms': 5000},
+        {'id': 4, 'duration_ms': 5000},
+      ];
+      for (final row in envelope['tracks'] as List) {
+        row['title'] = 'Track';
+      }
+      envelope['total'] = 6;
+      final source = LibraryShuffleContinuationSource(
+          LibraryService(_CapturingApiClient(envelope)));
+      final batch = await source.fetch(excludeTrackIds: {}, limit: 20);
+      expect(batch.map((t) => t['id']), [4]);
     });
 
     test('drops excluded ids and honors the batch limit', () async {

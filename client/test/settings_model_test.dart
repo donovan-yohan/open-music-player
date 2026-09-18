@@ -30,9 +30,13 @@ void main() {
     expect(SettingsModel.fromJson(const {}).keyNotation, KeyNotation.camelot);
   });
 
-  test('end-of-queue defaults to off and persists by stable enum name', () {
-    expect(const SettingsModel().endOfQueueMode, EndOfQueueMode.off);
-    expect(SettingsModel.fromJson(const {}).endOfQueueMode, EndOfQueueMode.off);
+  test('end-of-queue defaults to shuffle and preserves explicit off', () {
+    expect(const SettingsModel().endOfQueueMode, EndOfQueueMode.shuffleLibrary);
+    expect(SettingsModel.fromJson(const {}).endOfQueueMode,
+        EndOfQueueMode.shuffleLibrary);
+    expect(
+        SettingsModel.fromJson(const {'endOfQueueMode': 'off'}).endOfQueueMode,
+        EndOfQueueMode.off);
 
     const chosen = SettingsModel(endOfQueueMode: EndOfQueueMode.shuffleLibrary);
     expect(chosen.toJson()['endOfQueueMode'], 'shuffleLibrary');

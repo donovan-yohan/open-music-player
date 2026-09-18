@@ -170,14 +170,29 @@ class PlaybackEngine implements PlaybackEngineControls {
       _clickAuditioner.open(request);
 
   @override
-  Future<void> play() async {
-    _pool.beginCoordinatedResume();
+  Future<void> play() => playGuarded(stillCurrent: () => true);
+
+  /// Checks intent immediately before clock and voice dispatch, not afterwards.
+  Future<void> playGuarded({required bool Function() stillCurrent}) async {
+    if (!stillCurrent()) return;
+    _pool.beginCoordinatedResume(stillCurrent: stillCurrent);
+    var completed = false;
     try {
       await _pool.syncAt(_clock.positionMs, forceSeek: true);
+      if (!stillCurrent()) return;
       await _clock.play();
+      if (!stillCurrent()) return;
       await _pool.playActiveFromClock();
+      completed = true;
+      if (!stillCurrent()) return;
       unawaited(_clickAuditioner.transportChanged(forceSeek: true));
     } finally {
+      // A clock already dispatched before cancellation is stopped; voice
+      // dispatch itself is independently fenced inside VoicePool.
+      if (!completed || !stillCurrent()) {
+        await _clock.pause();
+        await _pool.pauseActive();
+      }
       _pool.endCoordinatedResume();
     }
   }

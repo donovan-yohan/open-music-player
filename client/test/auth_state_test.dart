@@ -41,6 +41,33 @@ void main() {
     );
   });
 
+  test(
+      'logout and password fallback notify revision before blocked token deletion',
+      () async {
+    for (final fallback in [false, true]) {
+      final storage =
+          _MemoryTokenStorage(accessToken: 'A', refreshToken: 'refresh');
+      storage.clearGate = Completer<void>();
+      final state = _authState(
+          storage: storage, adapter: _DioAdapter((_) => const _JsonReply({})));
+      final revisions = <int>[];
+      state.addListener(() => revisions.add(state.sessionRevision));
+      final operation =
+          fallback ? state.usePasswordLoginFallback() : state.logout();
+      expect(state.sessionRevision, 1);
+      expect(revisions, [1]);
+      await Future<void>.delayed(Duration.zero);
+      expect(storage.accessToken, 'A');
+      storage.clearGate!.complete();
+      await operation;
+      expect(storage.accessToken, isNull);
+      state.clearError();
+      expect(state.sessionRevision, 1,
+          reason: 'non-auth-intent notifications do not cancel playback');
+      state.dispose();
+    }
+  });
+
   group('AuthState.logout', () {
     test('clears biometric enrollment before a fresh password login', () async {
       final storage = _MemoryTokenStorage(
@@ -236,6 +263,7 @@ class _MemoryTokenStorage implements TokenStorageBackend {
     this.biometricUnlockEnabled = false,
   });
 
+  Completer<void>? clearGate;
   String? accessToken;
   String? refreshToken;
   bool biometricUnlockEnabled;
@@ -258,6 +286,7 @@ class _MemoryTokenStorage implements TokenStorageBackend {
 
   @override
   Future<void> clearTokens() async {
+    await clearGate?.future;
     accessToken = null;
     refreshToken = null;
     biometricUnlockEnabled = false;

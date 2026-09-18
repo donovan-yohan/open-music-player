@@ -10,8 +10,7 @@ library;
 
 /// How many tracks one continuation batch appends.
 ///
-/// Small enough that a listener who walks away does not accumulate an enormous
-/// queue, large enough that the fetch is not repeated every few minutes.
+/// Bounds each fetch, not retained history. Long-soak queue pruning is separate.
 const int defaultQueueContinuationBatchSize = 20;
 
 /// Supplies playback-json track maps (the shape `PlaybackState.playQueue`
@@ -27,5 +26,6 @@ abstract class QueueContinuationSource {
   Future<List<Map<String, dynamic>>> fetch({
     required Set<String> excludeTrackIds,
     required int limit,
+    List<String> recentTrackIds = const [],
   });
 }

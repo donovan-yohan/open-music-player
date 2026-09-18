@@ -204,8 +204,8 @@ class SettingsModel {
   final KeyNotation keyNotation;
 
   /// What happens when the listening queue reaches its natural end. Defaults to
-  /// [EndOfQueueMode.off] so an upgrade preserves the existing "stop when the
-  /// queue runs out" behavior until the listener opts in.
+  /// [EndOfQueueMode.shuffleLibrary] for fresh/absent settings. Explicit stored
+  /// Off remains Off, including legacy defaults whose intent is unknowable.
   final EndOfQueueMode endOfQueueMode;
 
   /// Where a swipe-to-queue gesture drops the track. Defaults to
@@ -238,7 +238,7 @@ class SettingsModel {
     this.crossfadeDuration = 0,
     this.themeMode = AppThemeMode.system,
     this.keyNotation = KeyNotation.camelot,
-    this.endOfQueueMode = EndOfQueueMode.off,
+    this.endOfQueueMode = EndOfQueueMode.shuffleLibrary,
     this.swipeQueueMode = QueueInsertMode.addToQueue,
     this.preserveManualQueue = true,
     this.clickAuditionVolume = defaultClickAuditionVolume,
@@ -349,7 +349,8 @@ KeyNotation _keyNotationFromJson(Object? value) {
 /// queue" rather than to some other continuation the running build would drive
 /// without the listener having chosen it.
 EndOfQueueMode _endOfQueueModeFromJson(Object? value) {
-  final normalized = value?.toString().trim().toLowerCase();
+  if (value == null) return EndOfQueueMode.shuffleLibrary;
+  final normalized = value.toString().trim().toLowerCase();
   return switch (normalized) {
     'shufflelibrary' || 'shuffle_library' => EndOfQueueMode.shuffleLibrary,
     _ => EndOfQueueMode.off,

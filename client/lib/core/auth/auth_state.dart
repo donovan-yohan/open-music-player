@@ -20,6 +20,11 @@ class AuthState extends ChangeNotifier {
 
   AuthState({required AuthService authService}) : _authService = authService;
 
+  int _sessionRevision = 0;
+
+  /// Changes synchronously at account intent, before any storage/network await.
+  int get sessionRevision => _sessionRevision;
+
   AuthStatus get status => _status;
   String? get error => _error;
   bool get isLoading => _isLoading;
@@ -30,6 +35,7 @@ class AuthState extends ChangeNotifier {
   bool get biometricUnlockAvailable => _biometricUnlockAvailable;
 
   Future<void> checkAuthStatus() async {
+    _sessionRevision++;
     _status = AuthStatus.checking;
     _error = null;
     notifyListeners();
@@ -53,6 +59,7 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<bool> login({required String email, required String password}) async {
+    _sessionRevision++;
     _isLoading = true;
     _error = null;
     notifyListeners();
@@ -79,6 +86,7 @@ class AuthState extends ChangeNotifier {
     required String password,
     required String username,
   }) async {
+    _sessionRevision++;
     _isLoading = true;
     _error = null;
     notifyListeners();
@@ -105,6 +113,7 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    _sessionRevision++;
     _isLoading = true;
     notifyListeners();
 
@@ -167,6 +176,7 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> usePasswordLoginFallback() async {
+    _sessionRevision++;
     _isLoading = true;
     _error = null;
     notifyListeners();
