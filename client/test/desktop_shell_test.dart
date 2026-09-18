@@ -185,6 +185,7 @@ void main() {
     }
 
     final miniPlayer = find.byKey(const ValueKey('spotify_like_mini_player'));
+    expect(errors, isEmpty);
     expect(miniPlayer, findsOneWidget);
     expect(find.byType(LinearProgressIndicator), findsOneWidget);
     expect(find.byTooltip('Pause'), findsOneWidget);
@@ -322,6 +323,9 @@ class _DesktopPlaybackState extends Fake implements PlaybackState {
 
   @override
   bool get isPlaying => true;
+
+  @override
+  bool get isResolvingSignedUrl => false;
 
   @override
   PlaybackContext get playbackContext => const PlaybackContext(
