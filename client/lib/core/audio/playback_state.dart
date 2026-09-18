@@ -666,11 +666,23 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     _playbackContext = context;
     _playbackError = null;
 
+    // Include the serialized clear in pending feedback, even on a cold start.
+    _isResolvingSignedUrl = true;
+    notifyListeners();
+
     // Stop/release the old session before waiting on signed URL resolution.
     // Otherwise Android keeps playing A while B is still preparing, which makes
     // the pause button appear to "stop A and start B" once the pending request
     // finally resolves.
-    await _queueController.setQueue(const []);
+    try {
+      await _queueController.setQueue(const []);
+    } catch (_) {
+      if (_isCurrentPlayRequest(generation)) {
+        _isResolvingSignedUrl = false;
+        notifyListeners();
+      }
+      rethrow;
+    }
     return generation;
   }
 

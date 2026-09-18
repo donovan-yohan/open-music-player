@@ -33,9 +33,39 @@ class MiniPlayer extends StatelessWidget {
         hasTrack: playback.hasTrack,
         item: playback.currentItem,
         isPlaying: playback.isPlaying,
+        isPending: playback.isResolvingSignedUrl,
         playbackContext: playback.playbackContext,
       ),
       builder: (context, snapshot, _) {
+        if (snapshot.isPending) {
+          return Container(
+            key: const ValueKey('pending_mini_player'),
+            constraints: const BoxConstraints(minHeight: 64),
+            color: Theme.of(context).colorScheme.surfaceContainerHigh,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: ExcludeSemantics(child: CircularProgressIndicator()),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Semantics(
+                    liveRegion: true,
+                    child: const Text('Starting playback…'),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Cancel playback',
+                  icon: const Icon(Icons.close),
+                  onPressed: context.read<PlaybackState>().pause,
+                ),
+              ],
+            ),
+          );
+        }
         if (!snapshot.hasTrack || snapshot.item == null) {
           return const SizedBox.shrink();
         }
@@ -203,12 +233,14 @@ class _MiniPlayerSnapshot {
     required this.hasTrack,
     required this.item,
     required this.isPlaying,
+    required this.isPending,
     required this.playbackContext,
   });
 
   final bool hasTrack;
   final MediaItem? item;
   final bool isPlaying;
+  final bool isPending;
   final PlaybackContext? playbackContext;
 
   @override
@@ -216,6 +248,7 @@ class _MiniPlayerSnapshot {
       other is _MiniPlayerSnapshot &&
       other.hasTrack == hasTrack &&
       other.isPlaying == isPlaying &&
+      other.isPending == isPending &&
       other.playbackContext == playbackContext &&
       other.item?.id == item?.id &&
       other.item?.title == item?.title &&
@@ -226,6 +259,7 @@ class _MiniPlayerSnapshot {
   int get hashCode => Object.hash(
         hasTrack,
         isPlaying,
+        isPending,
         playbackContext,
         item?.id,
         item?.title,
