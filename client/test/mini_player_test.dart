@@ -84,6 +84,25 @@ void main() {
       });
     }
 
+    testWidgets('cancel reports pause failure without late autoplay',
+        (tester) async {
+      await fixture.mount(tester);
+      final start = fixture.playback.playTrack(_pendingTrack(1));
+      await _pumpUntil(tester, () => fixture.requests.length == 1);
+      fixture.clock.failNextPause = true;
+      await tester.tap(find.byTooltip('Cancel playback'));
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Could not pause playback. Please try again.'),
+          findsOneWidget);
+      fixture.complete(0);
+      await _finish(tester, start);
+      expect(fixture.playback.isResolvingSignedUrl, isFalse);
+      expect(fixture.clock.playCalls, 0);
+      expect(fixture.playback.currentItem, isNull);
+      await fixture.close(tester);
+    });
+
     testWidgets('signed error clears feedback and preserves playback error',
         (tester) async {
       await fixture.mount(tester);
@@ -460,6 +479,16 @@ class _PendingClock extends DefaultTimelineClock {
   Completer<void>? gate;
   bool seekBlocked = false;
   int playCalls = 0;
+  bool failNextPause = false;
+
+  @override
+  Future<void> pause() async {
+    if (failNextPause) {
+      failNextPause = false;
+      throw StateError('Injected pause failure');
+    }
+    await super.pause();
+  }
 
   @override
   Future<void> seek(int globalMs) async {

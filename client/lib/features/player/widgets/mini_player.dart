@@ -60,7 +60,19 @@ class MiniPlayer extends StatelessWidget {
                 IconButton(
                   tooltip: 'Cancel playback',
                   icon: const Icon(Icons.close),
-                  onPressed: context.read<PlaybackState>().pause,
+                  onPressed: () async {
+                    try {
+                      await context.read<PlaybackState>().pause();
+                    } catch (_) {
+                      if (!hostContext.mounted) return;
+                      ScaffoldMessenger.of(hostContext).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                              'Could not pause playback. Please try again.'),
+                        ),
+                      );
+                    }
+                  },
                 ),
               ],
             ),
