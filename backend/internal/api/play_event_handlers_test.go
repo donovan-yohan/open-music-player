@@ -248,3 +248,119 @@ func TestTopTracksHTTP(t *testing.T) {
 func sqlNullString(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: value != ""}
 }
+
+// decodeTrackResponses decodes a `{tracks: [...]}` envelope into raw maps so a
+// test can assert on the wire field name (not just the Go struct tag).
+func decodeTrackResponses(t *testing.T, body []byte) []map[string]interface{} {
+	t.Helper()
+	var envelope struct {
+		Tracks []map[string]interface{} `json:"tracks"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("decode tracks envelope: %v (body=%s)", err, body)
+	}
+	return envelope.Tracks
+}
+
+// TestRecentlyPlayedReportsLibraryMembership is the capability-signal
+// regression for #478: the recently-played feed must tell the caller which rows
+// are in their library, and must do it by *annotating* rows — never by
+// dropping the ones that are not. Dropping them would destroy the audit value
+// of the history and hide the defect instead of reporting it.
+func TestRecentlyPlayedReportsLibraryMembership(t *testing.T) {
+	now := time.Now()
+	owned := db.RecentlyPlayedTrack{Track: *newTrack(44, "iPod Touch"), LastPlayedAt: now, InLibrary: true}
+	unowned := db.RecentlyPlayedTrack{Track: *newTrack(47, "iPod Touch"), LastPlayedAt: now.Add(-time.Minute), InLibrary: false}
+	store := &fakePlayStore{recent: []db.RecentlyPlayedTrack{owned, unowned}}
+	h := NewPlayEventHandlers(store, &fakePlayTrackRepo{})
+
+	req := withUser(httptest.NewRequest(http.MethodGet, "/api/v1/me/plays/recent?limit=20", nil), uuid.New())
+	rr := httptest.NewRecorder()
+	h.RecentlyPlayed(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+
+	rows := decodeTrackResponses(t, rr.Body.Bytes())
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want both the owned and the unowned history row preserved", len(rows))
+	}
+	if got, ok := rows[0]["inLibrary"]; !ok || got != true {
+		t.Fatalf("rows[0].inLibrary = %#v (present=%v), want true for the owned track", got, ok)
+	}
+	if got, ok := rows[1]["inLibrary"]; !ok || got != false {
+		t.Fatalf("rows[1].inLibrary = %#v (present=%v), want an explicit false for the unowned track", got, ok)
+	}
+	// Two distinct tracks, same title. Nothing here may collapse them: the feed
+	// reports membership per track id, it does not resolve identity.
+	if rows[0]["id"] != float64(44) || rows[1]["id"] != float64(47) {
+		t.Fatalf("ids = %v, %v; want 44 then 47 preserved as distinct rows", rows[0]["id"], rows[1]["id"])
+	}
+}
+
+// TestTopTracksReportsLibraryMembership guards the second feed. The report's
+// "recent/top" surfaces are two separate queries, so fixing only one would
+// leave the other tap doing nothing.
+func TestTopTracksReportsLibraryMembership(t *testing.T) {
+	now := time.Now()
+	store := &fakePlayStore{top: []db.TopTrack{
+		{Track: *newTrack(44, "iPod Touch"), PlayCount: 9, LastPlayedAt: now, InLibrary: true},
+		{Track: *newTrack(47, "iPod Touch"), PlayCount: 4, LastPlayedAt: now.Add(-time.Hour), InLibrary: false},
+	}}
+	h := NewPlayEventHandlers(store, &fakePlayTrackRepo{})
+
+	req := withUser(httptest.NewRequest(http.MethodGet, "/api/v1/me/plays/top?days=30&limit=20", nil), uuid.New())
+	rr := httptest.NewRecorder()
+	h.TopTracks(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+
+	rows := decodeTrackResponses(t, rr.Body.Bytes())
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	if got, ok := rows[0]["inLibrary"]; !ok || got != true {
+		t.Fatalf("rows[0].inLibrary = %#v (present=%v), want true", got, ok)
+	}
+	if got, ok := rows[1]["inLibrary"]; !ok || got != false {
+		t.Fatalf("rows[1].inLibrary = %#v (present=%v), want explicit false", got, ok)
+	}
+}
+
+// TestPlayHistoryReportsLibraryMembership pins that history keeps the row and
+// still reports the capability. History is raw and repeated; the flag rides on
+// the nested track object.
+func TestPlayHistoryReportsLibraryMembership(t *testing.T) {
+	now := time.Now()
+	store := &fakePlayStore{history: []db.PlayHistoryEvent{
+		{ID: 2, Track: *newTrack(47, "iPod Touch"), PlayedAt: now, InLibrary: false},
+		{ID: 1, Track: *newTrack(44, "iPod Touch"), PlayedAt: now.Add(-time.Minute), InLibrary: true},
+	}}
+	h := NewPlayEventHandlers(store, &fakePlayTrackRepo{})
+
+	req := withUser(httptest.NewRequest(http.MethodGet, "/api/v1/me/plays/history?limit=50", nil), uuid.New())
+	rr := httptest.NewRecorder()
+	h.PlayHistory(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Plays []struct {
+			Track map[string]interface{} `json:"track"`
+		} `json:"plays"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Plays) != 2 {
+		t.Fatalf("plays = %d, want both events preserved", len(resp.Plays))
+	}
+	if got, ok := resp.Plays[0].Track["inLibrary"]; !ok || got != false {
+		t.Fatalf("plays[0].track.inLibrary = %#v (present=%v), want explicit false", got, ok)
+	}
+	if got, ok := resp.Plays[1].Track["inLibrary"]; !ok || got != true {
+		t.Fatalf("plays[1].track.inLibrary = %#v (present=%v), want true", got, ok)
+	}
+}

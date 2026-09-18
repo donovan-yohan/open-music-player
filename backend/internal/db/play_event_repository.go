@@ -14,6 +14,13 @@ import (
 type RecentlyPlayedTrack struct {
 	Track
 	LastPlayedAt time.Time
+	// InLibrary reports whether this track is in the *requesting* user's library
+	// right now. A play event outlives library membership: removing a track from
+	// user_library does not delete its history, and history is written per
+	// listen, so a listing row can name a track the user may no longer play.
+	// This is a user-scoped capability signal, never a global property of the
+	// track row, and it never filters the listing.
+	InLibrary bool
 }
 
 // TopTrack is a track surfaced by the top-tracks listing along with its in-window
@@ -22,6 +29,9 @@ type TopTrack struct {
 	Track
 	PlayCount    int
 	LastPlayedAt time.Time
+	// InLibrary is the same user-scoped capability signal as
+	// RecentlyPlayedTrack.InLibrary.
+	InLibrary bool
 }
 
 // PlayHistoryEvent is one raw play event joined with the played track. Unlike
@@ -36,7 +46,18 @@ type PlayHistoryEvent struct {
 	// Skipped reports that this event is a skip rather than a listen. History is
 	// an audit log, so skips stay in it; aggregate listings filter them out.
 	Skipped bool
+	// InLibrary is the same user-scoped capability signal as
+	// RecentlyPlayedTrack.InLibrary. History keeps rows whose track left the
+	// library; the flag is how a caller learns that without losing the row.
+	InLibrary bool
 }
+
+// libraryMembershipProjection is the user-scoped EXISTS expression every
+// play-event listing selects as `in_library`. It keys on the caller's user_id
+// ($1 in all three listing queries) and never on a global join, so one user's
+// listing can never disclose another user's library membership. It mirrors the
+// shape LibraryRepository.IsTrackInLibrary enforces at the playback gate.
+const libraryMembershipProjection = `EXISTS(SELECT 1 FROM user_library ul WHERE ul.user_id = $1 AND ul.track_id = t.id)`
 
 // PlayEventRepository records play events and serves recently-played / top-track
 // listings. All reads and writes are scoped to a single user.
@@ -164,7 +185,8 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
 			   ta.updated_at,
-			   pe.last_played_at
+			   pe.last_played_at,
+			   ` + libraryMembershipProjection + `
 			   FROM (
 			   SELECT track_id, MAX(played_at) AS last_played_at
 			   FROM play_events
@@ -197,6 +219,7 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 			&rt.CoverArtURL, &rt.MetadataUserEdited, &rt.CreatedAt, &rt.UpdatedAt,
 			&rt.AnalysisStatus, &rt.AnalysisSummary, &analysisOverrides, &rt.AnalysisUpdatedAt,
 			&rt.LastPlayedAt,
+			&rt.InLibrary,
 		); err != nil {
 			return nil, err
 		}
@@ -237,12 +260,13 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
 			   ta.updated_at,
-			   pe.played_at, pe.context_type, pe.context_id, pe.skipped
-		FROM play_events pe
-		JOIN tracks t ON t.id = pe.track_id
-		LEFT JOIN track_analysis ta ON ta.track_id = t.id
-		WHERE pe.user_id = $1
-		ORDER BY pe.played_at DESC, pe.id DESC
+			   pe.played_at, pe.context_type, pe.context_id, pe.skipped,
+			   ` + libraryMembershipProjection + `
+			   FROM play_events pe
+			   JOIN tracks t ON t.id = pe.track_id
+			   LEFT JOIN track_analysis ta ON ta.track_id = t.id
+			   WHERE pe.user_id = $1
+			   ORDER BY pe.played_at DESC, pe.id DESC
 		LIMIT $2 OFFSET $3
 	`
 
@@ -267,6 +291,7 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 			&event.Track.CoverArtURL, &event.Track.MetadataUserEdited, &event.Track.CreatedAt, &event.Track.UpdatedAt,
 			&event.Track.AnalysisStatus, &event.Track.AnalysisSummary, &analysisOverrides, &event.Track.AnalysisUpdatedAt,
 			&event.PlayedAt, &event.ContextType, &event.ContextID, &event.Skipped,
+			&event.InLibrary,
 		); err != nil {
 			return nil, err
 		}
@@ -306,17 +331,18 @@ func (r *PlayEventRepository) TopTracks(ctx context.Context, userID uuid.UUID, d
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
 			   ta.updated_at,
-			   agg.play_count, agg.last_played_at
-		FROM (
-			SELECT track_id, COUNT(*) AS play_count, MAX(played_at) AS last_played_at
-			FROM play_events
-			WHERE user_id = $1 AND NOT skipped AND played_at >= NOW() - make_interval(days => $2)
-			GROUP BY track_id
-		) agg
-		JOIN tracks t ON t.id = agg.track_id
-		LEFT JOIN track_analysis ta ON ta.track_id = t.id
-		ORDER BY agg.play_count DESC, agg.last_played_at DESC, t.id DESC
-		LIMIT $3
+			   agg.play_count, agg.last_played_at,
+			   ` + libraryMembershipProjection + `
+			   FROM (
+			   SELECT track_id, COUNT(*) AS play_count, MAX(played_at) AS last_played_at
+			   FROM play_events
+			   WHERE user_id = $1 AND NOT skipped AND played_at >= NOW() - make_interval(days => $2)
+			   GROUP BY track_id
+		   ) agg
+		   JOIN tracks t ON t.id = agg.track_id
+		   LEFT JOIN track_analysis ta ON ta.track_id = t.id
+		   ORDER BY agg.play_count DESC, agg.last_played_at DESC, t.id DESC
+		   LIMIT $3
 	`
 
 	rows, err := r.db.QueryContext(ctx, query, userID, days, limit)
@@ -339,6 +365,7 @@ func (r *PlayEventRepository) TopTracks(ctx context.Context, userID uuid.UUID, d
 			&tt.CoverArtURL, &tt.MetadataUserEdited, &tt.CreatedAt, &tt.UpdatedAt,
 			&tt.AnalysisStatus, &tt.AnalysisSummary, &analysisOverrides, &tt.AnalysisUpdatedAt,
 			&tt.PlayCount, &tt.LastPlayedAt,
+			&tt.InLibrary,
 		); err != nil {
 			return nil, err
 		}

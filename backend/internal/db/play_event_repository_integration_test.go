@@ -339,6 +339,147 @@ func recentIDs(tracks []RecentlyPlayedTrack) []int64 {
 	return ids
 }
 
+// TestPlayEventListingsReportCallerScopedLibraryMembership is the
+// capability-signal integration regression for #478.
+//
+// It discriminates a *caller-scoped* membership projection from a global one:
+// the same track id is read by two users, one of whom owns it. A global join
+// (or one that ignores the requesting user id) would report `true` for both and
+// leak the owner's library membership to a stranger. It also pins that the
+// listings annotate rather than filter: the unowned row must still be present,
+// because dropping it would erase history instead of reporting the defect.
+func TestPlayEventListingsReportCallerScopedLibraryMembership(t *testing.T) {
+	database, ctx := newPlayEventTestDB(t)
+	trackRepo := NewTrackRepository(database)
+	repo := NewPlayEventRepository(database)
+
+	owner := seedPlayUser(t, database, "capability-owner@example.test")
+	stranger := seedPlayUser(t, database, "capability-stranger@example.test")
+
+	shared := seedPlayTrack(t, trackRepo, ctx, "Artist S", "Shared")
+	unowned := seedPlayTrack(t, trackRepo, ctx, "Artist U", "Unowned")
+
+	now := time.Now()
+	insertPlayAt(t, database, owner, shared, now.Add(-3*time.Minute))
+	insertPlayAt(t, database, owner, unowned, now.Add(-2*time.Minute))
+	// The stranger played the same shared track. Their membership must be
+	// reported independently of the owner's.
+	insertPlayAt(t, database, stranger, shared, now.Add(-time.Minute))
+
+	// Only the owner has `shared` in their library. `unowned` is nobody's.
+	if _, err := database.Exec(
+		`INSERT INTO user_library (user_id, track_id) VALUES ($1, $2)`, owner, shared); err != nil {
+		t.Fatalf("seed owner library: %v", err)
+	}
+
+	membership := func(tracks []RecentlyPlayedTrack) map[int64]bool {
+		t.Helper()
+		out := make(map[int64]bool, len(tracks))
+		for _, track := range tracks {
+			out[track.ID] = track.InLibrary
+		}
+		return out
+	}
+
+	ownerRecent, err := repo.RecentlyPlayed(ctx, owner, 10, 0)
+	if err != nil {
+		t.Fatalf("owner RecentlyPlayed: %v", err)
+	}
+	if len(ownerRecent) != 2 {
+		t.Fatalf("owner recent len = %d, want 2 rows preserved (annotation, not filtering)", len(ownerRecent))
+	}
+	ownerMembership := membership(ownerRecent)
+	if !ownerMembership[shared] {
+		t.Fatalf("owner recent %v: owned track %d must read in_library=true", ownerMembership, shared)
+	}
+	if ownerMembership[unowned] {
+		t.Fatalf("owner recent %v: unowned track %d must read in_library=false", ownerMembership, unowned)
+	}
+
+	// Same track id, different caller. This is the discrimination that a global
+	// join fails.
+	strangerRecent, err := repo.RecentlyPlayed(ctx, stranger, 10, 0)
+	if err != nil {
+		t.Fatalf("stranger RecentlyPlayed: %v", err)
+	}
+	if len(strangerRecent) != 1 || strangerRecent[0].ID != shared {
+		t.Fatalf("stranger recent = %#v, want just the shared track %d", recentIDs(strangerRecent), shared)
+	}
+	if strangerRecent[0].InLibrary {
+		t.Fatalf("stranger must not inherit the owner's library membership for track %d", shared)
+	}
+
+	// Top tracks carries the same caller-scoped flag.
+	ownerTop, err := repo.TopTracks(ctx, owner, 30, 10)
+	if err != nil {
+		t.Fatalf("owner TopTracks: %v", err)
+	}
+	if len(ownerTop) != 2 {
+		t.Fatalf("owner top len = %d, want 2 rows preserved", len(ownerTop))
+	}
+	for _, track := range ownerTop {
+		want := track.ID == shared
+		if track.InLibrary != want {
+			t.Fatalf("owner top track %d in_library = %v, want %v", track.ID, track.InLibrary, want)
+		}
+	}
+	strangerTop, err := repo.TopTracks(ctx, stranger, 30, 10)
+	if err != nil {
+		t.Fatalf("stranger TopTracks: %v", err)
+	}
+	if len(strangerTop) != 1 || strangerTop[0].ID != shared || strangerTop[0].InLibrary {
+		t.Fatalf("stranger top = %#v, want the shared track reported in_library=false", topTrackSummary(strangerTop))
+	}
+
+	// History keeps the row and reports the same capability per event.
+	ownerHistory, err := repo.PlayHistory(ctx, owner, 10, 0)
+	if err != nil {
+		t.Fatalf("owner PlayHistory: %v", err)
+	}
+	if len(ownerHistory) != 2 {
+		t.Fatalf("owner history len = %d, want 2 raw events preserved", len(ownerHistory))
+	}
+	for _, event := range ownerHistory {
+		want := event.Track.ID == shared
+		if event.InLibrary != want {
+			t.Fatalf("owner history track %d in_library = %v, want %v", event.Track.ID, event.InLibrary, want)
+		}
+	}
+	strangerHistory, err := repo.PlayHistory(ctx, stranger, 10, 0)
+	if err != nil {
+		t.Fatalf("stranger PlayHistory: %v", err)
+	}
+	if len(strangerHistory) != 1 || strangerHistory[0].InLibrary {
+		t.Fatalf("stranger history must report in_library=false for track %d", shared)
+	}
+
+	// The projection must agree with the playback gate's own check, or a client
+	// told "playable" would still 404. Removing membership flips the flag.
+	libraryRepo := NewLibraryRepository(database)
+	if err := libraryRepo.RemoveTrackFromLibrary(ctx, owner, shared); err != nil {
+		t.Fatalf("RemoveTrackFromLibrary: %v", err)
+	}
+	inLibrary, err := libraryRepo.IsTrackInLibrary(ctx, owner, shared)
+	if err != nil {
+		t.Fatalf("IsTrackInLibrary: %v", err)
+	}
+	if inLibrary {
+		t.Fatal("gate precondition: track must be out of library after removal")
+	}
+	afterRemoval, err := repo.RecentlyPlayed(ctx, owner, 10, 0)
+	if err != nil {
+		t.Fatalf("RecentlyPlayed after removal: %v", err)
+	}
+	if len(afterRemoval) != 2 {
+		t.Fatalf("recent after removal len = %d, want the history rows to survive library removal", len(afterRemoval))
+	}
+	for _, track := range afterRemoval {
+		if track.InLibrary {
+			t.Fatalf("track %d still reported in_library=true after its library row was deleted", track.ID)
+		}
+	}
+}
+
 func topTrackSummary(tracks []TopTrack) []string {
 	summaries := make([]string, 0, len(tracks))
 	for _, t := range tracks {
