@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/models/settings_model.dart';
 import 'package:open_music_player/core/providers/settings_provider.dart';
 import 'package:open_music_player/core/services/playlist_service.dart';
@@ -69,6 +70,10 @@ class _StubPlaylistService extends PlaylistService {
 }
 
 class _FakePlayback extends Fake implements PlaybackState {
+  // These surface tests have no active playback session.
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
+
   final List<Map<String, dynamic>> enqueued = [];
   final List<QueueInsertMode> modes = [];
 

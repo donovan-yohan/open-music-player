@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/commands/command_registry.dart';
 import 'package:open_music_player/core/download/download_state.dart';
 import 'package:open_music_player/core/api/api_client.dart';
@@ -52,6 +53,10 @@ class _StubLibraryService extends LibraryService {
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {
+  // These surface tests have no active playback session.
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
+
   @override
   MediaItem? get currentItem => null;
 

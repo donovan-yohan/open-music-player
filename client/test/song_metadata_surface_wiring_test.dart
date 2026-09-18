@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/services/home_service.dart';
 import 'package:open_music_player/core/services/playlist_service.dart';
 import 'package:open_music_player/features/home/home_screen.dart';
@@ -114,6 +115,10 @@ class _PlaylistService extends PlaylistService {
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {
+  // These surface tests have no active playback session.
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
+
   @override
   PlaybackContext? get playbackContext => null;
 

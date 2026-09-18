@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/commands/command_registry.dart';
 import 'package:open_music_player/core/download/download_state.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
@@ -88,6 +89,10 @@ Track _track(int id) => Track(
     );
 
 class _RecordingPlayback extends ChangeNotifier implements PlaybackState {
+  // These surface tests have no active playback session.
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
+
   List<String> queuedTitles = const [];
   int? startIndex;
   @override
