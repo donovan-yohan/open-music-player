@@ -17,7 +17,7 @@ package = next(p for p in json.loads(config.read_text())['packages']
 uri = package['rootUri']
 plugin = (Path(unquote(urlparse(uri).path)) if uri.startswith('file:')
           else config.parent / uri).resolve()
-assert plugin.name == 'audio_service-0.18.18', plugin
+assert plugin == (client / 'third_party/audio_service').resolve(), plugin
 res = client / 'android/app/src/main/res'
 a = '{http://schemas.android.com/apk/res/android}'
 tools = '{http://schemas.android.com/tools}'
@@ -42,14 +42,12 @@ source = (plugin/'android/src/main/java/com/ryanheise/audioservice/AudioService.
 match = re.search(r'public int getPlaybackState\(\) \{.*?\n    \}', source, re.S)
 assert match is not None
 method = match.group()
-old = 'case completed: return playing ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;'
-new = 'case completed: return playing ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_STOPPED;'
-assert old in method
-# Compile the exact extracted method twice, with Android constants stubbed only.
+# Compile the exact resolved method, with Android constants stubbed only.
 # This proves the mapping, NOT service lifecycle or MediaSession integration.
-constants = ['NONE', 'STOPPED', 'PAUSED', 'PLAYING', 'CONNECTING', 'BUFFERING', 'ERROR']
-fields = ''.join('static final int STATE_'+s+'='+str(i)+';' for i,s in enumerate(constants))
-for label, body, terminal in [('stock', method, 'PAUSED'), ('proposed', method.replace(old,new), 'STOPPED')]:
+constants = {'NONE': 0, 'STOPPED': 1, 'PAUSED': 2, 'PLAYING': 3,
+             'CONNECTING': 8, 'BUFFERING': 6, 'ERROR': 7}
+fields = ''.join('static final int STATE_'+s+'='+str(i)+';' for s,i in constants.items())
+for label, body, terminal in [('vendored', method, 'STOPPED')]:
     java = ('class MappingProof { static class PlaybackStateCompat {'+fields+'}'
       'enum State {idle, loading, buffering, ready, completed, error}'
       'State processingState; boolean playing;'+body+
