@@ -104,13 +104,9 @@ class TrackTile extends StatelessWidget {
         final trailingMaxWidth =
             (availableWidth * 0.38).clamp(96.0, 168.0).toDouble();
         final enlargedText = MediaQuery.textScalerOf(context).scale(1) > 1.3;
-        final hasNowPlayingBadge = SongRowTreatment.presentationOf(context) !=
-            SongRowPresentation.none;
-
-        final useExpandedLayout = (hasMetadata &&
-                (hasNowPlayingBadge ||
-                    (enlargedText && availableWidth < 480))) ||
-            (hasNowPlayingBadge && enlargedText);
+        // Playback selection must not replace the action/focus subtree.
+        // Reserve readable metadata and large-text space even when neutral.
+        final useExpandedLayout = hasMetadata || enlargedText;
 
         if (useExpandedLayout) {
           final expandedMetadataMaxWidth =

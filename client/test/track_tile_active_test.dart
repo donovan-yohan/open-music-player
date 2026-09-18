@@ -39,7 +39,7 @@ void main() {
     expect(find.byIcon(Icons.equalizer), findsOneWidget);
   });
 
-  testWidgets('keeps metadata as a compact trailing group on narrow rows', (
+  testWidgets('neutral narrow rows keep readable metadata below the title', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(320, 640);
@@ -70,10 +70,14 @@ void main() {
     );
     final durationRect = tester.getRect(find.text('3:38'));
 
-    expect(metadataRect.left, greaterThan(titleRect.left));
-    expect(titleRect.right, lessThanOrEqualTo(metadataRect.left));
-    expect(artistRect.right, lessThanOrEqualTo(metadataRect.left));
-    expect(metadataRect.right, lessThan(durationRect.left));
+    expect(metadataRect.left, greaterThanOrEqualTo(titleRect.left));
+    expect(titleRect.width, greaterThanOrEqualTo(160));
+    expect(artistRect.width, greaterThanOrEqualTo(160));
+    expect(artistRect.bottom, lessThanOrEqualTo(metadataRect.top));
+    expect(metadataRect.bottom, lessThanOrEqualTo(durationRect.top));
+    expect(metadataRect.right, lessThanOrEqualTo(320 - 16));
+    expect(find.text('128 BPM'), findsOneWidget);
+    expect(find.text('8A'), findsOneWidget);
     expect(
       tester
           .getSize(
