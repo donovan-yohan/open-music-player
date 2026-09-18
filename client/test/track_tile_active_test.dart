@@ -1,8 +1,11 @@
-import 'package:open_music_player/shared/widgets/now_playing_row.dart';
+import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:provider/provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/shared/widgets/track_tile.dart';
+
+import 'song_row_presentation_test.dart' show FakePlayback;
 
 TrackAnalysis _analysis() => TrackAnalysis.fromJson(
       status: 'analyzed',
@@ -16,11 +19,12 @@ TrackAnalysis _analysis() => TrackAnalysis.fromJson(
 void main() {
   testWidgets('active track tile surfaces a now-playing badge', (tester) async {
     await tester.pumpWidget(
-      const MaterialApp(
+      MaterialApp(
         home: Scaffold(
-          body: SongRowTreatment(
-              presentation: SongRowPresentation.playing,
-              child: TrackTile(
+          body: ChangeNotifierProvider<PlaybackState>(
+              create: (_) => FakePlayback(),
+              child: const TrackTile(
+                trackId: 'A',
                 title: 'Get Your Wish',
                 artist: 'Porter Robinson',
                 album: 'Nurture',
@@ -97,9 +101,10 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: SongRowTreatment(
-              presentation: SongRowPresentation.playing,
+          body: ChangeNotifierProvider<PlaybackState>(
+              create: (_) => FakePlayback(),
               child: TrackTile(
+                trackId: 'A',
                 title: title,
                 artist: artist,
                 duration: '3:38',
@@ -191,9 +196,10 @@ void main() {
           home: Scaffold(
             body: MediaQuery(
               data: MediaQueryData(textScaler: TextScaler.linear(scale)),
-              child: SongRowTreatment(
-                  presentation: SongRowPresentation.playing,
+              child: ChangeNotifierProvider<PlaybackState>(
+                  create: (_) => FakePlayback(),
                   child: TrackTile(
+                    trackId: 'A',
                     title: title,
                     artist: artist,
                     duration: '3:38',
@@ -267,9 +273,10 @@ void main() {
             home: Scaffold(
               body: MediaQuery(
                 data: MediaQueryData(textScaler: TextScaler.linear(scale)),
-                child: SongRowTreatment(
-                    presentation: SongRowPresentation.playing,
+                child: ChangeNotifierProvider<PlaybackState>(
+                    create: (_) => FakePlayback(),
                     child: TrackTile(
+                      trackId: 'A',
                       title: title,
                       artist: artist,
                       duration: '3:38',

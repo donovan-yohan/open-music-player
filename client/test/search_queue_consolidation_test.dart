@@ -325,6 +325,9 @@ class _RouterPlaybackState extends Fake implements PlaybackState {
   bool get isPlaying => false;
 
   @override
+  bool get isResolvingSignedUrl => false;
+
+  @override
   bool get canSkipNext => false;
 
   @override
