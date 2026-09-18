@@ -14,6 +14,22 @@ import '../../shared/widgets/track_artwork.dart';
 import '../../core/services/home_service.dart';
 import 'home_state.dart';
 
+/// Shown when a Home row's track is not in the caller's library.
+///
+/// Deliberately *not* the transport-level "This track is no longer available."
+/// copy: nothing failed here. The row is a play-history entry for a track the
+/// server will not issue a playback URL for, and saying so plainly is the
+/// whole point of the fix — the old behavior said nothing at all.
+const String homeNotInLibraryMessage = 'This track is not in your library.';
+
+/// True when the server said this row's track is currently in the caller's
+/// library, or said nothing.
+///
+/// Only an explicit `false` restricts anything. Library, local-browse, and
+/// cached payloads carry no `inLibrary` claim, and they must keep playing
+/// exactly as they did — an absent capability signal is not a denial.
+bool isPlayableFromHome(Track track) => track.inLibrary != false;
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, this.homeService});
 
@@ -63,11 +79,55 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _playTracks(List<Track> tracks, int startIndex) {
-    context.read<PlaybackState>().playQueue(
-          tracks.map((t) => t.toPlaybackJson()).toList(),
-          startIndex: startIndex,
-        );
+  /// Plays a Home section from the tapped row.
+  ///
+  /// Two things this deliberately does *not* do:
+  ///
+  /// 1. It never submits a row the server says is outside the caller's library.
+  ///    `/playback/urls` resolves a batch as a unit, so one unowned row made
+  ///    every tap in that section fail — including taps on perfectly playable
+  ///    siblings. The unowned row is filtered out of the queue instead, which is
+  ///    what stops an unowned sibling from blocking a tapped owned song.
+  /// 2. It resolves the queue position by *identity*, not by the tapped list
+  ///    index. Filtering shifts positions, so carrying the raw index across
+  ///    would start playback on the wrong track.
+  ///
+  /// The await/catch is retained from the earlier snackbar-only fix: a genuine
+  /// transport failure must still be visible rather than silently swallowed.
+  Future<void> _playTracks(List<Track> tracks, int startIndex) async {
+    if (startIndex < 0 || startIndex >= tracks.length) return;
+    final tapped = tracks[startIndex];
+    final playback = context.read<PlaybackState>();
+    final messenger = ScaffoldMessenger.of(context);
+
+    if (!isPlayableFromHome(tapped)) {
+      // Nothing failed — the server said this track is not in this user's
+      // library, so no playback URL will be issued for it. Say that, rather
+      // than the transport-level "no longer available" copy.
+      messenger.showSnackBar(
+        const SnackBar(content: Text(homeNotInLibraryMessage)),
+      );
+      return;
+    }
+
+    final eligible = tracks.where(isPlayableFromHome).toList();
+    final startAt = eligible.indexWhere((track) => track.id == tapped.id);
+    if (startAt < 0) return;
+
+    try {
+      await playback.playQueue(
+        eligible.map((t) => t.toPlaybackJson()).toList(),
+        startIndex: startAt,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(playback.playbackError ?? 'Could not play this track.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   Future<void> _enqueueTrack(Track track) async {
@@ -422,6 +482,7 @@ class _TrackSection extends StatelessWidget {
           _TrackTile(
             actionKey: ValueKey('home_queue_${title}_${tracks[i].id}_$i'),
             track: tracks[i],
+            playable: isPlayableFromHome(tracks[i]),
             onTap: () => onPlay(tracks, i),
             onAddToQueue: () => onEnqueue(tracks[i]),
           ),
@@ -434,20 +495,30 @@ class _TrackTile extends StatelessWidget {
   const _TrackTile({
     required this.actionKey,
     required this.track,
+    required this.playable,
     required this.onTap,
     required this.onAddToQueue,
   });
 
   final Key actionKey;
   final Track track;
+
+  /// False when the server says this row's track is not in the caller's
+  /// library, so no playback URL can be issued for it. The row stays visible
+  /// (it is real listening history) but must not look identical to a playable
+  /// row, and must not offer to queue itself into a queue that cannot resolve.
+  final bool playable;
   final VoidCallback onTap;
   final Future<void> Function() onAddToQueue;
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final muted = colors.onSurfaceVariant;
     return QueueSwipeAction(
       actionKey: actionKey,
       onAddToQueue: onAddToQueue,
+      enabled: playable,
       child: ListTile(
         onTap: onTap,
         leading: ClipRRect(
@@ -467,12 +538,29 @@ class _TrackTile extends StatelessWidget {
           track.title,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
+          style: playable ? null : TextStyle(color: muted),
         ),
-        subtitle: Text(
-          track.displayArtist,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
+        subtitle: playable
+            ? Text(
+                track.displayArtist,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              )
+            : Row(
+                children: [
+                  Icon(Icons.library_music_outlined, size: 13, color: muted),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      'Not in your library',
+                      key: ValueKey('home_not_in_library_${track.id}'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: muted),
+                    ),
+                  ),
+                ],
+              ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [

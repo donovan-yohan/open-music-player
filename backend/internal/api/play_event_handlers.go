@@ -87,6 +87,14 @@ type PlayEventTrackResponse struct {
 	AnalysisUpdatedAt string          `json:"analysisUpdatedAt,omitempty"`
 	LastPlayedAt      time.Time       `json:"lastPlayedAt"`
 	PlayCount         int             `json:"playCount,omitempty"`
+	// InLibrary reports whether the *caller* can play this track right now, i.e.
+	// whether it is in their library. Play-history listings keep rows whose
+	// track has left the library (history is an audit log), and
+	// `/playback/urls` refuses those with a deliberately opaque 404, so this is
+	// the only way a client can tell an offered row from a doomed one without a
+	// per-row request. It is always emitted, including false, because the
+	// absence of the field must never read as "playable".
+	InLibrary bool `json:"inLibrary"`
 	// HasMetadataOverride reports that title/artist/album carry the caller's manual
 	// correction rather than the canonical track values (issue #344).
 	HasMetadataOverride bool `json:"hasMetadataOverride,omitempty"`
@@ -241,6 +249,9 @@ func (h *PlayEventHandlers) PlayHistory(w http.ResponseWriter, r *http.Request) 
 	for _, event := range events {
 		track := trackToPlayEventResponse(event.Track)
 		track.LastPlayedAt = event.PlayedAt
+		// User-scoped capability comes off the event row, which the repository
+		// projected against the requesting user's library.
+		track.InLibrary = event.InLibrary
 		response := PlayHistoryEntryResponse{
 			ID:       event.ID,
 			Track:    track,
@@ -293,6 +304,7 @@ func (h *PlayEventHandlers) RecentlyPlayed(w http.ResponseWriter, r *http.Reques
 	for _, t := range tracks {
 		resp := trackToPlayEventResponse(t.Track)
 		resp.LastPlayedAt = t.LastPlayedAt
+		resp.InLibrary = t.InLibrary
 		responses = append(responses, resp)
 	}
 
@@ -334,6 +346,7 @@ func (h *PlayEventHandlers) TopTracks(w http.ResponseWriter, r *http.Request) {
 		resp := trackToPlayEventResponse(t.Track)
 		resp.LastPlayedAt = t.LastPlayedAt
 		resp.PlayCount = t.PlayCount
+		resp.InLibrary = t.InLibrary
 		responses = append(responses, resp)
 	}
 

@@ -136,6 +136,20 @@ class Track {
   /// values on every read path, so this flag only drives the "Edited"
   /// affordance and the availability of "Reset to original".
   final bool hasMetadataOverride;
+
+  /// Whether the backend says this track is currently in the signed-in user's
+  /// library, i.e. whether `/playback/urls` will issue a URL for it.
+  ///
+  /// Play-history feeds (recent/top) come from play events, which outlive
+  /// library membership, so a row can name a track the user can no longer play.
+  /// The server annotates those rows with `inLibrary` rather than dropping them
+  /// (history is an audit log).
+  ///
+  /// Null means the payload made no claim — a library row, a local-browse row,
+  /// or a cached/older response. Unknown is deliberately NOT treated as
+  /// unplayable: only an explicit `false` restricts anything, so no surface
+  /// loses playback on a field it never received.
+  final bool? inLibrary;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -168,6 +182,7 @@ class Track {
     bool? artworkDescriptorPresent,
     this.isLiked,
     this.hasMetadataOverride = false,
+    this.inLibrary,
     required this.createdAt,
     required this.updatedAt,
   })  : _artwork = resolveTrackArtworkDescriptor(
@@ -268,6 +283,8 @@ class Track {
       ),
       artworkKind: artworkKind,
       isLiked: json['isLiked'] as bool? ?? json['is_liked'] as bool?,
+      // Server capability signal for play-history feeds; absent elsewhere.
+      inLibrary: _optionalBool(json['inLibrary'] ?? json['in_library']),
       hasMetadataOverride: _optionalBool(
             json['hasMetadataOverride'] ?? json['has_metadata_override'],
           ) ??
@@ -517,6 +534,7 @@ class Track {
     bool? artworkDescriptorPresent,
     bool? isLiked,
     bool? hasMetadataOverride,
+    bool? inLibrary,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
@@ -550,6 +568,7 @@ class Track {
           (artworkKind != null ? true : this.artworkDescriptorPresent),
       isLiked: isLiked ?? this.isLiked,
       hasMetadataOverride: hasMetadataOverride ?? this.hasMetadataOverride,
+      inLibrary: inLibrary ?? this.inLibrary,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
