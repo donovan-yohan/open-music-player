@@ -86,7 +86,10 @@ Map<String, dynamic> _responseFor(List<int> ids) => <String, dynamic>{
           {
             'trackId': id,
             'url': 'https://example.com/$id.mp3',
-            'expiresAt': DateTime.utc(2027).toIso8601String(),
+            'expiresAt': DateTime.now()
+                .toUtc()
+                .add(const Duration(days: 1))
+                .toIso8601String(),
           },
       ],
       'unavailable': <Map<String, dynamic>>[],
