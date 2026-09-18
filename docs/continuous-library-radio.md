@@ -22,6 +22,28 @@ is preserved, including old automatically serialized Off: past intent cannot be
 reconstructed. Settings remain device-local. A current installation may need a
 manual settings change; this implementation does not mutate user preferences.
 
+## Player and system presentation
+
+`PlayerPresentation.fromSnapshot` is a pure value projection shared by full and
+mini players, song rows and the AudioService adapter. It adds no lifecycle owner.
+Waiting shows “Finding more music…” and Cancel invokes the existing pause intent
+fence. Canonical completed shows “Queue ended”; Replay calls existing play and
+restarts the selected cue. Ordinary paused playback resumes at its cursor.
+A clip-level processing completion or paused cursor at duration alone does not
+mean queue exhaustion; Radio Off uses the same canonical completed disposition.
+Song rows withdraw current/playing badges during waiting and completed states.
+Mini-player selectors include the presentation value but exclude position ticks.
+
+The handler exports loading while waiting, completed for terminal exhaustion,
+and actual transport `playing`; it does not fake idle to manipulate Android.
+Empty queues advertise no transport actions. Previous/next use existing queue
+capabilities; compact indices follow the available transport controls. Hardware
+command implementations remain intact. Album art/header forwarding and native
+transport glyphs are preserved. Android/OEMs own media-card artwork placement,
+size and full-shade composition: app metadata cannot guarantee full-shade art.
+The stock audio_service 0.18.18 native completed mapping is paused, not stopped;
+its separate native integration and exact-head physical shade test remain gates.
+
 ## Limits and UI contract
 
 This is reactive refill after completion, **not gapless**. The canonical

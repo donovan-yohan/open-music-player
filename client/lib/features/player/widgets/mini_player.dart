@@ -8,9 +8,11 @@ import '../../../app/theme.dart';
 import '../../../core/api/api_client.dart';
 import '../../../core/audio/playback_context.dart';
 import '../../../core/audio/playback_state.dart';
+import '../../../core/audio/player_presentation.dart';
 import '../../../core/services/playlist_service.dart';
 import '../../playlists/add_to_playlist.dart';
 import 'playback_context_label.dart';
+import 'radio_waiting.dart';
 
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer({super.key, this.playlistService});
@@ -30,6 +32,7 @@ class MiniPlayer extends StatelessWidget {
     // it — including the library list while it is being scrolled.
     final miniPlayer = Selector<PlaybackState, _MiniPlayerSnapshot>(
       selector: (_, playback) => _MiniPlayerSnapshot(
+        presentation: PlayerPresentation.fromSnapshot(playback.snapshot),
         hasTrack: playback.hasTrack,
         item: playback.currentItem,
         isPlaying: playback.isPlaying,
@@ -37,7 +40,8 @@ class MiniPlayer extends StatelessWidget {
         playbackContext: playback.playbackContext,
       ),
       builder: (context, snapshot, _) {
-        if (snapshot.isPending) {
+        if (snapshot.isPending ||
+            snapshot.presentation == PlayerPresentation.waiting) {
           return Container(
             key: const ValueKey('pending_mini_player'),
             constraints: const BoxConstraints(minHeight: 64),
@@ -54,25 +58,21 @@ class MiniPlayer extends StatelessWidget {
                 Expanded(
                   child: Semantics(
                     liveRegion: true,
-                    child: const Text('Starting playback…'),
+                    child: Text(
+                        snapshot.presentation == PlayerPresentation.waiting
+                            ? snapshot.presentation.label
+                            : 'Starting playback…'),
                   ),
                 ),
                 IconButton(
-                  tooltip: 'Cancel playback',
+                  tooltip: snapshot.presentation == PlayerPresentation.waiting
+                      ? 'Cancel'
+                      : 'Cancel playback',
+                  constraints:
+                      const BoxConstraints(minWidth: 48, minHeight: 48),
                   icon: const Icon(Icons.close),
-                  onPressed: () async {
-                    try {
-                      await context.read<PlaybackState>().pause();
-                    } catch (_) {
-                      if (!hostContext.mounted) return;
-                      ScaffoldMessenger.of(hostContext).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                              'Could not pause playback. Please try again.'),
-                        ),
-                      );
-                    }
-                  },
+                  onPressed: () =>
+                      cancelRadio(hostContext, context.read<PlaybackState>()),
                 ),
               ],
             ),
@@ -141,15 +141,21 @@ class MiniPlayer extends StatelessWidget {
                           mainAxisAlignment: MainAxisAlignment.center,
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            PlaybackContextLabel(
-                              snapshot.playbackContext,
-                              style: TextStyle(
-                                color: playerTheme.playhead,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: 0,
+                            if (snapshot.presentation ==
+                                PlayerPresentation.ended)
+                              Semantics(
+                                  liveRegion: true,
+                                  child: const Text('Queue ended'))
+                            else
+                              PlaybackContextLabel(
+                                snapshot.playbackContext,
+                                style: TextStyle(
+                                  color: playerTheme.playhead,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 0,
+                                ),
                               ),
-                            ),
                             Text(
                               item.title,
                               style: TextStyle(
@@ -180,9 +186,11 @@ class MiniPlayer extends StatelessWidget {
                               ? AppTheme.background
                               : colors.onSurface,
                         ),
-                        tooltip: snapshot.isPlaying ? 'Pause' : 'Play',
+                        tooltip: snapshot.presentation.actionLabel,
                         onPressed:
-                            context.read<PlaybackState>().togglePlayPause,
+                            snapshot.presentation == PlayerPresentation.ended
+                                ? context.read<PlaybackState>().play
+                                : context.read<PlaybackState>().togglePlayPause,
                         style: isMobilePoster
                             ? IconButton.styleFrom(
                                 backgroundColor: AppTheme.orange,
@@ -242,6 +250,7 @@ class MiniPlayer extends StatelessWidget {
 /// none of them does not rebuild it.
 class _MiniPlayerSnapshot {
   const _MiniPlayerSnapshot({
+    required this.presentation,
     required this.hasTrack,
     required this.item,
     required this.isPlaying,
@@ -249,6 +258,7 @@ class _MiniPlayerSnapshot {
     required this.playbackContext,
   });
 
+  final PlayerPresentation presentation;
   final bool hasTrack;
   final MediaItem? item;
   final bool isPlaying;
@@ -258,6 +268,7 @@ class _MiniPlayerSnapshot {
   @override
   bool operator ==(Object other) =>
       other is _MiniPlayerSnapshot &&
+      other.presentation == presentation &&
       other.hasTrack == hasTrack &&
       other.isPlaying == isPlaying &&
       other.isPending == isPending &&
@@ -269,6 +280,7 @@ class _MiniPlayerSnapshot {
 
   @override
   int get hashCode => Object.hash(
+        presentation,
         hasTrack,
         isPlaying,
         isPending,

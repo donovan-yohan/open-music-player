@@ -1,4 +1,8 @@
 import 'dart:async';
+import 'package:audio_service/audio_service.dart' as audio;
+import 'package:open_music_player/core/audio/mix_audio_handler.dart';
+import 'package:open_music_player/core/audio/player_presentation.dart';
+import 'package:open_music_player/core/audio/song_row_presentation.dart';
 import 'package:open_music_player/core/auth/auth_state.dart' as auth;
 import 'package:open_music_player/core/auth/auth_service.dart';
 import 'package:open_music_player/core/api/api_client.dart';
@@ -27,6 +31,82 @@ import 'support/fake_voice.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  for (final outcome in ['success', 'empty', 'error', 'cancel', 'off']) {
+    test(
+        'presentation and media session: waiting to $outcome, replay vs resume',
+        () async {
+      final gate = Completer<List<Map<String, dynamic>>>();
+      final h = _Harness(continuationSource: _PresentationSource(gate));
+      final handler = MixAudioHandler(playbackState: h.playback);
+      addTearDown(() async {
+        await handler.dispose();
+        await h.dispose();
+      });
+      if (outcome == 'off') h.playback.setEndOfQueueMode(EndOfQueueMode.off);
+      await h.playback.playQueue([_track(1, seconds: 5)]);
+      await pumpEventQueue();
+      h.advance(const Duration(seconds: 2));
+      await pumpEventQueue();
+      await handler.pause();
+      await pumpEventQueue();
+      expect(PlayerPresentation.fromSnapshot(h.playback.snapshot),
+          PlayerPresentation.paused);
+      final pausedAt = h.playback.position;
+      await handler.play();
+      await pumpEventQueue();
+      expect(h.playback.position, pausedAt);
+      await h.playToEndOfQueue();
+      if (outcome != 'off') {
+        expect(PlayerPresentation.fromSnapshot(h.playback.snapshot),
+            PlayerPresentation.waiting);
+        expect(handler.playbackState.value.processingState,
+            audio.AudioProcessingState.loading);
+        expect(handler.playbackState.value.playing, isFalse);
+        expect(handler.mediaItem.value?.title, 'Finding more music…');
+        expect(songRowPresentationFor(h.playback.snapshot, trackId: '1'),
+            SongRowPresentation.none);
+        expect(
+            handler.playbackState.value.controls
+                .any((c) => c.label == 'Cancel'),
+            isTrue);
+        if (outcome == 'cancel') await handler.pause();
+        if (outcome == 'error') {
+          gate.completeError(StateError('offline'));
+        } else {
+          gate.complete(outcome == 'empty' ? [] : [_track(90, seconds: 5)]);
+        }
+        await pumpEventQueue();
+      }
+      if (outcome == 'success') {
+        expect(PlayerPresentation.fromSnapshot(h.playback.snapshot),
+            PlayerPresentation.playing);
+        expect(handler.mediaItem.value?.id, '90');
+        expect(handler.playbackState.value.processingState,
+            audio.AudioProcessingState.ready);
+      } else if (outcome == 'cancel') {
+        expect(PlayerPresentation.fromSnapshot(h.playback.snapshot),
+            PlayerPresentation.paused);
+        expect(h.playback.isPlaying, isFalse);
+        expect(h.playback.queue.map((i) => i.id), ['1']);
+      } else {
+        expect(PlayerPresentation.fromSnapshot(h.playback.snapshot),
+            PlayerPresentation.ended);
+        expect(handler.mediaItem.value?.title, 'Queue ended');
+        expect(handler.playbackState.value.processingState,
+            audio.AudioProcessingState.completed);
+        expect(handler.playbackState.value.controls.map((c) => c.action),
+            isNot(contains(audio.MediaAction.skipToNext)));
+        expect(songRowPresentationFor(h.playback.snapshot, trackId: '1'),
+            SongRowPresentation.none);
+        await handler.play();
+        await pumpEventQueue();
+        expect(h.playback.position, Duration.zero);
+        expect(h.playback.currentItem?.id, '1');
+        expect(PlayerPresentation.fromSnapshot(h.playback.snapshot),
+            PlayerPresentation.playing);
+      }
+    });
+  }
   group('end-of-queue continuation trigger', () {
     test('a natural completion continues playback exactly once', () async {
       final source = _RecordingContinuationSource(
@@ -1013,6 +1093,17 @@ class _GatedEngine extends PlaybackEngine {
     await wait('play');
     await super.playGuarded(stillCurrent: stillCurrent);
   }
+}
+
+class _PresentationSource implements QueueContinuationSource {
+  _PresentationSource(this.gate);
+  final Completer<List<Map<String, dynamic>>> gate;
+  @override
+  Future<List<Map<String, dynamic>>> fetch(
+          {required Set<String> excludeTrackIds,
+          required int limit,
+          List<String> recentTrackIds = const []}) =>
+      gate.future;
 }
 
 class _IntentAuthService extends AuthService {

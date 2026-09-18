@@ -1,5 +1,7 @@
 import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:flutter/material.dart';
+import 'package:just_audio/just_audio.dart' show ProcessingState;
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -306,6 +308,34 @@ class _DesktopPlaybackState extends Fake implements PlaybackState {
 
   @override
   bool get hasTrack => true;
+
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot(
+        sessionId: 'desktop-test',
+        cues: [
+          PlaybackCue(
+              cueId: 'c',
+              queueItemId: 'q',
+              queueIndex: 0,
+              trackId: currentItem.id,
+              mediaItem: currentItem,
+              audioUri: Uri.parse('file:///test.wav'),
+              sourceDuration: duration,
+              sourceStart: Duration.zero,
+              sourceEnd: duration,
+              timelineStart: Duration.zero)
+        ],
+        currentCueId: 'c',
+        currentQueueIndex: 0,
+        currentMediaItem: currentItem,
+        localPosition: position,
+        localDuration: duration,
+        globalPosition: position,
+        globalDuration: duration,
+        playing: true,
+        processingState: ProcessingState.ready,
+        activeVoiceCount: 1,
+      );
 
   @override
   audio_service.MediaItem get currentItem => const audio_service.MediaItem(

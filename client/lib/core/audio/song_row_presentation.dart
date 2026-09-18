@@ -2,6 +2,7 @@ import 'package:just_audio/just_audio.dart' show ProcessingState;
 
 import 'playback_queue_projection.dart';
 import 'playback_session.dart';
+import 'player_presentation.dart';
 
 /// A value projection, never another current-track authority. Intentionally
 /// excludes position, duration, context and metadata, so selectors stay cheap.
@@ -27,6 +28,9 @@ SongRowPresentation songRowPresentationFor(
   required String? trackId,
   String? queueItemId,
 }) {
+  if (PlayerPresentation.fromSnapshot(snapshot).interruptsTrack) {
+    return SongRowPresentation.none;
+  }
   final item = snapshot.currentMediaItem;
   if (trackId == null ||
       trackId.isEmpty ||

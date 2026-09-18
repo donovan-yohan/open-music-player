@@ -62,12 +62,20 @@ void main() {
       await handler.dispose();
       await source.changes.close();
     });
-    expect(handler.playbackState.value.controls.map((c) => c.androidIcon), [
-      'drawable/audio_service_skip_previous',
-      'drawable/audio_service_play_arrow',
-      'drawable/audio_service_skip_next',
-      'drawable/audio_service_stop',
-    ]);
+    expect(handler.playbackState.value.controls, isEmpty);
+    expect(
+        [
+          audio.MediaControl.skipToPrevious,
+          audio.MediaControl.play,
+          audio.MediaControl.skipToNext,
+          audio.MediaControl.stop
+        ].map((c) => c.androidIcon),
+        [
+          'drawable/audio_service_skip_previous',
+          'drawable/audio_service_play_arrow',
+          'drawable/audio_service_skip_next',
+          'drawable/audio_service_stop',
+        ]);
     expect(
         audio.MediaControl.pause.androidIcon, 'drawable/audio_service_pause');
   });

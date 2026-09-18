@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:just_audio/just_audio.dart' show ProcessingState;
+import 'package:open_music_player/core/audio/playback_session.dart';
 
 import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
@@ -542,6 +544,34 @@ class _MiniPlayerPlaybackState extends Fake implements PlaybackState {
 
   @override
   bool get hasTrack => true;
+
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot(
+        sessionId: 'mini-test',
+        cues: [
+          PlaybackCue(
+              cueId: 'c',
+              queueItemId: 'q',
+              queueIndex: 0,
+              trackId: _item.id,
+              mediaItem: _item,
+              audioUri: Uri.parse('file:///test.wav'),
+              sourceDuration: duration,
+              sourceStart: Duration.zero,
+              sourceEnd: duration,
+              timelineStart: Duration.zero)
+        ],
+        currentCueId: 'c',
+        currentQueueIndex: 0,
+        currentMediaItem: _item,
+        localPosition: position,
+        localDuration: duration,
+        globalPosition: position,
+        globalDuration: duration,
+        playing: true,
+        processingState: ProcessingState.ready,
+        activeVoiceCount: 1,
+      );
 
   @override
   audio_service.MediaItem get currentItem => _item;

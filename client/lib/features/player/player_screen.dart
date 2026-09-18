@@ -11,6 +11,8 @@ import '../../app/theme.dart';
 import '../../core/api/api_client.dart';
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
+import '../../core/audio/player_presentation.dart';
+import 'widgets/radio_waiting.dart';
 import '../../core/providers/settings_provider.dart';
 import '../../core/services/liked_tracks_state.dart';
 import '../../core/services/library_service.dart';
@@ -47,6 +49,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final colors = Theme.of(context).colorScheme;
         final background = Theme.of(context).scaffoldBackgroundColor;
         final item = playback.currentItem;
+        final presentation = PlayerPresentation.fromSnapshot(playback.snapshot);
         final queueModeAvailable = _queueModeAvailable(playback);
         final activeTimeMode =
             queueModeAvailable ? _timeMode : _PlayerTimeMode.song;
@@ -62,7 +65,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             title: Column(
               children: [
                 Text(
-                  'PLAYING FROM',
+                  presentation.interruptsTrack ? 'PLAYBACK' : 'PLAYING FROM',
                   style: TextStyle(
                     fontSize: 11,
                     color: colors.onSurfaceVariant,
@@ -70,9 +73,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ),
                 ),
                 Text(
-                  playback.playbackContext?.label ??
-                      item?.album ??
-                      'Unknown Album',
+                  presentation.interruptsTrack
+                      ? presentation.label
+                      : playback.playbackContext?.label ??
+                          item?.album ??
+                          'Unknown Album',
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
@@ -102,81 +107,86 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
             ],
           ),
-          body: item == null
+          body: presentation == PlayerPresentation.waiting
               ? Center(
-                  child: Text(
-                    'No track playing',
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                )
-              : SafeArea(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final horizontalPadding =
-                          constraints.maxWidth <= 360 ? 20.0 : 24.0;
-                      final artExtent = (constraints.maxHeight * 0.38)
-                          .clamp(208.0, 440.0)
-                          .toDouble();
+                  child: SingleChildScrollView(
+                      child: RadioWaiting(playback: playback)))
+              : item == null
+                  ? Center(
+                      child: Text(
+                        'No track playing',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    )
+                  : SafeArea(
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final horizontalPadding =
+                              constraints.maxWidth <= 360 ? 20.0 : 24.0;
+                          final artExtent = (constraints.maxHeight * 0.38)
+                              .clamp(208.0, 440.0)
+                              .toDouble();
 
-                      return SingleChildScrollView(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: horizontalPadding,
-                          vertical: 12,
-                        ),
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            minHeight: constraints.maxHeight - 24,
-                          ),
-                          child: Column(
-                            children: [
-                              const SizedBox(height: 12),
-                              SizedBox.square(
-                                dimension: artExtent,
-                                child: _buildAlbumArt(
-                                  context,
-                                  item.artUri?.toString(),
-                                ),
+                          return SingleChildScrollView(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: horizontalPadding,
+                              vertical: 12,
+                            ),
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(
+                                minHeight: constraints.maxHeight - 24,
                               ),
-                              const SizedBox(height: 16),
-                              _buildTrackInfo(
-                                context,
-                                _displayTitle(item, playback, activeTimeMode),
-                                _displaySubtitle(playback, activeTimeMode),
-                                _sourceQuality(item),
-                                // Only the song view's subtitle is an artist;
-                                // the queue view shows a context label, which
-                                // addresses no artist page.
-                                browseArtist:
-                                    activeTimeMode == _PlayerTimeMode.song
-                                        ? item.artist
-                                        : null,
+                              child: Column(
+                                children: [
+                                  const SizedBox(height: 12),
+                                  SizedBox.square(
+                                    dimension: artExtent,
+                                    child: _buildAlbumArt(
+                                      context,
+                                      item.artUri?.toString(),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  _buildTrackInfo(
+                                    context,
+                                    _displayTitle(
+                                        item, playback, activeTimeMode),
+                                    _displaySubtitle(playback, activeTimeMode),
+                                    _sourceQuality(item),
+                                    // Only the song view's subtitle is an artist;
+                                    // the queue view shows a context label, which
+                                    // addresses no artist page.
+                                    browseArtist:
+                                        activeTimeMode == _PlayerTimeMode.song
+                                            ? item.artist
+                                            : null,
+                                  ),
+                                  if (playback
+                                      .snapshot.pitchPreservationFallback) ...[
+                                    const SizedBox(height: 12),
+                                    _buildPitchFallbackWarning(context),
+                                  ],
+                                  const SizedBox(height: 24),
+                                  _buildProgressBar(
+                                    context,
+                                    playback,
+                                    activeTimeMode,
+                                    queueModeAvailable: queueModeAvailable,
+                                  ),
+                                  const SizedBox(height: 24),
+                                  _buildControls(playback),
+                                  const SizedBox(height: 16),
+                                  _buildSecondaryControls(context, playback),
+                                  const SizedBox(height: 12),
+                                ],
                               ),
-                              if (playback
-                                  .snapshot.pitchPreservationFallback) ...[
-                                const SizedBox(height: 12),
-                                _buildPitchFallbackWarning(context),
-                              ],
-                              const SizedBox(height: 24),
-                              _buildProgressBar(
-                                context,
-                                playback,
-                                activeTimeMode,
-                                queueModeAvailable: queueModeAvailable,
-                              ),
-                              const SizedBox(height: 24),
-                              _buildControls(playback),
-                              const SizedBox(height: 16),
-                              _buildSecondaryControls(context, playback),
-                              const SizedBox(height: 12),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
         );
       },
     );
@@ -543,13 +553,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Widget _buildControls(PlaybackState playback) {
+    final presentation = PlayerPresentation.fromSnapshot(playback.snapshot);
     return PlaybackControls(
+      actionLabel: presentation.actionLabel,
       isPlaying: playback.isPlaying,
       shuffleEnabled: playback.shuffleEnabled,
       loopMode: playback.loopMode,
       onShuffle: playback.toggleShuffle,
       onPrevious: playback.previous,
-      onPlayPause: playback.togglePlayPause,
+      onPlayPause: presentation == PlayerPresentation.ended
+          ? playback.play
+          : playback.togglePlayPause,
       onNext: playback.skipToNext,
       onLoop: playback.cycleLoopMode,
     );
@@ -709,6 +723,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 class PlaybackControls extends StatelessWidget {
   const PlaybackControls({
     super.key,
+    this.actionLabel,
     required this.isPlaying,
     required this.shuffleEnabled,
     required this.loopMode,
@@ -719,6 +734,7 @@ class PlaybackControls extends StatelessWidget {
     required this.onLoop,
   });
 
+  final String? actionLabel;
   final bool isPlaying;
   final bool shuffleEnabled;
   final LoopMode loopMode;
@@ -763,6 +779,7 @@ class PlaybackControls extends StatelessWidget {
                     isPlaying ? Icons.pause : Icons.play_arrow,
                     color: AppTheme.background,
                   ),
+                  tooltip: actionLabel ?? (isPlaying ? 'Pause' : 'Play'),
                   iconSize: playButtonSize < 72 ? 36 : 40,
                   onPressed: onPlayPause,
                 ),
