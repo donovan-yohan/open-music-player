@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- audio_service resolves this name dynamically via Resources.getIdentifier. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/omp_notification" />

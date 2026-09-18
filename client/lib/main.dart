@@ -108,6 +108,7 @@ void main() async {
       config: const audio_service.AudioServiceConfig(
         androidNotificationChannelId: 'com.openmusicplayer.app.channel.audio',
         androidNotificationChannelName: 'Playback',
+        androidNotificationIcon: 'drawable/omp_notification',
         androidNotificationOngoing: true,
         androidStopForegroundOnPause: true,
       ),

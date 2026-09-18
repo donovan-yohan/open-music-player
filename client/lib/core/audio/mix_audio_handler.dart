@@ -321,6 +321,8 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
       album: item?.album,
       duration: item?.duration ?? _bufferedPosition,
       artUri: item?.artUri,
+      // Preserve only source-supplied artwork headers; never add API credentials.
+      artHeaders: item?.artHeaders,
       extras: extras,
     );
   }
