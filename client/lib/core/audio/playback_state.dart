@@ -686,14 +686,50 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     }
   }
 
+  /// Starts [track] as the only item of a fresh listening queue and begins
+  /// playing it.
+  ///
+  /// This is the shared empty-queue branch of [enqueue] and [playNext]: both
+  /// mean "the user asked for this track by name and nothing is playing". The
+  /// item is tagged [queueOriginManual] because a user command is user-built,
+  /// not ambient listening state — routing it through [playQueue] would tag it
+  /// `context` and sort it behind manual items (PR #448's origin semantics).
+  ///
+  /// It deliberately reuses the same generation-guarded replacement lifecycle as
+  /// [playTrack] instead of inserting through [enqueueAll] and starting
+  /// transport afterwards. The request token is taken *before* signed-URL
+  /// resolution and re-checked after every await, so a `stop()`/`pause()` that
+  /// arrives while the URL is still in flight cancels this start instead of
+  /// being overridden by a late `play()` ([_isCurrentPlayRequest]). The same
+  /// lifecycle stamps the attribution (a context-less manual track must not
+  /// inherit a drained playlist's [playbackContext]), and [_resolveSignedUrls]
+  /// keeps [isResolvingSignedUrl] and [playbackError] visible to listeners for
+  /// the duration of resolution.
+  Future<void> _startManualTrack(Map<String, dynamic> track) async {
+    // The queue is empty, so there is no unplayed user queue to carry over.
+    final generation = await _beginPlaybackReplacement(context: null);
+    await _resolveSignedUrls(() async {
+      await _startWithRecovery(() async {
+        final item = markOrigin(
+          await _sourceResolver.resolveTrack(track),
+          queueOriginManual,
+        );
+        if (!_isCurrentPlayRequest(generation)) return;
+        await _queueController.setQueue([item]);
+        if (!_isCurrentPlayRequest(generation)) return;
+        await _queueController.play();
+      });
+    }, generation: generation);
+  }
+
   /// Adds [track] to the active listening queue after the current item and any
   /// already-queued manual items, before the context tail. If nothing is
-  /// playing yet, starts a fresh queue with just this track. This is the
-  /// "Add to queue" action; it operates on the real playing queue, not the
-  /// separate Redis edit-queue.
+  /// playing yet, starts a fresh queue with just this track and plays it. This
+  /// is the "Add to queue" action; it operates on the real playing queue, not
+  /// the separate Redis edit-queue.
   Future<void> enqueue(Map<String, dynamic> track) async {
     if (queue.isEmpty) {
-      await playQueue([track]);
+      await _startManualTrack(track);
       return;
     }
     final item = markOrigin(
@@ -711,12 +747,11 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// many items were added.
   ///
   /// This exists because looping [enqueue] cannot express a bulk manual add.
-  /// [enqueue] on an empty queue falls through to [playQueue], which tags
-  /// everything `context` — so the first track of a bulk add would land with
-  /// the opposite origin to the rest of its own batch, and an "Add to queue"
-  /// would be sorted behind the context tail it was meant to precede
-  /// (PR #448's origin semantics). Here the whole batch is inserted at once, so
-  /// every item carries [origin] and the batch stays contiguous.
+  /// The whole batch is inserted at once, so every item carries [origin] and
+  /// the batch stays contiguous, including when the queue is empty.
+  ///
+  /// It intentionally does not start or stop transport and does not stamp
+  /// [playbackContext]: callers own the surrounding playback lifecycle.
   ///
   /// Resolution is one batched pass ([PlaybackSourceResolver.resolveQueue]), so
   /// the batch costs a single signed-URL request rather than one per track, and
@@ -755,10 +790,15 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   }
 
   /// Inserts [track] to play immediately after the current item ("Play next").
-  /// Starts a fresh queue when nothing is playing.
+  /// Starts a fresh queue with just this track and plays it when nothing is
+  /// playing yet.
   Future<void> playNext(Map<String, dynamic> track) async {
     if (queue.isEmpty) {
-      await playQueue([track]);
+      // Identical to [enqueue]'s empty-queue branch: the user named this track,
+      // so it is manual rather than context ambient state, and it must begin
+      // playing through the guarded replacement lifecycle so an in-flight
+      // stop/pause still wins.
+      await _startManualTrack(track);
       return;
     }
     final item = markOrigin(
