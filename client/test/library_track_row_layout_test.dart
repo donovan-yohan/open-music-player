@@ -103,7 +103,8 @@ void main() {
           lessThanOrEqualTo(tester.getRect(trailing).left));
       expect(find.text('128 BPM'), findsOneWidget);
       expect(find.text('8A'), findsOneWidget);
-      expect(find.text('Control-rich artist • 3:00'), findsOneWidget);
+      expect(find.text('Control-rich artist'), findsOneWidget);
+      expect(find.text('3:00'), findsOneWidget);
       expect(find.text('Match'), findsNothing);
       expect(find.byTooltip('Unlike'), findsNothing);
       expect(find.byTooltip('Download'), findsNothing);

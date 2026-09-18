@@ -15,7 +15,7 @@ FocusNode _focus(WidgetTester tester, String id) => Focus.of(tester.element(
     ));
 
 Future<void> _pump(WidgetTester tester, FakePlayback playback, bool metadata,
-    List<String> activated) async {
+    List<String> activated, double scale) async {
   tester.view.physicalSize = const Size(390, 1000);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
@@ -27,7 +27,7 @@ Future<void> _pump(WidgetTester tester, FakePlayback playback, bool metadata,
       home: Scaffold(
         body: MediaQuery(
           data: MediaQueryData(
-            textScaler: TextScaler.linear(metadata ? 1 : 2),
+            textScaler: TextScaler.linear(scale),
           ),
           child: Column(children: [
             for (final id in ['A', 'B'])
@@ -60,14 +60,20 @@ Future<void> _pump(WidgetTester tester, FakePlayback playback, bool metadata,
 }
 
 void main() {
-  for (final metadata in [true, false]) {
-    final layout = metadata ? 'metadata normal' : 'no metadata enlarged';
+  for (final scenario in [
+    (true, 1.0),
+    (false, 2.0),
+    (true, 2.0),
+    (true, 3.0)
+  ]) {
+    final (metadata, scale) = scenario;
+    final layout = 'metadata=$metadata scale=$scale';
     for (final id in ['A', 'B']) {
       testWidgets('$layout action $id retains element focus and keyboard',
           (tester) async {
         final playback = FakePlayback()..set(makeSnapshot(id: null));
         final activated = <String>[];
-        await _pump(tester, playback, metadata, activated);
+        await _pump(tester, playback, metadata, activated, scale);
         final element = tester.element(_action(id));
         final node = _focus(tester, id);
         node.requestFocus();
@@ -92,7 +98,7 @@ void main() {
           (tester) async {
         final playback = FakePlayback()..set(makeSnapshot(id: null));
         final activated = <String>[];
-        await _pump(tester, playback, metadata, activated);
+        await _pump(tester, playback, metadata, activated, scale);
         // One real press per transition, plus a press spanning the whole cycle.
         for (final sequence in <List<String?>>[
           ['A'],

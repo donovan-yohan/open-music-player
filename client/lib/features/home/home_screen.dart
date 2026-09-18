@@ -10,7 +10,7 @@ import '../../core/api/api_client.dart';
 import '../../shared/models/models.dart';
 import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
-import '../../shared/widgets/song_metadata_chips.dart';
+import '../../shared/widgets/song_list_item.dart';
 import '../../shared/widgets/track_artwork.dart';
 import '../../core/services/home_service.dart';
 import 'home_state.dart';
@@ -524,7 +524,8 @@ class _TrackTile extends StatelessWidget {
       enabled: playable,
       child: NowPlayingRow(
           trackId: track.id.toString(),
-          child: ListTile(
+          child: SongListItem(
+            analysis: track.analysis,
             onTap: onTap,
             leading: ClipRRect(
               borderRadius: BorderRadius.circular(4),
@@ -567,20 +568,16 @@ class _TrackTile extends StatelessWidget {
                       ),
                     ],
                   ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
+            trailing: Wrap(
+              alignment: WrapAlignment.end,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 2,
               children: [
-                Flexible(
-                  child: SongMetadataChips(
-                    analysis: track.analysis,
-                    singleLine: true,
-                    compact: true,
-                  ),
-                ),
                 LikeToggleButton(
-                  track: track,
-                  buttonKey: ValueKey('home_like_${track.id}'),
-                ),
+                    track: track, buttonKey: ValueKey('home_like_${track.id}')),
+                Text(track.formattedDuration,
+                    style: Theme.of(context).textTheme.bodySmall),
               ],
             ),
           )),

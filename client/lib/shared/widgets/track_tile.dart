@@ -2,7 +2,7 @@ import 'now_playing_row.dart';
 import 'package:flutter/material.dart';
 import '../../models/track_analysis.dart';
 import '../models/track.dart';
-import 'song_metadata_chips.dart';
+import 'song_list_item.dart';
 import 'track_artwork.dart';
 
 class TrackTile extends StatelessWidget {
@@ -83,70 +83,18 @@ class TrackTile extends StatelessWidget {
   }
 
   Widget _buildContent(BuildContext context) {
-    final theme = Theme.of(context);
-    final titleStyle =
-        ListTileTheme.of(context).titleTextStyle ?? theme.textTheme.bodyLarge;
-    final subtitleStyle = theme.textTheme.bodySmall;
-    final subtitle = [
-      artist,
-      album,
-    ].where((value) => value != null && value.isNotEmpty).join(' • ');
-    final summary = analysis?.summary;
-    final hasMetadata = summary?.bpm?.numericValue != null ||
-        summary?.key?.textValue != null ||
-        summary?.camelot?.textValue != null;
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final availableWidth = constraints.hasBoundedWidth
-            ? constraints.maxWidth
-            : MediaQuery.sizeOf(context).width;
-        final trailingMaxWidth =
-            (availableWidth * 0.38).clamp(96.0, 168.0).toDouble();
-        final enlargedText = MediaQuery.textScalerOf(context).scale(1) > 1.3;
-        // Playback selection must not replace the action/focus subtree.
-        // Reserve readable metadata and large-text space even when neutral.
-        final useExpandedLayout = hasMetadata || enlargedText;
-
-        if (useExpandedLayout) {
-          final expandedMetadataMaxWidth =
-              (availableWidth * 0.55).clamp(150.0, 220.0).toDouble();
-          return _buildExpandedTextTile(
-            context,
-            theme: theme,
-            titleStyle: titleStyle,
-            subtitleStyle: subtitleStyle,
-            subtitle: subtitle,
-            metadataMaxWidth: expandedMetadataMaxWidth,
-          );
-        }
-
-        return ListTile(
-          onTap: onTap,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          leading: leading ?? _buildCoverArt(),
-          title: Text(
-            title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: titleStyle,
-          ),
-          subtitle: subtitle.isEmpty
-              ? null
-              : Text(
-                  subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: subtitleStyle,
-                ),
-          trailing: _buildTrailing(
-            context,
-            hasMetadata,
-            trailingMaxWidth,
-          ),
-        );
-      },
+    final subtitle = [artist, album]
+        .where((value) => value != null && value.isNotEmpty)
+        .join(' • ');
+    return SongListItem(
+      onTap: onTap,
+      leading: leading ?? _buildCoverArt(),
+      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: subtitle.isEmpty
+          ? null
+          : Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      analysis: analysis,
+      trailing: _buildTrailingActions(context),
     );
   }
 
@@ -162,104 +110,6 @@ class TrackTile extends StatelessWidget {
     );
   }
 
-  Widget _buildTrailing(
-    BuildContext context,
-    bool hasMetadata,
-    double maxWidth,
-  ) {
-    final actions = _buildTrailingActions(context);
-    if (!hasMetadata) return actions;
-
-    final metadata = Align(
-      widthFactor: 1,
-      alignment: Alignment.centerRight,
-      child: SongMetadataChips(
-        analysis: analysis,
-        singleLine: true,
-        compact: true,
-      ),
-    );
-    return ConstrainedBox(
-      key: const ValueKey('track_tile_trailing'),
-      constraints: BoxConstraints(maxWidth: maxWidth),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Flexible(child: metadata),
-          const SizedBox(width: 6),
-          actions,
-        ],
-      ),
-    );
-  }
-
-  Widget _buildExpandedTextTile(
-    BuildContext context, {
-    required ThemeData theme,
-    required TextStyle? titleStyle,
-    required TextStyle? subtitleStyle,
-    required String subtitle,
-    required double metadataMaxWidth,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            leading ?? _buildCoverArt(),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: titleStyle,
-                  ),
-                  if (subtitle.isNotEmpty)
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: subtitleStyle,
-                    ),
-                  const SizedBox(height: 4),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: ConstrainedBox(
-                      key: const ValueKey('track_tile_trailing'),
-                      constraints: BoxConstraints(
-                        maxWidth: metadataMaxWidth,
-                      ),
-                      child: Align(
-                        widthFactor: 1,
-                        alignment: Alignment.centerRight,
-                        child: SongMetadataChips(
-                          analysis: analysis,
-                          singleLine: true,
-                          compact: true,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: _buildTrailingActions(context),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildTrailingActions(BuildContext context) {
     final theme = Theme.of(context);
 
@@ -270,9 +120,6 @@ class TrackTile extends StatelessWidget {
       spacing: 8,
       runSpacing: 2,
       children: [
-        if (SongRowTreatment.presentationOf(context) !=
-            SongRowPresentation.none)
-          const SongRowStatusBadge(),
         if (trailing != null)
           trailing!
         else ...[

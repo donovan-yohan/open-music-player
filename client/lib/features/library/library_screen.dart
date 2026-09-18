@@ -1,4 +1,5 @@
 import '../../shared/widgets/now_playing_row.dart';
+import '../../shared/widgets/song_list_item.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -993,19 +994,13 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     final liked = context.select<LikedTracksState, bool>(
       (tracks) => tracks.isLiked(track.id) ?? false,
     );
-    final summary = track.analysis?.summary;
-    final hasMetadata = summary?.bpm?.numericValue != null ||
-        summary?.key?.textValue != null ||
-        summary?.camelot?.textValue != null;
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final compactActions =
             constraints.maxWidth < _compactActionBreakpoint ||
                 MediaQuery.textScalerOf(context).scale(1) > 1.3;
-        final subtitle = compactActions
-            ? '${track.displayArtist} • ${track.formattedDuration}'
-            : track.displayArtist;
+        final subtitle = track.displayArtist;
 
         return QueueSwipeAction(
           actionKey: ValueKey('library_queue_${track.id}'),
@@ -1018,13 +1013,9 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
           ),
           child: NowPlayingRow(
               trackId: track.id.toString(),
-              child: ListTile(
+              child: SongListItem(
                 key: ValueKey('library_track_row_${track.id}'),
-                contentPadding: compactActions
-                    ? const EdgeInsets.symmetric(horizontal: 10)
-                    : null,
-                horizontalTitleGap: compactActions ? 8 : null,
-                minLeadingWidth: compactActions ? 40 : null,
+                analysis: track.analysis,
                 leading: Stack(
                   children: [
                     Container(
@@ -1099,21 +1090,16 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                trailing: Row(
+                trailing: Wrap(
                   key: ValueKey('library_track_trailing_${track.id}'),
-                  mainAxisSize: MainAxisSize.min,
+                  spacing: 8,
+                  runSpacing: 2,
+                  alignment: WrapAlignment.end,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    SongMetadataChips(
-                      analysis: track.analysis,
-                      singleLine: true,
-                      compact: true,
-                    ),
-                    if (hasMetadata) const SizedBox(width: 6),
+                    Text(track.formattedDuration,
+                        style: theme.textTheme.bodySmall),
                     if (!compactActions) ...[
-                      Text(
-                        track.formattedDuration,
-                        style: theme.textTheme.bodySmall,
-                      ),
                       IconButton(
                         visualDensity: VisualDensity.compact,
                         icon: Icon(

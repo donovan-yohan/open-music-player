@@ -45,6 +45,11 @@ import 'package:open_music_player/shared/widgets/track_tile.dart';
 import 'package:open_music_player/widgets/timeline_clip_widget.dart';
 
 import 'support/analysis_envelope_fixture.dart';
+import 'package:open_music_player/core/services/home_service.dart';
+import 'package:open_music_player/features/home/home_screen.dart';
+import 'package:open_music_player/features/library/library_screen.dart';
+import 'package:open_music_player/shared/models/track.dart' as catalog;
+import 'package:open_music_player/shared/widgets/song_list_item.dart';
 
 void main() {
   late _FakeQueueApiClient apiClient;
@@ -145,6 +150,113 @@ void main() {
   }
 
   tearDown(() => playbackState.dispose());
+
+  for (final width in [320.0, 390.0, 480.0]) {
+    for (final scale in [1.0, 2.0, 3.0]) {
+      testWidgets('canonical Home Library Queue geometry $width at $scale',
+          (tester) async {
+        tester.view.physicalSize = Size(width, 1800);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final track = catalog.Track.fromJson({
+          'id': 1,
+          'title': 'Comparable long song title',
+          'artist': 'Comparable artist',
+          'durationMs': 180000,
+          'analysisStatus': 'analyzed',
+          'analysisSummary': {
+            'bpm': {'value': 128},
+            'camelot': {'value': '8A'}
+          },
+        });
+        final liked = LikedTracksState(_QueueLikeLibraryService())
+          ..seedTrack(track);
+        addTearDown(liked.dispose);
+        playbackState.fakeQueue = [
+          _mediaItem(1, track.title, seconds: 180, extras: {
+            'analysisStatus': 'analyzed',
+            'analysisSummary': {
+              'bpm': {'value': 128},
+              'camelot': {'value': '8A'}
+            }
+          })
+        ];
+        final heights = <double>[];
+        for (final surface in ['queue', 'home', 'library']) {
+          playbackState.fakeCurrentIndex = null;
+          if (surface == 'queue') {
+            await pumpQueueScreen(tester,
+                textScaler: TextScaler.linear(scale), likedTracksState: liked);
+          } else {
+            await tester.pumpWidget(MultiProvider(
+                providers: [
+                  ListenableProvider<PlaybackState>.value(value: playbackState),
+                  ChangeNotifierProvider<LikedTracksState>.value(value: liked),
+                  Provider<CommandRegistry>.value(value: commandRegistry),
+                ],
+                child: MaterialApp(
+                  theme: AppTheme.lightTheme,
+                  builder: (context, child) => MediaQuery(
+                      data: MediaQuery.of(context)
+                          .copyWith(textScaler: TextScaler.linear(scale)),
+                      child: child!),
+                  home: surface == 'home'
+                      ? HomeScreen(homeService: _CompactHome(track))
+                      : Scaffold(
+                          body: LibraryTrackListTile(
+                              track: track,
+                              libraryService: LibraryService(ApiClient()),
+                              detailApiClient: ApiClient(),
+                              playlistService:
+                                  PlaylistService(api: ApiClient()))),
+                )));
+            await tester.pumpAndSettle();
+          }
+          final row = find.byType(SongListItem);
+          expect(row, findsOneWidget, reason: surface);
+          final height = tester.getSize(row).height;
+          heights.add(height);
+          final title = tester.getRect(find.text(track.title));
+          final metadata =
+              tester.getRect(find.byKey(const ValueKey('song_metadata_chips')));
+          final right = tester.getRect(find.descendant(
+              of: row,
+              matching: find.byKey(const ValueKey('track_tile_trailing'))));
+          expect(title.width, greaterThanOrEqualTo(64), reason: surface);
+          expect(title.right, lessThanOrEqualTo(right.left));
+          expect(metadata.left, greaterThanOrEqualTo(title.right));
+          expect(right.right, closeTo(tester.getRect(row).right - 16, 0.01));
+          if (scale == 1) {
+            expect(height, 72, reason: surface);
+            expect(metadata.center.dy,
+                closeTo(tester.getRect(row).center.dy, 0.01));
+            final action =
+                find.descendant(of: row, matching: find.byType(IconButton));
+            expect(
+                tester.getCenter(action).dy, closeTo(metadata.center.dy, 0.01));
+          }
+          for (final selected in [0, null]) {
+            playbackState.emitCurrentIndex(selected);
+            await tester.pump();
+            expect(tester.getSize(row).height, height,
+                reason: '$surface selection');
+          }
+          final before = tester.widget<SongListItem>(row);
+          playbackState.emitPlaybackPosition(
+              localPosition: const Duration(seconds: 1),
+              timelinePositionMs: 1000);
+          await tester.pump();
+          expect(tester.widget<SongListItem>(row), same(before),
+              reason: '$surface tick');
+          expect(tester.takeException(), isNull, reason: surface);
+          await tester.pumpWidget(const SizedBox.shrink());
+        }
+        expect(heights.toSet().length, 1,
+            reason: 'Home/Library/Queue heights: $heights');
+      });
+    }
+  }
 
   test('converts list reorder offsets into absolute queue indices', () {
     expect(
@@ -2921,6 +3033,20 @@ class _RecordingAuditionOutputRouteMonitor extends AuditionOutputRouteMonitor {
     disposeCalls++;
     await super.dispose();
   }
+}
+
+class _CompactHome extends HomeService {
+  _CompactHome(this.track) : super(ApiClient());
+  final catalog.Track track;
+  @override
+  Future<List<catalog.Track>> recentlyPlayed({int limit = 20}) async => [track];
+  @override
+  Future<List<catalog.Track>> topTracks(
+          {int days = 30, int limit = 20}) async =>
+      [];
+  @override
+  Future<List<Playlist>> playlists({int limit = 20, int offset = 0}) async =>
+      [];
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {

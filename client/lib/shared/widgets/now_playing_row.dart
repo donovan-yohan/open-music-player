@@ -81,6 +81,23 @@ class SongRowTreatment extends StatelessWidget {
                       : const BoxDecoration(),
                 ),
               ),
+              Positioned(
+                  top: 2,
+                  left: 4,
+                  child: ExcludeSemantics(
+                      child: Visibility(
+                          visible: selected,
+                          maintainSize: true,
+                          maintainAnimation: true,
+                          maintainState: true,
+                          child: Icon(
+                              presentation == SongRowPresentation.playing
+                                  ? Icons.equalizer
+                                  : presentation == SongRowPresentation.paused
+                                      ? Icons.pause
+                                      : Icons.music_note,
+                              size: 12,
+                              color: color)))),
               ListTileTheme.merge(
                 titleTextStyle: selected ? titleStyle : null,
                 child: DefaultTextStyle.merge(
@@ -128,36 +145,4 @@ class _SongRowScope extends InheritedWidget {
   @override
   bool updateShouldNotify(_SongRowScope oldWidget) =>
       presentation != oldWidget.presentation;
-}
-
-/// Static status cue: paused/loading/stopped never impersonate animated audio.
-class SongRowStatusBadge extends StatelessWidget {
-  const SongRowStatusBadge({super.key});
-  @override
-  Widget build(BuildContext context) {
-    final presentation = SongRowTreatment.presentationOf(context);
-    final color = Theme.of(context).colorScheme.primary;
-    return Container(
-      key: const ValueKey('track_tile_now_playing_badge'),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.16),
-          borderRadius: BorderRadius.circular(999)),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(
-            switch (presentation) {
-              SongRowPresentation.playing => Icons.equalizer,
-              SongRowPresentation.paused => Icons.pause,
-              _ => Icons.music_note,
-            },
-            size: 14,
-            color: color),
-        const SizedBox(width: 4),
-        Flexible(
-            child: Text(presentation.label,
-                style: TextStyle(
-                    color: color, fontSize: 11, fontWeight: FontWeight.w700))),
-      ]),
-    );
-  }
 }

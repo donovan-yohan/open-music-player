@@ -202,7 +202,10 @@ void main() {
               of: find.byKey(ValueKey('occurrence_$i')),
               matching: find.byKey(const ValueKey('song_row_current'))),
           findsOneWidget);
-      expect(find.text('Paused here'), findsOneWidget);
+      expect(
+          find.byWidgetPredicate(
+              (w) => w is Semantics && w.properties.label == 'Paused here'),
+          findsOneWidget);
       expect(find.byIcon(Icons.equalizer), findsNothing);
     }
     await tester.tap(find.text('Same title').first);
