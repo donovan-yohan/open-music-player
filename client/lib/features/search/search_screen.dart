@@ -8,6 +8,8 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/storage/search_history.dart';
+import '../../shared/widgets/recent_searches.dart';
 import '../../core/commands/search_focus_controller.dart';
 import '../../core/discovery/discovery_models.dart';
 import '../../core/discovery/research_models.dart';
@@ -57,6 +59,8 @@ class SearchScreen extends StatefulWidget {
 class _SearchScreenState extends State<SearchScreen> {
   final TextEditingController _queryController = TextEditingController();
   final FocusNode _queryFocusNode = FocusNode();
+  final SearchHistoryStore _history =
+      SearchHistoryStore(kind: SearchHistoryKind.discover);
   final Set<String> _pendingCandidateKeys = <String>{};
   Timer? _debounceTimer;
   Timer? _pollTimer;
@@ -249,6 +253,7 @@ class _SearchScreenState extends State<SearchScreen> {
   void _onSubmit(String value) {
     final text = value.trim();
     if (text.isEmpty) return;
+    unawaited(_history.add(text));
     if (_assistMode) {
       setState(() {
         _assistMode = false;
@@ -919,6 +924,18 @@ class _SearchScreenState extends State<SearchScreen> {
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 112),
           children: [
             _buildSearchBox(),
+            RecentSearches(
+              controller: _queryController,
+              focusNode: _queryFocusNode,
+              store: _history,
+              onSelected: (query) {
+                _queryController.text = query;
+                _queryController.selection =
+                    TextSelection.collapsed(offset: query.length);
+                _queryFocusNode.unfocus();
+                _onSubmit(query);
+              },
+            ),
             const SizedBox(height: 6),
             _buildResultTabs(),
             const SizedBox(height: 6),
