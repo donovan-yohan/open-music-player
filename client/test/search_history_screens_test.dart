@@ -131,6 +131,14 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     expect(prefs.getStringList('search_history.library.$accountId'),
         ['library q']);
+    expect(find.byTooltip('Clear search'), findsOneWidget);
+    await tester.tap(find.byTooltip('Clear search'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
+    expect(find.byTooltip('Clear search'), findsNothing);
+    expect(find.widgetWithText(ActionChip, 'library q'), findsOneWidget);
+    expect(prefs.getStringList('search_history.library.$accountId'),
+        ['library q']);
     await tester.enterText(field, 'submitted q');
     await tester.testTextInput.receiveAction(TextInputAction.search);
     await tester.pump(const Duration(milliseconds: 50));
