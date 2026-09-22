@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 import '../../core/storage/offline_database.dart';
+import '../../core/storage/search_history.dart';
+import '../../shared/widgets/recent_searches.dart';
 import '../../core/network/connectivity_service.dart';
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
@@ -96,6 +98,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
   final LibrarySortStore _sortStore = LibrarySortStore();
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+  final SearchHistoryStore _history =
+      SearchHistoryStore(kind: SearchHistoryKind.library);
 
   bool get _hasActiveFilters =>
       _downloadedOnly ||
@@ -130,6 +135,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -380,6 +386,21 @@ class _LibraryScreenState extends State<LibraryScreen> {
         children: [
           _buildOfflineBanner(context),
           _buildSearchField(context),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: RecentSearches(
+              controller: _searchController,
+              focusNode: _searchFocusNode,
+              store: _history,
+              onSelected: (query) {
+                _searchController.text = query;
+                _searchController.selection =
+                    TextSelection.collapsed(offset: query.length);
+                _searchFocusNode.unfocus();
+                _onSearchSubmitted(query);
+              },
+            ),
+          ),
           _buildFilterChips(context),
           Expanded(child: _buildBody(context)),
         ],
@@ -392,13 +413,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
       child: TextField(
         controller: _searchController,
+        focusNode: _searchFocusNode,
+        onChanged: (_) => setState(() {}),
         textInputAction: TextInputAction.search,
         onSubmitted: _onSearchSubmitted,
         decoration: InputDecoration(
           isDense: true,
           hintText: 'Search your library',
           prefixIcon: const Icon(Icons.search),
-          suffixIcon: _filter.query.isEmpty
+          suffixIcon: _searchController.text.isEmpty
               ? null
               : IconButton(
                   icon: const Icon(Icons.clear),
@@ -533,6 +556,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   void _onSearchSubmitted(String value) {
+    unawaited(_history.add(value));
     final next = _filter.withQuery(value);
     if (next == _filter) return;
     setState(() => _filter = next);
