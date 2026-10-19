@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/auth/auth_state.dart';
 import 'package:open_music_player/core/cache/playback_cache_manager.dart';
 import 'package:open_music_player/core/download/download_state.dart';
@@ -44,6 +45,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+
+      expect(find.text(ApiClient.baseUrl), findsOneWidget);
 
       expect(find.text('Streaming quality'), findsNothing);
       expect(find.text('Download quality'), findsNothing);

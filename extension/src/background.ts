@@ -15,7 +15,7 @@ import { AppError, ErrorCodes, toAppError, type ApiErrorResponse } from './error
 import { apiClient } from './utils/api';
 import { getAuthTokens, saveAccessToken, clearAuthTokens } from './storage';
 
-const API_BASE_URL = 'http://localhost:8080/api/v1';
+import { endpoints } from './endpoints';
 const CONTEXT_MENU_ID = 'add-to-omp';
 
 // Backend availability state
@@ -41,7 +41,7 @@ async function checkBackendAvailability(): Promise<boolean> {
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL.replace('/api/v1', '')}/health`, {
+    const response = await fetch(endpoints.healthUrl, {
       method: 'GET',
     });
     backendAvailable = response.ok;

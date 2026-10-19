@@ -1,0 +1,47 @@
+#!/usr/bin/env node
+// Approved-input, local artifact builds only. No install, publish or deployment.
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const { prepare, writeEvidence } = require('./private-vm-preflight');
+try {
+  const args = process.argv.slice(2);
+  const target = args[args.indexOf('--target') + 1];
+  if (!args.includes('--target') || !['client', 'client-web', 'extension', 'all'].includes(target)) {
+    throw new Error('Required --target client|client-web|extension|all (artifact-only)');
+  }
+  const prepared = prepare(args, ['--target']);
+  const { inputs } = prepared;
+  const env = { ...process.env };
+  // Never inherit a destination or identity from the invoking shell. Media/CORS
+  // are backend validation evidence, not client overrides or deployment inputs.
+  for (const key of ['OMP_API_BASE_URL', 'OMP_HEALTH_URL', 'OMP_WEB_LOGIN_URL', 'OMP_WS_URL',
+    'OMP_SOURCE_REF', 'OMP_BUILD_ID', 'MINIO_PUBLIC_ENDPOINT', 'OMP_CORS_ALLOWED_ORIGINS']) delete env[key];
+  for (const key of ['OMP_API_BASE_URL', 'OMP_HEALTH_URL', 'OMP_WEB_LOGIN_URL', 'OMP_WS_URL', 'OMP_SOURCE_REF', 'OMP_BUILD_ID']) {
+    if (inputs[key] !== undefined) env[key] = inputs[key];
+  }
+  const root = path.resolve(__dirname, '..');
+  const run = (command, commandArgs, component) => {
+    const result = spawnSync(command, commandArgs, { cwd: path.join(root, component), env, stdio: 'inherit' });
+    if (result.error || result.status !== 0) throw new Error(`${command} failed; cutover and distribution HELD`);
+  };
+  // The receipt is preflight evidence only, never a claim that a build succeeded.
+  writeEvidence(prepared);
+  const defines = ['OMP_API_BASE_URL', 'OMP_SOURCE_REF', 'OMP_BUILD_ID'].map(key => `--dart-define=${key}=${inputs[key]}`);
+  if (target === 'client' || target === 'all') {
+    run('flutter', ['pub', 'get'], 'client');
+    run('flutter', ['build', 'apk', '--debug', '--no-pub', '--target-platform', 'android-arm64', ...defines], 'client');
+  }
+  if (target === 'client-web' || target === 'all') {
+    run('flutter', ['pub', 'get'], 'client');
+    run('flutter', ['build', 'web', '--release', '--no-pub', ...defines], 'client');
+  }
+  if (target === 'extension' || target === 'all') {
+    if (!fs.existsSync(path.join(root, 'extension/node_modules'))) run('npm', ['ci'], 'extension');
+    run('npm', ['run', 'build'], 'extension');
+  }
+  console.log('Local artifacts built from reviewed inputs; cutover and distribution HELD. No install/deploy performed.');
+} catch (error) {
+  console.error(error.message);
+  process.exitCode = 2;
+}

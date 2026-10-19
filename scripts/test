@@ -75,11 +75,15 @@ run_extension() {
     fi
     npm run type-check
     npm run test:auth-refresh
+    npm run test:endpoints
     npm run test:brand-assets
   )
 }
 
 case "$TARGET" in
+  private-vm)
+    node --test "$ROOT/scripts/test-private-vm.cjs"
+    ;;
   delivery|harness)
     run_delivery
     ;;
@@ -103,6 +107,7 @@ case "$TARGET" in
     ;;
   all)
     run_delivery
+    node --test "$ROOT/scripts/test-private-vm.cjs"
     run_backend
     run_analyzer
     run_stems
@@ -111,7 +116,7 @@ case "$TARGET" in
     run_extension
     ;;
   *)
-    echo "usage: scripts/test [delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
+    echo "usage: scripts/test [private-vm|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
     exit 2
     ;;
 esac

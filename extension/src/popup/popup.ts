@@ -9,6 +9,7 @@ import type {
   TrackMetadata,
 } from '../types';
 import { toAppError, type AppError } from '../errors';
+import { endpoints } from '../endpoints';
 import { setupOfflineDetection, showOfflineBanner, getErrorIcon, getErrorTitle } from '../errors/ui';
 
 interface UIElements {
@@ -527,7 +528,7 @@ function setupEventListeners(): void {
 
   elements.loginBtn.addEventListener('click', () => {
     // Open the app login page in a new tab
-    chrome.tabs.create({ url: 'http://localhost:8080/login' });
+    chrome.tabs.create({ url: endpoints.webLoginUrl });
   });
 
   // Offline retry button

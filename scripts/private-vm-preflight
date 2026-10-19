@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+// Offline preparation only: never enroll, restore, deploy or mutate repo vars.
+const fs = require('node:fs');
+const path = require('node:path');
+const { endpointBundle, validateUrl } = require('../extension/config/endpoints.cjs');
+function prepare(args, extraFlags = []) {
+  const allowed = ['--opt-in', '--anko-verification', '--evidence', ...extraFlags];
+  const seen = new Set();
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i];
+    if (!allowed.includes(flag) || seen.has(flag)) throw new Error('Unknown or duplicate argument; only reviewed record inputs are accepted');
+    seen.add(flag);
+    if (flag !== '--opt-in') {
+      if (!args[++i] || args[i].startsWith('--')) throw new Error(`Required value for ${flag}`);
+    }
+  }
+  const value = flag => {
+    const index = args.indexOf(flag);
+    if (index < 0 || !args[index + 1] || args[index + 1].startsWith('--')) throw new Error(`Required ${flag}`);
+    return args[index + 1];
+  };
+  if (!args.includes('--opt-in')) throw new Error('Explicit --opt-in required; cutover remains HELD');
+  const target = path.resolve(value('--evidence'));
+  if (fs.existsSync(target)) throw new Error('Existing evidence is not current-run approval; choose a fresh evidence path (input and receipts are never overwritten)');
+  const record = JSON.parse(fs.readFileSync(value('--anko-verification'), 'utf8'));
+  if (record.approvedBy !== 'Anko' || !record.verificationRef?.trim()) throw new Error('Anko verification reference required');
+  const checks = ['vmEnrollment', 'restore', 'apiRoutes', 'jwtAuth', 'media', 'cors', 'reboot', 'rollback'];
+  for (const check of checks) if (record.checks?.[check] !== true) throw new Error(`Anko must verify ${check}`);
+  const inputs = record.inputs;
+  for (const key of ['OMP_API_BASE_URL', 'OMP_HEALTH_URL', 'OMP_WEB_LOGIN_URL', 'MINIO_PUBLIC_ENDPOINT', 'OMP_SOURCE_REF', 'OMP_BUILD_ID']) {
+    if (typeof inputs?.[key] !== 'string' || !inputs[key].trim()) throw new Error(`Explicit ${key} required`);
+  }
+  const endpoints = endpointBundle(inputs);
+  const media = new URL(validateUrl(inputs.MINIO_PUBLIC_ENDPOINT));
+  if (media.pathname !== '/') throw new Error('MINIO_PUBLIC_ENDPOINT must be an origin, not a path prefix');
+  const origins = inputs.OMP_CORS_ALLOWED_ORIGINS;
+  if (!Array.isArray(origins) || !origins.length) throw new Error('Explicit CORS origins required');
+  for (const origin of origins) {
+    if (new URL(validateUrl(origin)).origin !== origin) throw new Error('CORS must list exact origins without paths/wildcards');
+  }
+  if (!origins.includes(new URL(endpoints.webLoginUrl).origin)) throw new Error('CORS must allow the configured frontend origin');
+  const evidence = {
+    cutover: 'HELD', deployment: 'HELD', distribution: 'HELD', liveVerifiedByScript: false, approvedBy: record.approvedBy,
+    verificationRef: record.verificationRef, checks: record.checks, endpoints,
+    mediaOrigin: media.origin, corsOrigins: origins,
+    buildInputs: { OMP_SOURCE_REF: inputs.OMP_SOURCE_REF, OMP_BUILD_ID: inputs.OMP_BUILD_ID },
+  };
+  return { inputs, evidence, target };
+}
+function writeEvidence({ target, evidence }) {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, JSON.stringify(evidence, null, 2) + '\n', { flag: 'wx' });
+}
+if (require.main === module) try {
+  const prepared = prepare(process.argv.slice(2));
+  writeEvidence(prepared);
+  const { target } = prepared;
+  console.log(`Offline preparation passed; cutover HELD. Evidence: ${target}`);
+} catch (error) {
+  console.error(error.message);
+  process.exitCode = 2;
+}
+module.exports = { prepare, writeEvidence };

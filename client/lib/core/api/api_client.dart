@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dio/dio.dart';
+import 'api_endpoint.dart';
 import '../auth/auth_tokens.dart';
 import '../discovery/discovery_models.dart';
 import '../storage/secure_storage.dart';
@@ -10,10 +11,8 @@ import '../../models/queue_state.dart';
 import '../../models/track_analysis.dart';
 
 class ApiClient {
-  static const String baseUrl = String.fromEnvironment(
-    'OMP_API_BASE_URL',
-    defaultValue: 'http://localhost:8080/api/v1',
-  );
+  static String get baseUrl => ApiEndpoint.baseUrl;
+  static String validateBaseUrl(String value) => ApiEndpoint.validate(value);
 
   final Dio _dio;
   final SecureStorage _storage;
