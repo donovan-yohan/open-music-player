@@ -5,6 +5,8 @@ import 'package:open_music_player/core/audio/mix_audio_handler.dart';
 import 'package:open_music_player/core/audio/playback_state.dart' as app_audio;
 import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
+import 'package:open_music_player/core/engine/tempo_automation.dart';
+import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
@@ -192,6 +194,18 @@ void main() {
           5000,
           snapToDownbeat: false,
         );
+        // Numeric BPM no longer infers a rate pull in volume-only queues.
+        // Exercise actual pitch refusal with an explicitly authored rate.
+        await harness.engine.loadMix(
+            TimelineModel(
+              autoTempoTransitions: false,
+              clips: [
+                for (final clip in harness.engine.model.clips)
+                  clip.withRateAutomation(
+                      const PlaybackRateAutomation(baseRate: 0.9)),
+              ],
+            ),
+            preserveActivePlayback: true);
         await harness.engine.seek(7500);
         await Future<void>.delayed(Duration.zero);
 

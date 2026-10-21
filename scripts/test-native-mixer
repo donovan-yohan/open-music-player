@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Isolated native feasibility gate. No installs, Flutter, audio devices or network."""
+import argparse
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--scratch', required=True, type=Path, help='Existing scratch parent for fresh build dirs')
+    parser.add_argument('--wav', type=Path, help='Optional NEW final proof WAV path')
+    parser.add_argument('--sanitize', action='store_true', help='Also build and run ASan/UBSan suite')
+    args = parser.parse_args()
+    scratch = args.scratch.resolve(strict=True)
+    if args.wav:
+        args.wav = args.wav.resolve()
+    if args.wav and args.wav.exists():
+        parser.error('--wav must not already exist (evidence is not overwritten)')
+    root = Path(__file__).resolve().parent.parent
+    source = root / 'client/native/mix_renderer'
+    receipt_dir = Path(tempfile.mkdtemp(prefix='soundq-native-gate.', dir=scratch))
+    receipt = {'cwd': str(root), 'source': str(source), 'commands': [], 'status': 'running'}
+    receipt['source_sha256'] = {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(source.rglob('*')) if path.is_file() and '__pycache__' not in path.parts
+    }
+    receipt['runner_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    receipt_path = receipt_dir / 'receipt.json'
+
+    def run(argv, build_dir, label):
+        env = dict(os.environ, TMPDIR=str(build_dir))
+        started = time.monotonic()
+        entry = {'argv': [str(x) for x in argv], 'cwd': str(root), 'TMPDIR': str(build_dir), 'timeout_seconds': 120}
+        try:
+            process = subprocess.run(entry['argv'], cwd=root, env=env, stdin=subprocess.DEVNULL,
+                                     capture_output=True, timeout=120)
+            stdout, stderr = process.stdout, process.stderr
+            entry['exit_code'] = process.returncode
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            stdout = getattr(exc, 'stdout', None) or b''
+            stderr = getattr(exc, 'stderr', None) or b''
+            entry['exception'] = str(exc)
+            entry['exit_code'] = None
+        entry.update(duration_seconds=time.monotonic()-started, stdout=stdout.decode(errors='replace'),
+                     stderr=stderr.decode(errors='replace'), stdout_base64=base64.b64encode(stdout).decode(),
+                     stderr_base64=base64.b64encode(stderr).decode())
+        receipt['commands'].append(entry)
+        (receipt_dir / (label+'.log')).write_bytes(stdout+b'\n'+stderr)
+        receipt_path.write_text(json.dumps(receipt, indent=2)+'\n')
+        print('$ '+' '.join(entry['argv']), flush=True)
+        print(entry['stdout'], end='', flush=True)
+        print(entry['stderr'], end='', file=sys.stderr, flush=True)
+        if entry['exit_code'] != 0:
+            raise RuntimeError('command failed: '+label)
+
+    try:
+        for mode in (['normal', 'asan-ubsan'] if args.sanitize else ['normal']):
+            build = receipt_dir / mode
+            build.mkdir()
+            run(['cmake', '-S', source, '-B', build, '-DCMAKE_BUILD_TYPE=Debug',
+                 '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON', '-DSQ_SANITIZE='+('ON' if mode != 'normal' else 'OFF')], build, mode+'-configure')
+            run(['cmake', '--build', build, '-j', '2'], build, mode+'-build')
+            run(['ctest', '--test-dir', build, '-V'], build, mode+'-test')
+            if mode == 'normal' and args.wav:
+                run([build / 'offline_render', args.wav], build, 'proof-render')
+                run([sys.executable, source / 'tests/verify_wav.py', args.wav], build, 'proof-decode')
+                receipt['artifact'] = {'path': str(args.wav), 'sha256': hashlib.sha256(args.wav.read_bytes()).hexdigest(),
+                                       'bytes': args.wav.stat().st_size}
+        receipt['status'] = 'passed'
+        return_code = 0
+    except Exception as exc:
+        receipt['status'] = 'failed'
+        receipt['error'] = str(exc)
+        print(str(exc), file=sys.stderr)
+        return_code = 1
+    receipt_path.write_text(json.dumps(receipt, indent=2)+'\n')
+    print('receipt='+str(receipt_path), flush=True)
+    return return_code
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

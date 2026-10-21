@@ -936,7 +936,8 @@ void main() {
       );
     });
 
-    test('session persists beat lock and reflows automatic transitions', () {
+    test('session persists literal beat lock and abstains without beat events',
+        () {
       final queue = [
         _item(
           'a',
@@ -968,13 +969,14 @@ void main() {
       expect(free.transitionSnapMode, BeatSnapMode.free);
       expect(free.clips[1].timelineStartMs, 22000);
 
-      final phraseLocked = free.withTransitionSnapMode(BeatSnapMode.beat16);
-      expect(phraseLocked.transitionSnapMode, BeatSnapMode.beat16);
-      expect(phraseLocked.clips[1].timelineStartMs, 24000);
+      final beatLocked = free.withTransitionSnapMode(BeatSnapMode.beat16);
+      expect(beatLocked.transitionSnapMode, BeatSnapMode.beat16);
+      // Downbeats alone do not identify every literal beat or a 16-beat group.
+      expect(beatLocked.clips[1].timelineStartMs, 30000);
 
-      final restored = MixSession.fromJson(phraseLocked.toJson());
+      final restored = MixSession.fromJson(beatLocked.toJson());
       expect(restored.transitionSnapMode, BeatSnapMode.beat16);
-      expect(restored.clips[1].timelineStartMs, 24000);
+      expect(restored.clips[1].timelineStartMs, 30000);
     });
 
     test('session json carries BPM, key, and downbeat metadata', () {
@@ -1210,7 +1212,7 @@ void main() {
       expect(session.clips.map((clip) => clip.timelineStartMs), [0, 20000]);
     });
 
-    test('normalizing an existing session refreshes tempo from media items',
+    test('normalizing a volume-only session refreshes tempo without rate pulls',
         () {
       final originalQueue = [_item('a', seconds: 20), _item('b', seconds: 20)];
       final session = MixSession.fromQueue(
@@ -1260,7 +1262,11 @@ void main() {
       expect(model.clips[0].timelineStartMs, 0);
       expect(model.clips[1].timelineStartMs, 12000);
       expect(model.clips[0].playbackRateAt(12000), 1);
-      expect(model.clips[1].playbackRateAt(12000), closeTo(0.8, 0.0001));
+      expect(model.clips[1].playbackRateAt(12000), 1);
+      for (final clip in model.clips) {
+        expect(clip.tempoPolicy, TempoPolicy.volumeOnly);
+        expect(clip.rateAutomation.segments, isEmpty);
+      }
     });
 
     test(

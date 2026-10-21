@@ -571,7 +571,7 @@ class _DeckControl extends StatelessWidget {
             onOut: () => session.setLoopOut(deck.deckId),
             onExit: () => session.clearLoop(deck.deckId),
           ),
-        DjPanel.stems => DjStemPanel(source: session.stems),
+        DjPanel.stems => DjStemPanel(source: session.stemsFor(deck.deckId)),
       };
 }
 

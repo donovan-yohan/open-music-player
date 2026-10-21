@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
 import 'package:open_music_player/core/engine/engine_audio_source_resolver.dart';
 import 'package:open_music_player/core/engine/voice.dart';
 import 'package:open_music_player/features/dj/dj_screen.dart';
@@ -16,20 +17,21 @@ import 'support/dj_viewport_fixtures.dart';
 void main() {
   late DjSessionProvider session;
 
-  setUp(() {
-    session = DjSessionProvider.prototype(
-      voiceFactory: () => _FakeVoice(),
-      resolver: const DirectEngineAudioSourceResolver(),
-    );
-  });
-
-  tearDown(() => session.dispose());
+  DjSessionProvider newSession() => DjSessionProvider.prototype(
+        voiceFactory: () => _FakeVoice(),
+        resolver: const DirectEngineAudioSourceResolver(),
+      );
 
   Future<void> pumpDj(WidgetTester tester) async {
+    session = newSession();
     landscapeReference.apply(tester);
     await tester.pumpWidget(
-      MaterialApp(
-          home: DjScreen(session: session, filePicker: () async => null)),
+      ChangeNotifierProvider<DjSessionProvider>(
+        create: (_) => session,
+        lazy: false,
+        child: MaterialApp(
+            home: DjScreen(session: session, filePicker: () async => null)),
+      ),
     );
     await tester.pump();
   }
@@ -139,11 +141,15 @@ void main() {
     tester,
   ) async {
     var fallbackCalls = 0;
+    session = newSession();
     landscapeReference.apply(tester);
 
     await tester.pumpWidget(
-      MaterialApp(
-        home: DjScreen(
+      ChangeNotifierProvider<DjSessionProvider>(
+        create: (_) => session,
+        lazy: false,
+        child: MaterialApp(
+            home: DjScreen(
           session: session,
           filePicker: () async {
             fallbackCalls++;
@@ -153,7 +159,7 @@ void main() {
               localUri: Uri(scheme: 'file', path: '/tmp/picked.mp3'),
             );
           },
-        ),
+        )),
       ),
     );
     await tester.pump();

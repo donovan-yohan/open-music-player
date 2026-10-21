@@ -146,7 +146,7 @@ void main() {
   });
 
   group('stemEdits on a mix plan clip', () {
-    test('a clip without stemEdits serializes exactly as before', () {
+    test('a clip without stemEdits serializes explicit volume-only intent', () {
       final json = clip().toJson();
 
       expect(json, {
@@ -157,6 +157,7 @@ void main() {
         'sourceEndMs': 5000,
         'timelineStartMs': 12000,
         'gainDb': -1.5,
+        'tempoPolicy': 'volumeOnly',
         'fadeInMs': 250,
       });
       expect(json.containsKey('stemEdits'), isFalse);
