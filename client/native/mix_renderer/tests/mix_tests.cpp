@@ -18,8 +18,14 @@ void* operator new(std::size_t n) {
   throw std::bad_alloc();
 }
 void* operator new[](std::size_t n) { return ::operator new(n); }
+void* operator new(std::size_t n,const std::nothrow_t&) noexcept { try { return ::operator new(n); } catch(...) { return nullptr; } }
+void* operator new[](std::size_t n,const std::nothrow_t&) noexcept { return ::operator new(n,std::nothrow); }
 void operator delete(void *p) noexcept { if(render_guard) ++guarded_heap_calls; std::free(p); }
 void operator delete[](void *p) noexcept { ::operator delete(p); }
+void operator delete(void *p,std::size_t) noexcept { ::operator delete(p); }
+void operator delete[](void *p,std::size_t) noexcept { ::operator delete[](p); }
+void operator delete(void *p,const std::nothrow_t&) noexcept { ::operator delete(p); }
+void operator delete[](void *p,const std::nothrow_t&) noexcept { ::operator delete[](p); }
 
 #define CHECK(x) do { if (!(x)) { std::cerr << __func__ << ":" << __LINE__ << ": " #x "\n"; std::exit(1); } } while (0)
 static void near(float a, float b) { CHECK(std::abs(a-b) < 0.000002f); }

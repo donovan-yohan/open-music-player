@@ -13,8 +13,14 @@ static thread_local bool in_render=false;
 static std::atomic<unsigned> heap_calls{0};
 void* operator new(std::size_t n) { if(in_render) ++heap_calls; if(auto *p=std::malloc(n?n:1)) return p; throw std::bad_alloc(); }
 void* operator new[](std::size_t n) { return ::operator new(n); }
+void* operator new(std::size_t n,const std::nothrow_t&) noexcept { try { return ::operator new(n); } catch(...) { return nullptr; } }
+void* operator new[](std::size_t n,const std::nothrow_t&) noexcept { return ::operator new(n,std::nothrow); }
 void operator delete(void *p) noexcept { if(in_render) ++heap_calls; std::free(p); }
 void operator delete[](void *p) noexcept { ::operator delete(p); }
+void operator delete(void *p,std::size_t) noexcept { ::operator delete(p); }
+void operator delete[](void *p,std::size_t) noexcept { ::operator delete[](p); }
+void operator delete(void *p,const std::nothrow_t&) noexcept { ::operator delete(p); }
+void operator delete[](void *p,const std::nothrow_t&) noexcept { ::operator delete[](p); }
 static sq_result render(sq_engine *e,float *out,uint32_t n) {
   in_render=true; auto result=sq_render(e,out,n); in_render=false; return result;
 }
