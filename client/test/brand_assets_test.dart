@@ -24,7 +24,7 @@ void main() {
     for (final path in [
       'lib/features/auth/screens/login_screen.dart',
       'lib/features/splash/splash_screen.dart',
-      'lib/app/router.dart',
+      'lib/features/desktop/desktop_listening_shell.dart',
     ]) {
       final source = File(path).readAsStringSync();
       expect(source, contains(_logoAsset));

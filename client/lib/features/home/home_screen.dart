@@ -246,7 +246,7 @@ class _HomeContent extends StatelessWidget {
           sections: sections,
           onPlayTrack: onPlayTrack,
           onOpenPlaylist: onOpenPlaylist,
-          columns: viewportWidth >= 1440 ? 4 : 3,
+          columns: (constraints.maxWidth / 280).floor().clamp(3, 8),
         );
       }
       return _MobileHomeContent(
@@ -323,67 +323,45 @@ class _DesktopHomeContent extends StatelessWidget {
       for (final playlist in sections.playlists)
         _DesktopPosterItem.playlist(playlist: playlist),
     ];
-    return Stack(
-      children: [
-        Positioned(
-          right: -18,
-          top: -52,
-          child: ExcludeSemantics(
-            child: Text(
-              '39',
-              style: TextStyle(
-                color: Theme.of(context)
-                    .colorScheme
-                    .primary
-                    .withValues(alpha: 0.14),
-                fontSize: 184,
-                fontWeight: FontWeight.w800,
-                height: 1,
-              ),
-            ),
+    return CustomScrollView(
+      key: const ValueKey('soundq_desktop_home'),
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(32, 28, 32, 24),
+          sliver: SliverList(
+            delegate: SliverChildListDelegate.fixed([
+              Text('Your rotation',
+                  style: Theme.of(context).textTheme.headlineMedium),
+              const SizedBox(height: 6),
+              Text('Recent tracks, top plays, and playlists.',
+                  style: Theme.of(context).textTheme.bodyMedium),
+              const SizedBox(height: 24),
+            ]),
           ),
         ),
-        CustomScrollView(
-          key: const ValueKey('soundq_desktop_home'),
-          slivers: [
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(32, 28, 32, 112),
-              sliver: SliverList(
-                delegate: SliverChildListDelegate.fixed([
-                  Text('Your rotation',
-                      style: Theme.of(context).textTheme.headlineMedium),
-                  const SizedBox(height: 6),
-                  Text('Recent tracks, top plays, and playlists.',
-                      style: Theme.of(context).textTheme.bodyMedium),
-                  const SizedBox(height: 24),
-                ]),
-              ),
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(32, 0, 32, 112),
+          sliver: SliverGrid(
+            key: ValueKey('soundq_desktop_home_grid_$columns'),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: columns,
+              mainAxisSpacing: 16,
+              crossAxisSpacing: 16,
+              childAspectRatio: 0.82,
             ),
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(32, 0, 32, 112),
-              sliver: SliverGrid(
-                key: ValueKey('soundq_desktop_home_grid_$columns'),
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: columns,
-                  mainAxisSpacing: 16,
-                  crossAxisSpacing: 16,
-                  childAspectRatio: 0.82,
-                ),
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    final item = items[index];
-                    return _DesktopPoster(
-                      item: item,
-                      onTap: item.track == null
-                          ? () => onOpenPlaylist(item.playlist!)
-                          : () => onPlayTrack(tracks, item.index!),
-                    );
-                  },
-                  childCount: items.length,
-                ),
-              ),
+            delegate: SliverChildBuilderDelegate(
+              (context, index) {
+                final item = items[index];
+                return _DesktopPoster(
+                  item: item,
+                  onTap: item.track == null
+                      ? () => onOpenPlaylist(item.playlist!)
+                      : () => onPlayTrack(tracks, item.index!),
+                );
+              },
+              childCount: items.length,
             ),
-          ],
+          ),
         ),
       ],
     );

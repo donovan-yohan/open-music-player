@@ -35,15 +35,17 @@ class AuthState extends ChangeNotifier {
   bool get biometricUnlockAvailable => _biometricUnlockAvailable;
 
   Future<void> checkAuthStatus() async {
-    _sessionRevision++;
+    final revision = ++_sessionRevision;
     _status = AuthStatus.checking;
     _error = null;
     notifyListeners();
 
     try {
       final isAuth = await _authService.isAuthenticated();
+      if (revision != _sessionRevision) return;
       if (isAuth) {
-        await _refreshBiometricState();
+        await _refreshBiometricState(revision);
+        if (revision != _sessionRevision) return;
         _status = _biometricUnlockEnabled
             ? AuthStatus.biometricLocked
             : AuthStatus.authenticated;
@@ -52,6 +54,7 @@ class AuthState extends ChangeNotifier {
         _biometricUnlockEnabled = false;
       }
     } catch (_) {
+      if (revision != _sessionRevision) return;
       _status = AuthStatus.unauthenticated;
       _biometricUnlockEnabled = false;
     }
@@ -59,16 +62,19 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<bool> login({required String email, required String password}) async {
-    _sessionRevision++;
+    final revision = ++_sessionRevision;
+    _authService.beginAuthIntent();
     _isLoading = true;
     _error = null;
     notifyListeners();
 
     try {
       final result = await _authService.login(email: email, password: password);
+      if (revision != _sessionRevision) return false;
 
       if (result.success) {
-        await _refreshBiometricState();
+        await _refreshBiometricState(revision);
+        if (revision != _sessionRevision) return false;
         _status = AuthStatus.authenticated;
         return true;
       } else {
@@ -76,8 +82,10 @@ class AuthState extends ChangeNotifier {
         return false;
       }
     } finally {
-      _isLoading = false;
-      notifyListeners();
+      if (revision == _sessionRevision) {
+        _isLoading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -86,7 +94,8 @@ class AuthState extends ChangeNotifier {
     required String password,
     required String username,
   }) async {
-    _sessionRevision++;
+    final revision = ++_sessionRevision;
+    _authService.beginAuthIntent();
     _isLoading = true;
     _error = null;
     notifyListeners();
@@ -97,9 +106,11 @@ class AuthState extends ChangeNotifier {
         password: password,
         username: username,
       );
+      if (revision != _sessionRevision) return false;
 
       if (result.success) {
-        await _refreshBiometricState();
+        await _refreshBiometricState(revision);
+        if (revision != _sessionRevision) return false;
         _status = AuthStatus.authenticated;
         return true;
       } else {
@@ -107,49 +118,60 @@ class AuthState extends ChangeNotifier {
         return false;
       }
     } finally {
-      _isLoading = false;
-      notifyListeners();
+      if (revision == _sessionRevision) {
+        _isLoading = false;
+        notifyListeners();
+      }
     }
   }
 
   Future<void> logout() async {
-    _sessionRevision++;
+    final revision = ++_sessionRevision;
+    _authService.beginAuthIntent();
     _isLoading = true;
     notifyListeners();
 
     try {
       await _authService.logout();
+      if (revision != _sessionRevision) return;
       _status = AuthStatus.unauthenticated;
       _biometricUnlockEnabled = false;
     } finally {
-      _isLoading = false;
-      notifyListeners();
+      if (revision == _sessionRevision) {
+        _isLoading = false;
+        notifyListeners();
+      }
     }
   }
 
   Future<bool> setBiometricUnlockEnabled(bool enabled) async {
+    final revision = _sessionRevision;
     _isLoading = true;
     _error = null;
     notifyListeners();
 
     try {
       final result = await _authService.setBiometricUnlockEnabled(enabled);
+      if (revision != _sessionRevision) return false;
       if (result.success) {
-        await _refreshBiometricState();
+        await _refreshBiometricState(revision);
         _biometricUnlockEnabled = enabled;
         return true;
       }
 
       _error = result.error;
-      await _refreshBiometricState();
+      await _refreshBiometricState(revision);
       return false;
     } finally {
-      _isLoading = false;
-      notifyListeners();
+      if (revision == _sessionRevision) {
+        _isLoading = false;
+        notifyListeners();
+      }
     }
   }
 
   Future<bool> unlockWithBiometrics() async {
+    final revision = _sessionRevision;
     if (!_biometricUnlockEnabled) {
       _status = AuthStatus.authenticated;
       notifyListeners();
@@ -162,6 +184,7 @@ class AuthState extends ChangeNotifier {
 
     try {
       final unlocked = await _authService.unlockWithBiometrics();
+      if (revision != _sessionRevision) return false;
       if (unlocked) {
         _status = AuthStatus.authenticated;
         return true;
@@ -170,24 +193,30 @@ class AuthState extends ChangeNotifier {
       _error = 'Unlock canceled. Sign in with your password to continue.';
       return false;
     } finally {
-      _isLoading = false;
-      notifyListeners();
+      if (revision == _sessionRevision) {
+        _isLoading = false;
+        notifyListeners();
+      }
     }
   }
 
   Future<void> usePasswordLoginFallback() async {
-    _sessionRevision++;
+    final revision = ++_sessionRevision;
+    _authService.beginAuthIntent();
     _isLoading = true;
     _error = null;
     notifyListeners();
 
     try {
       await _authService.clearLocalSession();
+      if (revision != _sessionRevision) return;
       _status = AuthStatus.unauthenticated;
       _biometricUnlockEnabled = false;
     } finally {
-      _isLoading = false;
-      notifyListeners();
+      if (revision == _sessionRevision) {
+        _isLoading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -203,9 +232,10 @@ class AuthState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _refreshBiometricState() async {
+  Future<void> _refreshBiometricState(int revision) async {
     final available = await _authService.isBiometricUnlockAvailable();
     final enabled = await _authService.isBiometricUnlockEnabled();
+    if (revision != _sessionRevision) return;
     _biometricUnlockAvailable = available;
     _biometricUnlockEnabled = enabled;
   }
