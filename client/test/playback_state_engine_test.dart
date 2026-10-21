@@ -10,6 +10,7 @@ import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/engine/click_audition_projection.dart';
 import 'package:open_music_player/core/engine/click_auditioner.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
+import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
@@ -738,6 +739,47 @@ void main() {
       playback.dispose();
     });
 
+    for (final intent in [
+      'seek',
+      'local-begin',
+      'local-update',
+      'local-end',
+      'timeline-begin',
+      'timeline-update',
+      'timeline-end'
+    ]) {
+      test('$intent invalidates pending recording intent synchronously',
+          () async {
+        SharedPreferences.setMockInitialValues({});
+        final playback = _playbackState();
+        await playback.playQueue([_track(1, seconds: 30)]);
+        final before = playback.transportCommandGeneration;
+        Future<void>? pending;
+        switch (intent) {
+          case 'seek':
+            pending = playback.seek(const Duration(seconds: 2));
+          case 'local-begin':
+            playback.beginLocalScrub();
+          case 'local-update':
+            playback.updateLocalScrub(const Duration(seconds: 2));
+          case 'local-end':
+            pending = playback.endLocalScrub(const Duration(seconds: 2));
+          case 'timeline-begin':
+            playback.beginTimelineScrub();
+          case 'timeline-update':
+            playback.updateTimelineScrub(2000);
+          case 'timeline-end':
+            pending = playback.endTimelineScrub(2000);
+        }
+        final immediateEpoch = playback.transportCommandGeneration;
+        await pending;
+        playback.dispose();
+        expect(immediateEpoch, greaterThan(before),
+            reason:
+                'The intent must revoke an old recording lease before queued transport work.');
+      });
+    }
+
     test('replacements and skips advance focus transport generation', () async {
       final playback = _playbackState();
 
@@ -1053,7 +1095,8 @@ void main() {
       playback.dispose();
     });
 
-    test('analysis refresh updates active timeline tempo automation', () async {
+    test('analysis refresh preserves active volume-only tempo intent',
+        () async {
       SharedPreferences.setMockInitialValues({});
       final playback = _playbackState();
 
@@ -1097,7 +1140,11 @@ void main() {
         '2026-07-10T11:00:00.123456Z',
       );
       expect(clips[0].playbackRateAt(12000), 1);
-      expect(clips[1].playbackRateAt(12000), closeTo(0.8, 0.0001));
+      expect(clips[1].playbackRateAt(12000), 1);
+      for (final clip in clips) {
+        expect(clip.tempoPolicy, TempoPolicy.volumeOnly);
+        expect(clip.rateAutomation.segments, isEmpty);
+      }
       expect(playback.currentIndex, 0);
       playback.dispose();
     });

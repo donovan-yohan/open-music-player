@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/audio/audio_preparation_service.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/audio/signed_audio_url_service.dart';
 import '../../core/api/api_client.dart';
@@ -61,7 +62,7 @@ class DjScreen extends StatefulWidget {
 
 class _DjScreenState extends State<DjScreen> {
   DjSessionProvider? _session;
-  TrackStemChannelSource? _stems;
+  final _stems = <DjDeckId, TrackStemChannelSource>{};
   bool _ownsSession = false;
   bool _seeded = false;
 
@@ -82,7 +83,7 @@ class _DjScreenState extends State<DjScreen> {
   PlaybackState? _playback;
   StreamSubscription<DjPlaybackSignal>? _playbackSubscription;
 
-  /// Serializes deck seeds so two voices never load concurrently.
+  /// Serializes seed passes so pending decks are not loaded twice.
   Future<void> _seedChain = Future<void>.value();
 
   /// Last analysis revision already pushed onto the decks. QueueProvider also
@@ -170,11 +171,8 @@ class _DjScreenState extends State<DjScreen> {
   /// lane must not silence it (a picked local file, a downloaded track, or the
   /// previous track still under the fader).
   ///
-  /// Calls are serialized through [_seedChain]. Seed loads are awaited per deck
-  /// and the snapshot stream can emit while one is still in flight, so without
-  /// this a second pass would see deck B still empty and load it concurrently —
-  /// two voices' loads overlapping on the one shared audio session, which the
-  /// prototype's voices cannot do.
+  /// Calls are serialized through [_seedChain]. Individual decks prepare
+  /// independently, but another snapshot must not start a duplicate seed pass.
   Future<void> _seedDecksFromPlayback() {
     final next = _seedChain.then((_) => _seedEmptyDecks());
     _seedChain = next.then((_) {}, onError: (_) {});
@@ -187,21 +185,16 @@ class _DjScreenState extends State<DjScreen> {
     if (!mounted || playback == null || session == null) return;
     final current = _hydrated(playback.currentPlaybackTrack());
     final next = _hydrated(playback.nextPlaybackTrack());
-    // Deck A is awaited before deck B: the prototype's two voices share one
-    // audio session, so their loads must not overlap.
+    final loads = <Future<void>>[];
     if (current != null && !session.deckA.isLoaded) {
       final seeds = DjSessionProvider.queueSeeds(current, null);
-      if (seeds.isNotEmpty) await session.load(DjDeckId.a, seeds.first);
-      // Resolve stem availability for whatever actually landed on deck A. A
-      // local-file fallback load has no library track id, so the panel says so
-      // rather than offering a separation that cannot be queued.
-      await _stems?.bindTrack(_libraryTrackId(session.deckA.trackRef));
-      if (!mounted) return;
+      if (seeds.isNotEmpty) loads.add(session.load(DjDeckId.a, seeds.first));
     }
     if (next != null && !session.deckB.isLoaded) {
       final seeds = DjSessionProvider.queueSeeds(next, null);
-      if (seeds.isNotEmpty) await session.load(DjDeckId.b, seeds.first);
+      if (seeds.isNotEmpty) loads.add(session.load(DjDeckId.b, seeds.first));
     }
+    await Future.wait(loads);
   }
 
   /// [track] with whatever hydrated analysis the client already holds, and with
@@ -238,24 +231,19 @@ class _DjScreenState extends State<DjScreen> {
     ]);
   }
 
-  /// Deck refs are `playbackTrackId ?? queueItemId` for library tracks and
-  /// `local:<path>` for the picker fallback; only the former can be separated.
-  static int? _libraryTrackId(String? trackRef) {
-    if (trackRef == null) return null;
-    final parsed = int.tryParse(trackRef.trim());
-    return parsed != null && parsed > 0 ? parsed : null;
-  }
-
   DjSessionProvider _newPrototypeSession() {
-    _stems = TrackStemChannelSource(
-        service: StemsService(context.read<ApiClient>()));
+    final service = StemsService(context.read<ApiClient>());
+    for (final deck in [DjDeckId.a, DjDeckId.b]) {
+      _stems[deck] = TrackStemChannelSource(service: service);
+    }
     return DjSessionProvider.prototype(
       resolver: DefaultEngineAudioSourceResolver(
         signedAudioUrlService: SignedAudioUrlService(context.read<ApiClient>()),
         localResolver: context.read<DownloadService>(),
         cacheManager: context.read<PlaybackCacheManager?>(),
       ),
-      stems: _stems,
+      preparationService: context.read<AudioPreparationService?>(),
+      deckStems: _stems,
     );
   }
 
@@ -289,7 +277,9 @@ class _DjScreenState extends State<DjScreen> {
   void dispose() {
     unawaited(_playbackSubscription?.cancel() ?? Future<void>.value());
     _queue?.removeListener(_onQueueAnalysisChanged);
-    _stems?.dispose();
+    for (final source in _stems.values) {
+      source.dispose();
+    }
     if (_ownsSession) {
       // DeckController.dispose releases its Voice; do not overlap it with a
       // second release from stopAll.

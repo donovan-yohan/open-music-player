@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import '../../models/mix_plan.dart';
+import '../../models/stem_edits.dart';
 import '../../models/timeline_clip.dart';
 import 'gain_envelope.dart';
 import 'tempo_automation.dart';
@@ -15,8 +16,10 @@ class MixClip {
   final String? queueItemId;
   final double playbackRate;
   final String pitchMode;
+  final TempoPolicy tempoPolicy;
   final ClipTempoMetadata tempo;
   final PlaybackRateAutomation rateAutomation;
+  final StemEdits? stemEdits;
   final List<_ProjectedBeatMarkerCacheEntry> _projectedBeatMarkerCache = [];
 
   MixClip({
@@ -26,8 +29,10 @@ class MixClip {
     this.queueItemId,
     double playbackRate = 1,
     this.pitchMode = 'preserve',
+    this.tempoPolicy = TempoPolicy.constantTempoLock,
     this.tempo = ClipTempoMetadata.empty,
     PlaybackRateAutomation? rateAutomation,
+    this.stemEdits,
   })  : audioSourceRef = audioSourceRef ?? placement.trackId,
         playbackRate = playbackRate
             .clamp(minTempoAutomationRate, maxTempoAutomationRate)
@@ -134,8 +139,10 @@ class MixClip {
         queueItemId: queueItemId,
         playbackRate: playbackRate,
         pitchMode: pitchMode,
+        tempoPolicy: tempoPolicy,
         tempo: tempo,
         rateAutomation: automation,
+        stemEdits: stemEdits,
       );
 
   MixClip withEnvelope(GainEnvelope nextEnvelope) => MixClip(
@@ -145,8 +152,10 @@ class MixClip {
         queueItemId: queueItemId,
         playbackRate: playbackRate,
         pitchMode: pitchMode,
+        tempoPolicy: tempoPolicy,
         tempo: tempo,
         rateAutomation: rateAutomation,
+        stemEdits: stemEdits,
       );
 
   @override
@@ -158,7 +167,9 @@ class MixClip {
       other.queueItemId == queueItemId &&
       other.playbackRate == playbackRate &&
       other.pitchMode == pitchMode &&
+      other.tempoPolicy == tempoPolicy &&
       other.tempo == tempo &&
+      other.stemEdits == stemEdits &&
       other.rateAutomation == rateAutomation;
 
   @override
@@ -169,8 +180,10 @@ class MixClip {
         queueItemId,
         playbackRate,
         pitchMode,
+        tempoPolicy,
         tempo,
         rateAutomation,
+        stemEdits,
       );
 }
 
@@ -239,31 +252,18 @@ int? beatAlignmentCorrectionMs({
 }
 
 List<int> _alignmentMarkersForClip(MixClip clip, BeatSnapMode snapMode) {
-  final downbeats = beatMarkersForSnapMode(
-    clip.tempo,
-    BeatSnapMode.downbeat,
-  );
-  final beats = clip.tempo.hasReliableBeatGrid
-      ? clip.projectTempoSegmentBeatMarkers(clip.tempo.beatsMs)
-      : const <int>[];
-
-  return switch (snapMode) {
-    BeatSnapMode.free => const [],
-    BeatSnapMode.downbeat => downbeats,
-    BeatSnapMode.beat1 => beats.isNotEmpty ? beats : downbeats,
-    BeatSnapMode.beat4 =>
-      downbeats.isNotEmpty ? downbeats : _strideMarkers(beats, 4),
-    BeatSnapMode.beat16 => downbeats.isNotEmpty
-        ? _strideMarkers(downbeats, 4)
-        : _strideMarkers(beats, 16),
-  };
-}
-
-List<int> _strideMarkers(List<int> markers, int stride) {
-  if (markers.isEmpty || stride <= 1) return markers;
-  return [
-    for (var index = 0; index < markers.length; index += stride) markers[index],
-  ];
+  // Individual beats can follow a local octave segment without claiming a
+  // grouped origin; 4/16 still need one stable anchored lattice.
+  if (snapMode == BeatSnapMode.beat1 && clip.tempo.hasReliableBeatGrid) {
+    return clip.projectTempoSegmentBeatMarkers(clip.tempo.beatsMs);
+  }
+  // A changing octave interpretation has no single ordinal group lattice.
+  final scale = clip.tempoScaleAt(clip.timelineStartMs);
+  if (clip.rateAutomation.segments
+      .any((segment) => segment.tempoScale != scale)) {
+    return const [];
+  }
+  return beatMarkersForSnapMode(clip.tempo, snapMode, tempoScale: scale);
 }
 
 /// Pure timeline arrangement model for Phase 1 of the mix engine.
@@ -276,12 +276,18 @@ class TimelineModel {
     Iterable<MixClip> clips = const [],
     bool autoTempoTransitions = true,
   }) {
-    var model = const TimelineModel._([]);
-    for (final clip in clips) {
-      if (model.canPlaceClip(clip)) {
-        model = model._copyAdding(clip);
+    final ordered = List<MixClip>.from(clips)..sort(_compareClips);
+    final ids = <String>{};
+    for (final clip in ordered) {
+      if (!ids.add(clip.id)) {
+        throw StateError('duplicate timeline clip ID: ${clip.id}');
       }
     }
+    if (_exceedsMaxConcurrentVoices(ordered)) {
+      throw StateError(
+          'timeline would exceed $maxConcurrentVoices concurrent voices');
+    }
+    final model = TimelineModel._(List.unmodifiable(ordered));
     return autoTempoTransitions ? model._withStandardTempoTransitions() : model;
   }
 
@@ -332,17 +338,13 @@ class TimelineModel {
     MixPlan plan, {
     int Function(String trackId)? sourceDurationMsFor,
   }) {
-    var model = const TimelineModel._([]);
-    for (final clip in plan.clips) {
-      final mixClip = _mixClipFromPlanClip(
-        clip,
-        sourceDurationMsFor: sourceDurationMsFor,
-      );
-      if (model.canPlaceClip(mixClip)) {
-        model = model._copyAdding(mixClip);
-      }
-    }
-    return model;
+    return TimelineModel(
+      clips: plan.clips.map((clip) => _mixClipFromPlanClip(
+            clip,
+            sourceDurationMsFor: sourceDurationMsFor,
+          )),
+      autoTempoTransitions: false,
+    );
   }
 
   factory TimelineModel.fromQueuePlan(
@@ -357,14 +359,23 @@ class TimelineModel {
     bool useTempoDefaultStarts = false,
     BeatSnapMode snapMode = BeatSnapMode.downbeat,
   }) {
-    final remainingPlanClips = List<MixPlanClip>.from(plan.clips);
+    final planClipsByTrack = <String, List<MixPlanClip>>{};
+    for (final clip in plan.clips) {
+      (planClipsByTrack[clip.trackId] ??= []).add(clip);
+    }
+    final planClipsForTrack = {
+      for (final entry in planClipsByTrack.entries)
+        entry.key: entry.value.iterator,
+    };
     var cursor = 0;
-    var model = const TimelineModel._([]);
+    final queueClips = <MixClip>[];
     MixClip? previousQueueClip;
 
     for (var index = 0; index < trackOrder.length; index++) {
       final trackId = trackOrder[index];
-      final planClip = _takeFirstForTrack(remainingPlanClips, trackId);
+      final planClips = planClipsForTrack[trackId];
+      final planClip =
+          planClips != null && planClips.moveNext() ? planClips.current : null;
       final sourceDurationMs = _sourceDurationFor(
         trackId,
         planClip,
@@ -418,16 +429,16 @@ class TimelineModel {
         queueItemId:
             planClip?.queueItemId ?? queueItemIdFor?.call(trackId, index),
         pitchMode: planClip?.pitchMode ?? pitchModePreserve,
+        tempoPolicy: planClip?.tempoPolicy ?? TempoPolicy.volumeOnly,
+        stemEdits: planClip?.stemEdits,
         tempo: tempo,
       );
-      if (model.canPlaceClip(mixClip)) {
-        model = model._copyAdding(mixClip);
-        previousQueueClip = mixClip;
-      }
+      queueClips.add(mixClip);
+      previousQueueClip = mixClip;
       cursor = placement.timelineEndMs;
     }
 
-    return model;
+    return TimelineModel(clips: queueClips, autoTempoTransitions: false);
   }
 
   int get durationMs => clips.fold<int>(
@@ -467,6 +478,10 @@ class TimelineModel {
   }
 
   bool canPlaceClip(MixClip candidate, {String? ignoringClipId}) {
+    if (clips
+        .any((clip) => clip.id != ignoringClipId && clip.id == candidate.id)) {
+      return false;
+    }
     final candidates = <MixClip>[
       for (final clip in clips)
         if (clip.id != ignoringClipId) clip,
@@ -476,6 +491,9 @@ class TimelineModel {
   }
 
   TimelineModel addClip(MixClip clip) {
+    if (clips.any((existing) => existing.id == clip.id)) {
+      throw StateError('duplicate timeline clip ID: ${clip.id}');
+    }
     if (!canPlaceClip(clip)) {
       throw StateError(
         'clip would exceed $maxConcurrentVoices concurrent voices',
@@ -508,147 +526,236 @@ class TimelineModel {
           fadeOutMs:
               clip.envelope.fadeOutMs == 0 ? null : clip.envelope.fadeOutMs,
           pitchMode: clip.rateAutomation.pitchMode,
+          tempoPolicy: clip.tempoPolicy,
+          stemEdits: clip.stemEdits,
         ),
       )
       .toList(growable: false);
 
   TimelineModel _copyAdding(MixClip clip) {
-    final next = [...clips, clip]..sort((a, b) {
-        final byStart = a.timelineStartMs.compareTo(b.timelineStartMs);
-        if (byStart != 0) return byStart;
-        return a.id.compareTo(b.id);
-      });
+    final next = [...clips, clip]..sort(_compareClips);
     return TimelineModel._(List.unmodifiable(next));
   }
 
   TimelineModel _withStandardTempoTransitions() {
     if (clips.length < 2) return this;
-
     final next = List<MixClip>.from(clips);
-    for (var i = 0; i < next.length; i++) {
-      for (var j = i + 1; j < next.length; j++) {
-        final first = next[i];
-        final second = next[j];
-        final overlapStart = math.max(
-          first.timelineStartMs,
-          second.timelineStartMs,
-        );
-        final overlapEnd = math.min(first.timelineEndMs, second.timelineEndMs);
-        if (overlapEnd <= overlapStart) continue;
-
-        final firstIsOutgoing = first.timelineStartMs <= second.timelineStartMs;
-        final outgoingIndex = firstIsOutgoing ? i : j;
-        final incomingIndex = firstIsOutgoing ? j : i;
-        final outgoing = next[outgoingIndex];
-        final incoming = next[incomingIndex];
-        if (outgoing.timelineStartMs == incoming.timelineStartMs) continue;
-        final transition = _tempoMatchedPair(
-          outgoing: outgoing,
-          incoming: incoming,
-          overlapStartMs: overlapStart,
-          initialOverlapEndMs: overlapEnd,
-        );
-        if (transition == null) continue;
-
-        final proposedOutgoing = transition.outgoing;
-        final proposedIncoming = transition.incoming;
-        final proposed = List<MixClip>.from(next)
-          ..[outgoingIndex] = proposedOutgoing
-          ..[incomingIndex] = proposedIncoming;
-        if (_exceedsMaxConcurrentVoices(proposed)) continue;
-
-        next[outgoingIndex] = proposedOutgoing;
-        next[incomingIndex] = proposedIncoming;
+    final capacity = _TimelineCapacity(next);
+    // Starts and IDs already have deterministic ordering. One reference per
+    // connected overlap component, not competing pairwise overlays.
+    var first = 0;
+    while (first < next.length) {
+      var end = next[first].timelineEndMs;
+      var last = first + 1;
+      while (last < next.length && next[last].timelineStartMs < end) {
+        end = math.max(end, next[last].timelineEndMs);
+        last++;
       }
+      if (last - first > 1) {
+        final master = next[first];
+        final proposed = <(int, MixClip)>[];
+        var accepted = next.sublist(first, last).every((clip) =>
+            clip.tempoPolicy == TempoPolicy.constantTempoLock &&
+            hasConstantTempoLockGrid(clip.tempo));
+        final masterRate = _constantClipRate(master);
+        accepted = accepted && masterRate != null;
+        if (accepted) {
+          for (var i = first + 1; i < last; i++) {
+            final incoming = next[i];
+            final locked = _constantMasterIncoming(master, incoming);
+            if (locked == null ||
+                !capacity.tryReplacePair(master, incoming, master, locked)) {
+              accepted = false;
+              break;
+            }
+            proposed.add((i, locked));
+          }
+        }
+        // A lock may lengthen a tail into the next independently planned
+        // component. Abstain rather than introduce two simultaneous masters.
+        if (accepted &&
+            last < next.length &&
+            proposed.any((entry) =>
+                entry.$2.timelineEndMs > next[last].timelineStartMs)) {
+          accepted = false;
+        }
+        if (accepted) {
+          for (final (i, clip) in proposed) {
+            next[i] = clip;
+          }
+        } else {
+          // Atomic component abstention: never leave a partially locked group.
+          for (final (i, clip) in proposed) {
+            capacity.tryReplacePair(master, clip, master, next[i]);
+          }
+        }
+      }
+      first = last;
     }
-
     return TimelineModel._(List.unmodifiable(next));
   }
 
-  static bool _exceedsMaxConcurrentVoices(Iterable<MixClip> candidates) {
-    final clips = candidates.toList(growable: false);
-    final probeTimes = clips
-        .map((clip) => clip.timelineStartMs)
-        .toSet()
-        .toList(growable: false)
-      ..sort();
+  static int _compareClips(MixClip a, MixClip b) {
+    final byStart = a.timelineStartMs.compareTo(b.timelineStartMs);
+    return byStart != 0 ? byStart : a.id.compareTo(b.id);
+  }
 
-    for (final time in probeTimes) {
-      final depth = clips.where((clip) => clip.isActiveAt(time)).length;
+  static bool _exceedsMaxConcurrentVoices(Iterable<MixClip> candidates) {
+    final events = <(int, int)>[];
+    for (final clip in candidates) {
+      // Empty half-open intervals consume no voice, including at their start.
+      if (clip.timelineEndMs <= clip.timelineStartMs) continue;
+      events.add((clip.timelineStartMs, 1));
+      events.add((clip.timelineEndMs, -1));
+    }
+    events.sort((a, b) {
+      final byTime = a.$1.compareTo(b.$1);
+      // Releases precede admissions at a butt joint: [start, end).
+      return byTime != 0 ? byTime : a.$2.compareTo(b.$2);
+    });
+    var depth = 0;
+    for (final (_, delta) in events) {
+      depth += delta;
       if (depth > maxConcurrentVoices) return true;
     }
     return false;
   }
 }
 
-_TempoMatchedPair? _tempoMatchedPair({
-  required MixClip outgoing,
-  required MixClip incoming,
-  required int overlapStartMs,
-  required int initialOverlapEndMs,
-}) {
-  final initialOverlapMs = initialOverlapEndMs - overlapStartMs;
-  if (initialOverlapMs <= 0) return null;
-
-  var transitionEndMs = initialOverlapEndMs;
-  MixClip? proposedOutgoing;
-  MixClip? proposedIncoming;
-  var converged = false;
-
-  for (var attempt = 0; attempt < 12; attempt++) {
-    final ratePlan = planTempoMatchedTransition(
-      overlapStartMs: overlapStartMs,
-      overlapEndMs: transitionEndMs,
-      outgoingTempo: outgoing.tempo,
-      incomingTempo: incoming.tempo,
-      outgoingBaseRate: outgoing.rateAutomation.baseRate,
-      incomingBaseRate: incoming.rateAutomation.baseRate,
-    );
-    if (ratePlan == null) return null;
-
-    proposedOutgoing = outgoing.withRateAutomation(
-      ratePlan.applyToOutgoing(outgoing.rateAutomation),
-    );
-    proposedIncoming = incoming.withRateAutomation(
-      ratePlan.applyToIncoming(incoming.rateAutomation),
-    );
-    final actualOverlapEndMs = math.min(
-      proposedOutgoing.timelineEndMs,
-      proposedIncoming.timelineEndMs,
-    );
-    if (actualOverlapEndMs <= overlapStartMs) return null;
-    if ((actualOverlapEndMs - transitionEndMs).abs() <= 1) {
-      transitionEndMs = actualOverlapEndMs;
-      converged = true;
-      break;
+/// Range-add/range-max index over fixed clip starts. Overlap depth can only
+/// increase at a start, even when tempo automation moves an end. This keeps
+/// each proposed pair's full-arrangement capacity check O(log N), not O(N).
+class _TimelineCapacity {
+  _TimelineCapacity(List<MixClip> clips)
+      : _starts = clips.map((clip) => clip.timelineStartMs).toSet().toList()
+          ..sort() {
+    _max = List.filled(_starts.length * 4, 0);
+    _lazy = List.filled(_starts.length * 4, 0);
+    for (final clip in clips) {
+      _addClip(clip, 1);
     }
-    transitionEndMs = actualOverlapEndMs;
   }
 
-  if (!converged || proposedOutgoing == null || proposedIncoming == null) {
-    return null;
+  final List<int> _starts;
+  late final List<int> _max;
+  late final List<int> _lazy;
+
+  bool tryReplacePair(MixClip outgoing, MixClip incoming, MixClip nextOutgoing,
+      MixClip nextIncoming) {
+    _addClip(outgoing, -1);
+    _addClip(incoming, -1);
+    _addClip(nextOutgoing, 1);
+    _addClip(nextIncoming, 1);
+    if (_max[1] <= TimelineModel.maxConcurrentVoices) return true;
+    _addClip(nextOutgoing, -1);
+    _addClip(nextIncoming, -1);
+    _addClip(outgoing, 1);
+    _addClip(incoming, 1);
+    return false;
   }
 
-  final transitionMs = transitionEndMs - overlapStartMs;
-  if (outgoing.envelope.fadeOutMs == initialOverlapMs) {
-    proposedOutgoing = proposedOutgoing.withEnvelope(
-      outgoing.envelope.withFadeOutMs(transitionMs),
-    );
-  }
-  if (incoming.envelope.fadeInMs == initialOverlapMs) {
-    proposedIncoming = proposedIncoming.withEnvelope(
-      incoming.envelope.withFadeInMs(transitionMs),
-    );
+  int _lowerBound(int timeMs) {
+    var low = 0;
+    var high = _starts.length;
+    while (low < high) {
+      final mid = (low + high) ~/ 2;
+      if (_starts[mid] < timeMs) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    return low;
   }
 
-  return _TempoMatchedPair(proposedOutgoing, proposedIncoming);
+  void _addClip(MixClip clip, int delta) {
+    if (clip.timelineEndMs <= clip.timelineStartMs) return;
+    final start = _lowerBound(clip.timelineStartMs);
+    final end = _lowerBound(clip.timelineEndMs);
+    _add(1, 0, _starts.length, start, end, delta);
+  }
+
+  void _add(int node, int left, int right, int start, int end, int delta) {
+    if (end <= left || right <= start) return;
+    if (start <= left && right <= end) {
+      _max[node] += delta;
+      _lazy[node] += delta;
+      return;
+    }
+    final mid = (left + right) ~/ 2;
+    _add(node * 2, left, mid, start, end, delta);
+    _add(node * 2 + 1, mid, right, start, end, delta);
+    _max[node] = _lazy[node] + math.max(_max[node * 2], _max[node * 2 + 1]);
+  }
 }
 
-class _TempoMatchedPair {
-  const _TempoMatchedPair(this.outgoing, this.incoming);
+/// Authored curves are immutable. Only a single constant rate and octave
+/// interpretation covering the entire selected window can join an auto lock.
+double? _constantClipRate(MixClip clip) {
+  final start = clip.timelineStartMs;
+  final end = clip.timelineEndMs;
+  final rate = clip.playbackRateAt(start);
+  final scale = clip.tempoScaleAt(start);
+  final cuts = <int>{start, math.max(start, end - 1)};
+  for (final segment in clip.rateAutomation.segments) {
+    if (segment.endMs <= start || segment.startMs >= end) continue;
+    if (segment.startRate != segment.endRate) return null;
+    cuts.add(segment.startMs.clamp(start, end - 1));
+    cuts.add(segment.endMs.clamp(start, end - 1));
+  }
+  for (final cut in cuts) {
+    if ((clip.playbackRateAt(cut) - rate).abs() > 0.000001 ||
+        clip.tempoScaleAt(cut) != scale) {
+      return null;
+    }
+  }
+  return rate;
+}
 
-  final MixClip outgoing;
-  final MixClip incoming;
+MixClip? _constantMasterIncoming(MixClip master, MixClip incoming) {
+  final masterRate = _constantClipRate(master);
+  if (masterRate == null) return null;
+  final pair = resolveTempoTransitionBpmPair(
+      outgoingTempo: master.tempo,
+      incomingTempo: incoming.tempo,
+      outgoingBaseRate: masterRate,
+      incomingBaseRate: incoming.rateAutomation.baseRate);
+  if (pair == null) return null;
+  final scale = master.tempoScaleAt(master.timelineStartMs) *
+      pair.incomingTempoScale /
+      pair.outgoingTempoScale;
+  if (!tempoOctaveScales.contains(scale)) return null;
+  final pulse = master.effectiveBpmAt(master.timelineStartMs)!;
+  final rate = pulse / (incoming.tempo.nativeBpm! * scale);
+  final base = incoming.rateAutomation.baseRate;
+  // Technical .5..2 feasibility is not audible-quality admission.
+  if (!rate.isFinite ||
+      rate < minTempoAutomationRate ||
+      rate > maxTempoAutomationRate ||
+      (rate / base - 1).abs() > 0.15) {
+    return null;
+  }
+  final existing = _constantClipRate(incoming);
+  if (incoming.rateAutomation.segments.isNotEmpty ||
+      base != incoming.playbackRate) {
+    if (existing == null ||
+        (existing - rate).abs() > 0.000001 ||
+        incoming.tempoScaleAt(incoming.timelineStartMs) != scale) {
+      return null;
+    }
+    return incoming;
+  }
+  // Prepare before audibility and hold through EOF. The segment's absolute
+  // end bounds even the slowest supported rate; no overlap-end restoration.
+  return incoming.withRateAutomation(incoming.rateAutomation.withSegment(
+      PlaybackRateSegment(
+          startMs: incoming.timelineStartMs,
+          endMs: incoming.timelineStartMs +
+              (incoming.selectedDurationMs / minTempoAutomationRate).ceil() +
+              1,
+          startRate: rate,
+          endRate: rate,
+          tempoScale: scale)));
 }
 
 MixClip _mixClipFromPlanClip(
@@ -672,6 +779,8 @@ MixClip _mixClipFromPlanClip(
     envelope: _envelopeFromPlanClip(clip),
     queueItemId: clip.queueItemId,
     pitchMode: clip.pitchMode,
+    tempoPolicy: clip.tempoPolicy,
+    stemEdits: clip.stemEdits,
   );
 }
 
@@ -693,10 +802,4 @@ int _sourceDurationFor(
   final minimum = clip?.sourceEndMs ?? 0;
   if (provided == null) return minimum;
   return math.max(provided, minimum);
-}
-
-MixPlanClip? _takeFirstForTrack(List<MixPlanClip> clips, String trackId) {
-  final index = clips.indexWhere((clip) => clip.trackId == trackId);
-  if (index == -1) return null;
-  return clips.removeAt(index);
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
@@ -203,6 +205,83 @@ void main() {
     expect(playback.isPreviewingMixSeam, isFalse);
     expect(playback.queue.map((item) => item.id), ['7']);
   });
+
+  test('closing while preview resolution is pending cannot revive preview',
+      () async {
+    final started = Completer<void>();
+    final release = Completer<void>();
+    final playback = _playbackState(beforeResolve: (ids) async {
+      if (ids.contains(1)) {
+        if (!started.isCompleted) started.complete();
+        await release.future;
+      }
+    });
+    addTearDown(playback.dispose);
+    await playback.playQueue([_track(7, seconds: 120)]);
+    final preview = playback.previewMixSeam(
+      [_track(1, seconds: 200), _track(2, seconds: 200)],
+      _plan(overlapMs: 10000),
+      seamIndex: 0,
+    );
+    await started.future;
+    await playback.endMixSeamPreview();
+    release.complete();
+    await preview;
+    expect(playback.isPreviewingMixSeam, isFalse);
+    expect(playback.queue.map((item) => item.id), ['7']);
+  });
+
+  test('stop abandons a pending preview without resuming its snapshot',
+      () async {
+    final started = Completer<void>();
+    final release = Completer<void>();
+    final playback = _playbackState(beforeResolve: (ids) async {
+      if (ids.contains(1)) {
+        if (!started.isCompleted) started.complete();
+        await release.future;
+      }
+    });
+    addTearDown(playback.dispose);
+    await playback.playQueue([_track(7, seconds: 120)]);
+    final preview = playback.previewMixSeam(
+      [_track(1, seconds: 200), _track(2, seconds: 200)],
+      _plan(overlapMs: 10000),
+      seamIndex: 0,
+    );
+    await started.future;
+    await playback.stop();
+    release.complete();
+    await preview;
+    await playback.endMixSeamPreview();
+    expect(playback.queue.map((item) => item.id), ['7']);
+    expect(playback.isPlaying, isFalse);
+    expect(playback.isPreviewingMixSeam, isFalse);
+  });
+
+  test('normal replacement abandons the preview restore snapshot', () async {
+    final started = Completer<void>();
+    final release = Completer<void>();
+    final playback = _playbackState(beforeResolve: (ids) async {
+      if (ids.contains(1)) {
+        if (!started.isCompleted) started.complete();
+        await release.future;
+      }
+    });
+    addTearDown(playback.dispose);
+    await playback.playQueue([_track(7, seconds: 120)]);
+    final preview = playback.previewMixSeam(
+      [_track(1, seconds: 200), _track(2, seconds: 200)],
+      _plan(overlapMs: 10000),
+      seamIndex: 0,
+    );
+    await started.future;
+    await playback.playQueue([_track(9, seconds: 120)]);
+    release.complete();
+    await preview;
+    await playback.endMixSeamPreview();
+    expect(playback.queue.map((item) => item.id), ['9']);
+    expect(playback.isPreviewingMixSeam, isFalse);
+  });
 }
 
 const int _clipDurationMs = 200000;
@@ -253,7 +332,8 @@ Map<String, dynamic> _track(int id, {required int seconds}) => {
       'duration': seconds,
     };
 
-PlaybackState _playbackState() {
+PlaybackState _playbackState(
+    {Future<void> Function(List<int>)? beforeResolve}) {
   final engine = PlaybackEngine.withClock(
     clock: DefaultTimelineClock(
       now: () => DateTime.utc(2026),
@@ -265,6 +345,7 @@ PlaybackState _playbackState() {
     engine,
     signedAudioUrlService: SignedAudioUrlService.withRequester((body) async {
       final ids = (body['trackIds'] as List).cast<int>();
+      await beforeResolve?.call(ids);
       return {
         'urls': [
           for (final id in ids)

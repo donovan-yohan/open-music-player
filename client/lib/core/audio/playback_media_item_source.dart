@@ -17,6 +17,11 @@ String? localArtifactPath(MediaItem item) {
 /// the signed `url` extra otherwise. Throws when neither is available rather
 /// than silently producing an unplayable source.
 Uri audioSourceUriForItem(MediaItem item) {
+  // Explicit native-only identity, not an original stream or local-file claim.
+  // PlaybackEngine rejects this scheme on its legacy consumer.
+  if (item.extras?['preparedAudio'] == true) {
+    return Uri(scheme: 'soundq-prepared', path: item.id);
+  }
   final localPath = localArtifactPath(item);
   if (localPath != null) {
     return Uri.file(localPath);

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import '../auth/auth_tokens.dart';
 import '../discovery/discovery_models.dart';
 import '../storage/secure_storage.dart';
@@ -12,12 +13,41 @@ import '../../models/track_analysis.dart';
 class ApiClient {
   static const String baseUrl = String.fromEnvironment(
     'OMP_API_BASE_URL',
-    defaultValue: 'http://localhost:8080/api/v1',
+    defaultValue: 'https://soundq.fish-rattlesnake.ts.net/api/v1',
   );
 
   final Dio _dio;
   final SecureStorage _storage;
-  Future<bool>? _refreshInFlight;
+  static const _logoutIntentKey = 'logoutAuthIntent';
+  static const _scopeKey = 'capturedAuthSession';
+  static const _wireSettledKey = 'authWireSettled';
+  static final _scopeZoneKey = Object();
+
+  AuthSessionScope captureAuthSession() => _storage.captureSession();
+  Listenable get authSessionChanges => _storage.sessionChanges;
+  bool acceptsAuthSession(AuthSessionScope scope) => _storage.accepts(scope);
+
+  /// Captures before async data preparation. Every send/retry retains this scope.
+  Future<T> inAuthSession<T>(
+      AuthSessionScope scope, Future<T> Function() action) {
+    return runZoned(action, zoneValues: {_scopeZoneKey: scope});
+  }
+
+  Future<Response<T>> sessionRequest<T>(AuthSessionScope scope, String path,
+      {required String method, Object? data, CancelToken? cancelToken}) async {
+    final wire = _WireLifetime();
+    final extra = <String, dynamic>{_scopeKey: scope, _wireSettledKey: wire};
+    try {
+      return await _dio.request<T>(path,
+          data: data,
+          cancelToken: cancelToken,
+          options: Options(method: method, extra: extra));
+    } finally {
+      // Dio may complete cancellation before its adapter actually settles.
+      // The shared mutable extra is copied by Dio; use a stable barrier holder.
+      await wire.settled;
+    }
+  }
 
   static const _authRetryExtraKey = 'authRetryAttempted';
   static const _authRefreshBypassPaths = {
@@ -35,6 +65,8 @@ class ApiClient {
   ApiClient({SecureStorage? storage, Dio? dio})
       : _storage = storage ?? SecureStorage(),
         _dio = dio ?? Dio() {
+    _dio.httpClientAdapter =
+        _SessionGuardAdapter(_dio.httpClientAdapter, _storage);
     _dio.options.baseUrl = baseUrl;
     _dio.options.connectTimeout = const Duration(seconds: 10);
     _dio.options.receiveTimeout = const Duration(seconds: 10);
@@ -49,8 +81,32 @@ class ApiClient {
     RequestOptions options,
     RequestInterceptorHandler handler,
   ) async {
-    if (!_matchesAnyPath(options, _anonymousAuthPaths)) {
+    final logoutIntent = options.extra[_logoutIntentKey] as AuthSessionScope?;
+    if (logoutIntent != null && _matchesAnyPath(options, {'/auth/logout'})) {
       final token = await _storage.getAccessToken();
+      if (!_storage.ownsIntent(logoutIntent)) {
+        return handler.reject(DioException(
+            requestOptions: options,
+            type: DioExceptionType.cancel,
+            message: 'Logout superseded'));
+      }
+      options.headers.remove('Authorization');
+      if (token != null && token.isNotEmpty) {
+        options.headers['Authorization'] = 'Bearer $token';
+      }
+    } else if (!_matchesAnyPath(options, _anonymousAuthPaths)) {
+      final scope = options.extra[_scopeKey] as AuthSessionScope? ??
+          Zone.current[_scopeZoneKey] as AuthSessionScope? ??
+          captureAuthSession();
+      options.extra[_scopeKey] = scope;
+      final token = await _storage.accessTokenFor(scope);
+      if (!_storage.accepts(scope)) {
+        return handler.reject(DioException(
+            requestOptions: options,
+            type: DioExceptionType.cancel,
+            message: 'Authentication session changed'));
+      }
+      options.headers.remove('Authorization');
       if (token != null && token.isNotEmpty) {
         options.headers['Authorization'] = 'Bearer $token';
       }
@@ -67,79 +123,40 @@ class ApiClient {
         !_isAuthEndpoint(requestOptions) &&
         requestOptions.extra[_authRetryExtraKey] != true;
 
-    if (shouldRefresh) {
-      final refreshed = await refreshSession();
-      if (refreshed) {
-        final retryResponse = await _retryRequest(requestOptions);
-        return handler.resolve(retryResponse);
+    final scope = requestOptions.extra[_scopeKey] as AuthSessionScope?;
+    if (shouldRefresh && scope != null && _storage.accepts(scope)) {
+      final refreshed = await _refreshFor(scope);
+      if (refreshed && _storage.accepts(scope)) {
+        try {
+          requestOptions.extra[_authRetryExtraKey] = true;
+          return handler.resolve(await _dio.fetch(requestOptions));
+        } on DioException catch (retryError) {
+          return handler.next(retryError);
+        }
       }
     }
     handler.next(error);
   }
 
-  Future<bool> refreshSession() {
-    final inFlight = _refreshInFlight;
-    if (inFlight != null) {
-      return inFlight;
-    }
-
-    late final Future<bool> refresh;
-    refresh = _performRefreshSession().whenComplete(() {
-      if (identical(_refreshInFlight, refresh)) {
-        _refreshInFlight = null;
-      }
-    });
-    _refreshInFlight = refresh;
-    return refresh;
+  Future<void> logoutForIntent(AuthSessionScope intent) async {
+    await _dio.post('/auth/logout',
+        options: Options(extra: {_logoutIntentKey: intent}));
   }
 
-  Future<bool> _performRefreshSession() async {
-    final refreshToken = await _storage.getRefreshToken();
-    if (refreshToken == null || refreshToken.isEmpty) {
-      await _clearTokensIfRefreshTokenUnchanged(refreshToken);
-      return false;
-    }
+  Future<bool> refreshSession() => _refreshFor(captureAuthSession());
 
-    try {
-      final response = await _dio.post(
-        '/auth/refresh',
-        data: refreshTokenPayload(refreshToken),
-      );
-
-      if (response.statusCode == 200) {
+  Future<bool> _refreshFor(AuthSessionScope scope) =>
+      _storage.refreshSession(scope, (refreshToken) async {
+        final response = await _dio.post('/auth/refresh',
+            data: refreshTokenPayload(refreshToken),
+            options: Options(extra: {_scopeKey: scope}));
+        if (response.statusCode != 200) return null;
         final tokens = parseAuthTokens(response.data);
-        await _storage.saveTokens(
+        return (
           accessToken: tokens.accessToken,
-          refreshToken: tokens.refreshToken,
+          refreshToken: tokens.refreshToken
         );
-        return true;
-      }
-      await _clearTokensIfRefreshTokenUnchanged(refreshToken);
-    } catch (_) {
-      await _clearTokensIfRefreshTokenUnchanged(refreshToken);
-    }
-    return false;
-  }
-
-  Future<void> _clearTokensIfRefreshTokenUnchanged(
-    String? attemptedRefreshToken,
-  ) async {
-    final currentRefreshToken = await _storage.getRefreshToken();
-    if (currentRefreshToken == attemptedRefreshToken) {
-      await _storage.clearTokens();
-    }
-  }
-
-  Future<Response<dynamic>> _retryRequest(RequestOptions options) async {
-    final token = await _storage.getAccessToken();
-    options.extra[_authRetryExtraKey] = true;
-    if (token != null && token.isNotEmpty) {
-      options.headers['Authorization'] = 'Bearer $token';
-    } else {
-      options.headers.remove('Authorization');
-    }
-    return _dio.fetch(options);
-  }
+      });
 
   bool _isAuthEndpoint(RequestOptions options) {
     return _matchesAnyPath(options, _authRefreshBypassPaths);
@@ -162,9 +179,12 @@ class ApiClient {
     return _dio.get<T>(
       path,
       queryParameters: queryParameters,
-      options: headers == null && receiveTimeout == null
-          ? null
-          : Options(headers: headers, receiveTimeout: receiveTimeout),
+      options: Options(
+          headers: headers,
+          receiveTimeout: receiveTimeout,
+          extra: {
+            _scopeKey: Zone.current[_scopeZoneKey] ?? captureAuthSession()
+          }),
     );
   }
 
@@ -179,9 +199,12 @@ class ApiClient {
       path,
       data: data,
       queryParameters: queryParameters,
-      options: headers == null && receiveTimeout == null
-          ? null
-          : Options(headers: headers, receiveTimeout: receiveTimeout),
+      options: Options(
+          headers: headers,
+          receiveTimeout: receiveTimeout,
+          extra: {
+            _scopeKey: Zone.current[_scopeZoneKey] ?? captureAuthSession()
+          }),
     );
   }
 
@@ -195,7 +218,9 @@ class ApiClient {
       path,
       data: data,
       queryParameters: queryParameters,
-      options: headers == null ? null : Options(headers: headers),
+      options: Options(headers: headers, extra: {
+        _scopeKey: Zone.current[_scopeZoneKey] ?? captureAuthSession()
+      }),
     );
   }
 
@@ -207,9 +232,18 @@ class ApiClient {
     return _dio.delete<T>(
       path,
       queryParameters: queryParameters,
-      options: headers == null ? null : Options(headers: headers),
+      options: Options(headers: headers, extra: {
+        _scopeKey: Zone.current[_scopeZoneKey] ?? captureAuthSession()
+      }),
     );
   }
+
+  Future<Response<T>> _patch<T>(String path, {Object? data}) =>
+      _dio.patch<T>(path,
+          data: data,
+          options: Options(extra: {
+            _scopeKey: Zone.current[_scopeZoneKey] ?? captureAuthSession()
+          }));
 
   // ---------------------------------------------------------------------------
   // Queue + mix-plan operations
@@ -224,7 +258,7 @@ class ApiClient {
 
   Future<QueueState> getQueue() async {
     try {
-      final response = await _dio.get('/queue');
+      final response = await get('/queue');
       return QueueState.fromJson(_asMap(response.data));
     } on DioException catch (e) {
       final data = e.response?.data;
@@ -258,16 +292,20 @@ class ApiClient {
       parsedTrackIds.add(parsedTrackId);
     }
 
+    final scope = Zone.current[_scopeZoneKey] as AuthSessionScope? ??
+        captureAuthSession();
     QueueState? latest;
     for (var i = 0; i < parsedTrackIds.length; i++) {
       try {
-        final response = await _dio.post(
-          '/queue/items',
-          data: {
-            'trackId': parsedTrackIds[i],
-            'position': i == 0 ? position : 'last',
-          },
-        );
+        final response = await inAuthSession(
+            scope,
+            () => post(
+                  '/queue/items',
+                  data: {
+                    'trackId': parsedTrackIds[i],
+                    'position': i == 0 ? position : 'last',
+                  },
+                ));
         latest = QueueState.fromJson(_asMap(response.data));
       } on DioException catch (e) {
         throw ApiException('Failed to add to queue', _statusCodeOf(e));
@@ -284,7 +322,7 @@ class ApiClient {
     String? reason,
   }) async {
     try {
-      final response = await _dio.post(
+      final response = await post(
         '/source-selections',
         data: {
           'sessionId': sessionId,
@@ -305,7 +343,7 @@ class ApiClient {
     int offset = 0,
   }) async {
     try {
-      final response = await _dio.get(
+      final response = await get(
         '/source-selections',
         queryParameters: {'limit': limit, 'offset': offset},
       );
@@ -317,7 +355,7 @@ class ApiClient {
 
   Future<SourceSelectionDecision> getSourceSelection(String id) async {
     try {
-      final response = await _dio.get(
+      final response = await get(
         '/source-selections/${Uri.encodeComponent(id)}',
       );
       return SourceSelectionDecision.fromJson(_asMap(response.data));
@@ -337,7 +375,7 @@ class ApiClient {
     int? playlistId,
   }) async {
     try {
-      final response = await _dio.post(
+      final response = await post(
         '/queue/items',
         data: {
           'position': position,
@@ -359,7 +397,7 @@ class ApiClient {
     Duration timeout = const Duration(seconds: 8),
   }) async {
     try {
-      final response = await _dio.post('/downloads',
+      final response = await post('/downloads',
           data: {'url': url, 'source_type': sourceType}).timeout(timeout);
       return DownloadJobResponse.fromJson(_asMap(response.data));
     } on TimeoutException {
@@ -375,7 +413,7 @@ class ApiClient {
     }
 
     try {
-      final response = await _dio.delete(
+      final response = await delete(
         '/queue/items/${Uri.encodeComponent(queueItemId)}',
       );
       return QueueState.fromJson(_asMap(response.data));
@@ -390,7 +428,7 @@ class ApiClient {
     }
 
     try {
-      final response = await _dio.post(
+      final response = await post(
         '/queue/items/${Uri.encodeComponent(queueItemId)}/retry',
       );
       return QueueState.fromJson(_asMap(response.data));
@@ -408,7 +446,7 @@ class ApiClient {
     }
 
     try {
-      final response = await _dio.put(
+      final response = await put(
         '/queue/reorder',
         data: {'queueItemId': queueItemId, 'toPosition': toPosition},
       );
@@ -420,7 +458,7 @@ class ApiClient {
 
   Future<void> clearQueue() async {
     try {
-      await _dio.delete('/queue');
+      await delete('/queue');
     } on DioException catch (e) {
       throw ApiException('Failed to clear queue', _statusCodeOf(e));
     }
@@ -432,7 +470,7 @@ class ApiClient {
     }
 
     try {
-      final response = await _dio.get('/tracks/$trackId/analysis');
+      final response = await get('/tracks/$trackId/analysis');
       final data = _asMap(response.data);
       return TrackAnalysis.fromJson(
         status: data['status'],
@@ -461,7 +499,7 @@ class ApiClient {
     }
 
     try {
-      final response = await _dio.patch(
+      final response = await _patch(
         '/tracks/$trackId/analysis/overrides',
         data: {
           'overrides': overrides.toJson(includeServerMetadata: false),
@@ -493,7 +531,7 @@ class ApiClient {
 
   Future<List<MixPlan>> listMixPlans({int limit = 50, int offset = 0}) async {
     try {
-      final response = await _dio.get(
+      final response = await get(
         '/mix-plans',
         queryParameters: {
           'limit': limit.toString(),
@@ -502,7 +540,8 @@ class ApiClient {
       );
       final data = _asMap(response.data);
       return (data['data'] as List? ?? const [])
-          .map((plan) => MixPlan.fromJson(plan as Map<String, dynamic>))
+          .map(
+              (plan) => MixPlan.fromAuthoringJson(plan as Map<String, dynamic>))
           .toList();
     } on DioException catch (e) {
       throw ApiException('Failed to list mix plans', _statusCodeOf(e));
@@ -511,10 +550,10 @@ class ApiClient {
 
   Future<MixPlan> getMixPlan(String id) async {
     try {
-      final response = await _dio.get<Map<String, dynamic>>(
+      final response = await get<Map<String, dynamic>>(
         '/mix-plans/${Uri.encodeComponent(id)}',
       );
-      return MixPlan.fromJson(_asMap(response.data));
+      return MixPlan.fromAuthoringJson(_asMap(response.data));
     } on DioException catch (e) {
       throw ApiException('Failed to get mix plan', _statusCodeOf(e));
     }
@@ -525,7 +564,7 @@ class ApiClient {
     required List<MixPlanClip> clips,
   }) async {
     try {
-      final response = await _dio.post(
+      final response = await post(
         '/mix-plans',
         data: {
           'schemaVersion': 1,
@@ -533,7 +572,7 @@ class ApiClient {
           'clips': clips.map((clip) => clip.toJson()).toList(),
         },
       );
-      return MixPlan.fromJson(_asMap(response.data));
+      return MixPlan.fromAuthoringJson(_asMap(response.data));
     } on DioException catch (e) {
       throw ApiException('Failed to create mix plan', _statusCodeOf(e));
     }
@@ -546,7 +585,7 @@ class ApiClient {
     required List<MixPlanClip> clips,
   }) async {
     try {
-      final response = await _dio.put(
+      final response = await put(
         '/mix-plans/${Uri.encodeComponent(id)}',
         data: {
           'schemaVersion': 1,
@@ -555,7 +594,7 @@ class ApiClient {
           'clips': clips.map((clip) => clip.toJson()).toList(),
         },
       );
-      return MixPlan.fromJson(_asMap(response.data));
+      return MixPlan.fromAuthoringJson(_asMap(response.data));
     } on DioException catch (e) {
       throw _apiExceptionFrom(e, 'Failed to update mix plan');
     }
@@ -614,7 +653,7 @@ class ApiClient {
     bool orderByHistory = false,
   }) async {
     try {
-      final response = await _dio.get(
+      final response = await get(
         '/tracks/nearby',
         queryParameters: {
           'bpm': bpm.toString(),
@@ -636,6 +675,46 @@ class ApiClient {
     if (data is Map) return Map<String, dynamic>.from(data);
     throw ApiException('Unexpected response shape', 0);
   }
+}
+
+/// Last synchronous check at actual network dispatch (after async interceptors
+/// and body transformation), including refresh and retries.
+class _WireLifetime {
+  Future<void>? settled;
+}
+
+class _SessionGuardAdapter implements HttpClientAdapter {
+  _SessionGuardAdapter(this.inner, this.storage);
+  final HttpClientAdapter inner;
+  final SecureStorage storage;
+  @override
+  Future<ResponseBody> fetch(RequestOptions options,
+      Stream<Uint8List>? requestStream, Future<void>? cancelFuture) {
+    final anonymousLogin = options.uri.path.endsWith('/auth/login') ||
+        options.uri.path.endsWith('/auth/register');
+    final scope = anonymousLogin
+        ? null
+        : options.extra[ApiClient._scopeKey] as AuthSessionScope?;
+    final intent =
+        options.extra[ApiClient._logoutIntentKey] as AuthSessionScope?;
+    if ((scope != null && !storage.accepts(scope)) ||
+        (intent != null && !storage.ownsIntent(intent))) {
+      throw DioException(
+          requestOptions: options,
+          type: DioExceptionType.cancel,
+          message: 'Authentication session changed before dispatch');
+    }
+    final pending = inner.fetch(options, requestStream, cancelFuture);
+    final wire = options.extra[ApiClient._wireSettledKey];
+    if (wire is _WireLifetime) {
+      wire.settled =
+          pending.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    }
+    return pending;
+  }
+
+  @override
+  void close({bool force = false}) => inner.close(force: force);
 }
 
 class DownloadJobResponse {

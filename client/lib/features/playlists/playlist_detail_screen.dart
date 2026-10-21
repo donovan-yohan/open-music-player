@@ -15,7 +15,7 @@ import '../../core/providers/settings_provider.dart';
 import '../../core/services/library_service.dart';
 import '../../core/services/playlist_service.dart';
 import '../../core/api/api_client.dart';
-import '../../../models/mix_plan.dart';
+import '../../models/mix_plan.dart';
 import '../../models/nearby_tracks.dart';
 import '../../models/playback_payload.dart';
 import '../../core/storage/secure_storage.dart';

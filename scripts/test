@@ -53,6 +53,24 @@ run_stems() {
 
 run_client() {
   (
+    # Exercise the real FFI library in the normal client gate, never a skipped
+    # native test or a library left over from another checkout.
+    native_build="$(mktemp -d "${TMPDIR:-/tmp}/soundq-client-native.XXXXXXXX")"
+    cmake -S "$ROOT/client/native/mix_renderer" -B "$native_build" -DCMAKE_BUILD_TYPE=Debug
+    cmake --build "$native_build" -j 2
+    ctest --test-dir "$native_build" --output-on-failure
+    case "$(uname -s)" in
+      Darwin) native_extension=dylib ;;
+      Linux) native_extension=so ;;
+      *) echo "native client tests require a supported host library path" >&2; exit 1 ;;
+    esac
+    export SOUNDQ_NATIVE_MIX_LIBRARY="$native_build/libsoundq_mix.$native_extension"
+    # This target links actual host/render/core but NO OS platform. Tests can
+    # exercise device handoff/failures without ever opening a real audio device.
+    cmake -S "$ROOT/client/native/device_host" -B "$native_build/ffi-fake" \
+      -DCMAKE_BUILD_TYPE=Debug -DSQ_DEVICE_FFI_FAKE_ONLY=ON
+    cmake --build "$native_build/ffi-fake" -j 2
+    export SOUNDQ_NATIVE_DEVICE_TEST_LIBRARY="$native_build/ffi-fake/libsoundq_device_ffi_fake.$native_extension"
     cd "$ROOT/client"
     flutter pub get
     python3 test/audio_service_vendor_check.py

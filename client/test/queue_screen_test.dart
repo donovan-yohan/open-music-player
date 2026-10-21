@@ -3363,10 +3363,11 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   }
 
   @override
-  void beginTimelineScrub() => scrubEvents.add('begin');
+  Future<void> beginTimelineScrub() async => scrubEvents.add('begin');
 
   @override
-  void updateTimelineScrub(int globalMs) => scrubEvents.add('update:$globalMs');
+  Future<void> updateTimelineScrub(int globalMs) async =>
+      scrubEvents.add('update:$globalMs');
 
   @override
   Future<void> endTimelineScrub(int globalMs) async =>

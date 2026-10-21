@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
+import '../../../core/audio/audio_preparation_service.dart';
 import '../../../core/engine/engine_audio_source_resolver.dart';
 import '../../../core/engine/tempo_automation.dart';
 import '../../../core/engine/timeline_model.dart';
@@ -70,6 +71,7 @@ class DeckController {
     required this.deckId,
     required Voice voice,
     required EngineAudioSourceResolver resolver,
+    this.preparationService,
     this.slew = const Duration(milliseconds: 15),
   })  : _voice = voice,
         _resolver = resolver,
@@ -78,11 +80,44 @@ class DeckController {
   final DjDeckId deckId;
   final Voice _voice;
   final EngineAudioSourceResolver _resolver;
+  final AudioPreparationService? preparationService;
+  AudioPreparationRequest? _pendingPreparation;
+  final Set<ResolvedAudioSource> _nativeSources = {};
+
+  void _cancelPreparation() {
+    final pending = _pendingPreparation;
+    _pendingPreparation = null;
+    if (pending != null) unawaited(pending.cancel());
+  }
+
+  Future<void> _unloadSource() async {
+    await _voice.release();
+    final sources = _nativeSources.toList();
+    _nativeSources.clear();
+    for (final source in sources) {
+      await source.release();
+    }
+  }
+
   final Duration slew;
   DjDeckState _state;
   Timer? _volumeSlew;
   double? _pendingVolume;
   Completer<void>? _volumeCompletion;
+  bool _disposed = false;
+  int _loadGeneration = 0;
+  Future<void> _nativeLoadTail = Future<void>.value();
+  Future<void>? _disposeFuture;
+
+  bool _ownsLoad(int generation) => !_disposed && generation == _loadGeneration;
+
+  // Resolution may overlap, but an already-dispatched native source mutation
+  // must finish before another load or teardown can reuse the same player.
+  Future<void> _serializeNativeLoad(Future<void> Function() action) {
+    final next = _nativeLoadTail.then((_) => action());
+    _nativeLoadTail = next.then((_) {}, onError: (Object _, StackTrace __) {});
+    return next;
+  }
 
   DjDeckState get state => _state;
   Voice get voice => _voice;
@@ -99,6 +134,7 @@ class DeckController {
     required Voice voice,
     required EngineAudioSourceResolver resolver,
     required DjDeckState state,
+    this.preparationService,
     this.slew = const Duration(milliseconds: 15),
   })  : _voice = voice,
         _resolver = resolver,
@@ -108,12 +144,14 @@ class DeckController {
     required DjDeckId deckId,
     required Voice voice,
     required EngineAudioSourceResolver resolver,
+    AudioPreparationService? preparationService,
     Duration slew = const Duration(milliseconds: 15),
   }) =>
       DeckController._withState(
         deckId: deckId,
         voice: voice,
         resolver: resolver,
+        preparationService: preparationService,
         slew: slew,
         state: DjDeckState(deckId: deckId),
       );
@@ -125,11 +163,16 @@ class DeckController {
   /// rather than a thrown [StateError] escaping into `dj_screen.dart`'s
   /// post-frame callback (#409).
   Future<void> load(DjDeckLoad load) async {
+    if (_disposed) return;
+    final generation = ++_loadGeneration;
+    ++_playGeneration;
+    _cancelPreparation();
     final localUri = load.localUri;
     if (localUri != null && localUri.scheme != 'file') {
       // refuseLoad is total: its release is best-effort, so this pre-guard
       // refusal cannot throw out of load() either.
-      await refuseLoad(load, kind: DjDeckLoadFailureKind.pickerNotLocal);
+      await _serializeNativeLoad(() => _refuseLoad(load, generation,
+          kind: DjDeckLoadFailureKind.pickerNotLocal));
       return;
     }
     final clip = MixClip(
@@ -141,7 +184,7 @@ class DeckController {
         sourceEndMs: load.durationMs <= 0 ? 1000 : load.durationMs,
         timelineStartMs: 0,
       ),
-      audioSourceRef: load.trackRef,
+      audioSourceRef: localUri?.toString() ?? load.trackRef,
       queueItemId: load.queueItemId,
     );
     // The only broad catch on the deck path: a deck seed must not escape into
@@ -149,72 +192,116 @@ class DeckController {
     // built inside the block on purpose: the resolver and the voice both throw
     // for a source this device cannot open, and the voice must not be left
     // holding audio no deck state describes.
+    ResolvedAudioSource? resolved;
+    var transferred = false;
     try {
-      final resolved = localUri == null ? await _resolver.resolve(clip) : null;
+      resolved = localUri == null
+          ? await _resolver.resolve(clip)
+          : await _resolvePicker(clip);
+      if (!_ownsLoad(generation)) return;
       if (kDebugMode) {
         debugPrint(
           'OMP DJ deck ${deckId.name} seed trackRef=${load.trackRef} '
-          "resolved=${resolved?.isLocal == true ? 'local' : 'remote'}",
+          "resolved=${resolved.isLocal ? 'local' : 'remote'}",
         );
       }
-      if (resolved != null && !resolved.isLocal) {
-        await refuseLoad(load, kind: DjDeckLoadFailureKind.unavailableOffline);
-        return;
+      if (!resolved.isLocal) {
+        final descriptor = resolved.descriptor;
+        final preparation = preparationService;
+        if (descriptor == null || preparation == null) {
+          await _serializeNativeLoad(() => _refuseLoad(load, generation,
+              kind: DjDeckLoadFailureKind.unavailableOffline));
+          return;
+        }
+        final request = preparation.prepareOriginal(descriptor,
+            priority: AudioPreparationPriority.active);
+        _pendingPreparation = request;
+        final asset = await request.future;
+        if (identical(_pendingPreparation, request)) _pendingPreparation = null;
+        await resolved.release();
+        resolved = ResolvedAudioSource.local(Uri.file(asset.localPath),
+            onRelease: asset.release);
+        if (!_ownsLoad(generation)) return;
       }
-      await _voice.load(localUri ?? resolved!.uri);
-      // Speed and pitch are AudioPlayer-level properties: `Voice.load` only
-      // swaps the audio source and `release()` only stops, so both survive a
-      // track change. The fresh state below claims rate 1, keylock on and no
-      // key shift, so without these two writes a deck loaded after a +6 shift
-      // and a 140 BPM target played the new track a tritone up and 12% fast
-      // while the header read `+0.0%` and the unshifted Camelot, with nothing
-      // in the UI to reveal it (#413 review). Routed through the one
-      // composition site so the deck still has exactly one pitch formula.
-      await _voice.setSpeed(1);
-      // The verdict is deliberately not adopted here: a freshly loaded deck
-      // starts optimistic about pitch support and only `setRate` /
-      // `setKeySemitones` latch a refusal, which is what
-      // dj_deck_key_shift_test's "a fresh load resets ... the pitch verdict"
-      // pins.
-      await _voice.setPitch(
-        _composedPitchFactor(
-          rate: 1,
-          pitchMode: pitchModePreserve,
-          semitones: 0,
-        ),
-      );
-      // The seed's duration is the queue payload's, and the queue API omits it
-      // for an item with no source row (#425), so a device-seeded deck arrives
-      // claiming to be zero long. The voice has the file open by this line and
-      // is the only other authority on the question, so adopt what it reports.
-      // This is the one place the deck can learn a duration before anything is
-      // measured against it - every clamp below and in `seek` is an upper bound
-      // this value sets.
-      final duration =
-          load.durationMs > 0 ? load.durationMs : _voiceDurationMs();
-      // A freshly built success state carries loadFailure == null, so a
-      // recovered deck needs no explicit clearing.
-      _state = DjDeckState(
-        deckId: deckId,
-        queueItemId: load.queueItemId,
-        trackRef: load.trackRef,
-        title: load.title,
-        queueTrack: load.queueTrack,
-        durationMs: duration,
-        // Same rule as every other clamp on this class: an unknown duration is
-        // not an upper bound of zero. A cue at the intro start on a deck whose
-        // length nobody knows stays where the analysis put it.
-        loadedCueMs: _clampPosition(load.initialCueMs, duration),
-        beatsMs: List.unmodifiable(load.beatsMs),
-      );
+      await _serializeNativeLoad(() async {
+        if (!_ownsLoad(generation)) return;
+        final previous = _nativeSources.toList();
+        _nativeSources.add(resolved!);
+        transferred = true;
+        await _voice.load(resolved.uri);
+        // Successful native replacement is an unload barrier for old bytes.
+        for (final source in previous) {
+          _nativeSources.remove(source);
+          await source.release();
+        }
+        if (!_ownsLoad(generation)) return;
+        // Speed and pitch are AudioPlayer-level properties: `Voice.load` only
+        // swaps the audio source and `release()` only stops, so both survive a
+        // track change. The fresh state below claims rate 1, keylock on and no
+        // key shift, so without these two writes a deck loaded after a +6 shift
+        // and a 140 BPM target played the new track a tritone up and 12% fast
+        // while the header read `+0.0%` and the unshifted Camelot, with nothing
+        // in the UI to reveal it (#413 review). Routed through the one
+        // composition site so the deck still has exactly one pitch formula.
+        await _voice.setSpeed(1);
+        if (!_ownsLoad(generation)) return;
+        // The verdict is deliberately not adopted here: a freshly loaded deck
+        // starts optimistic about pitch support and only `setRate` /
+        // `setKeySemitones` latch a refusal, which is what
+        // dj_deck_key_shift_test's "a fresh load resets ... the pitch verdict"
+        // pins.
+        await _voice.setPitch(
+          _composedPitchFactor(
+            rate: 1,
+            pitchMode: pitchModePreserve,
+            semitones: 0,
+          ),
+        );
+        if (!_ownsLoad(generation)) return;
+        // The seed's duration is the queue payload's, and the queue API omits it
+        // for an item with no source row (#425), so a device-seeded deck arrives
+        // claiming to be zero long. The voice has the file open by this line and
+        // is the only other authority on the question, so adopt what it reports.
+        // This is the one place the deck can learn a duration before anything is
+        // measured against it - every clamp below and in `seek` is an upper bound
+        // this value sets.
+        final duration =
+            load.durationMs > 0 ? load.durationMs : _voiceDurationMs();
+        // A freshly built success state carries loadFailure == null, so a
+        // recovered deck needs no explicit clearing.
+        _state = DjDeckState(
+          deckId: deckId,
+          queueItemId: load.queueItemId,
+          trackRef: load.trackRef,
+          title: load.title,
+          queueTrack: load.queueTrack,
+          durationMs: duration,
+          // Same rule as every other clamp on this class: an unknown duration is
+          // not an upper bound of zero. A cue at the intro start on a deck whose
+          // length nobody knows stays where the analysis put it.
+          loadedCueMs: _clampPosition(load.initialCueMs, duration),
+          beatsMs: List.unmodifiable(load.beatsMs),
+        );
+      });
     } catch (error) {
-      await refuseLoad(
-        load,
-        kind: DjDeckLoadFailureKind.sourceUnavailable,
-        detail: '$error',
-      );
+      await _serializeNativeLoad(() => _refuseLoad(
+            load,
+            generation,
+            kind: DjDeckLoadFailureKind.sourceUnavailable,
+            detail: '$error',
+          ));
       return;
+    } finally {
+      if (!transferred) await resolved?.release();
     }
+  }
+
+  Future<ResolvedAudioSource> _resolvePicker(MixClip clip) async {
+    if (_resolver is DefaultEngineAudioSourceResolver ||
+        _resolver is DirectEngineAudioSourceResolver) {
+      return _resolver.resolve(clip);
+    }
+    return ResolvedAudioSource.local(Uri.parse(clip.audioSourceRef));
   }
 
   /// Replaces the deck's pinned analysis snapshot after async hydration, without
@@ -270,19 +357,37 @@ class DeckController {
     DjDeckLoad load, {
     DjDeckLoadFailureKind kind = DjDeckLoadFailureKind.sourceUnavailable,
     String? detail,
+  }) {
+    if (_disposed) return Future<void>.value();
+    final generation = ++_loadGeneration;
+    ++_playGeneration;
+    _cancelPreparation();
+    return _serializeNativeLoad(
+        () => _refuseLoad(load, generation, kind: kind, detail: detail));
+  }
+
+  Future<void> _refuseLoad(
+    DjDeckLoad load,
+    int generation, {
+    required DjDeckLoadFailureKind kind,
+    String? detail,
   }) async {
+    if (!_ownsLoad(generation)) return;
     // A deck that already held a track — or whose voice took this very seed
     // before a later step failed — must not keep audio the lane no longer
     // shows. Best-effort: `Voice.release` is a platform `stop()` that can
     // throw, and a failed release must neither mask the refusal nor relabel
     // its kind through the caller's catch.
-    if (_state.trackRef != null || _voice.isLoaded) {
+    if (_state.trackRef != null ||
+        _voice.isLoaded ||
+        _nativeSources.isNotEmpty) {
       try {
-        await _voice.release();
+        await _unloadSource();
       } catch (_) {
         // Swallowed on purpose; the failure state below is the contract.
       }
     }
+    if (!_ownsLoad(generation)) return;
     _markLoadFailure(load, kind: kind, detail: detail);
   }
 
@@ -310,13 +415,33 @@ class DeckController {
     );
   }
 
+  int _playGeneration = 0;
+
+  /// Accepts the start command, not the playback-lifetime Future returned by
+  /// just_audio. Keep observing that Future so late failures are not unhandled.
   Future<void> play() async {
-    await _voice.play();
+    if (_disposed) return;
+    final generation = ++_playGeneration;
+    final lifetime = _voice.play();
     _state = _state.copyWith(playing: true);
+    unawaited(
+        lifetime.then<void>((_) {}, onError: (Object error, StackTrace stack) {
+      if (generation != _playGeneration) return;
+      _state = _state.copyWith(playing: false);
+      FlutterError.reportError(FlutterErrorDetails(
+        exception: error,
+        stack: stack,
+        library: 'DJ deck playback',
+        context: ErrorDescription('while playing deck ${deckId.name}'),
+      ));
+    }));
   }
 
   Future<void> pause() async {
+    if (_disposed) return;
+    final generation = ++_playGeneration;
     await _voice.pause();
+    if (_disposed || generation != _playGeneration) return;
     _state = _state.copyWith(playing: false);
   }
 
@@ -330,8 +455,11 @@ class DeckController {
   /// own start. [_adoptedDurationMs] gives the voice a late chance to supply
   /// the bound before the clamp is taken.
   Future<void> seek(int positionMs) async {
+    if (_disposed) return;
+    final generation = _loadGeneration;
     final safe = _clampPosition(positionMs, _adoptedDurationMs());
     await _voice.seekLocal(safe);
+    if (!_ownsLoad(generation)) return;
     _state = _state.copyWith(positionMs: safe);
   }
 
@@ -351,9 +479,16 @@ class DeckController {
     double rate, {
     String? pitchMode,
   }) async {
+    if (_disposed) {
+      return DjDeckRateOutcome(requested: rate, applied: _state.rate);
+    }
+    final generation = _loadGeneration;
     final safe = rate.clamp(kDjDeckMinRate, kDjDeckMaxRate).toDouble();
     final mode = pitchMode ?? _state.pitchMode;
     await _voice.setSpeed(safe);
+    if (!_ownsLoad(generation)) {
+      return DjDeckRateOutcome(requested: rate, applied: _state.rate);
+    }
     // Voice.setPitch returns false on a backend with no pitch shifting
     // (voice.dart:151-161). Playback still proceeds; only the key-shift
     // affordance is withheld, and the fact latches for the loaded track.
@@ -364,6 +499,9 @@ class DeckController {
         semitones: _state.keySemitones,
       ),
     );
+    if (!_ownsLoad(generation)) {
+      return DjDeckRateOutcome(requested: rate, applied: _state.rate);
+    }
     _state = _state.copyWith(
       rate: safe,
       pitchMode: mode,
@@ -382,6 +520,8 @@ class DeckController {
   /// Only the pitch is written. The rate is untouched, so a key shift on a
   /// synced follower cannot fight the correction loop for its tempo.
   Future<void> setKeySemitones(int semitones) async {
+    if (_disposed) return;
+    final generation = _loadGeneration;
     final clamped =
         semitones.clamp(-kDjMaxKeySemitones, kDjMaxKeySemitones).toInt();
     final pitched = await _voice.setPitch(
@@ -391,6 +531,7 @@ class DeckController {
         semitones: clamped,
       ),
     );
+    if (!_ownsLoad(generation)) return;
     _state = _state.copyWith(
       keySemitones: clamped,
       pitchSupported: _state.pitchSupported && pitched,
@@ -418,6 +559,7 @@ class DeckController {
   /// Applies a live output multiplier without changing the channel fader's
   /// logical value in the immutable deck snapshot.
   Future<void> setOutputVolume(double gain) {
+    if (_disposed) return Future<void>.value();
     final target = gain.clamp(0.0, 1.0).toDouble();
     _pendingVolume = target;
     _volumeSlew?.cancel();
@@ -443,6 +585,7 @@ class DeckController {
   }
 
   void refreshSnapshot() {
+    if (_disposed) return;
     final reported = _voice.currentLocalPositionMs ?? _state.positionMs;
     final duration = _adoptedDurationMs();
     _state = _state.copyWith(
@@ -484,16 +627,39 @@ class DeckController {
     return positionMs;
   }
 
-  Future<void> dispose() async {
+  Future<void> dispose() {
+    if (_disposeFuture != null) return _disposeFuture!;
+    _disposed = true;
+    ++_loadGeneration;
+    ++_playGeneration;
+    _cancelPreparation();
     _cancelPendingVolume();
-    await _voice.release();
-    await _voice.dispose();
+    return _disposeFuture = _serializeNativeLoad(() async {
+      try {
+        await _unloadSource();
+      } finally {
+        await _voice.dispose();
+        final sources = _nativeSources.toList();
+        _nativeSources.clear();
+        for (final source in sources) {
+          await source.release();
+        }
+      }
+    });
   }
 
-  Future<void> release() async {
+  Future<void> release() {
+    if (_disposed) return Future<void>.value();
+    final generation = ++_loadGeneration;
+    ++_playGeneration;
+    _cancelPreparation();
     _cancelPendingVolume();
-    await _voice.release();
-    _state = _state.copyWith(playing: false);
+    return _serializeNativeLoad(() async {
+      if (!_ownsLoad(generation)) return;
+      await _unloadSource();
+      if (!_ownsLoad(generation)) return;
+      _state = _state.copyWith(playing: false);
+    });
   }
 
   void _cancelPendingVolume() {

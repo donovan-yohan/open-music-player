@@ -8,6 +8,7 @@ import '../../shared/models/playlist.dart';
 import '../../shared/widgets/playlist_card.dart';
 import 'playlist_creation_dialog.dart';
 import 'playlist_edit_dialog.dart';
+import 'mix/desktop_mix_editor_screen.dart';
 
 class PlaylistsScreen extends StatefulWidget {
   const PlaylistsScreen({super.key});
@@ -338,6 +339,12 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
       appBar: AppBar(
         title: const Text('Playlists'),
         actions: [
+          if (desktopMixEditorEligible(context))
+            IconButton(
+              tooltip: 'Edit saved mixes',
+              icon: const Icon(Icons.view_timeline_outlined),
+              onPressed: () => context.push('/mixes'),
+            ),
           IconButton(
             icon: const Icon(Icons.add),
             onPressed: _showCreatePlaylistDialog,
