@@ -6,11 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/google/uuid"
-	_ "github.com/lib/pq"
-	"github.com/openmusicplayer/backend/internal/db"
-	"github.com/openmusicplayer/backend/internal/jam"
-	"github.com/redis/go-redis/v9"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +13,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
+
+	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/jam"
 )
 
 func TestJamIntegrationFixtureProtection(t *testing.T) {
@@ -100,7 +102,7 @@ func jamHTTP(t *testing.T, c *http.Client, method, url, token string, body any) 
 			t.Fatal(e)
 		}
 	}
-	r, e := http.NewRequest(method, url, &b)
+	r, e := http.NewRequestWithContext(context.Background(), method, url, &b)
 	if e != nil {
 		t.Fatal(e)
 	}

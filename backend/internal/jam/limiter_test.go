@@ -2,11 +2,12 @@ package jam
 
 import (
 	"context"
-	"github.com/redis/go-redis/v9"
 	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func TestJamRedisLimiterAtomicBoundedFailClosed(t *testing.T) {

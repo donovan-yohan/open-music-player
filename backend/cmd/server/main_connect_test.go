@@ -4,15 +4,17 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/google/uuid"
-	"github.com/openmusicplayer/backend/internal/api"
-	"github.com/openmusicplayer/backend/internal/auth"
-	"github.com/openmusicplayer/backend/internal/cache"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/openmusicplayer/backend/internal/api"
+	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/cache"
 )
 
 func TestConnectProductionRedisOffFailsClosed(t *testing.T) {

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/google/uuid"
-	"github.com/openmusicplayer/backend/internal/jam"
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/google/uuid"
+
+	"github.com/openmusicplayer/backend/internal/jam"
 )
 
 // Parent supplies generation-checked account context and actual Connect lease

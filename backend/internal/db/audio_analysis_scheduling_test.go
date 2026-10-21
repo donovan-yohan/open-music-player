@@ -19,14 +19,14 @@ type analysisLifecycleSQL struct {
 type analysisLifecycleConnector struct{ state *analysisLifecycleSQL }
 
 func (c analysisLifecycleConnector) Connect(context.Context) (driver.Conn, error) {
-	return analysisLifecycleConn{c.state}, nil
+	return analysisLifecycleConn(c), nil
 }
-func (c analysisLifecycleConnector) Driver() driver.Driver { return analysisLifecycleDriver{c.state} }
+func (c analysisLifecycleConnector) Driver() driver.Driver { return analysisLifecycleDriver(c) }
 
 type analysisLifecycleDriver struct{ state *analysisLifecycleSQL }
 
 func (d analysisLifecycleDriver) Open(string) (driver.Conn, error) {
-	return analysisLifecycleConn{d.state}, nil
+	return analysisLifecycleConn(d), nil
 }
 
 type analysisLifecycleConn struct{ state *analysisLifecycleSQL }

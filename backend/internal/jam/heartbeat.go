@@ -3,8 +3,9 @@ package jam
 import (
 	"context"
 	"database/sql"
-	"github.com/google/uuid"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Heartbeat sequences do not change content version. Exact retries never keep

@@ -18,11 +18,12 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
+
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/connect"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/middleware"
-	"github.com/redis/go-redis/v9"
 )
 
 func TestConnectRouterFixtureProtection(t *testing.T) {
@@ -266,7 +267,7 @@ func TestConnectHTTPServerRealInfra(t *testing.T) {
 	id := uuid.NewString()
 	secret := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{31}, 32))
 	body := fmt.Sprintf(`{"deviceId":%q,"label":"TCP device","platform":"macos","writerSecret":%q}`, id, secret)
-	req, err := http.NewRequest("POST", server.URL+"/api/v1/me/devices", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", server.URL+"/api/v1/me/devices", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +280,7 @@ func TestConnectHTTPServerRealInfra(t *testing.T) {
 		t.Fatalf("TCP register status=%d headers=%v", response.StatusCode, response.Header)
 	}
 	response.Body.Close()
-	req, err = http.NewRequest("GET", server.URL+"/api/v1/me/devices", nil)
+	req, err = http.NewRequestWithContext(context.Background(), "GET", server.URL+"/api/v1/me/devices", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

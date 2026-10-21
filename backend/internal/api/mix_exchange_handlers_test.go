@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
 )

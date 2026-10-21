@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/google/uuid"
 	"io"
 	"net/http"
 	"reflect"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
 )
 
 // Local strict boundary; unlike encoding/json alone it rejects duplicate keys,

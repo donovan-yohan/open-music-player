@@ -3,11 +3,12 @@ package api
 import (
 	"bytes"
 	"context"
-	"github.com/openmusicplayer/backend/internal/jam"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/openmusicplayer/backend/internal/jam"
 )
 
 func TestJamStrictBody(t *testing.T) {

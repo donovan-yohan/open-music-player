@@ -6,13 +6,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"github.com/openmusicplayer/backend/internal/storage"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/openmusicplayer/backend/internal/storage"
 
 	"github.com/google/uuid"
 

@@ -2,8 +2,9 @@ package connect
 
 import (
 	"context"
-	"github.com/google/uuid"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func (s *Service) Report(ctx context.Context, owner uuid.UUID, generation int64, id string, req ReportRequest) (Device, error) {

@@ -1,8 +1,9 @@
 package api
 
 import (
-	"github.com/openmusicplayer/backend/internal/jam"
 	"net/http"
+
+	"github.com/openmusicplayer/backend/internal/jam"
 )
 
 func (h *JamHandlers) RegisterGuestWebRoutes(m *http.ServeMux) {

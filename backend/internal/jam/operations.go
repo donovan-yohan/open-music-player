@@ -3,8 +3,9 @@ package jam
 import (
 	"context"
 	"database/sql"
-	"github.com/google/uuid"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func (r *Repository) RotateInvite(ctx context.Context, o Owner, id uuid.UUID, p Proof) (Invite, error) {

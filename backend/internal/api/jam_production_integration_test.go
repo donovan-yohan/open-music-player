@@ -3,15 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"github.com/google/uuid"
-	"github.com/openmusicplayer/backend/internal/auth"
-	"github.com/openmusicplayer/backend/internal/connect"
-	"github.com/openmusicplayer/backend/internal/jam"
-	"github.com/openmusicplayer/backend/internal/middleware"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/connect"
+	"github.com/openmusicplayer/backend/internal/jam"
+	"github.com/openmusicplayer/backend/internal/middleware"
 )
 
 func TestJamProductionDisabledRoutesNoStore(t *testing.T) {

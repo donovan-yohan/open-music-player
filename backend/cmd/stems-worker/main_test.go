@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/openmusicplayer/backend/internal/stems"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/openmusicplayer/backend/internal/stems"
 
 	"github.com/openmusicplayer/backend/internal/storage"
 )

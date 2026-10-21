@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/openmusicplayer/backend/internal/analyzer"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
@@ -35,13 +36,13 @@ type processorSQLFake struct {
 type processorConnector struct{ fake *processorSQLFake }
 
 func (c processorConnector) Connect(context.Context) (driver.Conn, error) {
-	return processorConn{c.fake}, nil
+	return processorConn(c), nil
 }
-func (c processorConnector) Driver() driver.Driver { return processorDriver{c.fake} }
+func (c processorConnector) Driver() driver.Driver { return processorDriver(c) }
 
 type processorDriver struct{ fake *processorSQLFake }
 
-func (d processorDriver) Open(string) (driver.Conn, error) { return processorConn{d.fake}, nil }
+func (d processorDriver) Open(string) (driver.Conn, error) { return processorConn(d), nil }
 
 type processorConn struct{ fake *processorSQLFake }
 

@@ -60,11 +60,11 @@ func (r *MixExchangeRepository) CreateVerified(ctx context.Context, plan *MixPla
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	byHash := make(map[string][]MixExchangeSource)
 	for rows.Next() {
 		var source MixExchangeSource
 		if err := rows.Scan(&source.TrackID, &source.SourceFileHash, &source.DurationMs); err != nil {
-			rows.Close()
 			return err
 		}
 		byHash[source.SourceFileHash] = append(byHash[source.SourceFileHash], source)
