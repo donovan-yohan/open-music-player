@@ -695,9 +695,11 @@ void main() {
     provider.dispose();
   });
 
-  test('valid pending analysis keeps polling beyond transport retry budget',
-      () async {
+  testWidgets(
+      'valid pending analysis keeps polling beyond transport retry budget',
+      (tester) async {
     final analyzed = Completer<void>();
+    final releaseFifthResponse = Completer<void>();
     var analysisRequests = 0;
     final provider = QueueProvider(
       mockQueueApiClient((request) async {
@@ -705,8 +707,8 @@ void main() {
           return http.Response('', 404);
         }
         analysisRequests++;
-        if (analysisRequests == 5 && !analyzed.isCompleted) {
-          analyzed.complete();
+        if (analysisRequests == 5) {
+          await releaseFifthResponse.future;
         }
         return http.Response(
           jsonEncode(
@@ -726,23 +728,55 @@ void main() {
           headers: {'content-type': 'application/json'},
         );
       }),
+      analysisClock: () => tester.binding.clock.now(),
       analysisRetryCooldown: const Duration(milliseconds: 1),
     );
+    addTearDown(() {
+      provider.dispose();
+      if (!releaseFifthResponse.isCompleted) releaseFifthResponse.complete();
+    });
     final pending = _track(
       playbackTrackId: '42',
       analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
     );
+    TrackAnalysis? observedAnalysis() =>
+        provider.trackWithAnalysis(pending, requestHydration: false).analysis;
+    provider.addListener(() {
+      if (observedAnalysis()?.status == TrackAnalysisStatus.analyzed &&
+          !analyzed.isCompleted) {
+        analyzed.complete();
+      }
+    });
 
     provider.trackWithAnalysis(pending);
-    await analyzed.future.timeout(const Duration(seconds: 1));
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-
+    await tester.idle();
+    expect(analysisRequests, 1);
+    for (final delayMs in [1, 2, 4, 8]) {
+      await tester.pump(Duration(milliseconds: delayMs));
+      await tester.idle();
+    }
     expect(analysisRequests, 5);
+
+    // Dispatch is not publication: even the old 10 ms wait cannot make a
+    // held fifth response visible or authorize a sixth request.
+    await tester.pump(const Duration(milliseconds: 10));
+    expect(releaseFifthResponse.isCompleted, isFalse);
+    expect(analyzed.isCompleted, isFalse);
+    expect(observedAnalysis()?.status, TrackAnalysisStatus.pending);
+    expect(analysisRequests, 5);
+
+    releaseFifthResponse.complete();
+    await tester.idle();
+    expect(analyzed.isCompleted, isTrue);
+    await analyzed.future;
+
     expect(
       provider.trackWithAnalysis(pending).analysis?.status,
       TrackAnalysisStatus.analyzed,
     );
-    provider.dispose();
+    expect(observedAnalysis()?.summary?.waveform?.peaks, [0.2, 0.8]);
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(analysisRequests, 5);
   });
 
   test('analyzed detail-less responses stop at the cap until interest returns',
