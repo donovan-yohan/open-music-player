@@ -137,7 +137,7 @@ def base_channel_for(channel: str) -> str:
     return CHANNEL_ALIASES.get(channel, channel)
 
 
-def object_key(track_id: int, channel_set: str, channel: str) -> str:
+def object_key(track_id: int, channel_set: str, channel: str, source_hash: str = "", generation: int = 0, digest: str = "") -> str:
     """MinIO key for one channel of one set.
 
     Every persisted channel is namespaced by the complete immutable model
@@ -146,6 +146,8 @@ def object_key(track_id: int, channel_set: str, channel: str) -> str:
     to share a channel-set name. ``drums`` is retained with the five-channel
     result so the pair can be null-verified without another separator run.
     """
+    if source_hash:
+        return f"stems/{track_id}/{stem_model_version(channel_set)}/{source_hash.removeprefix('sha256:')}/g{generation}/{base_channel_for(channel)}/{digest}.opus"
     return f"stems/{track_id}/{stem_model_version(channel_set)}/{base_channel_for(channel)}.opus"
 
 
@@ -635,6 +637,7 @@ def run_separation(
     separator: Separator | None = None,
     sample_rate: int = MODEL_SAMPLE_RATE,
     encode: bool = True,
+    generation: int = 0,
 ) -> Dict[str, object]:
     """Separate, derive kick/perc, encode, and return the artifact manifest.
 
@@ -642,6 +645,8 @@ def run_separation(
     manifest gates) is exercisable without torch.
     """
     channels = channels_for(channel_set)
+    # Hash original compressed bytes before the provider decodes anything.
+    source_hash = "sha256:" + _sha256(Path(audio_path)) if encode else ""
     separate = separator or audio_separator_htdemucs_ft_separator
     stems = separate(audio_path, sample_rate)
 
@@ -651,6 +656,9 @@ def run_separation(
 
     emitted: Dict[str, np.ndarray] = {name: np.asarray(stems[name], dtype=np.float32)
                                       for name in BASE_CHANNELS}
+    shapes = {audio.shape for audio in emitted.values()}
+    if len(shapes) != 1 or any(audio.ndim != 2 or audio.shape[0] != 2 or not np.isfinite(audio).all() for audio in emitted.values()):
+        raise StemsError("separator stems must be finite aligned stereo PCM")
     null_sum_db: float | None = None
     if channel_set == "stems5-hybrid-v1":
         kick, perc = split_kick_perc(emitted["drums"], sample_rate)
@@ -686,8 +694,23 @@ def run_separation(
         if encode:
             size = encode_opus(source, local, sample_rate)
             signatures.add(encoder_flag_signature(opus_encode_argv(local, sample_rate)))
+        metadata = {}
+        if encode:
+            digest = _sha256(local)
+            decoded = decode_pcm(local, 48000)
+            header = local.read_bytes()[:65536]
+            marker = header.find(b"OpusHead")
+            if marker < 0 or marker + 12 > len(header):
+                raise StemsError("encoded output missing OpusHead delay provenance")
+            preskip = int.from_bytes(header[marker + 10:marker + 12], "little")
+            key = object_key(track_id, channel_set, channel, source_hash, generation, digest)
+            metadata = {"sha256": digest, "sample_frames": int(decoded.shape[-1]),
+                "sample_rate_hz": 48000, "channels": int(decoded.shape[0]),
+                "origin_frame": 0, "delay_frames": 0, "encoder_delay_frames": preskip,
+                "delay_provenance": "ffmpeg-ogg-opus-preskip-end-trim-v1"}
         objects.append(
             {
+                **metadata,
                 "channel": channel,
                 "key": key,
                 "path": str(local),
@@ -700,7 +723,7 @@ def run_separation(
         raise StemsError("opus encoder settings were not uniform across stems")
 
     curves = {channel: energy_curve(signal_for(channel), sample_rate) for channel in persist_order}
-    return build_manifest(
+    manifest = build_manifest(
         track_id=track_id,
         channel_set=channel_set,
         sample_rate=sample_rate,
@@ -709,6 +732,9 @@ def run_separation(
         null_sum_db=null_sum_db,
         energy=quantize_energy(curves),
     )
+    manifest["generation"] = generation
+    manifest["source_file_hash"] = source_hash
+    return manifest
 
 
 # --------------------------------------------------------------------------- #
@@ -742,6 +768,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("audio", nargs="?", help="path to the source audio file")
     parser.add_argument("--out-dir", help="directory to write encoded stems into")
     parser.add_argument("--track-id", type=int, default=0)
+    parser.add_argument("--generation", type=int, default=0)
     parser.add_argument("--channel-set", default="stems5-hybrid-v1", choices=sorted(CHANNEL_SETS))
     parser.add_argument(
         "--check",
@@ -768,6 +795,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             out_dir=out_dir,
             track_id=args.track_id,
             channel_set=args.channel_set,
+            generation=args.generation,
         )
     except StemsError as exc:
         json.dump({"error": str(exc)}, sys.stderr)

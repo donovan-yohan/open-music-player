@@ -137,8 +137,8 @@ func seedNearbyAnalysis(t *testing.T, repo *AnalysisRepository, ctx context.Cont
 		t.Fatalf("marshal analysis summary: %v", err)
 	}
 	provenance := json.RawMessage(`{"analyzer":"test","analyzer_version":"1"}`)
-	if err := repo.RequestAnalysis(ctx, trackID, provenance); err != nil {
-		t.Fatalf("request analysis: %v", err)
+	if repair, err := repo.RequestRepairAnalysis(ctx, trackID, provenance, true, false, 0); err != nil || !repair.Queued {
+		t.Fatalf("request fixture analysis replacement: %+v, %v", repair, err)
 	}
 	if err := repo.MarkAnalyzing(ctx, trackID, provenance); err != nil {
 		t.Fatalf("mark analyzing: %v", err)

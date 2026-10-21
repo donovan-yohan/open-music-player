@@ -50,6 +50,7 @@ type stemsLibraryRepository interface {
 // There is deliberately no library-wide sweep: separation is minutes-per-track
 // and ~20 MB of artifacts, so it only ever runs for tracks a user asked about.
 type StemsHandlers struct {
+	storage     playbackURLStorage
 	stemsRepo   stemsRepository
 	queue       stemsQueue
 	trackRepo   stemsTrackRepository
@@ -61,8 +62,14 @@ func NewStemsHandlers(
 	queue stemsQueue,
 	trackRepo stemsTrackRepository,
 	libraryRepo stemsLibraryRepository,
+	storage ...playbackURLStorage,
 ) *StemsHandlers {
+	var objects playbackURLStorage
+	if len(storage) > 0 {
+		objects = storage[0]
+	}
 	return &StemsHandlers{
+		storage:     objects,
 		stemsRepo:   stemsRepo,
 		queue:       queue,
 		trackRepo:   trackRepo,
@@ -91,21 +98,32 @@ type StemsRequestResponse struct {
 // StemsStatusResponse carries the durable row, including artifacts. Per-stem
 // energy curves live in artifacts.energy: the stems service never writes
 // track_analysis, which stays single-writer (the analyzer).
+type StemMemberDownload struct {
+	Channel   string    `json:"channel"`
+	Key       string    `json:"key"`
+	SHA256    string    `json:"sha256"`
+	Bytes     int64     `json:"bytes"`
+	URL       string    `json:"url"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
 type StemsStatusResponse struct {
-	TrackID          int64           `json:"trackId"`
-	ChannelSet       string          `json:"channelSet"`
-	StemModelVersion string          `json:"stemModelVersion"`
-	SchemaVersion    int             `json:"schemaVersion"`
-	Status           string          `json:"status"`
-	SourceFileHash   string          `json:"sourceFileHash,omitempty"`
-	Artifacts        json.RawMessage `json:"artifacts,omitempty"`
-	Provenance       json.RawMessage `json:"provenance,omitempty"`
-	Error            string          `json:"error,omitempty"`
-	RequestedAt      string          `json:"requestedAt"`
-	StartedAt        string          `json:"startedAt,omitempty"`
-	CompletedAt      string          `json:"completedAt,omitempty"`
-	UpdatedAt        string          `json:"updatedAt"`
-	QueuePosition    int64           `json:"queuePosition"`
+	MemberDownloads   []StemMemberDownload `json:"memberDownloads,omitempty"`
+	Generation        int64                `json:"generation"`
+	PublishedManifest json.RawMessage      `json:"publishedManifest,omitempty"`
+	TrackID           int64                `json:"trackId"`
+	ChannelSet        string               `json:"channelSet"`
+	StemModelVersion  string               `json:"stemModelVersion"`
+	SchemaVersion     int                  `json:"schemaVersion"`
+	Status            string               `json:"status"`
+	SourceFileHash    string               `json:"sourceFileHash,omitempty"`
+	Artifacts         json.RawMessage      `json:"artifacts,omitempty"`
+	Provenance        json.RawMessage      `json:"provenance,omitempty"`
+	Error             string               `json:"error,omitempty"`
+	RequestedAt       string               `json:"requestedAt"`
+	StartedAt         string               `json:"startedAt,omitempty"`
+	CompletedAt       string               `json:"completedAt,omitempty"`
+	UpdatedAt         string               `json:"updatedAt"`
+	QueuePosition     int64                `json:"queuePosition"`
 }
 
 // RequestStems triggers separation for one track. It is idempotent: repeated
@@ -166,7 +184,7 @@ func (h *StemsHandlers) RequestStems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jobID := stems.JobID(trackID, identity.ChannelSet, identity.StemModelVersion)
+	jobID := stems.GenerationJobID(trackID, identity.ChannelSet, identity.StemModelVersion, row.Generation)
 	response := StemsRequestResponse{
 		TrackID:          trackID,
 		ChannelSet:       row.ChannelSet,
@@ -189,17 +207,26 @@ func (h *StemsHandlers) RequestStems(w http.ResponseWriter, r *http.Request) {
 
 	_, _, err = h.queue.Enqueue(r.Context(), stems.EnqueueRequest{
 		TrackID:          trackID,
+		Generation:       row.Generation,
 		ChannelSet:       identity.ChannelSet,
 		StemModelVersion: identity.StemModelVersion,
 		StorageKey:       storageKey,
 		SourceFileHash:   row.SourceFileHash,
 	})
 	if errors.Is(err, stems.ErrQueueFull) {
-		writeLibraryError(w, http.StatusTooManyRequests, "QUEUE_FULL", "stem separation queue is full; retry later")
+		// SQL already accepted this request. Redis is delivery capacity, not
+		// admission: recovery will publish it later. Never say rejected (429)
+		// when eligible durable work still exists.
+		response.Queued = false
+		response.Reason = "awaiting_capacity"
+		writeLibraryJSON(w, http.StatusAccepted, response)
 		return
 	}
 	if err != nil {
-		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to queue stem separation")
+		log.Printf("stems request for track %d accepted durably but delivery failed: %v", trackID, err)
+		response.Queued = false
+		response.Reason = "awaiting_delivery"
+		writeLibraryJSON(w, http.StatusAccepted, response)
 		return
 	}
 	if position, posErr := h.queue.QueuePosition(r.Context(), jobID); posErr == nil {
@@ -210,6 +237,7 @@ func (h *StemsHandlers) RequestStems(w http.ResponseWriter, r *http.Request) {
 
 // GetStems returns the durable separation state for a track's channel set.
 func (h *StemsHandlers) GetStems(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	_, trackID, ok := h.authorize(w, r)
 	if !ok {
 		return
@@ -230,7 +258,53 @@ func (h *StemsHandlers) GetStems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := newStemsStatusResponse(row)
-	if position, posErr := h.queue.QueuePosition(r.Context(), stems.JobID(trackID, identity.ChannelSet, identity.StemModelVersion)); posErr == nil {
+	if r.URL.Query().Get("includeUrls") == "1" {
+		if h.storage == nil {
+			writeLibraryError(w, http.StatusServiceUnavailable, "SERVICE_DISABLED", "stem member downloads are unavailable")
+			return
+		}
+		if row.Status != db.StemsStatusReady {
+			writeLibraryError(w, http.StatusConflict, "STEMS_NOT_READY", "current stem publication is not ready")
+			return
+		}
+		track, err := h.trackRepo.GetByID(r.Context(), trackID)
+		if err != nil || track == nil || !track.StorageKey.Valid {
+			writeLibraryError(w, http.StatusConflict, "STEMS_SOURCE_CHANGED", "track source unavailable")
+			return
+		}
+		hash, err := h.trackRepo.GetSourceFileHash(r.Context(), trackID)
+		if err != nil {
+			writeLibraryError(w, http.StatusServiceUnavailable, "STEMS_SOURCE_UNVERIFIED", "cannot verify current source")
+			return
+		}
+		var manifest stems.Manifest
+		if err := json.Unmarshal(row.PublishedManifestJSON, &manifest); err != nil || hash == "" || manifest.SourceFileHash != row.SourceFileHash || stems.ValidateManifest(&manifest, stems.Request{TrackID: trackID, ChannelSet: identity.ChannelSet, StorageKey: track.StorageKey.String, Generation: row.Generation, ExpectedSourceFileHash: hash}) != nil {
+			writeLibraryError(w, http.StatusConflict, "STEMS_MANIFEST_INVALID", "stem publication requires regeneration or source changed")
+			return
+		}
+		var artifacts stems.Artifacts
+		_ = json.Unmarshal(manifest.Artifacts, &artifacts)
+		// Validate all members before signing any. The digest is checked again by
+		// the downloading client; S3 ETags are not content hashes.
+		for _, member := range artifacts.Objects {
+			info, err := h.storage.StatObject(r.Context(), member.Key)
+			if err != nil || info == nil || info.Size != member.Bytes {
+				writeLibraryError(w, http.StatusConflict, "STEMS_MEMBER_UNAVAILABLE", "stem member missing or wrong size")
+				return
+			}
+		}
+		ttl := 10 * time.Minute
+		expires := time.Now().UTC().Add(ttl)
+		for _, member := range artifacts.Objects {
+			url, err := h.storage.PresignGetObject(r.Context(), member.Key, ttl)
+			if err != nil {
+				writeLibraryError(w, http.StatusServiceUnavailable, "STEMS_DOWNLOAD_UNAVAILABLE", "cannot issue stem download")
+				return
+			}
+			response.MemberDownloads = append(response.MemberDownloads, StemMemberDownload{Channel: member.Channel, Key: member.Key, SHA256: member.SHA256, Bytes: member.Bytes, URL: url, ExpiresAt: expires})
+		}
+	}
+	if position, posErr := h.queue.QueuePosition(r.Context(), stems.GenerationJobID(trackID, identity.ChannelSet, identity.StemModelVersion, row.Generation)); posErr == nil {
 		response.QueuePosition = position
 	}
 	writeLibraryJSON(w, http.StatusOK, response)
@@ -292,11 +366,19 @@ func decodeStemsRequest(w http.ResponseWriter, r *http.Request) (StemsRequest, e
 		return req, nil
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxStemsRequestBytes)
-	err := json.NewDecoder(r.Body).Decode(&req)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	err := decoder.Decode(&req)
 	if errors.Is(err, io.EOF) {
 		return StemsRequest{}, nil
 	}
-	return req, err
+	if err != nil {
+		return req, err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return req, errors.New("trailing stems request payload")
+	}
+	return req, nil
 }
 
 // stemsRequestProvenance stamps the worker identity this build expects, so a
@@ -316,17 +398,19 @@ func stemsRequestProvenance(identity db.StemsIdentity) json.RawMessage {
 
 func newStemsStatusResponse(row *db.TrackStems) StemsStatusResponse {
 	response := StemsStatusResponse{
-		TrackID:          row.TrackID,
-		ChannelSet:       row.ChannelSet,
-		StemModelVersion: row.StemModelVersion,
-		SchemaVersion:    row.SchemaVersion,
-		Status:           row.Status,
-		SourceFileHash:   row.SourceFileHash,
-		Artifacts:        row.ArtifactsJSON,
-		Provenance:       row.ProvenanceJSON,
-		RequestedAt:      row.RequestedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:        row.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		QueuePosition:    -1,
+		Generation:        row.Generation,
+		PublishedManifest: row.PublishedManifestJSON,
+		TrackID:           row.TrackID,
+		ChannelSet:        row.ChannelSet,
+		StemModelVersion:  row.StemModelVersion,
+		SchemaVersion:     row.SchemaVersion,
+		Status:            row.Status,
+		SourceFileHash:    row.SourceFileHash,
+		Artifacts:         row.ArtifactsJSON,
+		Provenance:        row.ProvenanceJSON,
+		RequestedAt:       row.RequestedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         row.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		QueuePosition:     -1,
 	}
 	if row.Error.Valid {
 		response.Error = row.Error.String

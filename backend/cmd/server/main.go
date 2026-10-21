@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -20,10 +21,12 @@ import (
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/cache"
 	"github.com/openmusicplayer/backend/internal/config"
+	"github.com/openmusicplayer/backend/internal/connect"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/health"
+	"github.com/openmusicplayer/backend/internal/jam"
 	"github.com/openmusicplayer/backend/internal/listenbrainz"
 	"github.com/openmusicplayer/backend/internal/logger"
 	"github.com/openmusicplayer/backend/internal/matcher"
@@ -41,6 +44,85 @@ import (
 )
 
 const version = "1.0.0"
+
+// Reuse the configured cache client: Redis-off remains a registered, private,
+// fail-closed feature, without a second destination or memory fallback.
+func newConnectHandlers(redisCache *cache.Cache) *api.ConnectHandlers {
+	if redisCache == nil {
+		return api.NewConnectHandlers(nil)
+	}
+	return api.NewConnectHandlers(connect.NewService(redisCache.Client()))
+}
+
+// Jam uses the same configured Redis client as Connect. Missing dependencies
+// remain registered and fail closed, without an in-memory capability fallback.
+func newJamHandlers(database *db.DB, redisCache *cache.Cache) (*api.JamHandlers, *jam.Repository) {
+	if database == nil || database.DB == nil {
+		return api.NewJamHandlers(nil, nil, nil, nil), nil
+	}
+	repo := jam.NewRepository(database.DB)
+	if redisCache == nil {
+		return api.NewJamHandlers(nil, nil, nil, nil), repo
+	}
+	writer := connect.NewService(redisCache.Client())
+	return api.NewJamHandlers(repo, jam.NewRedisLimiter(redisCache.Client()),
+		func(req *http.Request) (jam.Owner, error) {
+			user := auth.GetUserFromContext(req.Context())
+			if user == nil {
+				return jam.Owner{}, jam.ErrDenied
+			}
+			// Signed claims are inputs only; Jam SQL checks the current generation
+			// within each operation's own users -> jams transaction.
+			return jam.Owner{UserID: user.UserID, Generation: user.ConnectGeneration}, nil
+		},
+		func(ctx context.Context, owner jam.Owner, proof jam.Proof) error {
+			err := writer.ValidateWriter(ctx, owner.UserID, owner.Generation, proof.HostDeviceID.String(), proof.LeaseID.String(), proof.WriterSecret)
+			if errors.Is(err, connect.ErrUnavailable) {
+				return jam.ErrUnavailable
+			}
+			if err != nil {
+				return jam.ErrDenied
+			}
+			return nil
+		}), repo
+}
+
+// There is no perpetual server-wide maintenance loop (analyzer startup work
+// exits after reconciliation), so Jam owns one focused, cancellable timer.
+func startJamCleanup(repo *jam.Repository) func() {
+	if repo == nil {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	ticker := time.NewTicker(15 * time.Minute)
+	done := runJamCleanup(ctx, repo, ticker.C)
+	var once sync.Once
+	return func() { once.Do(func() { ticker.Stop(); cancel(); <-done }) }
+}
+
+func runJamCleanup(ctx context.Context, repo *jam.Repository, ticks <-chan time.Time) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case _, ok := <-ticks:
+				if !ok || ctx.Err() != nil {
+					return
+				}
+				batchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				_, err := repo.PurgeRetired(batchCtx)
+				cancel()
+				if err != nil && ctx.Err() == nil {
+					logger.Default().Error(ctx, "Jam retention cleanup failed", nil, err)
+				}
+			}
+		}
+	}()
+	return done
+}
 
 const (
 	// Startup drains stale rows in repeated bounded batches so queue pressure and
@@ -173,6 +255,13 @@ func newAgentToolsHandler(cfg *config.Config, search *discovery.Service) *discov
 type researchRuntime struct {
 	handlers *api.ResearchHandlers
 	worker   *research.Worker
+}
+
+func maintenanceStartupConfig(cfg *config.Config) (api.MaintenanceConfig, error) {
+	if err := cfg.ValidateMaintenance(); err != nil {
+		return api.MaintenanceConfig{}, err
+	}
+	return api.MaintenanceConfig{AdminUserIDs: cfg.MaintenanceAdminUserIDs}, nil
 }
 
 func validateResearchStartup(cfg *config.Config) error {
@@ -405,6 +494,11 @@ func main() {
 	})
 
 	cfg := config.Load()
+	maintenanceConfig, err := maintenanceStartupConfig(cfg)
+	if err != nil {
+		log.Error(ctx, "Invalid maintenance configuration", nil, err)
+		os.Exit(1)
+	}
 	if err := validateResearchStartup(cfg); err != nil {
 		log.Error(ctx, "Invalid research rollout configuration", nil, err)
 		os.Exit(1)
@@ -536,6 +630,7 @@ func main() {
 	analysisHandlers := api.NewAnalysisHandlersWithTrackRepo(analysisRepo, libraryRepo, trackRepo)
 	playlistHandlers := api.NewPlaylistHandlersWithMetadataOverrides(playlistRepo, trackRepo, metadataOverrideRepo)
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
+	mixExchangeHandlers := api.NewMixExchangeHandlers(mixPlanRepo, db.NewMixExchangeRepository(database))
 	playlistMixHandlers := api.NewPlaylistMixHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
 	autoBlendHandlers := api.NewPlaylistAutoBlendHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
 	smartReorderHandlers := api.NewPlaylistSmartReorderHandlers(playlistRepo, playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
@@ -671,7 +766,7 @@ func main() {
 			}
 		}()
 	}
-	maintenanceHandlers := api.NewMaintenanceHandlers(trackRepo, jobProcessor)
+	maintenanceHandlers := api.NewMaintenanceHandlers(trackRepo, jobProcessor, maintenanceConfig)
 
 	// Optional on-demand stem separation. Every failure path here degrades to the
 	// router's unavailable handler: a missing worker, a malformed base URL, or an
@@ -747,7 +842,7 @@ func main() {
 			// Handlers go live only once something is consuming the queue.
 			// Exposing the trigger without a consumer would accept work that
 			// nothing can ever finish, which is worse than reporting 503.
-			stemsHandlers = api.NewStemsHandlers(stemsRepo, stemsQueue, trackRepo, libraryRepo)
+			stemsHandlers = api.NewStemsHandlers(stemsRepo, stemsQueue, trackRepo, libraryRepo, storageClient)
 			log.Info(ctx, "Initialized stem separation", map[string]interface{}{
 				"base_url":        cfg.StemsBaseURL,
 				"concurrency":     cfg.StemsConcurrency,
@@ -827,8 +922,14 @@ func main() {
 	})
 	healthHandler := health.NewHandler(healthChecker)
 
+	jamHandlers, jamRepo := newJamHandlers(database, redisCache)
+	stopJamCleanup := startJamCleanup(jamRepo)
+	defer stopJamCleanup()
+
 	// Create router with all handlers
 	router := api.NewRouterWithConfig(&api.RouterConfig{
+		JamHandlers:             jamHandlers,
+		ConnectHandlers:         newConnectHandlers(redisCache),
 		AuthHandlers:            authHandlers,
 		AuthService:             authService,
 		SearchHandlers:          searchHandlers,
@@ -852,6 +953,7 @@ func main() {
 		NearbyTracksHandlers:    nearbyTracksHandlers,
 		ListenBrainzHandlers:    listenBrainzHandlers,
 		MixPlanHandlers:         mixPlanHandlers,
+		MixExchangeHandlers:     mixExchangeHandlers,
 		DownloadHandlers:        downloadHandlers,
 		SourceSelectionHandlers: sourceSelectionHandlers,
 		MaintenanceHandlers:     maintenanceHandlers,
@@ -894,6 +996,7 @@ func main() {
 			"signal": sig.String(),
 		})
 		stopAnalyzerMaintenance()
+		stopJamCleanup()
 
 		// Stop accepting new requests
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

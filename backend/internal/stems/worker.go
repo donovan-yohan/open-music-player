@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/openmusicplayer/backend/internal/db"
 )
 
@@ -219,6 +220,7 @@ func (p *WorkerPool) Recover(ctx context.Context) (int64, int, error) {
 	for _, row := range pending {
 		_, created, enqueueErr := p.queue.Enqueue(ctx, EnqueueRequest{
 			TrackID:          row.TrackID,
+			Generation:       row.Generation,
 			ChannelSet:       row.ChannelSet,
 			StemModelVersion: row.StemModelVersion,
 			StorageKey:       row.SourceStorageKey,
@@ -311,8 +313,18 @@ func sleepCtx(ctx context.Context, delay time.Duration) {
 }
 
 func (p *WorkerPool) process(runCtx context.Context, workerID int, job *Job) {
-	identity := db.StemsIdentity{ChannelSet: job.ChannelSet, StemModelVersion: job.StemModelVersion}
+	model, ok := StemModelVersionFor(job.ChannelSet)
+	if !ok || model != job.StemModelVersion {
+		p.updateJob(runCtx, job.ID, JobStatusFailed, "job model is unsupported by this worker")
+		return
+	}
+	identity := db.StemsIdentity{ChannelSet: job.ChannelSet, StemModelVersion: job.StemModelVersion, Generation: job.Generation, AttemptID: uuid.NewString()}
 	provenance := workerProvenance(job)
+	var claim map[string]any
+	_ = json.Unmarshal(provenance, &claim)
+	claim["attempt_id"] = identity.AttemptID
+	claim["generation"] = identity.Generation
+	provenance, _ = json.Marshal(claim)
 
 	// Claim the durable row first. A refusal here means this job no longer owns
 	// the request (superseded, already ready under another worker version, or
@@ -340,23 +352,34 @@ func (p *WorkerPool) process(runCtx context.Context, workerID int, job *Job) {
 	}
 
 	manifest, err := p.separator.Separate(sepCtx, Request{
-		SchemaVersion:         SchemaVersion,
-		TrackID:               job.TrackID,
-		StorageKey:            job.StorageKey,
-		ChannelSet:            job.ChannelSet,
-		ExpectedWorker:        WorkerName,
-		ExpectedWorkerVersion: WorkerVersion,
+		SchemaVersion:          SchemaVersion,
+		Generation:             job.Generation,
+		ExpectedSourceFileHash: job.SourceFileHash,
+		TrackID:                job.TrackID,
+		StorageKey:             job.StorageKey,
+		ChannelSet:             job.ChannelSet,
+		ExpectedWorker:         WorkerName,
+		ExpectedWorkerVersion:  WorkerVersion,
 	})
 	if err != nil {
 		p.failJob(runCtx, workerID, job, identity, provenance, err)
 		return
 	}
 
+	if err := ValidateManifest(manifest, Request{TrackID: job.TrackID, StorageKey: job.StorageKey, ChannelSet: job.ChannelSet, Generation: job.Generation, ExpectedSourceFileHash: job.SourceFileHash}); err != nil {
+		p.failJob(runCtx, workerID, job, identity, provenance, err)
+		return
+	}
 	result := db.StemsResult{
+		SampleRateHz:     manifest.SampleRateHz,
+		DurationMs:       manifest.DurationMs,
+		Generation:       identity.Generation,
+		AttemptID:        identity.AttemptID,
 		SchemaVersion:    manifest.SchemaVersion,
 		ChannelSet:       manifest.ChannelSet,
 		StemModelVersion: manifest.StemModelVersion,
 		SourceFileHash:   manifest.SourceFileHash,
+		SourceStorageKey: manifest.SourceStorageKey,
 		ArtifactsJSON:    manifest.Artifacts,
 		ProvenanceJSON:   manifest.Provenance,
 	}
@@ -373,7 +396,9 @@ func (p *WorkerPool) process(runCtx context.Context, workerID int, job *Job) {
 		return
 	}
 
-	p.reconcileSourceHash(runCtx, workerID, job.TrackID, manifest.SourceFileHash)
+	if atomic, ok := p.store.(interface{ AtomicSourcePublication() bool }); !ok || !atomic.AtomicSourcePublication() {
+		p.reconcileSourceHash(runCtx, workerID, job.TrackID, manifest.SourceFileHash)
+	}
 	p.updateJob(runCtx, job.ID, JobStatusComplete, "")
 	log.Printf("stems worker %d: job %s completed", workerID, job.ID)
 }

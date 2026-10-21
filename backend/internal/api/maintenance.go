@@ -1,16 +1,26 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/processor"
+)
+
+const (
+	maintenanceMaxRequestBytes = 16 * 1024
+	maintenanceMaxTrackIDs     = 200
+	maintenanceMaxStaleMinutes = 7 * 24 * 60
 )
 
 type maintenanceTrackStore interface {
@@ -25,13 +35,28 @@ type maintenanceProcessor interface {
 	RepairAudioQuality(ctx context.Context, track *db.Track) (processor.AudioQualityRepairResult, error)
 }
 
-type MaintenanceHandlers struct {
-	tracks    maintenanceTrackStore
-	processor maintenanceProcessor
+type MaintenanceConfig struct {
+	// AdminUserIDs is trusted server configuration, never request/token role data.
+	AdminUserIDs []uuid.UUID
 }
 
-func NewMaintenanceHandlers(tracks maintenanceTrackStore, processor maintenanceProcessor) *MaintenanceHandlers {
-	return &MaintenanceHandlers{tracks: tracks, processor: processor}
+type MaintenanceHandlers struct {
+	tracks       maintenanceTrackStore
+	processor    maintenanceProcessor
+	adminUserIDs map[uuid.UUID]struct{}
+}
+
+// NewMaintenanceHandlers defaults to denying every HTTP caller when unconfigured.
+func NewMaintenanceHandlers(tracks maintenanceTrackStore, processor maintenanceProcessor, configs ...MaintenanceConfig) *MaintenanceHandlers {
+	h := &MaintenanceHandlers{tracks: tracks, processor: processor, adminUserIDs: make(map[uuid.UUID]struct{})}
+	for _, cfg := range configs {
+		for _, id := range cfg.AdminUserIDs {
+			if id != uuid.Nil {
+				h.adminUserIDs[id] = struct{}{}
+			}
+		}
+	}
+	return h
 }
 
 type maintenanceRepairRequest struct {
@@ -83,14 +108,55 @@ type maintenanceRepairCriteria struct {
 }
 
 func (h *MaintenanceHandlers) RepairTracks(w http.ResponseWriter, r *http.Request) {
-	if h == nil || h.tracks == nil || h.processor == nil {
+	user := auth.GetUserFromContext(r.Context())
+	if user == nil || user.UserID == uuid.Nil {
+		writeMaintenanceError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+		return
+	}
+	if h == nil {
+		writeMaintenanceError(w, http.StatusForbidden, "FORBIDDEN", "maintenance operator access required")
+		return
+	}
+	if _, allowed := h.adminUserIDs[user.UserID]; !allowed {
+		writeMaintenanceError(w, http.StatusForbidden, "FORBIDDEN", "maintenance operator access required")
+		return
+	}
+	if h.tracks == nil || h.processor == nil {
 		writeMaintenanceError(w, http.StatusServiceUnavailable, "SERVICE_DISABLED", "maintenance repair is unavailable")
 		return
 	}
-	var req maintenanceRepairRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Read a bounded body before decoding so oversized trailing whitespace also
+	// fails and the decoder never allocates from an unbounded ID array/string.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maintenanceMaxRequestBytes))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeMaintenanceError(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "repair request exceeds 16 KiB")
+		} else {
+			writeMaintenanceError(w, http.StatusBadRequest, "INVALID_REQUEST", "failed to read repair request")
+		}
+		return
+	}
+	var req *maintenanceRepairRequest
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil || req == nil {
 		writeMaintenanceError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid repair request JSON")
 		return
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		writeMaintenanceError(w, http.StatusBadRequest, "INVALID_REQUEST", "repair request must contain exactly one JSON object")
+		return
+	}
+	if len(req.TrackIDs) > maintenanceMaxTrackIDs || req.Limit < 0 || req.StaleAfterMinutes < 0 || req.StaleAfterMinutes > maintenanceMaxStaleMinutes {
+		writeMaintenanceError(w, http.StatusBadRequest, "VALIDATION_ERROR", "repair request exceeds ID, limit, or stale-duration bounds")
+		return
+	}
+	for _, id := range req.TrackIDs {
+		if id <= 0 {
+			writeMaintenanceError(w, http.StatusBadRequest, "VALIDATION_ERROR", "track IDs must be positive")
+			return
+		}
 	}
 	includeMetadata := boolDefault(req.Metadata, true)
 	includeAnalysis := boolDefault(req.Analysis, true)

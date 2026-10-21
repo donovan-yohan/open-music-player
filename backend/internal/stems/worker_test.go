@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -151,15 +152,7 @@ func (f *fakeTrackHashes) count() int {
 }
 
 func testManifest() *Manifest {
-	return &Manifest{
-		SchemaVersion:    SchemaVersion,
-		TrackID:          42,
-		ChannelSet:       ChannelSetStems5Hybrid,
-		StemModelVersion: StemModelVersionStems5,
-		SourceFileHash:   "sha256:newbytes",
-		Artifacts:        json.RawMessage(`{"objects":[]}`),
-		Provenance:       json.RawMessage(`{"worker":"stemsep-worker","worker_version":"2026-08-03-1"}`),
-	}
+	return validTestManifest(42, 0)
 }
 
 func testJob() *Job {
@@ -234,6 +227,54 @@ func TestWorkerPoolProcessesJobThroughDurableTransitions(t *testing.T) {
 	}
 	if stored.Status != JobStatusComplete {
 		t.Fatalf("job status = %q, want %q", stored.Status, JobStatusComplete)
+	}
+}
+
+func TestWorkerPropagatesAttemptAndExpectedSource(t *testing.T) {
+	separator := &fakeSeparator{manifest: testManifest()}
+	store := &fakeStore{}
+	pool, _, _ := newTestPool(t, separator, store, WorkerPoolConfig{})
+	job := testJob()
+	job.Generation = 7
+	separator.manifest = validTestManifest(42, 7)
+	job.SourceFileHash = separator.manifest.SourceFileHash
+	pool.process(context.Background(), 0, job)
+	reqs := separator.calls()
+	if len(reqs) != 1 {
+		t.Fatalf("requests=%v", reqs)
+	}
+	if reqs[0].Generation != 7 || reqs[0].ExpectedSourceFileHash != job.SourceFileHash {
+		t.Fatalf("request lost identity: %+v", reqs[0])
+	}
+	claims := store.callsFor("MarkSeparating")
+	if len(claims) != 1 || !strings.Contains(claims[0].detail, "attempt_id") {
+		t.Fatalf("missing attempt: %+v", claims)
+	}
+}
+
+type atomicPublicationStore struct{ fakeStore }
+
+func (*atomicPublicationStore) AtomicSourcePublication() bool { return true }
+func TestWorkerDoesNotReconcileHashAfterAtomicPublication(t *testing.T) {
+	separator := &fakeSeparator{manifest: testManifest()}
+	store := &atomicPublicationStore{}
+	tracks := &fakeTrackHashes{changed: true}
+	pool, _, _ := newTestPool(t, separator, store, WorkerPoolConfig{Tracks: tracks})
+	pool.process(context.Background(), 0, testJob())
+	if tracks.count() != 0 {
+		t.Fatal("post-publication hash write can clobber newer track identity")
+	}
+}
+
+func TestWorkerRejectsUnrequestedJobModelBeforeClaim(t *testing.T) {
+	separator := &fakeSeparator{manifest: testManifest()}
+	store := &fakeStore{}
+	pool, _, _ := newTestPool(t, separator, store, WorkerPoolConfig{})
+	job := testJob()
+	job.StemModelVersion = "wrong-model"
+	pool.process(context.Background(), 0, job)
+	if len(store.callsFor("MarkSeparating")) != 0 || len(separator.calls()) != 0 {
+		t.Fatal("unrequested model was claimed and sent to inference")
 	}
 }
 
@@ -395,7 +436,7 @@ func TestWorkerPoolInvalidatesStemsWhenSourceAudioChanged(t *testing.T) {
 	}
 	// It must be invalidated against the NEW hash: every set still carrying the
 	// old identity is derived from bytes that no longer exist.
-	if stale[0].detail != "sha256:newbytes" {
+	if stale[0].detail != "sha256:"+strings.Repeat("a", 64) {
 		t.Fatalf("MarkStaleBySourceHash hash = %q, want the newly separated hash", stale[0].detail)
 	}
 	if stale[0].trackID != 42 {

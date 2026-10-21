@@ -13,12 +13,13 @@ var ErrUserNotFound = errors.New("user not found")
 var ErrEmailExists = errors.New("email already exists")
 
 type User struct {
-	ID           uuid.UUID
-	Email        string
-	Username     string
-	PasswordHash string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ConnectAuthGeneration int64
+	ID                    uuid.UUID
+	Email                 string
+	Username              string
+	PasswordHash          string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type UserRepository struct {
@@ -50,14 +51,14 @@ func (r *UserRepository) Create(ctx context.Context, user *User) error {
 
 func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*User, error) {
 	query := `
-		SELECT id, email, username, password_hash, created_at, updated_at
+		SELECT id, email, username, password_hash, created_at, updated_at, connect_auth_generation
 		FROM users
 		WHERE email = $1
 	`
 
 	user := &User{}
 	err := r.db.QueryRowContext(ctx, query, email).Scan(
-		&user.ID, &user.Email, &user.Username, &user.PasswordHash, &user.CreatedAt, &user.UpdatedAt,
+		&user.ID, &user.Email, &user.Username, &user.PasswordHash, &user.CreatedAt, &user.UpdatedAt, &user.ConnectAuthGeneration,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -71,14 +72,14 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*User, e
 
 func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	query := `
-		SELECT id, email, username, password_hash, created_at, updated_at
+		SELECT id, email, username, password_hash, created_at, updated_at, connect_auth_generation
 		FROM users
 		WHERE id = $1
 	`
 
 	user := &User{}
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&user.ID, &user.Email, &user.Username, &user.PasswordHash, &user.CreatedAt, &user.UpdatedAt,
+		&user.ID, &user.Email, &user.Username, &user.PasswordHash, &user.CreatedAt, &user.UpdatedAt, &user.ConnectAuthGeneration,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
