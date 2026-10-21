@@ -57,8 +57,7 @@ Future<void> _nativeAppTracer() async {
       reason: 'Compiled fake host is mandatory; never use OS audio.');
   final fake = _FakeDevice(path!);
   expect(fake.reset(), 0);
-  final root = await Directory(Platform.environment['TMPDIR']!)
-      .createTemp('app-native-');
+  final root = await Directory.systemTemp.createTemp('app-native-');
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
   final body = preparedStatus(objectOrigin: 'http://127.0.0.1:${server.port}');
   const fixtureSeconds = 8;

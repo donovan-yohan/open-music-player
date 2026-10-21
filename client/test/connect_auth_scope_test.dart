@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:open_music_player/core/auth/auth_service.dart';
 import 'package:open_music_player/core/auth/auth_state.dart';
 import 'package:flutter/services.dart';
@@ -110,11 +111,20 @@ void main() {
         .setMockMethodCallHandler(channel, null));
     final wire = Wire((_) => reply({}));
     await ApiClient(dio: Dio()..httpClientAdapter = wire).get('/library');
-    expect(
-        calls.single.arguments['options']['useDataProtectionKeyChain'],
-        applicationSecureStorage()
-            .mOptions
-            .toMap()['useDataProtectionKeyChain']);
+    final storage = applicationSecureStorage();
+    final expectedOptions = Platform.isMacOS
+        ? storage.mOptions.toMap()
+        : Platform.isLinux
+            ? storage.lOptions.toMap()
+            : Platform.isWindows
+                ? storage.wOptions.toMap()
+                : Platform.isIOS
+                    ? storage.iOptions.toMap()
+                    : storage.aOptions.toMap();
+    expect(calls.single.arguments['options'], expectedOptions);
+    if (Platform.isMacOS) {
+      expect(expectedOptions['useDataProtectionKeyChain'], 'false');
+    }
   });
   test('captured account payload cannot send after auth intent', () async {
     final backend = MemoryTokens();

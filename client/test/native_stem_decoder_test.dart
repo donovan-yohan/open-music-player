@@ -27,8 +27,8 @@ void main() {
           Platform.environment['SOUNDQ_NATIVE_DEVICE_TEST_LIBRARY'];
       expect(library, isNotNull,
           reason: 'Build the real device host; no FFI skip');
-      final root = await Directory(Platform.environment['TMPDIR']!)
-          .createTemp('native-stem-decoder-');
+      final root =
+          await Directory.systemTemp.createTemp('native-stem-decoder-');
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final encoded = File('${root.path}/fixture.opus');
       final raw = File('${root.path}/reference.f32');
