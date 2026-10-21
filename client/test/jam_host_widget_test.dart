@@ -50,7 +50,7 @@ void main() {
           find.byKey(const ValueKey('jam-invitation-qr')));
       final image = await boundary.toImage(pixelRatio: 2);
       final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-      final dir = Platform.environment['TMPDIR']!;
+      final dir = Directory.systemTemp.path;
       await File('$dir/soundq-jam-host-qr.png')
           .writeAsBytes(bytes!.buffer.asUint8List());
       await File('$dir/soundq-jam-host-qr-expected.txt')

@@ -20,8 +20,7 @@ import 'prepared_stem_manifest_test.dart'
 void main() {
   late Directory root;
   setUp(() async {
-    root = await Directory(Platform.environment['TMPDIR']!)
-        .createTemp('prepared-stems-test-');
+    root = await Directory.systemTemp.createTemp('prepared-stems-test-');
   });
   tearDown(() async {
     if (await root.exists()) await root.delete(recursive: true);

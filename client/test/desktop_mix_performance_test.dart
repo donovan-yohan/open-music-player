@@ -882,8 +882,8 @@ void main() {
         final callback = lib.lookupFunction<ffi.Int32 Function(ffi.Uint32),
             int Function(int)>('sq_ffi_test_callback');
         expect(reset(), 0);
-        final temp = await Directory(Platform.environment['TMPDIR']!)
-            .createTemp('desktop-recording-');
+        final temp =
+            await Directory.systemTemp.createTemp('desktop-recording-');
         final file = File('${temp.path}/fixture.opus');
         final result = await Process.run('ffmpeg', [
           '-v',
