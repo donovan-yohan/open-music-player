@@ -2,6 +2,7 @@ package stems
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,7 @@ import (
 	"time"
 )
 
-const testManifestBody = `{
+const incompleteManifestBody = `{
 	"schema_version": 1,
 	"track_id": 123,
 	"channel_set": "stems5-hybrid-v1",
@@ -23,6 +24,28 @@ const testManifestBody = `{
 	"artifacts": {"objects": [{"channel": "vocals", "key": "stems/123/audio-separator-htdemucs-ft-4s-v1/vocals.opus", "derivation": "separator"}]},
 	"provenance": {"worker": "stemsep-worker", "worker_version": "2026-08-30-1", "inference_provider": {"name":"audio-separator"}}
 }`
+
+var testManifestBody = func() string { data, _ := json.Marshal(validTestManifest(123, 0)); return string(data) }()
+
+func validTestManifest(trackID, generation int64) *Manifest {
+	zero := int64(0)
+	preskip := int64(312)
+	hash := strings.Repeat("a", 64)
+	roles := []string{"vocals", "melody", "bass", "kick", "perc", "drums"}
+	artifacts := Artifacts{Codec: json.RawMessage(`{"name":"libopus","sample_rate_hz":48000,"channels":2}`), NullSum: json.RawMessage(`{"pair":["kick","perc"],"against":"drums","residual_db":-120,"threshold_db":-80,"passed":true}`)}
+	energy := map[string]string{}
+	for _, role := range roles {
+		derivation := DerivationSeparator
+		if role == "kick" || role == "perc" {
+			derivation = DerivationCrossover
+		}
+		artifacts.Objects = append(artifacts.Objects, Member{Channel: role, Key: MemberKey(trackID, StemModelVersionStems5, "sha256:"+hash, generation, role, hash), SHA256: hash, Bytes: 10, DurationMs: 1000, SampleFrames: 48000, SampleRateHz: 48000, Channels: 2, OriginFrame: &zero, DelayFrames: &zero, EncoderDelayFrames: &preskip, DelayProvenance: DelayProvenance, Derivation: derivation})
+		energy[role] = base64.StdEncoding.EncodeToString(make([]byte, 80))
+	}
+	artifacts.Energy, _ = json.Marshal(map[string]any{"frame_hz": 80, "frame_count": 80, "encoding": "uint8-linear", "channels": energy})
+	data, _ := json.Marshal(artifacts)
+	return &Manifest{SchemaVersion: 1, TrackID: trackID, Generation: generation, ChannelSet: ChannelSetStems5Hybrid, StemModelVersion: StemModelVersionStems5, SourceFileHash: "sha256:" + hash, SourceStorageKey: "tracks/youtube/x.mp3", DurationMs: 1000, Artifacts: data, Provenance: json.RawMessage(`{"worker":"stemsep-worker","worker_version":"2026-08-30-1"}`)}
+}
 
 func newTestClient(t *testing.T, handler http.Handler, authToken string) (*ServiceClient, *httptest.Server) {
 	t.Helper()
@@ -50,6 +73,112 @@ func testSeparateRequest() Request {
 		ChannelSet:            ChannelSetStems5Hybrid,
 		ExpectedWorker:        WorkerName,
 		ExpectedWorkerVersion: WorkerVersion,
+	}
+}
+
+func TestSeparateRejectsIncompleteMemberManifest(t *testing.T) {
+	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, incompleteManifestBody) }), "")
+	_, err := client.Separate(context.Background(), testSeparateRequest())
+	if err == nil {
+		t.Fatal("accepted incomplete, unlinked member manifest")
+	}
+}
+
+func TestManifestValidationRejectsIdentityAndMemberTampering(t *testing.T) {
+	tests := map[string]func(*Manifest, *Artifacts){
+		"schema":           func(m *Manifest, _ *Artifacts) { m.SchemaVersion = 0 },
+		"track":            func(m *Manifest, _ *Artifacts) { m.TrackID++ },
+		"source":           func(m *Manifest, _ *Artifacts) { m.SourceFileHash = "sha256:" + strings.Repeat("b", 64) },
+		"source_key":       func(m *Manifest, _ *Artifacts) { m.SourceStorageKey = "other" },
+		"model":            func(m *Manifest, _ *Artifacts) { m.StemModelVersion = "wrong" },
+		"generation":       func(m *Manifest, _ *Artifacts) { m.Generation++ },
+		"missing":          func(_ *Manifest, a *Artifacts) { a.Objects = a.Objects[:5] },
+		"duplicate":        func(_ *Manifest, a *Artifacts) { a.Objects[1] = a.Objects[0] },
+		"arbitrary_key":    func(_ *Manifest, a *Artifacts) { a.Objects[0].Key = "tracks/private" },
+		"sha":              func(_ *Manifest, a *Artifacts) { a.Objects[0].SHA256 = "bad" },
+		"size":             func(_ *Manifest, a *Artifacts) { a.Objects[0].Bytes = 0 },
+		"pcm_frames":       func(_ *Manifest, a *Artifacts) { a.Objects[0].SampleFrames = 80 },
+		"rate":             func(_ *Manifest, a *Artifacts) { a.Objects[0].SampleRateHz = 44100 },
+		"channels":         func(_ *Manifest, a *Artifacts) { a.Objects[0].Channels = 1 },
+		"origin_missing":   func(_ *Manifest, a *Artifacts) { a.Objects[0].OriginFrame = nil },
+		"delay_missing":    func(_ *Manifest, a *Artifacts) { a.Objects[0].DelayFrames = nil },
+		"delay_provenance": func(_ *Manifest, a *Artifacts) { a.Objects[0].DelayProvenance = "guessed" },
+		"energy_grid": func(_ *Manifest, a *Artifacts) {
+			a.Energy = json.RawMessage(`{"frame_hz":80,"frame_count":48000,"encoding":"uint8-linear"}`)
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			m := validTestManifest(123, 0)
+			var a Artifacts
+			_ = json.Unmarshal(m.Artifacts, &a)
+			mutate(m, &a)
+			m.Artifacts, _ = json.Marshal(a)
+			if err := ValidateManifest(m, Request{TrackID: 123, StorageKey: "tracks/youtube/x.mp3", ChannelSet: ChannelSetStems5Hybrid, ExpectedSourceFileHash: "sha256:" + strings.Repeat("a", 64)}); err == nil {
+				t.Fatal("tampered manifest admitted")
+			}
+		})
+	}
+}
+
+func TestSeparateDoesNotRepairMissingManifestSchema(t *testing.T) {
+	m := validTestManifest(123, 0)
+	m.SchemaVersion = 0
+	body, _ := json.Marshal(m)
+	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }), "")
+	if _, err := client.Separate(context.Background(), testSeparateRequest()); err == nil {
+		t.Fatal("missing schema was silently repaired")
+	}
+}
+
+func TestSeparateRejectsCodecNullsumAndTrailingPayload(t *testing.T) {
+	for _, kind := range []string{"codec", "null_sum", "trailing"} {
+		t.Run(kind, func(t *testing.T) {
+			m := validTestManifest(123, 0)
+			var a Artifacts
+			_ = json.Unmarshal(m.Artifacts, &a)
+			if kind == "codec" {
+				a.Codec = json.RawMessage(`{"name":"mp3"}`)
+			}
+			if kind == "null_sum" {
+				a.NullSum = json.RawMessage(`{"passed":false,"residual_db":-20}`)
+			}
+			m.Artifacts, _ = json.Marshal(a)
+			body, _ := json.Marshal(m)
+			if kind == "trailing" {
+				body = append(body, []byte(` {"ignored":"payload"}`)...)
+			}
+			client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }), "")
+			if _, err := client.Separate(context.Background(), testSeparateRequest()); err == nil {
+				t.Fatal("invalid publication accepted")
+			}
+		})
+	}
+}
+
+func TestSeparateRejectsManifestUnknownFields(t *testing.T) {
+	m := validTestManifest(123, 0)
+	data, _ := json.Marshal(m)
+	var payload map[string]any
+	_ = json.Unmarshal(data, &payload)
+	payload["sample_rate_hz"] = 44100
+	payload["lost_metadata"] = true
+	body, _ := json.Marshal(payload)
+	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }), "")
+	if _, err := client.Separate(context.Background(), testSeparateRequest()); err == nil {
+		t.Fatal("manifest fields silently discarded")
+	}
+}
+
+func TestManifestRejectsDifferentEncoderDelayAcrossMembers(t *testing.T) {
+	m := validTestManifest(123, 0)
+	var a Artifacts
+	_ = json.Unmarshal(m.Artifacts, &a)
+	different := int64(960)
+	a.Objects[0].EncoderDelayFrames = &different
+	m.Artifacts, _ = json.Marshal(a)
+	if err := ValidateManifest(m, testSeparateRequest()); err == nil {
+		t.Fatal("mixed encoder delay accepted")
 	}
 }
 
@@ -103,7 +232,7 @@ func TestSeparateSendsContractRequestWithBearerAuth(t *testing.T) {
 	if decoded.ExpectedWorker != WorkerName || decoded.ExpectedWorkerVersion != WorkerVersion {
 		t.Fatalf("request identity = %q/%q, want %q/%q", decoded.ExpectedWorker, decoded.ExpectedWorkerVersion, WorkerName, WorkerVersion)
 	}
-	if manifest.StemModelVersion != StemModelVersionStems5 || manifest.SourceFileHash != "sha256:deadbeef" {
+	if manifest.StemModelVersion != StemModelVersionStems5 || manifest.SourceFileHash != "sha256:"+strings.Repeat("a", 64) {
 		t.Fatalf("manifest = %+v, want the parsed artifact manifest", manifest)
 	}
 	worker, workerVersion, err := manifest.ProvenanceIdentity()
@@ -128,7 +257,7 @@ func TestSeparateSurfacesIdentityMismatchAsTypedError(t *testing.T) {
 }
 
 func TestSeparateRejectsManifestClaimingAnotherWorkerIdentity(t *testing.T) {
-	body := strings.Replace(testManifestBody, `"worker_version": "2026-08-30-1"`, `"worker_version": "1999-01-01-1"`, 1)
+	body := strings.Replace(testManifestBody, `"worker_version":"2026-08-30-1"`, `"worker_version":"1999-01-01-1"`, 1)
 	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, body)
 	}), "")

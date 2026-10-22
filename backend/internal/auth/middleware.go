@@ -13,8 +13,9 @@ type contextKey string
 const UserContextKey contextKey = "user"
 
 type UserContext struct {
-	UserID uuid.UUID
-	Email  string
+	ConnectGeneration int64
+	UserID            uuid.UUID
+	Email             string
 }
 
 func Middleware(authService *Service) func(http.Handler) http.Handler {
@@ -50,8 +51,9 @@ func Middleware(authService *Service) func(http.Handler) http.Handler {
 			}
 
 			userCtx := &UserContext{
-				UserID: userID,
-				Email:  claims.Email,
+				ConnectGeneration: claims.ConnectGeneration,
+				UserID:            userID,
+				Email:             claims.Email,
 			}
 
 			ctx := context.WithValue(r.Context(), UserContextKey, userCtx)

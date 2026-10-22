@@ -117,24 +117,36 @@ func NewAnalysisRepository(db *DB) *AnalysisRepository {
 	return &AnalysisRepository{db: db}
 }
 
+// RequestAnalysis preserves the error-only API for callers that only persist
+// intent. Dispatchers must use RequestAnalysisIfNeeded and honor its decision.
 func (r *AnalysisRepository) RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error {
+	_, err := r.RequestAnalysisIfNeeded(ctx, trackID, provenance)
+	return err
+}
+
+// RequestAnalysisIfNeeded atomically creates/retries eligible work. Healthy
+// results, active requests and unsupported sources are no-ops, including their
+// provenance: a duplicate download must not rewrite an existing analysis input.
+func (r *AnalysisRepository) RequestAnalysisIfNeeded(ctx context.Context, trackID int64, provenance json.RawMessage) (bool, error) {
 	query := `
 		INSERT INTO track_analysis (track_id, status, provenance_json, requested_at, updated_at)
 		VALUES ($1, $2, COALESCE($3::jsonb, '{}'::jsonb), NOW(), NOW())
 		ON CONFLICT (track_id) DO UPDATE
-		SET status = CASE
-				WHEN track_analysis.status IN ('analyzed', 'analyzing') THEN track_analysis.status
-				ELSE EXCLUDED.status
-			END,
+		SET status = EXCLUDED.status,
 			provenance_json = COALESCE(track_analysis.provenance_json, '{}'::jsonb) || COALESCE(EXCLUDED.provenance_json, '{}'::jsonb),
-			requested_at = CASE
-				WHEN track_analysis.status IN ('analyzed', 'analyzing') THEN track_analysis.requested_at
-				ELSE NOW()
-			END,
+			error = NULL,
+			requested_at = NOW(),
+			started_at = NULL,
+			completed_at = NULL,
 			updated_at = NOW()
+		WHERE track_analysis.status IN ('failed', 'stale')
 	`
-	_, err := r.db.ExecContext(ctx, query, trackID, AnalysisStatusPending, nullableRawJSON(provenance))
-	return err
+	updated, err := r.db.ExecContext(ctx, query, trackID, AnalysisStatusPending, nullableRawJSON(provenance))
+	if err != nil {
+		return false, err
+	}
+	rows, err := updated.RowsAffected()
+	return rows > 0, err
 }
 
 func (r *AnalysisRepository) RequestRepairAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage, force, onlyStale bool, staleAfter time.Duration) (AnalysisRepairRequest, error) {
@@ -250,7 +262,7 @@ func (r *AnalysisRepository) MarkAnalyzing(ctx context.Context, trackID int64, p
 			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || COALESCE($3::jsonb, '{}'::jsonb),
 			updated_at = NOW()
 		WHERE track_id = $1
-		  AND status IN ($4, $5, $6)
+		  AND status = $4
 		  AND (
 			COALESCE(provenance_json->>'expected_analyzer', '') = ''
 			OR provenance_json->>'expected_analyzer' = COALESCE($3::jsonb->>'expected_analyzer', '')
@@ -267,8 +279,6 @@ func (r *AnalysisRepository) MarkAnalyzing(ctx context.Context, trackID int64, p
 		AnalysisStatusAnalyzing,
 		nullableRawJSON(provenance),
 		AnalysisStatusPending,
-		AnalysisStatusAnalyzed,
-		AnalysisStatusStale,
 	)
 	if err != nil {
 		return err

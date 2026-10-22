@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"sort"
@@ -18,9 +20,10 @@ import (
 )
 
 const (
-	mixPlanSchemaVersion       = 1
-	mixPlanMaxRequestBodyBytes = 256 * 1024
-	mixPlanMaxClips            = 1000
+	mixPlanSchemaVersion        = 1
+	mixPlanMaxRequestBodyBytes  = 256 * 1024
+	mixPlanMaxClips             = 1000
+	mixPlanMaxSimultaneousClips = 4
 )
 
 type MixPlanStore interface {
@@ -52,31 +55,107 @@ type MixPlanPayload struct {
 	Clips         []MixPlanClip `json:"clips"`
 }
 
+// MixTempoPolicy is additive to schema v1. Only omission has a safe legacy
+// default; explicit null, empty strings, and future policies are rejected.
+type MixTempoPolicy string
+
+const (
+	mixTempoVolumeOnly   MixTempoPolicy = "volumeOnly"
+	mixTempoConstantLock MixTempoPolicy = "constantTempoLock"
+)
+
+// Validate the new intent key before Go's case-insensitive struct matching or
+// last-duplicate-wins behavior can acknowledge a different authoring document.
+func validateMixTempoPolicyKeys(data []byte) error {
+	var document struct {
+		Clips []json.RawMessage `json:"clips"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return err
+	}
+	for _, clip := range document.Clips {
+		decoder := json.NewDecoder(bytes.NewReader(clip))
+		if _, err := decoder.Token(); err != nil {
+			return err
+		}
+		seen := false
+		for decoder.More() {
+			token, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, _ := token.(string)
+			if strings.EqualFold(key, "tempoPolicy") {
+				if key != "tempoPolicy" || seen {
+					return errors.New("tempoPolicy must occur once with canonical spelling")
+				}
+				seen = true
+			}
+			var value json.RawMessage
+			if err := decoder.Decode(&value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (policy *MixTempoPolicy) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return fmt.Errorf("tempoPolicy must be a string: %w", err)
+	}
+	if value != string(mixTempoVolumeOnly) && value != string(mixTempoConstantLock) {
+		return errors.New("tempoPolicy must be volumeOnly or constantTempoLock")
+	}
+	*policy = MixTempoPolicy(value)
+	return nil
+}
+
+func (policy MixTempoPolicy) MarshalJSON() ([]byte, error) {
+	value := effectiveMixTempoPolicy(policy)
+	if value != mixTempoVolumeOnly && value != mixTempoConstantLock {
+		return nil, errors.New("unsupported tempoPolicy")
+	}
+	return json.Marshal(string(value))
+}
+
+func effectiveMixTempoPolicy(policy MixTempoPolicy) MixTempoPolicy {
+	if policy == "" {
+		return mixTempoVolumeOnly
+	}
+	return policy
+}
+
 type MixPlanClip struct {
-	ClipID          string  `json:"clipId"`
-	QueueItemID     string  `json:"queueItemId"`
-	TrackID         int64   `json:"trackId"`
-	SourceStartMs   int64   `json:"sourceStartMs"`
-	SourceEndMs     int64   `json:"sourceEndMs"`
-	TimelineStartMs int64   `json:"timelineStartMs"`
-	GainDB          float64 `json:"gainDb"`
-	FadeInMs        *int64  `json:"fadeInMs,omitempty"`
-	FadeOutMs       *int64  `json:"fadeOutMs,omitempty"`
-	PitchMode       string  `json:"pitchMode,omitempty"`
+	ClipID          string            `json:"clipId"`
+	QueueItemID     string            `json:"queueItemId"`
+	TrackID         int64             `json:"trackId"`
+	SourceStartMs   int64             `json:"sourceStartMs"`
+	SourceEndMs     int64             `json:"sourceEndMs"`
+	TimelineStartMs int64             `json:"timelineStartMs"`
+	GainDB          float64           `json:"gainDb"`
+	FadeInMs        *int64            `json:"fadeInMs,omitempty"`
+	FadeOutMs       *int64            `json:"fadeOutMs,omitempty"`
+	PitchMode       string            `json:"pitchMode,omitempty"`
+	StemEdits       *MixPlanStemEdits `json:"stemEdits,omitempty"`
+	TempoPolicy     MixTempoPolicy    `json:"tempoPolicy"`
 }
 
 type MixPlanClipResponse struct {
-	ClipID          string  `json:"clipId"`
-	QueueItemID     string  `json:"queueItemId"`
-	TrackID         int64   `json:"trackId"`
-	SourceStartMs   int64   `json:"sourceStartMs"`
-	SourceEndMs     int64   `json:"sourceEndMs"`
-	TimelineStartMs int64   `json:"timelineStartMs"`
-	TimelineEndMs   int64   `json:"timelineEndMs"`
-	GainDB          float64 `json:"gainDb"`
-	FadeInMs        *int64  `json:"fadeInMs,omitempty"`
-	FadeOutMs       *int64  `json:"fadeOutMs,omitempty"`
-	PitchMode       string  `json:"pitchMode"`
+	ClipID          string            `json:"clipId"`
+	QueueItemID     string            `json:"queueItemId"`
+	TrackID         int64             `json:"trackId"`
+	SourceStartMs   int64             `json:"sourceStartMs"`
+	SourceEndMs     int64             `json:"sourceEndMs"`
+	TimelineStartMs int64             `json:"timelineStartMs"`
+	TimelineEndMs   int64             `json:"timelineEndMs"`
+	GainDB          float64           `json:"gainDb"`
+	FadeInMs        *int64            `json:"fadeInMs,omitempty"`
+	FadeOutMs       *int64            `json:"fadeOutMs,omitempty"`
+	PitchMode       string            `json:"pitchMode"`
+	StemEdits       *MixPlanStemEdits `json:"stemEdits,omitempty"`
+	TempoPolicy     MixTempoPolicy    `json:"tempoPolicy"`
 }
 
 type MixPlanSummary struct {
@@ -322,8 +401,23 @@ func decodeSaveMixPlanRequest(w http.ResponseWriter, r *http.Request) (*SaveMixP
 	var req SaveMixPlanRequest
 	r.Body = http.MaxBytesReader(w, r.Body, mixPlanMaxRequestBodyBytes)
 	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(&req); err != nil {
-		return nil, errors.New("invalid request body")
+	// Mix saves must not acknowledge fields that the v1 payload cannot retain
+	// (notably unsupported deck fields). Keep this local to the mix contract.
+	decoder.DisallowUnknownFields()
+	var raw json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		return nil, fmt.Errorf("invalid request body: %w", err)
+	}
+	if err := validateMixTempoPolicyKeys(raw); err != nil {
+		return nil, err
+	}
+	strict := json.NewDecoder(bytes.NewReader(raw))
+	strict.DisallowUnknownFields()
+	if err := strict.Decode(&req); err != nil {
+		return nil, fmt.Errorf("invalid request body: %w", err)
+	}
+	if err := decoder.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return nil, errors.New("request body must contain a single JSON value")
 	}
 	return &req, nil
 }
@@ -354,8 +448,25 @@ func buildMixPlanPayload(req *SaveMixPlanRequest) (MixPlanPayload, MixPlanSummar
 	trackSeen := make(map[int64]bool)
 	trackIDs := make([]int64, 0, len(payload.Clips))
 	maxTimelineEnd := int64(0)
+	// Count transport instances, not distinct recordings. End events sort before
+	// starts at the same time so the accepted intervals are [start, end).
+	type boundary struct {
+		atMs  int64
+		delta int
+	}
+	boundaries := make([]boundary, 0, 2*len(payload.Clips))
+	stemEventCount := 0
 	for i := range payload.Clips {
 		clip := &payload.Clips[i]
+		if clip.StemEdits != nil {
+			if err := validateMixStemEdits(clip.StemEdits); err != nil {
+				return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d]: %w", i, err)
+			}
+			stemEventCount += len(clip.StemEdits.Events)
+			if stemEventCount > mixStemMaxEventsPerPlan {
+				return payload, MixPlanSummary{}, nil, fmt.Errorf("stemEdits cannot exceed %d events per plan", mixStemMaxEventsPerPlan)
+			}
+		}
 		clip.ClipID = strings.TrimSpace(clip.ClipID)
 		if clip.ClipID == "" {
 			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].clipId is required", i)
@@ -389,18 +500,56 @@ func buildMixPlanPayload(req *SaveMixPlanRequest) (MixPlanPayload, MixPlanSummar
 		if clip.FadeOutMs != nil && *clip.FadeOutMs < 0 {
 			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].fadeOutMs must be non-negative", i)
 		}
+		clip.TempoPolicy = effectiveMixTempoPolicy(clip.TempoPolicy)
+		if clip.TempoPolicy != mixTempoVolumeOnly && clip.TempoPolicy != mixTempoConstantLock {
+			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].tempoPolicy is unsupported", i)
+		}
 		clip.PitchMode = normalizeMixPlanPitchMode(clip.PitchMode)
 		if !trackSeen[clip.TrackID] {
 			trackSeen[clip.TrackID] = true
 			trackIDs = append(trackIDs, clip.TrackID)
 		}
 		durationMs := clip.SourceEndMs - clip.SourceStartMs
+		// GainEnvelope._effectiveFades in the client proportionally rescales
+		// ramps whose sum exceeds the selected window. Reject that geometry
+		// on save instead of persisting a different envelope than is rendered.
+		fadeIn, fadeOut := int64(0), int64(0)
+		if clip.FadeInMs != nil {
+			fadeIn = *clip.FadeInMs
+		}
+		if clip.FadeOutMs != nil {
+			fadeOut = *clip.FadeOutMs
+		}
+		if fadeIn > durationMs {
+			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].fadeInMs must not exceed selected clip duration", i)
+		}
+		if fadeOut > durationMs {
+			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].fadeOutMs must not exceed selected clip duration", i)
+		}
+		// Subtract after the individual checks to avoid overflowing the sum.
+		if fadeIn > durationMs-fadeOut {
+			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].fadeInMs + fadeOutMs must not exceed selected clip duration", i)
+		}
 		if durationMs > math.MaxInt64-clip.TimelineStartMs {
 			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d] timeline end exceeds maximum duration", i)
 		}
 		timelineEnd := clip.TimelineStartMs + durationMs
+		boundaries = append(boundaries, boundary{clip.TimelineStartMs, 1}, boundary{timelineEnd, -1})
 		if timelineEnd > maxTimelineEnd {
 			maxTimelineEnd = timelineEnd
+		}
+	}
+	sort.Slice(boundaries, func(i, j int) bool {
+		if boundaries[i].atMs == boundaries[j].atMs {
+			return boundaries[i].delta < boundaries[j].delta
+		}
+		return boundaries[i].atMs < boundaries[j].atMs
+	})
+	active := 0
+	for _, event := range boundaries {
+		active += event.delta
+		if active > mixPlanMaxSimultaneousClips {
+			return payload, MixPlanSummary{}, nil, fmt.Errorf("mix plan cannot exceed %d simultaneous clip instances (at %dms)", mixPlanMaxSimultaneousClips, event.atMs)
 		}
 	}
 	sort.Slice(trackIDs, func(i, j int) bool { return trackIDs[i] < trackIDs[j] })
@@ -451,6 +600,8 @@ func mixPlanClipResponses(clips []MixPlanClip) []MixPlanClipResponse {
 			FadeInMs:        clip.FadeInMs,
 			FadeOutMs:       clip.FadeOutMs,
 			PitchMode:       normalizeMixPlanPitchMode(clip.PitchMode),
+			StemEdits:       clip.StemEdits,
+			TempoPolicy:     effectiveMixTempoPolicy(clip.TempoPolicy),
 		})
 	}
 	return responses

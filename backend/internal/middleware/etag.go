@@ -54,6 +54,16 @@ func ETag(next http.Handler) http.Handler {
 		// Handle the request
 		next.ServeHTTP(wrapped, r)
 
+		// Private feature responses must never acquire validators or become 304.
+		for _, directive := range strings.Split(w.Header().Get("Cache-Control"), ",") {
+			if strings.EqualFold(strings.TrimSpace(directive), "no-store") {
+				w.Header().Del("ETag")
+				w.WriteHeader(wrapped.statusCode)
+				_, _ = w.Write(buf.Bytes())
+				return
+			}
+		}
+
 		// Calculate ETag from response body
 		hash := md5.Sum(buf.Bytes())
 		etag := `"` + hex.EncodeToString(hash[:]) + `"`

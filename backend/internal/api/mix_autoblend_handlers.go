@@ -34,6 +34,9 @@ const (
 	autoBlendEndpointSeamDivisor = int64(2)
 	autoBlendInteriorSeamDivisor = int64(4)
 	autoBlendBarsTolerance       = 0.05
+	// Existing ClipTempoMetadata admission floors, not detector calibration.
+	autoBlendReliableTimingConfidence = 0.55
+	autoBlendManualProvenance         = "manual_override"
 )
 
 // Transition presets, ordered from smoothest to hardest.
@@ -70,15 +73,18 @@ type AutoMixResponse struct {
 // autoBlendTrackFacts carries the analyzer facts the algorithm needs per
 // track, decoded from the effective compact analysis projection.
 type autoBlendTrackFacts struct {
-	TrackID       int64
-	DurationMs    int64
-	BPM           float64
-	HasBPM        bool
-	BeatsPerBar   int
-	Downbeats     []int64
-	CamelotNumber int
-	CamelotLetter byte
-	HasCamelot    bool
+	TrackID          int64
+	DurationMs       int64
+	BPM              float64
+	HasBPM           bool // Numeric display/ranking fact, not sync authority.
+	TempoEligible    bool
+	BeatGridEligible bool // Beat ordinals alone never establish bar phase.
+	BarEligible      bool
+	BeatsPerBar      int
+	Downbeats        []int64
+	CamelotNumber    int
+	CamelotLetter    byte
+	HasCamelot       bool
 }
 
 // PlaylistAutoBlendHandlers exposes POST /api/v1/playlists/{id}/auto-mix.
@@ -208,7 +214,17 @@ func buildAutoBlendMix(playlistID int64, facts []autoBlendTrackFacts) ([]MixPlan
 	for i, transition := range transitions {
 		overlaps[i] = transition.OverlapMs
 	}
-	return layoutAutoBlendClips(playlistID, facts, overlaps), transitions
+	clips := layoutAutoBlendClips(playlistID, facts, overlaps)
+	// Both sides opt into the same seam. A clip next to any untrusted seam
+	// remains volume-only; never let a fallback acquire a hidden rate change.
+	for i := range clips {
+		clips[i].TempoPolicy = mixTempoConstantLock
+		if (i > 0 && (transitions[i-1].Confidence.SimpleFade || transitions[i-1].OverlapMs <= 0)) ||
+			(i < len(transitions) && (transitions[i].Confidence.SimpleFade || transitions[i].OverlapMs <= 0)) || len(transitions) == 0 {
+			clips[i].TempoPolicy = mixTempoVolumeOnly
+		}
+	}
+	return clips, transitions
 }
 
 // computeAutoBlendTransitions derives every seam for an ordered track list,
@@ -269,6 +285,7 @@ func layoutAutoBlendClips(
 			FadeInMs:        fadeIn,
 			FadeOutMs:       fadeOut,
 			PitchMode:       normalizeMixPlanPitchMode("preserve"),
+			TempoPolicy:     mixTempoVolumeOnly,
 		})
 		timelineStart += facts[i].DurationMs
 		if i < n-1 {
@@ -320,14 +337,15 @@ func autoBlendClipSeamBudget(durationMs int64, hasOtherSeam bool) int64 {
 //  1. Tempo: <5% is matched, 5-15% is a warned tempo shift, and larger or
 //     unknown differences use a short simple fade without beat alignment.
 //  2. Key: same-number A/B or same-letter adjacent numbers are matches.
-//  3. Beat-aligned transitions require usable in-range downbeats on both
-//     tracks. Bad or sparse grids fall back to an 8-second simple fade.
+//  3. Bar-aligned transitions require independently eligible tempo and manual
+//     phase authority, one shared meter, and usable in-range downbeats on both
+//     tracks. Unknown/generated phase and bad grids use a simple fade.
 //  4. Preset: Blend (key+tempo), Rise (tempo), otherwise Fade. Slam remains
 //     an explicit editing preset; Auto never turns missing analysis into a cut.
 func computeAutoBlendTransition(index int, out, in autoBlendTrackFacts) AutoMixTransition {
-	tempoRatio := autoBlendTempoRatio(out.BPM, in.BPM, out.HasBPM, in.HasBPM)
-	tempoMatched := out.HasBPM && in.HasBPM && tempoRatio < autoBlendTempoMatchMax
-	tempoShift := out.HasBPM && in.HasBPM &&
+	tempoRatio := autoBlendTempoRatio(out.BPM, in.BPM, out.TempoEligible, in.TempoEligible)
+	tempoMatched := out.TempoEligible && in.TempoEligible && tempoRatio < autoBlendTempoMatchMax
+	tempoShift := out.TempoEligible && in.TempoEligible &&
 		tempoRatio >= autoBlendTempoMatchMax && tempoRatio <= autoBlendTempoShiftMax
 	keyMatch, _ := autoBlendCamelotDistance(
 		out.CamelotNumber,
@@ -365,7 +383,9 @@ func computeAutoBlendTransition(index int, out, in autoBlendTrackFacts) AutoMixT
 
 	// Missing or very different tempos cannot stay aligned through a useful
 	// transition. Keep playback audible with a bounded simple fade.
-	if !out.HasBPM || !in.HasBPM || tempoRatio > autoBlendTempoShiftMax {
+	if !out.TempoEligible || !in.TempoEligible || !out.BarEligible || !in.BarEligible ||
+		out.BeatsPerBar <= 0 || out.BeatsPerBar > 32 || out.BeatsPerBar != in.BeatsPerBar ||
+		tempoRatio > autoBlendTempoShiftMax {
 		return autoBlendSimpleFade(transition, out, in)
 	}
 
@@ -524,7 +544,8 @@ func autoBlendBarLengthMs(bpm float64, beatsPerBar int) float64 {
 }
 
 func autoBlendTempoRatio(bpmOut, bpmIn float64, hasOut, hasIn bool) float64 {
-	if !hasOut || !hasIn {
+	if !hasOut || !hasIn || bpmOut <= 0 || bpmIn <= 0 ||
+		math.IsNaN(bpmOut) || math.IsNaN(bpmIn) || math.IsInf(bpmOut, 0) || math.IsInf(bpmIn, 0) {
 		return math.MaxFloat64
 	}
 	denom := math.Max(bpmOut, bpmIn)
@@ -536,8 +557,9 @@ func autoBlendTempoRatio(bpmOut, bpmIn float64, hasOut, hasIn bool) float64 {
 
 // autoBlendTrackFactsFromAnalysis decodes the effective compact analysis
 // projection already attached to playlist tracks by the repository read
-// (summary merged with manual overrides). Unknown or malformed facts degrade
-// to "absent" so mixes still generate without analysis.
+// (summary merged with manual overrides). Numeric/marker display facts are
+// separate from tempo, beat-grid and bar authority; missing analysis never
+// supplies a default tempo lock. Internal constructors must opt in explicitly.
 func autoBlendTrackFactsFromAnalysis(track db.Track) autoBlendTrackFacts {
 	facts := autoBlendTrackFacts{
 		TrackID:     track.ID,
@@ -554,29 +576,82 @@ func autoBlendTrackFactsFromAnalysis(track db.Track) autoBlendTrackFacts {
 	// the effective document; decode the facts we need straight from it.
 	var effective struct {
 		BPM *struct {
-			Value *float64 `json:"value"`
+			Value      *float64 `json:"value"`
+			Confidence *float64 `json:"confidence"`
 		} `json:"bpm"`
+		BeatGrid *struct {
+			BPM        *float64 `json:"bpm"`
+			Confidence *float64 `json:"confidence"`
+			Provenance *string  `json:"provenance"`
+			BeatsMS    []*int64 `json:"beats_ms"`
+		} `json:"beat_grid"`
 		Meter *struct {
-			BeatsPerBar *int `json:"beats_per_bar"`
+			BeatsPerBar *int     `json:"beats_per_bar"`
+			Confidence  *float64 `json:"confidence"`
+			Provenance  *string  `json:"provenance"`
 		} `json:"meter"`
+		Phase *struct {
+			Index      *int     `json:"index"`
+			Confidence *float64 `json:"confidence"`
+			Provenance *string  `json:"provenance"`
+		} `json:"downbeat_phase"`
 		Downbeats *struct {
-			PositionsMS *[]int64 `json:"positions_ms"`
+			PositionsMS *[]*int64 `json:"positions_ms"`
+			Confidence  *float64  `json:"confidence"`
+			Provenance  *string   `json:"provenance"`
 		} `json:"downbeats"`
 		Camelot *struct {
 			Value *string `json:"value"`
 		} `json:"camelot"`
 	}
 	if err := json.Unmarshal(track.AnalysisSummary, &effective); err == nil {
-		if effective.BPM != nil && effective.BPM.Value != nil && *effective.BPM.Value > 0 {
-			facts.BPM = *effective.BPM.Value
+		var bpm, confidence *float64
+		if effective.BPM != nil {
+			bpm, confidence = effective.BPM.Value, effective.BPM.Confidence
+		}
+		if effective.BeatGrid != nil {
+			if bpm == nil {
+				bpm = effective.BeatGrid.BPM
+			}
+			if confidence == nil {
+				confidence = effective.BeatGrid.Confidence
+			}
+		}
+		if bpm != nil && *bpm > 0 && !math.IsNaN(*bpm) && !math.IsInf(*bpm, 0) {
+			facts.BPM = *bpm
 			facts.HasBPM = true
+			facts.TempoEligible = autoBlendTimingConfidenceEligible(confidence)
+		}
+		if effective.BeatGrid != nil {
+			beats, valid := autoBlendMarkerValues(effective.BeatGrid.BeatsMS)
+			manual := effective.BeatGrid.Provenance != nil &&
+				strings.EqualFold(strings.TrimSpace(*effective.BeatGrid.Provenance), autoBlendManualProvenance)
+			facts.BeatGridEligible = valid && autoBlendBeatGridEligible(beats, confidence, manual)
 		}
 		if effective.Meter != nil && effective.Meter.BeatsPerBar != nil &&
 			*effective.Meter.BeatsPerBar > 0 {
 			facts.BeatsPerBar = *effective.Meter.BeatsPerBar
 		}
 		if effective.Downbeats != nil && effective.Downbeats.PositionsMS != nil {
-			facts.Downbeats = *effective.Downbeats.PositionsMS
+			var validMarkers bool
+			facts.Downbeats, validMarkers = autoBlendMarkerValues(*effective.Downbeats.PositionsMS)
+			canonicalManual := effective.Meter != nil && effective.Meter.BeatsPerBar != nil &&
+				effective.Phase != nil && effective.Phase.Index != nil &&
+				*effective.Phase.Index >= 0 && *effective.Phase.Index < *effective.Meter.BeatsPerBar &&
+				autoBlendManualTimingAuthority(effective.Meter.Confidence, effective.Meter.Provenance) &&
+				autoBlendManualTimingAuthority(effective.Phase.Confidence, effective.Phase.Provenance)
+			// Only projected explicit legacy manual markers retain implicit 4/4
+			// compatibility. Missing fields in generated summaries are not proof.
+			legacyManual := effective.Meter == nil && effective.Phase == nil &&
+				autoBlendManualTimingAuthority(effective.Downbeats.Confidence, effective.Downbeats.Provenance)
+			facts.BarEligible = (canonicalManual || legacyManual) &&
+				autoBlendTimingConfidenceEligible(effective.Downbeats.Confidence) &&
+				validMarkers && autoBlendStrictMarkers(facts.Downbeats)
+			if effective.BeatGrid != nil && len(effective.BeatGrid.BeatsMS) > 0 {
+				beats, validBeats := autoBlendMarkerValues(effective.BeatGrid.BeatsMS)
+				facts.BarEligible = facts.BarEligible &&
+					validBeats && autoBlendDownbeatsFollowBeatGrid(beats, facts.Downbeats)
+			}
 		}
 		if effective.Camelot != nil && effective.Camelot.Value != nil {
 			if number, letter, ok := autoBlendParseCamelot(*effective.Camelot.Value); ok {
@@ -587,6 +662,93 @@ func autoBlendTrackFactsFromAnalysis(track db.Track) autoBlendTrackFacts {
 		}
 	}
 	return facts
+}
+
+// These are ClipTempoMetadata.hasReliableBeatGrid's existing structural
+// admission rules (4 markers, interval/upper-median ratios 0.45..1.8), not
+// thresholds fitted to synthetic clicks. Eligibility is independent of bars.
+func autoBlendBeatGridEligible(beats []int64, confidence *float64, manual bool) bool {
+	if len(beats) < 4 || !autoBlendStrictMarkers(beats) {
+		return false
+	}
+	if manual {
+		return true
+	}
+	if !autoBlendTimingConfidenceEligible(confidence) {
+		return false
+	}
+	intervals := make([]int64, len(beats)-1)
+	for i := range intervals {
+		intervals[i] = beats[i+1] - beats[i]
+	}
+	sorted := append([]int64(nil), intervals...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	median := float64(sorted[len(sorted)/2])
+	for _, interval := range intervals {
+		if float64(interval) < median*0.45 || float64(interval) > median*1.8 {
+			return false
+		}
+	}
+	return true
+}
+
+func autoBlendTimingConfidenceEligible(confidence *float64) bool {
+	return confidence == nil || (!math.IsNaN(*confidence) && !math.IsInf(*confidence, 0) &&
+		*confidence >= autoBlendReliableTimingConfidence && *confidence <= 1)
+}
+
+func autoBlendManualTimingAuthority(confidence *float64, provenance *string) bool {
+	return confidence != nil && *confidence == 1 && provenance != nil && *provenance == autoBlendManualProvenance
+}
+
+func autoBlendMarkerValues(markers []*int64) ([]int64, bool) {
+	values := make([]int64, 0, len(markers))
+	for _, marker := range markers {
+		if marker == nil {
+			return values, false
+		}
+		values = append(values, *marker)
+	}
+	return values, true
+}
+
+func autoBlendStrictMarkers(markers []int64) bool {
+	if len(markers) == 0 || markers[0] < 0 {
+		return false
+	}
+	for i := 1; i < len(markers); i++ {
+		if markers[i] <= markers[i-1] {
+			return false
+		}
+	}
+	return true
+}
+
+// Match ClipTempoMetadata's event-domain check. Downbeats inside the observed
+// span must be actual beats; outside it only exact edge-interval continuation
+// is compatible. This validates markers, not a detector or phrase inference.
+func autoBlendDownbeatsFollowBeatGrid(beats, downbeats []int64) bool {
+	if !autoBlendStrictMarkers(beats) {
+		return false
+	}
+	for _, downbeat := range downbeats {
+		index := sort.Search(len(beats), func(i int) bool { return beats[i] >= downbeat })
+		if index < len(beats) && beats[index] == downbeat {
+			continue
+		}
+		if len(beats) < 2 || (index > 0 && index < len(beats)) {
+			return false
+		}
+		anchor, interval := beats[0], beats[1]-beats[0]
+		if index == len(beats) {
+			anchor = beats[len(beats)-1]
+			interval = anchor - beats[len(beats)-2]
+		}
+		if (downbeat-anchor)%interval != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // autoBlendMixName derives a valid mix-plan name from the playlist name,
