@@ -16,6 +16,7 @@
     "https://soundcloud.com/*",
     "https://www.soundcloud.com/*",
     "http://localhost:8080/*",
+    "https://soundq.fish-rattlesnake.ts.net/*",
     "https://*.openmusicplayer.app/*"
   ],
   "action": {

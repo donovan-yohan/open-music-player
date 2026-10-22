@@ -4,11 +4,8 @@ import type {
   AddToLibraryResponse,
   PageMetadata,
   SourceType,
-  UpdateMetadataMessage,
-  UpdateMetadataResult,
-  TrackMetadata,
 } from '../types';
-import { toAppError, type AppError } from '../errors';
+import { AppError, toAppError } from '../errors';
 import { setupOfflineDetection, showOfflineBanner, getErrorIcon, getErrorTitle } from '../errors/ui';
 
 interface UIElements {
@@ -55,17 +52,16 @@ interface State {
   sourceType: SourceType;
   metadata: PageMetadata;
   isAdding: boolean;
-  // Edit state
-  trackId: string | null;
-  isEditing: boolean;
-  duplicateTrackId: string | null;
+  // A queued download is not a library track.
+  jobId: string | null;
 }
 
 let elements: UIElements;
 let state: State;
 
-// Track last error for retry
+// Keep retry intent separate from whether a request is currently in flight.
 let lastError: AppError | null = null;
+let retryAction: 'addToLibrary' | null = null;
 let offlineBanner: HTMLElement | null = null;
 let cleanupOfflineDetection: (() => void) | null = null;
 
@@ -201,9 +197,9 @@ function showTrackPreview(): void {
 
 function showSuccess(jobId?: string): void {
   showSection(elements.success);
-  if (jobId) {
-    elements.jobStatus.textContent = `Job ID: ${jobId}`;
-  }
+  const message = elements.success.querySelector('.message');
+  if (message) message.textContent = 'Download queued. Follow its progress in the Sound Q app.';
+  elements.jobStatus.textContent = jobId ? `Job ID: ${jobId}` : 'Download queued';
 }
 
 function showError(errorOrMessage: string | Error | AppError): void {
@@ -219,6 +215,7 @@ function showError(errorOrMessage: string | Error | AppError): void {
 
   // Store for retry
   lastError = appError;
+  retryAction = appError.isRetryable ? 'addToLibrary' : null;
 
   // Update error display
   elements.errorIcon.textContent = getErrorIcon(appError);
@@ -244,73 +241,6 @@ function showOffline(): void {
 
 function showAlreadyAdded(): void {
   showSection(elements.alreadyAdded);
-}
-
-function showEditModal(): void {
-  hideAll();
-  elements.editModal.classList.remove('hidden');
-
-  // Pre-fill form with current metadata
-  elements.editTitle.value = state.metadata.title || '';
-  elements.editArtist.value = state.metadata.artist || '';
-  elements.editAlbum.value = '';
-  elements.editVersion.value = '';
-  elements.editCoverArt.value = state.metadata.thumbnail || '';
-
-  // Reset error and warning states
-  elements.editError.classList.add('hidden');
-  elements.editError.textContent = '';
-  elements.duplicateWarning.classList.add('hidden');
-  state.duplicateTrackId = null;
-
-  // Reset save button state
-  setEditSaveButtonLoading(false);
-}
-
-function hideEditModal(): void {
-  elements.editModal.classList.add('hidden');
-  // Return to the appropriate previous state
-  if (state.trackId) {
-    showSuccess(state.trackId);
-  } else {
-    showTrackPreview();
-  }
-}
-
-function showEditError(message: string): void {
-  elements.editError.textContent = message;
-  elements.editError.classList.remove('hidden');
-}
-
-function hideEditError(): void {
-  elements.editError.classList.add('hidden');
-  elements.editError.textContent = '';
-}
-
-function showDuplicateWarning(duplicateTrackId: string): void {
-  state.duplicateTrackId = duplicateTrackId;
-  elements.duplicateWarning.classList.remove('hidden');
-}
-
-function hideDuplicateWarning(): void {
-  elements.duplicateWarning.classList.add('hidden');
-  state.duplicateTrackId = null;
-}
-
-function setEditSaveButtonLoading(isLoading: boolean): void {
-  state.isEditing = isLoading;
-  elements.editSaveBtn.disabled = isLoading;
-
-  const btnText = elements.editSaveBtn.querySelector('.btn-text')!;
-  const btnLoading = elements.editSaveBtn.querySelector('.btn-loading')!;
-
-  if (isLoading) {
-    btnText.classList.add('hidden');
-    btnLoading.classList.remove('hidden');
-  } else {
-    btnText.classList.remove('hidden');
-    btnLoading.classList.add('hidden');
-  }
 }
 
 function setAddButtonLoading(isLoading: boolean): void {
@@ -357,6 +287,10 @@ async function getPageMetadata(): Promise<MetadataResponse | null> {
 async function addToLibrary(): Promise<void> {
   if (state.isAdding) return;
 
+  lastError = null;
+  retryAction = null;
+  elements.retryBtn.classList.add('hidden');
+  showTrackPreview();
   setAddButtonLoading(true);
 
   const message: AddToLibraryMessage = {
@@ -370,7 +304,7 @@ async function addToLibrary(): Promise<void> {
     const response = await new Promise<AddToLibraryResponse>((resolve, reject) => {
       chrome.runtime.sendMessage(message, (response: AddToLibraryResponse) => {
         if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
+          reject(AppError.network(chrome.runtime.lastError.message));
         } else {
           resolve(response);
         }
@@ -378,134 +312,21 @@ async function addToLibrary(): Promise<void> {
     });
 
     if (response.success) {
-      state.trackId = response.jobId || null;
+      state.jobId = response.jobId || null;
       showSuccess(response.jobId);
     } else if (response.error === 'already_added') {
-      // Store track ID from error response if available
-      state.trackId = response.jobId || null;
+      state.jobId = null;
       showAlreadyAdded();
     } else if (response.error === 'not_logged_in') {
       showNotLoggedIn();
     } else {
-      showError(response.error || 'Failed to add to library');
+      const message = response.error || 'Failed to add to library';
+      showError(response.errorCode ? new AppError({ code: response.errorCode, message }) : message);
     }
   } catch (err) {
-    showError(err instanceof Error ? err.message : 'Network error');
-  }
-}
-
-async function saveMetadata(forceSave = false): Promise<void> {
-  if (state.isEditing) return;
-  if (!state.trackId) {
-    showEditError('No track to edit');
-    return;
-  }
-
-  // Validate required fields
-  const title = elements.editTitle.value.trim();
-  const artist = elements.editArtist.value.trim();
-
-  if (!title) {
-    showEditError('Title is required');
-    return;
-  }
-
-  if (!artist) {
-    showEditError('Artist is required');
-    return;
-  }
-
-  hideEditError();
-  hideDuplicateWarning();
-  setEditSaveButtonLoading(true);
-
-  const message: UpdateMetadataMessage = {
-    type: 'UPDATE_METADATA',
-    trackId: state.trackId,
-    metadata: {
-      title,
-      artist,
-      album: elements.editAlbum.value.trim() || undefined,
-      version: elements.editVersion.value.trim() || undefined,
-      cover_art_url: elements.editCoverArt.value.trim() || undefined,
-    },
-  };
-
-  // Add force flag if user confirmed to keep separate
-  if (forceSave) {
-    (message as UpdateMetadataMessage & { force: boolean }).force = true;
-  }
-
-  try {
-    const response = await new Promise<UpdateMetadataResult>((resolve, reject) => {
-      chrome.runtime.sendMessage(message, (response: UpdateMetadataResult) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else {
-          resolve(response);
-        }
-      });
-    });
-
-    setEditSaveButtonLoading(false);
-
-    if (response.success) {
-      // Update local metadata state with new values
-      if (response.track) {
-        state.metadata.title = response.track.title;
-        state.metadata.artist = response.track.artist;
-      }
-      // Show success and return to success view
-      hideEditModal();
-    } else if (response.duplicateFound && response.duplicateTrackId) {
-      // Show duplicate warning with merge option
-      showDuplicateWarning(response.duplicateTrackId);
-    } else {
-      showEditError(response.error || 'Failed to update metadata');
-    }
-  } catch (err) {
-    setEditSaveButtonLoading(false);
-    showEditError(err instanceof Error ? err.message : 'Network error');
-  }
-}
-
-async function mergeWithDuplicate(): Promise<void> {
-  if (!state.trackId || !state.duplicateTrackId) {
-    showEditError('Cannot merge tracks');
-    return;
-  }
-
-  setEditSaveButtonLoading(true);
-  hideDuplicateWarning();
-
-  const message = {
-    type: 'MERGE_TRACKS',
-    sourceTrackId: state.trackId,
-    targetTrackId: state.duplicateTrackId,
-  };
-
-  try {
-    const response = await new Promise<{ success: boolean; error?: string }>((resolve, reject) => {
-      chrome.runtime.sendMessage(message, (response) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else {
-          resolve(response);
-        }
-      });
-    });
-
-    setEditSaveButtonLoading(false);
-
-    if (response.success) {
-      // Track was merged, return to library view
-      hideEditModal();
-    } else {
-      showEditError(response.error || 'Failed to merge tracks');
-    }
-  } catch (err) {
-    setEditSaveButtonLoading(false);
-    showEditError(err instanceof Error ? err.message : 'Network error');
+    showError(err instanceof Error ? err : AppError.network('Network error'));
+  } finally {
+    setAddButtonLoading(false);
   }
 }
 
@@ -513,16 +334,9 @@ function setupEventListeners(): void {
   elements.addBtn.addEventListener('click', addToLibrary);
 
   elements.retryBtn.addEventListener('click', async () => {
-    // Retry the last operation based on state
-    if (lastError) {
-      if (state.isAdding) {
-        await addToLibrary();
-      } else {
-        showTrackPreview();
-      }
-    } else {
-      showTrackPreview();
-    }
+    if (state.isAdding || retryAction !== 'addToLibrary' || !lastError?.isRetryable) return;
+    // Only an explicit user click may retry a failed mutation.
+    await addToLibrary();
   });
 
   elements.loginBtn.addEventListener('click', () => {
@@ -541,36 +355,25 @@ function setupEventListeners(): void {
     });
   }
 
-  // Edit modal event listeners
-  elements.editBtn.addEventListener('click', showEditModal);
-  elements.editExistingBtn.addEventListener('click', showEditModal);
-  elements.editCloseBtn.addEventListener('click', hideEditModal);
-  elements.editCancelBtn.addEventListener('click', hideEditModal);
-
-  // Form submission
-  elements.editForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    saveMetadata();
-  });
-
-  // Duplicate handling
-  elements.mergeBtn.addEventListener('click', mergeWithDuplicate);
-  elements.keepSeparateBtn.addEventListener('click', () => {
-    // Save with force flag to skip duplicate check
-    saveMetadata(true);
-  });
+  // Legacy metadata/merge routes are not supported by the current backend.
+  for (const button of [elements.editBtn, elements.editExistingBtn, elements.mergeBtn,
+    elements.keepSeparateBtn, elements.editSaveBtn]) {
+    button.disabled = true;
+    button.title = 'Metadata editing and track merging are not supported by this extension.';
+    button.textContent = 'Unavailable in extension';
+  }
 }
 
 async function init(): Promise<void> {
   elements = getElements();
+  lastError = null;
+  retryAction = null;
   state = {
     url: '',
     sourceType: 'unknown',
     metadata: { title: '' },
     isAdding: false,
-    trackId: null,
-    isEditing: false,
-    duplicateTrackId: null,
+    jobId: null,
   };
 
   setupEventListeners();
