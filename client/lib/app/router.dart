@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../features/desktop/desktop_listening_shell.dart';
 import '../features/desktop/desktop_transport.dart';
@@ -247,6 +248,9 @@ String? safeLoginRedirectNext(String? next) {
 }
 
 String get _initialRoute {
+  // Native Uri.base is the working directory, not an app route. GoRouter still
+  // gives platform deep links precedence over this fallback initial location.
+  if (!kIsWeb) return '/';
   final path = Uri.base.path;
   return path.isEmpty ? '/' : path;
 }
