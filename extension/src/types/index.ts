@@ -37,6 +37,7 @@ export interface AddToLibraryResponse {
   success: boolean;
   jobId?: string;
   error?: string;
+  errorCode?: string;
 }
 
 // Download API types
@@ -243,7 +244,7 @@ export const STORAGE_KEYS = {
 
 // Default configuration
 export const DEFAULT_CONFIG = {
-  API_BASE_URL: 'http://localhost:8080',
+  API_BASE_URL: 'https://soundq.fish-rattlesnake.ts.net',
   WS_RECONNECT_DELAY: 3000,
   WS_MAX_RECONNECT_ATTEMPTS: 5,
 } as const;
