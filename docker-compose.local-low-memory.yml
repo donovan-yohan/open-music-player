@@ -250,7 +250,10 @@ services:
       - omp-lowmem-network
 
   minio:
-    image: quay.io/minio/minio:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: minio-runtime
     restart: unless-stopped
     ports:
       - "${MINIO_PORT:-9000}:9000"
@@ -271,7 +274,10 @@ services:
       - omp-lowmem-network
 
   minio-init:
-    image: quay.io/minio/mc:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: minio-client
     depends_on:
       minio:
         condition: service_healthy
@@ -307,7 +313,10 @@ services:
       - omp-lowmem-network
 
   minio-smoke:
-    image: quay.io/minio/mc:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: minio-client
     profiles:
       - smoke
     depends_on:
