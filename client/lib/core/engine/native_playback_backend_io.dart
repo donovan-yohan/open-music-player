@@ -118,15 +118,24 @@ class _PreparedNativeBackend implements NativePlaybackBackend {
         pauseDevice: _renderer.pauseDevice,
         seekTransport: seek);
     _timer = Timer.periodic(const Duration(milliseconds: 250), (_) {
-      if (_closed || _busy || !clock.isPlaying || _model.clips.isEmpty) return;
+      if (_closed ||
+          _closing ||
+          _busy ||
+          _preparation != null ||
+          !clock.isPlaying ||
+          _model.clips.isEmpty) {
+        return;
+      }
+      // Own the request before enqueueing: stop/replacement must also revoke a
+      // timer turn that has not entered the serialized lane yet.
+      final token = _preparation = CancelToken();
       unawaited(_serial(() async {
-        final token = _preparation = CancelToken();
+        if (token.isCancelled) return;
         final windows =
             await _prepare(_model, _manifests, clock.positionMs, token: token);
-        if (identical(_preparation, token)) _preparation = null;
         if (token.isCancelled) {
           _discardNewWindows(windows);
-          throw token.cancelError!;
+          return;
         }
         if (windows.length != _windows.length ||
             windows.any((w) => !_windows.contains(w))) {
@@ -142,7 +151,11 @@ class _PreparedNativeBackend implements NativePlaybackBackend {
               '${_renderer.lastMissingInstance}; healthy clips continue.'));
         }
       }).catchError((Object e) {
-        if (!_errors.isClosed) _errors.add(e);
+        // Retirement revokes this operation's right to publish. Do not filter
+        // exception types: all failures of a still-current request must surface.
+        if (!token.isCancelled && !_errors.isClosed) _errors.add(e);
+      }).whenComplete(() {
+        if (identical(_preparation, token)) _preparation = null;
       }));
     });
   }
@@ -303,6 +316,7 @@ class _PreparedNativeBackend implements NativePlaybackBackend {
       _needsRecovery = false;
       clock.durationMs = model.durationMs;
       clock.publish();
+    }).whenComplete(() {
       if (identical(_preparation, token)) _preparation = null;
     });
   }
