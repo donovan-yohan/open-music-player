@@ -33,94 +33,127 @@ class DesktopTransport extends StatelessWidget {
           color: colors.surfaceContainerLow,
           child: DecoratedBox(
             decoration: BoxDecoration(
-                border: Border(top: BorderSide(color: colors.outlineVariant))),
+              border: Border(top: BorderSide(color: colors.outlineVariant)),
+            ),
             child: SafeArea(
               top: false,
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                child: Row(children: [
-                  Expanded(
-                    flex: 3,
-                    child: AnimatedSwitcher(
-                      key: const ValueKey('soundq_desktop_track_switch'),
-                      duration: desktopMotionDuration(context, 180),
-                      switchInCurve: Curves.easeOutCubic,
-                      switchOutCurve: Curves.easeInCubic,
-                      transitionBuilder: desktopTrackTransition,
-                      child: _TrackIdentity(
-                        key: ValueKey((data.occurrence, item?.id, pending)),
-                        item: item,
-                        label: pending
-                            ? (data.resolving
-                                ? 'Starting playback…'
-                                : presentation.label)
-                            : presentation.label,
-                        pending: pending,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 24),
-                  Expanded(
-                    flex: 5,
-                    child: Align(
-                      widthFactor: 1,
-                      heightFactor: 1,
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 720),
-                        child:
-                            Column(mainAxisSize: MainAxisSize.min, children: [
-                          Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                const _TransportCommand(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 2,
+                ),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    // Equal side rails center playback on the window, not the
+                    // space left over by the track title and queue button.
+                    final centerWidth = (constraints.maxWidth * .5).clamp(
+                      480.0,
+                      560.0,
+                    );
+                    return Row(
+                      children: [
+                        Expanded(
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 280),
+                              child: AnimatedSwitcher(
+                                key: const ValueKey(
+                                  'soundq_desktop_track_switch',
+                                ),
+                                duration: desktopMotionDuration(context, 180),
+                                switchInCurve: Curves.easeOutCubic,
+                                switchOutCurve: Curves.easeInCubic,
+                                transitionBuilder: desktopTrackTransition,
+                                child: _TrackIdentity(
+                                  key: ValueKey((
+                                    data.occurrence,
+                                    item?.id,
+                                    pending,
+                                  )),
+                                  item: item,
+                                  label: pending
+                                      ? (data.resolving
+                                          ? 'Starting playback…'
+                                          : presentation.label)
+                                      : presentation.label,
+                                  pending: pending,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        SizedBox(
+                          width: centerWidth,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const _TransportCommand(
                                     id: CommandId.toggleShuffle,
-                                    tooltip: 'Toggle shuffle'),
-                                const _TransportCommand(
-                                    id: CommandId.previous,
-                                    tooltip: 'Previous'),
-                                if (pending)
-                                  IconButton(
-                                    tooltip: 'Cancel playback',
-                                    onPressed: () => cancelRadio(
-                                        context, context.read<PlaybackState>()),
-                                    icon: const Icon(Icons.close),
-                                  )
-                                else
-                                  _TransportCommand(
-                                    id: presentation == PlayerPresentation.ended
-                                        ? CommandId.play
-                                        : CommandId.playPauseToggle,
-                                    tooltip: presentation.actionLabel,
-                                    icon: data.playing
-                                        ? Icons.pause
-                                        : Icons.play_arrow,
-                                    primary: true,
+                                    tooltip: 'Toggle shuffle',
                                   ),
-                                const _TransportCommand(
-                                    id: CommandId.next, tooltip: 'Next'),
-                                const _TransportCommand(
+                                  const _TransportCommand(
+                                    id: CommandId.previous,
+                                    tooltip: 'Previous',
+                                  ),
+                                  if (pending)
+                                    IconButton(
+                                      tooltip: 'Cancel playback',
+                                      constraints: const BoxConstraints(
+                                        minWidth: 48,
+                                        minHeight: 48,
+                                      ),
+                                      onPressed: () => cancelRadio(
+                                        context,
+                                        context.read<PlaybackState>(),
+                                      ),
+                                      icon: const Icon(Icons.close),
+                                    )
+                                  else
+                                    _TransportCommand(
+                                      id: presentation ==
+                                              PlayerPresentation.ended
+                                          ? CommandId.play
+                                          : CommandId.playPauseToggle,
+                                      tooltip: presentation.actionLabel,
+                                      icon: data.playing
+                                          ? Icons.pause
+                                          : Icons.play_arrow,
+                                      primary: true,
+                                    ),
+                                  const _TransportCommand(
+                                    id: CommandId.next,
+                                    tooltip: 'Next',
+                                  ),
+                                  const _TransportCommand(
                                     id: CommandId.cycleRepeat,
-                                    tooltip: 'Cycle repeat mode'),
-                              ]),
-                          const _DesktopSeekBar(),
-                        ]),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 24),
-                  Expanded(
-                    flex: 2,
-                    child: Align(
-                      alignment: Alignment.centerRight,
-                      child: IconButton(
-                        tooltip: 'Open queue',
-                        onPressed: () => context.go('/queue'),
-                        icon: const Icon(Icons.queue_music),
-                      ),
-                    ),
-                  ),
-                ]),
+                                    tooltip: 'Cycle repeat mode',
+                                  ),
+                                ],
+                              ),
+                              const _DesktopSeekBar(),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Align(
+                            alignment: Alignment.centerRight,
+                            child: IconButton(
+                              tooltip: 'Open queue',
+                              onPressed: () => context.go('/queue'),
+                              icon: const Icon(Icons.queue_music),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
               ),
             ),
           ),
@@ -158,16 +191,25 @@ class _TransportChrome {
       other.item?.artist == item?.artist &&
       other.item?.artUri == item?.artUri;
   @override
-  int get hashCode => Object.hash(occurrence, presentation, playing, resolving,
-      item?.id, item?.title, item?.artist, item?.artUri);
+  int get hashCode => Object.hash(
+        occurrence,
+        presentation,
+        playing,
+        resolving,
+        item?.id,
+        item?.title,
+        item?.artist,
+        item?.artUri,
+      );
 }
 
 class _TrackIdentity extends StatelessWidget {
-  const _TrackIdentity(
-      {super.key,
-      required this.item,
-      required this.label,
-      required this.pending});
+  const _TrackIdentity({
+    super.key,
+    required this.item,
+    required this.label,
+    required this.pending,
+  });
   final MediaItem? item;
   final String label;
   final bool pending;
@@ -182,50 +224,62 @@ class _TrackIdentity extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: const EdgeInsets.all(4),
-          child: Row(children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(6),
-              child: SizedBox(
-                width: 64,
-                height: 64,
-                child: item?.artUri != null
-                    ? Image.network(item!.artUri.toString(),
-                        fit: BoxFit.cover,
-                        cacheWidth: 128,
-                        cacheHeight: 128,
-                        errorBuilder: (_, __, ___) => _placeholder(colors))
-                    : _placeholder(colors),
+          child: Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: SizedBox(
+                  width: 48,
+                  height: 48,
+                  child: item?.artUri != null
+                      ? Image.network(
+                          item!.artUri.toString(),
+                          fit: BoxFit.cover,
+                          cacheWidth: 96,
+                          cacheHeight: 96,
+                          errorBuilder: (_, __, ___) => _placeholder(colors),
+                        )
+                      : _placeholder(colors),
+                ),
               ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (pending || item == null || label == 'Queue ended')
                       Semantics(
-                          liveRegion: pending,
-                          child: Text(label,
-                              maxLines: 1, overflow: TextOverflow.ellipsis)),
+                        liveRegion: pending,
+                        child: Text(
+                          label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
                     if (item != null) ...[
-                      Text(item!.title,
-                          key: const ValueKey('soundq_desktop_track_title'),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.titleSmall),
+                      Text(
+                        item!.title,
+                        key: const ValueKey('soundq_desktop_track_title'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
                       const SizedBox(height: 4),
-                      Text(item!.artist ?? 'Unknown Artist',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(color: colors.onSurfaceVariant)),
+                      Text(
+                        item!.artist ?? 'Unknown Artist',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: colors.onSurfaceVariant,
+                            ),
+                      ),
                     ],
-                  ]),
-            ),
-          ]),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -233,17 +287,20 @@ class _TrackIdentity extends StatelessWidget {
 
   Widget _placeholder(ColorScheme colors) => ColoredBox(
         color: colors.surfaceContainerHighest,
-        child: Icon(pending ? Icons.hourglass_top : Icons.music_note,
-            color: colors.onSurfaceVariant),
+        child: Icon(
+          pending ? Icons.hourglass_top : Icons.music_note,
+          color: colors.onSurfaceVariant,
+        ),
       );
 }
 
 class _TransportCommand extends StatelessWidget {
-  const _TransportCommand(
-      {required this.id,
-      required this.tooltip,
-      this.icon,
-      this.primary = false});
+  const _TransportCommand({
+    required this.id,
+    required this.tooltip,
+    this.icon,
+    this.primary = false,
+  });
   final CommandId id;
   final String tooltip;
   final IconData? icon;
@@ -252,23 +309,29 @@ class _TransportCommand extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final command = context.read<CommandRegistry>()[id];
-    final commandContext =
-        CommandContext(playbackState: context.read<PlaybackState>());
-    final selected =
-        context.select<PlaybackState, bool>((playback) => switch (id) {
-              CommandId.toggleShuffle => playback.shuffleEnabled,
-              CommandId.cycleRepeat => playback.loopMode != LoopMode.off,
-              _ => false,
-            });
+    final commandContext = CommandContext(
+      playbackState: context.read<PlaybackState>(),
+    );
+    final selected = context.select<PlaybackState, bool>(
+      (playback) => switch (id) {
+        CommandId.toggleShuffle => playback.shuffleEnabled,
+        CommandId.cycleRepeat => playback.loopMode != LoopMode.off,
+        _ => false,
+      },
+    );
     return ValueListenableBuilder<CommandAvailability>(
       valueListenable: command.availability,
       builder: (context, availability, _) => IconButton(
         tooltip: tooltip,
-        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        constraints: BoxConstraints(
+          minWidth: primary ? 48 : 40,
+          minHeight: primary ? 48 : 40,
+        ),
         style: primary
             ? IconButton.styleFrom(
                 backgroundColor: Theme.of(context).colorScheme.primary,
-                foregroundColor: Theme.of(context).colorScheme.onPrimary)
+                foregroundColor: Theme.of(context).colorScheme.onPrimary,
+              )
             : null,
         color:
             !primary && selected ? Theme.of(context).colorScheme.primary : null,
@@ -280,8 +343,10 @@ class _TransportCommand extends StatelessWidget {
                 key: const ValueKey('soundq_desktop_play_switch'),
                 duration: desktopMotionDuration(context, 140),
                 switchInCurve: Curves.easeOutCubic,
-                child: Icon(icon ?? command.icon,
-                    key: ValueKey(icon ?? command.icon)),
+                child: Icon(
+                  icon ?? command.icon,
+                  key: ValueKey(icon ?? command.icon),
+                ),
               )
             : Icon(icon ?? command.icon),
       ),
@@ -303,8 +368,9 @@ class _DesktopSeekBarState extends State<_DesktopSeekBar> {
 
   @override
   Widget build(BuildContext context) {
-    final progress =
-        context.select<PlaybackState, (Duration, Duration, bool)>((playback) {
+    final progress = context.select<PlaybackState, (Duration, Duration, bool)>((
+      playback,
+    ) {
       final snapshot = playback.snapshot;
       return (
         snapshot.localPosition,
@@ -312,60 +378,92 @@ class _DesktopSeekBarState extends State<_DesktopSeekBar> {
         !playback.isResolvingSignedUrl &&
             PlayerPresentation.fromSnapshot(snapshot) !=
                 PlayerPresentation.waiting &&
-            snapshot.currentMediaItem != null
+            snapshot.currentMediaItem != null,
       );
     });
     final identity = context.select<PlaybackState, (String, String?)>(
-        (playback) =>
-            (playback.snapshot.sessionId, playback.snapshot.currentCueId));
+      (playback) =>
+          (playback.snapshot.sessionId, playback.snapshot.currentCueId),
+    );
     final duration = progress.$2.inMilliseconds;
     final shown = _gestureIdentity == identity ? _preview : null;
-    final position = (shown?.round() ?? progress.$1.inMilliseconds)
-        .clamp(0, duration > 0 ? duration : 0);
-    return Row(children: [
-      Text(_format(Duration(milliseconds: position)),
-          style: Theme.of(context).textTheme.labelSmall),
-      Expanded(
-        child: Slider(
-          key: const ValueKey('soundq_desktop_seek'),
-          value: position.toDouble(),
-          max: duration > 0 ? duration.toDouble() : 1,
-          semanticFormatterCallback: (value) =>
-              '${_format(Duration(milliseconds: value.round()))} of ${_format(progress.$2)}',
-          onChangeStart: duration > 0 && progress.$3
-              ? (value) => setState(() {
-                    _gestureIdentity = identity;
-                    _preview = value;
-                  })
-              : null,
-          onChanged: duration > 0 && progress.$3
-              ? (value) => setState(() {
-                    _gestureIdentity ??= identity;
-                    _preview = value;
-                  })
-              : null,
-          onChangeEnd: duration > 0 && progress.$3
-              ? (value) {
-                  final playback = context.read<PlaybackState>();
-                  final latest = playback.snapshot;
-                  final accepted = _gestureIdentity ==
-                      (latest.sessionId, latest.currentCueId);
-                  setState(() {
-                    _preview = null;
-                    _gestureIdentity = null;
-                  });
-                  if (accepted && !playback.isResolvingSignedUrl) {
-                    unawaited(playback.seek(Duration(
-                        milliseconds: value
-                            .round()
-                            .clamp(0, latest.localDuration.inMilliseconds))));
-                  }
-                }
-              : null,
+    final position = (shown?.round() ?? progress.$1.inMilliseconds).clamp(
+      0,
+      duration > 0 ? duration : 0,
+    );
+    final elapsed = _format(Duration(milliseconds: position));
+    final total = _format(progress.$2);
+    final timeStyle = Theme.of(context).textTheme.labelSmall;
+    // Symmetric, naturally scaled timestamp gutters keep the actual slider
+    // centered even when an hour-long duration has more digits than elapsed.
+    var timeWidth = 0.0;
+    for (final label in [elapsed, total]) {
+      final painter = TextPainter(
+        text: TextSpan(text: label, style: timeStyle),
+        textDirection: Directionality.of(context),
+        textScaler: MediaQuery.textScalerOf(context),
+        maxLines: 1,
+      )..layout();
+      if (painter.width > timeWidth) timeWidth = painter.width;
+      painter.dispose();
+    }
+    return Row(
+      children: [
+        SizedBox(
+          width: timeWidth,
+          child: Text(elapsed, textAlign: TextAlign.end, style: timeStyle),
         ),
-      ),
-      Text(_format(progress.$2), style: Theme.of(context).textTheme.labelSmall),
-    ]);
+        Expanded(
+          child: Slider(
+            key: const ValueKey('soundq_desktop_seek'),
+            value: position.toDouble(),
+            max: duration > 0 ? duration.toDouble() : 1,
+            semanticFormatterCallback: (value) =>
+                '${_format(Duration(milliseconds: value.round()))} of ${_format(progress.$2)}',
+            onChangeStart: duration > 0 && progress.$3
+                ? (value) => setState(() {
+                      _gestureIdentity = identity;
+                      _preview = value;
+                    })
+                : null,
+            onChanged: duration > 0 && progress.$3
+                ? (value) => setState(() {
+                      _gestureIdentity ??= identity;
+                      _preview = value;
+                    })
+                : null,
+            onChangeEnd: duration > 0 && progress.$3
+                ? (value) {
+                    final playback = context.read<PlaybackState>();
+                    final latest = playback.snapshot;
+                    final accepted = _gestureIdentity ==
+                        (latest.sessionId, latest.currentCueId);
+                    setState(() {
+                      _preview = null;
+                      _gestureIdentity = null;
+                    });
+                    if (accepted && !playback.isResolvingSignedUrl) {
+                      unawaited(
+                        playback.seek(
+                          Duration(
+                            milliseconds: value.round().clamp(
+                                  0,
+                                  latest.localDuration.inMilliseconds,
+                                ),
+                          ),
+                        ),
+                      );
+                    }
+                  }
+                : null,
+          ),
+        ),
+        SizedBox(
+          width: timeWidth,
+          child: Text(total, style: timeStyle),
+        ),
+      ],
+    );
   }
 
   String _format(Duration duration) =>
