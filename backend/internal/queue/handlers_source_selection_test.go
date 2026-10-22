@@ -79,8 +79,7 @@ func (s *fakeQueueHandlerService) RetryQueueItem(context.Context, string, string
 func (s *fakeQueueHandlerService) ReorderQueueItem(context.Context, string, string, int) (*QueueState, error) {
 	return nil, ErrTrackNotFound
 }
-func (s *fakeQueueHandlerService) ClearQueue(context.Context, string) error             { return nil }
-func (s *fakeQueueHandlerService) saveQueue(context.Context, string, *QueueState) error { return nil }
+func (s *fakeQueueHandlerService) ClearQueue(context.Context, string) error { return nil }
 
 type fakeQueueDownloadService struct {
 	job        *download.DownloadJob

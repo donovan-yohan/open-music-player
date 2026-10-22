@@ -29,7 +29,7 @@ const defaultStemsPendingLimit = 64
 
 const trackStemsColumns = `id, track_id, channel_set, stem_model_version, schema_version, status,
 	source_file_hash, source_storage_key, artifacts_json, provenance_json, error,
-	requested_at, started_at, completed_at, created_at, updated_at`
+	requested_at, started_at, completed_at, created_at, updated_at, generation, attempt_id, published_manifest_json`
 
 var (
 	ErrTrackStemsNotFound    = errors.New("track stems not found")
@@ -41,6 +41,8 @@ var (
 // Two different channel sets (or two different model versions of the same
 // channel set) are separate rows with separate lifecycles, never an overwrite.
 type StemsIdentity struct {
+	Generation       int64
+	AttemptID        string
 	ChannelSet       string
 	StemModelVersion string
 }
@@ -53,28 +55,36 @@ func (i StemsIdentity) validate() error {
 }
 
 type TrackStems struct {
-	ID               int64
-	TrackID          int64
-	ChannelSet       string
-	StemModelVersion string
-	SchemaVersion    int
-	Status           string
-	SourceFileHash   string
-	SourceStorageKey string
-	ArtifactsJSON    json.RawMessage
-	ProvenanceJSON   json.RawMessage
-	Error            sql.NullString
-	RequestedAt      time.Time
-	StartedAt        sql.NullTime
-	CompletedAt      sql.NullTime
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	Generation            int64
+	AttemptID             string
+	PublishedManifestJSON json.RawMessage
+	ID                    int64
+	TrackID               int64
+	ChannelSet            string
+	StemModelVersion      string
+	SchemaVersion         int
+	Status                string
+	SourceFileHash        string
+	SourceStorageKey      string
+	ArtifactsJSON         json.RawMessage
+	ProvenanceJSON        json.RawMessage
+	Error                 sql.NullString
+	RequestedAt           time.Time
+	StartedAt             sql.NullTime
+	CompletedAt           sql.NullTime
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 // StemsResult is the worker's artifact manifest as persisted. Worker and
 // WorkerVersion are the caller's expectation; they are cross-checked against the
 // provenance document so a worker cannot claim an identity it did not report.
 type StemsResult struct {
+	SampleRateHz     int
+	DurationMs       int64
+	SourceStorageKey string
+	Generation       int64
+	AttemptID        string
 	SchemaVersion    int
 	ChannelSet       string
 	StemModelVersion string
@@ -88,6 +98,10 @@ type StemsResult struct {
 type TrackStemsRepository struct {
 	db *DB
 }
+
+// AtomicSourcePublication tells the pool not to perform a second, unfenced
+// track-hash write after StoreResult committed the source and artifacts together.
+func (*TrackStemsRepository) AtomicSourcePublication() bool { return true }
 
 func NewTrackStemsRepository(db *DB) *TrackStemsRepository {
 	return &TrackStemsRepository{db: db}
@@ -121,6 +135,11 @@ func (r *TrackStemsRepository) RequestSeparation(
 	}
 	defer tx.Rollback()
 
+	// Lock the parent before looking for a child: SELECT FOR UPDATE on a missing
+	// row locks nothing, so concurrent first inserts would otherwise collide.
+	if _, err := tx.ExecContext(ctx, `SELECT id FROM tracks WHERE id = $1 FOR UPDATE`, trackID); err != nil {
+		return zero, false, "", err
+	}
 	var existing TrackStems
 	err = scanTrackStems(tx.QueryRowContext(ctx, `
 		SELECT `+trackStemsColumns+`
@@ -154,7 +173,11 @@ func (r *TrackStemsRepository) RequestSeparation(
 	reason := ""
 	switch existing.Status {
 	case StemsStatusReady:
-		if sourceFileHash == "" || existing.SourceFileHash == "" || existing.SourceFileHash == sourceFileHash {
+		if (sourceStorageKey == "" || existing.SourceStorageKey == sourceStorageKey) && (sourceFileHash == "" || existing.SourceFileHash == sourceFileHash) {
+			if string(existing.PublishedManifestJSON) == "{}" {
+				reason = "manifest_upgrade"
+				break
+			}
 			if err := tx.Commit(); err != nil {
 				return zero, false, "", err
 			}
@@ -181,6 +204,10 @@ func (r *TrackStemsRepository) RequestSeparation(
 		}
 		reason = "source_changed"
 	case StemsStatusPending, StemsStatusSeparating:
+		if (sourceFileHash != "" && sourceFileHash != existing.SourceFileHash) || (sourceStorageKey != "" && sourceStorageKey != existing.SourceStorageKey) {
+			reason = "source_changed"
+			break
+		}
 		if err := tx.Commit(); err != nil {
 			return zero, false, "", err
 		}
@@ -193,13 +220,26 @@ func (r *TrackStemsRepository) RequestSeparation(
 		return zero, false, "", fmt.Errorf("unexpected track_stems status %q", existing.Status)
 	}
 
+	// Preserve a legacy publication before changing its desired source. This is
+	// metadata retention, not validation: old manifests still require regeneration
+	// before a consumer may treat them as verified member sets.
+	if string(existing.PublishedManifestJSON) == "{}" && string(existing.ArtifactsJSON) != "{}" {
+		if _, err := tx.ExecContext(ctx, `UPDATE track_stems SET published_manifest_json=jsonb_build_object(
+	 'schema_version',schema_version,'track_id',track_id,'channel_set',channel_set,'stem_model_version',stem_model_version,
+	 'source_file_hash',source_file_hash,'source_storage_key',source_storage_key,'generation',generation,
+	 'artifacts',artifacts_json,'provenance',provenance_json) WHERE id=$1`, existing.ID); err != nil {
+			return zero, false, "", err
+		}
+	}
 	var requested TrackStems
 	if err := scanTrackStems(tx.QueryRowContext(ctx, `
 		UPDATE track_stems
 		SET status = $2,
+			generation = generation + 1,
+			attempt_id = '',
 			error = NULL,
 			source_storage_key = COALESCE(NULLIF($3, ''), source_storage_key),
-			source_file_hash = COALESCE(NULLIF($4, ''), source_file_hash),
+			source_file_hash = CASE WHEN $3 <> '' AND $3 <> source_storage_key THEN $4 ELSE COALESCE(NULLIF($4, ''), source_file_hash) END,
 			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || COALESCE($5::jsonb, '{}'::jsonb),
 			requested_at = NOW(),
 			started_at = NULL,
@@ -227,11 +267,13 @@ func (r *TrackStemsRepository) MarkSeparating(ctx context.Context, trackID int64
 	updated, err := r.db.ExecContext(ctx, `
 		UPDATE track_stems
 		SET status = $4,
-			started_at = COALESCE(started_at, NOW()),
+			started_at = NOW(),
+			attempt_id = $8,
 			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || COALESCE($5::jsonb, '{}'::jsonb),
 			updated_at = NOW()
 		WHERE track_id = $1 AND channel_set = $2 AND stem_model_version = $3
-		  AND status IN ($6, $7, $8)
+		  AND status = $6
+		  AND generation = $7 AND attempt_id = '' AND $8 <> ''
 		  AND (
 			COALESCE(provenance_json->>'expected_worker', '') = ''
 			OR provenance_json->>'expected_worker' = COALESCE($5::jsonb->>'expected_worker', '')
@@ -243,7 +285,7 @@ func (r *TrackStemsRepository) MarkSeparating(ctx context.Context, trackID int64
 	`,
 		trackID, identity.ChannelSet, identity.StemModelVersion,
 		StemsStatusSeparating, nullableRawJSON(provenance),
-		StemsStatusPending, StemsStatusReady, StemsStatusStale,
+		StemsStatusPending, identity.Generation, identity.AttemptID,
 	)
 	if err != nil {
 		return err
@@ -307,12 +349,30 @@ func (r *TrackStemsRepository) StoreResult(ctx context.Context, trackID int64, r
 		)
 	}
 
-	stored, err := r.db.ExecContext(ctx, `
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if result.SourceStorageKey != "" {
+		var key, hash string
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(storage_key,''),source_file_hash FROM tracks WHERE id=$1 FOR UPDATE`, trackID).Scan(&key, &hash); err != nil {
+			return err
+		}
+		if key != result.SourceStorageKey || (hash != "" && hash != result.SourceFileHash) {
+			return ErrStemsResultSuperseded
+		}
+	}
+	stored, err := tx.ExecContext(ctx, `
 		UPDATE track_stems
 		SET schema_version = $4,
 			status = $5,
 			source_file_hash = COALESCE(NULLIF($6, ''), source_file_hash),
 			artifacts_json = COALESCE($7::jsonb, '{}'::jsonb),
+			published_manifest_json = jsonb_build_object('schema_version', $4::int, 'track_id', $1::bigint,
+				'channel_set', $2::text, 'stem_model_version', $3::text, 'source_file_hash', $6::text,
+				'source_storage_key', source_storage_key, 'generation', generation, 'duration_ms', $14::bigint, 'sample_rate_hz', $15::int,
+				'artifacts', $7::jsonb, 'provenance', $8::jsonb),
 			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || COALESCE($8::jsonb, '{}'::jsonb),
 			error = NULL,
 			started_at = COALESCE(started_at, NOW()),
@@ -320,6 +380,8 @@ func (r *TrackStemsRepository) StoreResult(ctx context.Context, trackID int64, r
 			updated_at = NOW()
 		WHERE track_id = $1 AND channel_set = $2 AND stem_model_version = $3
 		  AND status = $9
+		  AND generation = $12 AND attempt_id = $13 AND $13 <> ''
+		  AND (source_file_hash = '' OR source_file_hash = $6)
 		  AND (
 			COALESCE(provenance_json->>'expected_worker', '') = ''
 			OR (NULLIF($10, '') IS NOT NULL AND provenance_json->>'expected_worker' = $10)
@@ -332,7 +394,7 @@ func (r *TrackStemsRepository) StoreResult(ctx context.Context, trackID int64, r
 		trackID, identity.ChannelSet, identity.StemModelVersion,
 		schemaVersion, StemsStatusReady, result.SourceFileHash,
 		nullableRawJSON(result.ArtifactsJSON), nullableRawJSON(result.ProvenanceJSON),
-		StemsStatusSeparating, workerName, workerVersion,
+		StemsStatusSeparating, workerName, workerVersion, result.Generation, result.AttemptID, result.DurationMs, result.SampleRateHz,
 	)
 	if err != nil {
 		return err
@@ -344,7 +406,14 @@ func (r *TrackStemsRepository) StoreResult(ctx context.Context, trackID int64, r
 	if rows == 0 {
 		return ErrStemsResultSuperseded
 	}
-	return nil
+	if result.SourceStorageKey != "" {
+		// Hash-on-first-publication is atomic with publication, under the track lock.
+		// Never let a late worker rewrite the identity of newly replaced source bytes.
+		if _, err := tx.ExecContext(ctx, `UPDATE tracks SET source_file_hash=$2 WHERE id=$1 AND source_file_hash=''`, trackID, result.SourceFileHash); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // MarkFailed records a terminal failure under the same identity guard, so a
@@ -361,7 +430,8 @@ func (r *TrackStemsRepository) MarkFailed(ctx context.Context, trackID int64, id
 			completed_at = NOW(),
 			updated_at = NOW()
 		WHERE track_id = $1 AND channel_set = $2 AND stem_model_version = $3
-		  AND status IN ($7, $8, $9)
+		  AND status = $7
+		  AND generation = $8 AND attempt_id = $9 AND $9 <> ''
 		  AND (
 			COALESCE(provenance_json->>'expected_worker', '') = ''
 			OR provenance_json->>'expected_worker' = COALESCE($6::jsonb->>'expected_worker', '')
@@ -373,7 +443,7 @@ func (r *TrackStemsRepository) MarkFailed(ctx context.Context, trackID int64, id
 	`,
 		trackID, identity.ChannelSet, identity.StemModelVersion,
 		StemsStatusFailed, errText, nullableRawJSON(provenance),
-		StemsStatusPending, StemsStatusSeparating, StemsStatusStale,
+		StemsStatusSeparating, identity.Generation, identity.AttemptID,
 	)
 	if err != nil {
 		return err
@@ -477,6 +547,8 @@ func (r *TrackStemsRepository) RecoverInFlight(ctx context.Context, staleAfter t
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE track_stems
 		SET status = $2,
+			generation = generation + 1,
+			attempt_id = '',
 			started_at = NULL,
 			error = NULL,
 			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || jsonb_build_object(
@@ -594,5 +666,8 @@ func scanTrackStems(row rowScanner, stems *TrackStems) error {
 		&stems.CompletedAt,
 		&stems.CreatedAt,
 		&stems.UpdatedAt,
+		&stems.Generation,
+		&stems.AttemptID,
+		&stems.PublishedManifestJSON,
 	)
 }

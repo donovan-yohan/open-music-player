@@ -136,6 +136,30 @@ func TestCreateMixFromPlaylistBuildsSequentialClips(t *testing.T) {
 	}
 }
 
+func TestPlaylistMixSharedValidationPreservesLongSequentialPlaylist(t *testing.T) {
+	userID := uuid.New()
+	tracks := make([]db.Track, 12)
+	for i := range tracks {
+		tracks[i] = mixTrack(42, int32(i+1)*1000, true)
+	}
+	playlist := &db.PlaylistWithTracks{Playlist: db.Playlist{ID: 7, UserID: userID, Name: "Repeated recording"}, Tracks: tracks}
+	store := &fakeMixPlanStore{}
+	h := NewPlaylistMixHandlers(&fakePlaylistMixReader{playlist: playlist}, store, true)
+	w := httptest.NewRecorder()
+	h.CreateMixFromPlaylist(w, playlistMixRequest(userID, 7))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	payload := assertPersistedMixValid(t, store.created, len(tracks))
+	end := int64(0)
+	for i, clip := range payload.Clips {
+		if clip.TrackID != 42 || clip.TimelineStartMs != end || clip.SourceEndMs != int64(tracks[i].DurationMs.Int32) {
+			t.Fatalf("sequential instance[%d] changed: %+v", i, clip)
+		}
+		end += clip.SourceEndMs
+	}
+}
+
 func TestCreateMixFromPlaylistNullDurationUsesDefault(t *testing.T) {
 	userID := uuid.New()
 	reader := &fakePlaylistMixReader{playlist: &db.PlaylistWithTracks{

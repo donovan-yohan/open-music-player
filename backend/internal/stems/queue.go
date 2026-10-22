@@ -20,18 +20,16 @@ const (
 
 	defaultBlockTimeout = 5 * time.Second
 
-	// DefaultMaxDepth bounds visible backlog. Separation is minutes-per-track at
-	// concurrency 1, so an unbounded queue would promise hours of work the host
-	// cannot honor.
+	// DefaultMaxDepth bounds the Redis delivery window (best effort under races),
+	// not durable SQL backlog or a completion-time promise.
 	DefaultMaxDepth = 32
 )
 
 var (
 	ErrJobNotFound = errors.New("stems job not found")
 	ErrQueueEmpty  = errors.New("stems queue is empty")
-	// ErrQueueFull is reject-when-full backpressure. Callers must surface it
-	// (429) rather than blocking or dropping: a silently dropped separation
-	// request looks identical to a stuck one from the client's side.
+	// ErrQueueFull means delivery capacity, not SQL admission. Once SQL has
+	// accepted work the API returns 202 awaiting_capacity and recovery retries.
 	ErrQueueFull = errors.New("stems queue is full")
 )
 
@@ -65,6 +63,7 @@ type Queue struct {
 
 // EnqueueRequest is the caller's view of a separation job.
 type EnqueueRequest struct {
+	Generation       int64
 	TrackID          int64
 	ChannelSet       string
 	StemModelVersion string
@@ -137,7 +136,7 @@ func (q *Queue) Enqueue(ctx context.Context, req EnqueueRequest) (*Job, bool, er
 	if err := req.validate(); err != nil {
 		return nil, false, err
 	}
-	jobID := JobID(req.TrackID, req.ChannelSet, req.StemModelVersion)
+	jobID := GenerationJobID(req.TrackID, req.ChannelSet, req.StemModelVersion, req.Generation)
 
 	existing, err := q.GetJob(ctx, jobID)
 	if err != nil && !errors.Is(err, ErrJobNotFound) {
@@ -149,6 +148,13 @@ func (q *Queue) Enqueue(ctx context.Context, req EnqueueRequest) (*Job, bool, er
 		case positionErr == nil:
 			return existing, false, nil
 		case errors.Is(positionErr, redis.Nil):
+			depth, err := q.client.LLen(ctx, keyJobQueue).Result()
+			if err != nil {
+				return nil, false, err
+			}
+			if depth >= int64(q.maxDepth) {
+				return nil, false, ErrQueueFull
+			}
 			// The durable request exists but the list entry was lost (restart,
 			// eviction). Restore it rather than creating a second job.
 			if err := q.client.LPush(ctx, keyJobQueue, jobID).Err(); err != nil {
@@ -176,6 +182,7 @@ func (q *Queue) Enqueue(ctx context.Context, req EnqueueRequest) (*Job, bool, er
 	now := time.Now().UTC()
 	job := &Job{
 		ID:               jobID,
+		Generation:       req.Generation,
 		TrackID:          req.TrackID,
 		ChannelSet:       req.ChannelSet,
 		StemModelVersion: req.StemModelVersion,

@@ -157,6 +157,58 @@ func testEnqueueRequest(trackID int64) EnqueueRequest {
 	}
 }
 
+func TestQueueGenerationKeepsSourcePayloadsIsolated(t *testing.T) {
+	q := NewQueueWithClient(newFakeRedis(), QueueConfig{})
+	ctx := context.Background()
+	a := testEnqueueRequest(42)
+	a.Generation = 1
+	a.SourceFileHash = "source-A"
+	a.StorageKey = "key-A"
+	first, _, err := q.Enqueue(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := a
+	b.Generation = 2
+	b.SourceFileHash = "source-B"
+	b.StorageKey = "key-B"
+	second, _, err := q.Enqueue(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID {
+		t.Fatal("different request generations share delivery status")
+	}
+	for _, want := range []EnqueueRequest{a, b} {
+		got, err := q.Dequeue(ctx, time.Millisecond)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Generation != want.Generation || got.SourceFileHash != want.SourceFileHash || got.StorageKey != want.StorageKey {
+			t.Fatalf("payload lost: %+v want %+v", got, want)
+		}
+	}
+}
+
+func TestQueueRestoreRespectsCapacity(t *testing.T) {
+	f := newFakeRedis()
+	q := NewQueueWithClient(f, QueueConfig{MaxDepth: 1})
+	ctx := context.Background()
+	a := testEnqueueRequest(1)
+	if _, _, err := q.Enqueue(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Dequeue(ctx, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := q.Enqueue(ctx, testEnqueueRequest(2)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := q.Enqueue(ctx, a); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("restore bypassed capacity: %v", err)
+	}
+}
+
 func TestQueueEnqueueCreatesDeterministicJob(t *testing.T) {
 	fake := newFakeRedis()
 	queue := NewQueueWithClient(fake, QueueConfig{})
