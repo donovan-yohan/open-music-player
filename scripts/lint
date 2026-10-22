@@ -30,6 +30,7 @@ run_analyzer() {
     PYTHONPYCACHEPREFIX="$cache_dir" python3 -m py_compile \
       "$ROOT/backend/cmd/audio-analyzer/audio_mir.py" \
       "$ROOT/backend/cmd/audio-analyzer/audio_mir_test.py"
+    python3 "$ROOT/scripts/ci-dependencies-test.py"
     docker compose -f "$ROOT/docker-compose.yml" config --quiet
     docker compose -f "$ROOT/docker-compose.local-low-memory.yml" config --quiet
   )
