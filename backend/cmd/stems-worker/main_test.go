@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -11,9 +12,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/openmusicplayer/backend/internal/stems"
 
 	"github.com/openmusicplayer/backend/internal/storage"
 )
@@ -58,7 +63,7 @@ func (f *fakeStore) PutObject(_ context.Context, key string, reader io.Reader, _
 // end without torch, ffmpeg, or a checkpoint.
 func stubSeparator(t *testing.T) separateFunc {
 	t.Helper()
-	return func(_ context.Context, _, outDir string, trackID int64, channelSet string) (*separateManifest, error) {
+	return func(_ context.Context, audioPath, outDir string, trackID int64, channelSet string) (*separateManifest, error) {
 		channels := []struct {
 			name       string
 			key        string
@@ -78,7 +83,11 @@ func stubSeparator(t *testing.T) separateFunc {
 			if err := os.WriteFile(local, payload, 0o600); err != nil {
 				return nil, err
 			}
+			zero := int64(0)
+			skip := int64(312)
+			digest := sha256.Sum256(payload)
 			objects = append(objects, manifestObject{
+				SHA256: hex.EncodeToString(digest[:]), SampleFrames: 10080000, SampleRateHz: 48000, Channels: 2, OriginFrame: &zero, DelayFrames: &zero, EncoderDelayFrames: &skip, DelayProvenance: stems.DelayProvenance,
 				Channel:    channel.name,
 				Key:        channel.key,
 				Path:       local,
@@ -87,7 +96,18 @@ func stubSeparator(t *testing.T) separateFunc {
 				Derivation: channel.derivation,
 			})
 		}
+		energyChannels := map[string]string{}
+		for _, o := range objects {
+			energyChannels[o.Channel] = base64.StdEncoding.EncodeToString(make([]byte, 16800))
+		}
+		energy, _ := json.Marshal(map[string]any{"frame_hz": 80, "frame_count": 16800, "encoding": "uint8-linear", "channels": energyChannels})
+		sourceBytes, err := os.ReadFile(audioPath)
+		if err != nil {
+			return nil, err
+		}
+		sourceDigest := sha256.Sum256(sourceBytes)
 		return &separateManifest{
+			SourceFileHash:   "sha256:" + hex.EncodeToString(sourceDigest[:]),
 			SchemaVersion:    1,
 			TrackID:          trackID,
 			ChannelSet:       channelSet,
@@ -96,11 +116,11 @@ func stubSeparator(t *testing.T) separateFunc {
 			SampleRateHz:     44100,
 			Artifacts: manifestArtifacts{
 				Objects: objects,
-				Codec:   json.RawMessage(`{"name":"libopus","bitrate_kbps":128,"sample_rate_hz":48000}`),
+				Codec:   json.RawMessage(`{"name":"libopus","bitrate_kbps":128,"sample_rate_hz":48000,"channels":2}`),
 				NullSum: json.RawMessage(`{"pair":["kick","perc"],"against":"drums","residual_db":-120.4,"threshold_db":-80.0,"passed":true}`),
-				Energy:  json.RawMessage(`{"frame_hz":80,"frame_count":4,"encoding":"uint8-linear","channels":{"vocals":"AAAA"}}`),
+				Energy:  energy,
 			},
-			Provenance: map[string]interface{}{"inference_provider": inferenceProvider},
+			Provenance: map[string]interface{}{"inference_provider": inferenceProvider, "worker": workerName, "worker_version": workerVersion},
 		}, nil
 	}
 }
@@ -124,6 +144,176 @@ func postSeparate(t *testing.T, server *stemsServer, body string, token string) 
 	rec := httptest.NewRecorder()
 	server.handleSeparate(rec, req)
 	return rec
+}
+
+func TestSeparateChecksExpectedSourceBeforeInference(t *testing.T) {
+	store := newFakeStore()
+	store.objects["source"] = []byte("changed")
+	server := newTestServer(t, store, "")
+	called := false
+	server.separate = func(context.Context, string, string, int64, string) (*separateManifest, error) {
+		called = true
+		return nil, fmt.Errorf("must not run")
+	}
+	rec := postSeparate(t, server, `{"track_id":1,"storage_key":"source","expected_source_file_hash":"sha256:`+strings.Repeat("a", 64)+`"}`, "")
+	if rec.Code != http.StatusConflict || called || len(store.uploads) > 0 {
+		t.Fatalf("status=%d inference=%v uploads=%d", rec.Code, called, len(store.uploads))
+	}
+}
+
+func TestSeparateRejectsCorruptMemberBeforeAnyUpload(t *testing.T) {
+	store := newFakeStore()
+	store.objects["source"] = []byte("source")
+	server := newTestServer(t, store, "")
+	inner := server.separate
+	server.separate = func(ctx context.Context, src, out string, id int64, set string) (*separateManifest, error) {
+		m, err := inner(ctx, src, out, id, set)
+		if err != nil {
+			return nil, err
+		}
+		m.Artifacts.Objects[len(m.Artifacts.Objects)-1].SHA256 = strings.Repeat("b", 64)
+		return m, nil
+	}
+	rec := postSeparate(t, server, `{"track_id":1,"storage_key":"source"}`, "")
+	if rec.Code != http.StatusInternalServerError || len(store.uploads) != 0 {
+		t.Fatalf("status=%d uploads=%d", rec.Code, len(store.uploads))
+	}
+}
+
+func TestSeparateRejectsBadHelperTrackAndSchema(t *testing.T) {
+	for _, kind := range []string{"schema", "track", "missing-member", "delay", "path"} {
+		t.Run(kind, func(t *testing.T) {
+			store := newFakeStore()
+			store.objects["source"] = []byte("source")
+			server := newTestServer(t, store, "")
+			inner := server.separate
+			server.separate = func(ctx context.Context, src, out string, id int64, set string) (*separateManifest, error) {
+				m, err := inner(ctx, src, out, id, set)
+				if err != nil {
+					return nil, err
+				}
+				switch kind {
+				case "schema":
+					m.SchemaVersion = 3
+				case "track":
+					m.TrackID++
+				case "missing-member":
+					m.Artifacts.Objects = m.Artifacts.Objects[:5]
+				case "delay":
+					m.Artifacts.Objects[0].DelayFrames = nil
+				case "path":
+					m.Artifacts.Objects[0].Path = src
+				}
+				return m, nil
+			}
+			rec := postSeparate(t, server, `{"track_id":1,"storage_key":"source"}`, "")
+			if rec.Code != http.StatusInternalServerError || len(store.uploads) != 0 {
+				t.Fatalf("status=%d uploads=%d", rec.Code, len(store.uploads))
+			}
+		})
+	}
+}
+
+func TestSeparateRejectsHelperSourceHashDrift(t *testing.T) {
+	store := newFakeStore()
+	store.objects["source"] = []byte("source")
+	server := newTestServer(t, store, "")
+	inner := server.separate
+	server.separate = func(ctx context.Context, src, out string, id int64, set string) (*separateManifest, error) {
+		m, err := inner(ctx, src, out, id, set)
+		if err != nil {
+			return nil, err
+		}
+		m.SourceFileHash = "sha256:" + strings.Repeat("b", 64)
+		return m, nil
+	}
+	rec := postSeparate(t, server, `{"track_id":1,"storage_key":"source"}`, "")
+	if rec.Code != http.StatusInternalServerError || len(store.uploads) != 0 {
+		t.Fatalf("status=%d uploads=%d", rec.Code, len(store.uploads))
+	}
+}
+
+func TestSeparateRejectsSilentRequestPayload(t *testing.T) {
+	for _, body := range []string{`{"track_id":1,"storage_key":"source"} {"ignored":true}`, `{"track_id":1,"storage_key":"source","force":true}`, `{"schema_version":3,"track_id":1,"storage_key":"source"}`} {
+		store := newFakeStore()
+		store.objects["source"] = []byte("source")
+		server := newTestServer(t, store, "")
+		rec := postSeparate(t, server, body, "")
+		if rec.Code < 400 || len(store.uploads) > 0 {
+			t.Fatalf("silent request loss: status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestSeparateRejectsHelperPathOutsidePrivateOutput(t *testing.T) {
+	store := newFakeStore()
+	store.objects["source"] = []byte("source")
+	server := newTestServer(t, store, "")
+	inner := server.separate
+	server.separate = func(ctx context.Context, src, out string, id int64, set string) (*separateManifest, error) {
+		m, err := inner(ctx, src, out, id, set)
+		if err != nil {
+			return nil, err
+		}
+		data, _ := os.ReadFile(src)
+		digest := sha256.Sum256(data)
+		m.Artifacts.Objects[0].Path = src
+		m.Artifacts.Objects[0].SHA256 = hex.EncodeToString(digest[:])
+		m.Artifacts.Objects[0].Bytes = int64(len(data))
+		return m, nil
+	}
+	rec := postSeparate(t, server, `{"track_id":1,"storage_key":"source"}`, "")
+	if rec.Code < 400 || len(store.uploads) > 0 {
+		t.Fatalf("helper uploaded source file outside output: status=%d", rec.Code)
+	}
+}
+
+func TestRealDSPMemberPublicationWithFFmpeg(t *testing.T) {
+	python := os.Getenv("OMP_STEMS_DSP_TEST_PYTHON")
+	if python == "" {
+		t.Skip("set OMP_STEMS_DSP_TEST_PYTHON to Python with numpy/scipy; no model required")
+	}
+	store := newFakeStore()
+	store.objects["source"] = []byte("hashed source fixture, injected separator")
+	server := newTestServer(t, store, "")
+	server.separate = func(ctx context.Context, src, out string, id int64, set string) (*separateManifest, error) {
+		script := `import sys,json,numpy as np,stems_dsp
+n=44100
+t=np.arange(n)/44100
+signal=np.stack([.2*np.sin(2*np.pi*440*t)]*2).astype(np.float32)
+def separate(path,rate): return {name:signal.copy() for name in stems_dsp.BASE_CHANNELS}
+m=stems_dsp.run_separation(audio_path=sys.argv[1],out_dir=sys.argv[2],track_id=int(sys.argv[3]),channel_set=sys.argv[4],separator=separate)
+print(json.dumps(m))`
+		cmd := exec.CommandContext(ctx, python, "-c", script, src, out, strconv.FormatInt(id, 10), set)
+		body, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("DSP probe: %w: %s", err, body)
+		}
+		var m separateManifest
+		err = json.Unmarshal(body, &m)
+		return &m, err
+	}
+	rec := postSeparate(t, server, `{"schema_version":1,"track_id":42,"storage_key":"source","generation":3}`, "")
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var manifest stems.Manifest
+	if err := json.Unmarshal(rec.Body.Bytes(), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := stems.ValidateManifest(&manifest, stems.Request{TrackID: 42, StorageKey: "source", ChannelSet: stems.DefaultChannelSet, Generation: 3}); err != nil {
+		t.Fatal(err)
+	}
+	var artifacts stems.Artifacts
+	_ = json.Unmarshal(manifest.Artifacts, &artifacts)
+	for _, member := range artifacts.Objects {
+		data := store.uploads[member.Key]
+		digest := sha256.Sum256(data)
+		if hex.EncodeToString(digest[:]) != member.SHA256 || int64(len(data)) != member.Bytes || member.SampleFrames != 48000 {
+			t.Fatalf("bad uploaded member: %+v", member)
+		}
+	}
+	t.Logf("real ffmpeg/libopus pipeline published %d verified members at 48000 PCM frames each, source %s", len(artifacts.Objects), manifest.SourceFileHash)
 }
 
 func TestHealthAdvertisesVersionedIdentity(t *testing.T) {
@@ -242,14 +432,8 @@ func TestSeparateUploadsEveryStemAndReturnsManifest(t *testing.T) {
 	if len(store.uploads) != 6 {
 		t.Fatalf("uploaded %d objects, want 6: %v", len(store.uploads), store.putOrder)
 	}
-	for _, key := range []string{
-		"stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/vocals.opus",
-		"stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/other.opus",
-		"stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/bass.opus",
-		"stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/drums.opus",
-		"stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/kick.opus",
-		"stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/perc.opus",
-	} {
+	for _, obj := range manifest.Artifacts.Objects {
+		key := stems.MemberKey(42, manifest.StemModelVersion, wantHash, manifest.Generation, obj.Channel, obj.SHA256)
 		if _, ok := store.uploads[key]; !ok {
 			t.Fatalf("missing upload %s (have %v)", key, store.putOrder)
 		}

@@ -67,6 +67,19 @@ func (db *DB) Migrate() error {
 		updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 	);
 	CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS connect_auth_generation BIGINT NOT NULL DEFAULT 0;
+
+	CREATE TABLE IF NOT EXISTS jams (
+		id UUID PRIMARY KEY,
+		owner_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		owner_auth_generation BIGINT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL,
+		expires_at TIMESTAMPTZ NOT NULL,
+		closed_at TIMESTAMPTZ,
+		version BIGINT NOT NULL CHECK (version >= 1),
+		state JSONB NOT NULL CHECK (octet_length(state::text) <= 65536)
+	);
+	CREATE INDEX IF NOT EXISTS jams_owner_idx ON jams(owner_user_id);
 
 	CREATE TABLE IF NOT EXISTS refresh_tokens (
 		id UUID PRIMARY KEY,
@@ -777,6 +790,11 @@ func (db *DB) Migrate() error {
 		CONSTRAINT chk_track_stems_status CHECK (status IN ('pending', 'separating', 'ready', 'failed', 'stale')),
 		CONSTRAINT uq_track_stems_identity UNIQUE (track_id, channel_set, stem_model_version)
 	);
+	-- Request generations and attempt tokens fence recovery/retries. Published
+	-- metadata stays separate from the desired source while replacement runs.
+	ALTER TABLE track_stems ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1;
+	ALTER TABLE track_stems ADD COLUMN IF NOT EXISTS attempt_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE track_stems ADD COLUMN IF NOT EXISTS published_manifest_json JSONB NOT NULL DEFAULT '{}'::jsonb;
 	CREATE INDEX IF NOT EXISTS idx_track_stems_status ON track_stems(status);
 	CREATE INDEX IF NOT EXISTS idx_track_stems_track ON track_stems(track_id);
 	CREATE INDEX IF NOT EXISTS idx_track_stems_updated_at ON track_stems(updated_at DESC);

@@ -66,6 +66,30 @@ func stemsWorkerProvenanceJSON(worker, workerVersion string) json.RawMessage {
 	))
 }
 
+func claimedTestIdentity(t *testing.T, repo *TrackStemsRepository, ctx context.Context, trackID int64, identity StemsIdentity) StemsIdentity {
+	t.Helper()
+	row, err := repo.GetByTrackAndIdentity(ctx, trackID, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.Generation = row.Generation
+	identity.AttemptID = row.AttemptID
+	return identity
+}
+func claimTestStems(t *testing.T, repo *TrackStemsRepository, ctx context.Context, trackID int64, identity StemsIdentity, provenance json.RawMessage) error {
+	t.Helper()
+	identity = claimedTestIdentity(t, repo, ctx, trackID, identity)
+	identity.AttemptID = "test-attempt"
+	return repo.MarkSeparating(ctx, trackID, identity, provenance)
+}
+func storeTestStems(t *testing.T, repo *TrackStemsRepository, ctx context.Context, trackID int64, result StemsResult) error {
+	t.Helper()
+	id := claimedTestIdentity(t, repo, ctx, trackID, StemsIdentity{ChannelSet: result.ChannelSet, StemModelVersion: result.StemModelVersion})
+	result.Generation = id.Generation
+	result.AttemptID = id.AttemptID
+	return repo.StoreResult(ctx, trackID, result)
+}
+
 func TestTrackStemsRepositorySeparationHappyPathAgainstPostgres(t *testing.T) {
 	database, ctx := newPostgresStemsTestDB(t)
 	repo := NewTrackStemsRepository(database)
@@ -83,7 +107,7 @@ func TestTrackStemsRepositorySeparationHappyPathAgainstPostgres(t *testing.T) {
 		t.Fatalf("row = %+v, want a pending row carrying the storage key", row)
 	}
 
-	if err := repo.MarkSeparating(ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
+	if err := claimTestStems(t, repo, ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("mark separating: %v", err)
 	}
 	claimed, err := repo.GetByTrackAndIdentity(ctx, track.ID, identity)
@@ -95,7 +119,7 @@ func TestTrackStemsRepositorySeparationHappyPathAgainstPostgres(t *testing.T) {
 	}
 
 	artifacts := json.RawMessage(`{"objects":[{"channel":"vocals","key":"stems/1/htdemucs-4s-v1/vocals.opus","derivation":"separator"}],"null_sum":{"residual_db":-120.4},"energy":{"frame_hz":80}}`)
-	if err := repo.StoreResult(ctx, track.ID, StemsResult{
+	if err := storeTestStems(t, repo, ctx, track.ID, StemsResult{
 		SchemaVersion:    1,
 		ChannelSet:       identity.ChannelSet,
 		StemModelVersion: identity.StemModelVersion,
@@ -160,11 +184,11 @@ func TestTrackStemsRepositoryRejectsMismatchedWorkerIdentityAgainstPostgres(t *t
 	if _, _, _, err := repo.RequestSeparation(ctx, track.ID, identity, "tracks/fixture/identity-guard.mp3", "", stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("request separation: %v", err)
 	}
-	if err := repo.MarkSeparating(ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
+	if err := claimTestStems(t, repo, ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("mark separating: %v", err)
 	}
 
-	err := repo.StoreResult(ctx, track.ID, StemsResult{
+	err := storeTestStems(t, repo, ctx, track.ID, StemsResult{
 		SchemaVersion:    1,
 		ChannelSet:       identity.ChannelSet,
 		StemModelVersion: identity.StemModelVersion,
@@ -198,7 +222,7 @@ func TestTrackStemsRepositoryRejectsMismatchedWorkerIdentityAgainstPostgres(t *t
 
 	// A result whose declared identity disagrees with its own provenance is
 	// refused before any SQL runs.
-	err = repo.StoreResult(ctx, track.ID, StemsResult{
+	err = storeTestStems(t, repo, ctx, track.ID, StemsResult{
 		SchemaVersion:    1,
 		ChannelSet:       identity.ChannelSet,
 		StemModelVersion: identity.StemModelVersion,
@@ -235,10 +259,10 @@ func TestTrackStemsRepositoryRequestIsIdempotentAgainstPostgres(t *testing.T) {
 		t.Fatalf("queued=%v reason=%q, want an active_request no-op", queued, reason)
 	}
 
-	if err := repo.MarkSeparating(ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
+	if err := claimTestStems(t, repo, ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("mark separating: %v", err)
 	}
-	if err := repo.StoreResult(ctx, track.ID, StemsResult{
+	if err := storeTestStems(t, repo, ctx, track.ID, StemsResult{
 		SchemaVersion:    1,
 		ChannelSet:       identity.ChannelSet,
 		StemModelVersion: identity.StemModelVersion,
@@ -285,11 +309,11 @@ func TestTrackStemsRepositoryRequeuesWhenSourceHashChangesAgainstPostgres(t *tes
 	if _, _, _, err := repo.RequestSeparation(ctx, track.ID, identity, "tracks/fixture/source-change.mp3", "", stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("request separation: %v", err)
 	}
-	if err := repo.MarkSeparating(ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
+	if err := claimTestStems(t, repo, ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("mark separating: %v", err)
 	}
 	originalArtifacts := json.RawMessage(`{"objects":[{"channel":"vocals","key":"stems/old/vocals.opus"}]}`)
-	if err := repo.StoreResult(ctx, track.ID, StemsResult{
+	if err := storeTestStems(t, repo, ctx, track.ID, StemsResult{
 		SchemaVersion:    1,
 		ChannelSet:       identity.ChannelSet,
 		StemModelVersion: identity.StemModelVersion,
@@ -499,7 +523,7 @@ func TestTrackStemsRepositoryRecoversInFlightAgainstPostgres(t *testing.T) {
 		if _, _, _, err := repo.RequestSeparation(ctx, trackID, identity, "tracks/fixture/recover.mp3", "", stemsRequestProvenanceJSON()); err != nil {
 			t.Fatalf("request separation for %d: %v", trackID, err)
 		}
-		if err := repo.MarkSeparating(ctx, trackID, identity, stemsRequestProvenanceJSON()); err != nil {
+		if err := claimTestStems(t, repo, ctx, trackID, identity, stemsRequestProvenanceJSON()); err != nil {
 			t.Fatalf("mark separating for %d: %v", trackID, err)
 		}
 	}
@@ -543,10 +567,10 @@ func TestTrackStemsRepositoryRecoversInFlightAgainstPostgres(t *testing.T) {
 	}
 
 	// The recovered row can be reclaimed and completed normally.
-	if err := repo.MarkSeparating(ctx, abandoned.ID, identity, stemsRequestProvenanceJSON()); err != nil {
+	if err := claimTestStems(t, repo, ctx, abandoned.ID, identity, stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("reclaim recovered row: %v", err)
 	}
-	if err := repo.StoreResult(ctx, abandoned.ID, StemsResult{
+	if err := storeTestStems(t, repo, ctx, abandoned.ID, StemsResult{
 		SchemaVersion:    1,
 		ChannelSet:       identity.ChannelSet,
 		StemModelVersion: identity.StemModelVersion,
@@ -559,7 +583,7 @@ func TestTrackStemsRepositoryRecoversInFlightAgainstPostgres(t *testing.T) {
 		t.Fatalf("store result after recovery: %v", err)
 	}
 	// A duplicate delivery of the same manifest is a no-op, not a double write.
-	if err := repo.StoreResult(ctx, abandoned.ID, StemsResult{
+	if err := storeTestStems(t, repo, ctx, abandoned.ID, StemsResult{
 		SchemaVersion:    1,
 		ChannelSet:       identity.ChannelSet,
 		StemModelVersion: identity.StemModelVersion,
@@ -585,10 +609,10 @@ func TestTrackStemsRepositoryFailureRetriesAndLookupsAgainstPostgres(t *testing.
 	if _, _, _, err := repo.RequestSeparation(ctx, track.ID, identity, "tracks/fixture/failure-retry.mp3", "", stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("request separation: %v", err)
 	}
-	if err := repo.MarkSeparating(ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
+	if err := claimTestStems(t, repo, ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("mark separating: %v", err)
 	}
-	if err := repo.MarkFailed(ctx, track.ID, identity, "demucs exited 137", stemsRequestProvenanceJSON()); err != nil {
+	if err := repo.MarkFailed(ctx, track.ID, claimedTestIdentity(t, repo, ctx, track.ID, identity), "demucs exited 137", stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
 
@@ -649,7 +673,7 @@ func TestTrackStemsListPendingSeparations(t *testing.T) {
 
 	// A claimed row is no longer pending: recovery must not republish work a
 	// worker already owns.
-	if err := repo.MarkSeparating(ctx, trackA.ID, identity, stemsRequestProvenanceJSON()); err != nil {
+	if err := claimTestStems(t, repo, ctx, trackA.ID, identity, stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("mark separating: %v", err)
 	}
 	pending, err = repo.ListPendingSeparations(ctx, 0)
@@ -708,10 +732,10 @@ func TestTrackStemsSourceHashStalenessEndToEnd(t *testing.T) {
 	if _, _, _, err := repo.RequestSeparation(ctx, track.ID, identity, "tracks/fixture/hash-staleness.mp3", "sha256:first", stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("request separation: %v", err)
 	}
-	if err := repo.MarkSeparating(ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
+	if err := claimTestStems(t, repo, ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
 		t.Fatalf("mark separating: %v", err)
 	}
-	if err := repo.StoreResult(ctx, track.ID, StemsResult{
+	if err := storeTestStems(t, repo, ctx, track.ID, StemsResult{
 		SchemaVersion:    1,
 		ChannelSet:       identity.ChannelSet,
 		StemModelVersion: identity.StemModelVersion,

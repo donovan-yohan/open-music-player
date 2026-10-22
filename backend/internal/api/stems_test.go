@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/openmusicplayer/backend/internal/storage"
 
 	"github.com/google/uuid"
 
@@ -177,6 +180,122 @@ func decodeStemsBody(t *testing.T, recorder *httptest.ResponseRecorder) map[stri
 	return payload
 }
 
+func TestRequestStemsDurableRedisOutageIsAccepted(t *testing.T) {
+	repo := &fakeStemsRepo{row: db.TrackStems{Status: db.StemsStatusPending}, queued: true, reason: "missing_stems_row"}
+	handlers := NewStemsHandlers(repo, &fakeStemsQueue{enqueueErr: errors.New("redis offline")}, &fakeStemsTrackRepo{track: stemsTestTrack()}, &fakeStemsLibraryRepo{inLibrary: true})
+	rec := httptest.NewRecorder()
+	handlers.RequestStems(rec, newStemsRequest(t, http.MethodPost, "", true))
+	payload := decodeStemsBody(t, rec)
+	if rec.Code != http.StatusAccepted || payload["reason"] != "awaiting_delivery" || payload["queued"] != false {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+type stemDownloadStore struct {
+	signed []string
+	sizes  map[string]int64
+}
+
+func (s *stemDownloadStore) StatObject(_ context.Context, key string) (*storage.ObjectInfo, error) {
+	n, ok := s.sizes[key]
+	if !ok {
+		return nil, errors.New("missing")
+	}
+	return &storage.ObjectInfo{Size: n}, nil
+}
+func (s *stemDownloadStore) PresignGetObject(_ context.Context, key string, _ time.Duration) (string, error) {
+	s.signed = append(s.signed, key)
+	return "https://objects.invalid/" + key, nil
+}
+func downloadableStemRow(t *testing.T) db.TrackStems {
+	t.Helper()
+	zero := int64(0)
+	skip := int64(312)
+	hash := strings.Repeat("a", 64)
+	members := []stems.Member{}
+	energy := map[string]string{}
+	for _, role := range []string{"vocals", "melody", "bass", "kick", "perc", "drums"} {
+		derivation := stems.DerivationSeparator
+		if role == "kick" || role == "perc" {
+			derivation = stems.DerivationCrossover
+		}
+		members = append(members, stems.Member{Channel: role, Key: stems.MemberKey(42, stems.StemModelVersionStems5, "sha256:"+hash, 1, role, hash), SHA256: hash, Bytes: 10, DurationMs: 1000, SampleFrames: 48000, SampleRateHz: 48000, Channels: 2, OriginFrame: &zero, DelayFrames: &zero, EncoderDelayFrames: &skip, DelayProvenance: stems.DelayProvenance, Derivation: derivation})
+		energy[role] = base64.StdEncoding.EncodeToString(make([]byte, 80))
+	}
+	e, _ := json.Marshal(map[string]any{"frame_hz": 80, "frame_count": 80, "encoding": "uint8-linear", "channels": energy})
+	a, _ := json.Marshal(stems.Artifacts{Objects: members, Energy: e, Codec: json.RawMessage(`{"name":"libopus","sample_rate_hz":48000,"channels":2}`), NullSum: json.RawMessage(`{"pair":["kick","perc"],"against":"drums","passed":true,"residual_db":-120,"threshold_db":-80}`)})
+	m := stems.Manifest{SchemaVersion: 1, TrackID: 42, Generation: 1, ChannelSet: stems.DefaultChannelSet, StemModelVersion: stems.StemModelVersionStems5, SourceStorageKey: "tracks/youtube/x.mp3", SourceFileHash: "sha256:" + hash, DurationMs: 1000, Artifacts: a, Provenance: json.RawMessage(`{"worker":"stemsep-worker","worker_version":"2026-08-30-1"}`)}
+	row := readyStemsRow()
+	row.Generation = 1
+	row.SourceFileHash = m.SourceFileHash
+	row.SourceStorageKey = m.SourceStorageKey
+	row.ArtifactsJSON = a
+	row.PublishedManifestJSON, _ = json.Marshal(m)
+	return row
+}
+func TestGetStemsSignsOnlyValidatedCurrentMembers(t *testing.T) {
+	for _, kind := range []string{"valid", "arbitrary-key", "missing-member", "missing-object", "changed-source", "pending"} {
+		t.Run(kind, func(t *testing.T) {
+			row := downloadableStemRow(t)
+			store := &stemDownloadStore{sizes: map[string]int64{}}
+			var a stems.Artifacts
+			_ = json.Unmarshal(row.ArtifactsJSON, &a)
+			for _, m := range a.Objects {
+				store.sizes[m.Key] = m.Bytes
+			}
+			var m stems.Manifest
+			_ = json.Unmarshal(row.PublishedManifestJSON, &m)
+			switch kind {
+			case "arbitrary-key":
+				a.Objects[0].Key = "tracks/private"
+			case "missing-member":
+				a.Objects = a.Objects[:5]
+			case "missing-object":
+				delete(store.sizes, a.Objects[5].Key)
+			case "pending":
+				row.Status = db.StemsStatusPending
+			}
+			m.Artifacts, _ = json.Marshal(a)
+			row.PublishedManifestJSON, _ = json.Marshal(m)
+			hash := row.SourceFileHash
+			if kind == "changed-source" {
+				hash = "sha256:" + strings.Repeat("b", 64)
+			}
+			h := NewStemsHandlers(&fakeStemsRepo{getRow: &row}, &fakeStemsQueue{}, &fakeStemsTrackRepo{track: stemsTestTrack(), sourceHash: hash}, &fakeStemsLibraryRepo{inLibrary: true}, store)
+			r := newStemsRequest(t, http.MethodGet, "", true)
+			r.URL.RawQuery = "includeUrls=1"
+			rec := httptest.NewRecorder()
+			h.GetStems(rec, r)
+			if kind == "valid" {
+				if rec.Header().Get("Cache-Control") != "no-store" {
+					t.Fatal("signed stem downloads must never be cached")
+				}
+				if rec.Code != 200 || len(store.signed) != 6 {
+					t.Fatalf("status=%d signed=%d body=%s", rec.Code, len(store.signed), rec.Body.String())
+				}
+				payload := decodeStemsBody(t, rec)
+				if len(payload["memberDownloads"].([]any)) != 6 {
+					t.Fatal("missing downloads")
+				}
+			} else if rec.Code < 400 || len(store.signed) != 0 {
+				t.Fatalf("invalid manifest signed: status=%d keys=%v", rec.Code, store.signed)
+			}
+		})
+	}
+}
+
+func TestRequestStemsRejectsSilentTrailingOrUnknownPayload(t *testing.T) {
+	for _, body := range []string{`{"channelSet":"stems5-hybrid-v1"} {"ignored":"request"}`, `{"channelSet":"stems5-hybrid-v1","force":true}`} {
+		repo := &fakeStemsRepo{}
+		h := NewStemsHandlers(repo, &fakeStemsQueue{}, &fakeStemsTrackRepo{track: stemsTestTrack()}, &fakeStemsLibraryRepo{inLibrary: true})
+		rec := httptest.NewRecorder()
+		h.RequestStems(rec, newStemsRequest(t, http.MethodPost, body, true))
+		if rec.Code != 400 || repo.requests != 0 {
+			t.Fatalf("ignored payload: %s status=%d requests=%d", body, rec.Code, repo.requests)
+		}
+	}
+}
+
 func TestRequestStemsStatusCodes(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -248,14 +367,15 @@ func TestRequestStemsStatusCodes(t *testing.T) {
 			wantCode:      "UNKNOWN_CHANNEL_SET",
 		},
 		{
-			name:          "queue full returns 429",
+			name:          "queue full accepts durable request awaiting capacity",
 			authenticated: true,
 			repo:          &fakeStemsRepo{row: db.TrackStems{Status: db.StemsStatusPending}, queued: true, reason: "missing_stems_row"},
 			queue:         &fakeStemsQueue{enqueueErr: stems.ErrQueueFull},
 			trackRepo:     &fakeStemsTrackRepo{track: stemsTestTrack()},
 			libraryRepo:   &fakeStemsLibraryRepo{inLibrary: true},
-			wantStatus:    http.StatusTooManyRequests,
-			wantCode:      "QUEUE_FULL",
+			wantStatus:    http.StatusAccepted,
+			wantQueued:    false,
+			wantReason:    "awaiting_capacity",
 		},
 		{
 			name:          "unauthenticated returns 401",
@@ -319,14 +439,14 @@ func TestRequestStemsStatusCodes(t *testing.T) {
 			wantCode:      "INVALID_REQUEST",
 		},
 		{
-			name:          "queue failure returns 500",
+			name:          "queue failure accepts durable request",
 			authenticated: true,
 			repo:          &fakeStemsRepo{row: db.TrackStems{Status: db.StemsStatusPending}, queued: true, reason: "failed_retry"},
 			queue:         &fakeStemsQueue{enqueueErr: errors.New("redis down")},
 			trackRepo:     &fakeStemsTrackRepo{track: stemsTestTrack()},
 			libraryRepo:   &fakeStemsLibraryRepo{inLibrary: true},
-			wantStatus:    http.StatusInternalServerError,
-			wantCode:      "INTERNAL_ERROR",
+			wantStatus:    http.StatusAccepted,
+			wantQueued:    false, wantReason: "awaiting_delivery",
 		},
 	}
 
