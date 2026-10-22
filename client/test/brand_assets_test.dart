@@ -22,7 +22,7 @@ void main() {
   test('auth surfaces reference the canonical logo instead of the placeholder',
       () {
     for (final path in [
-      'lib/features/auth/screens/login_screen.dart',
+      'lib/features/auth/auth_frame.dart',
       'lib/features/splash/splash_screen.dart',
       'lib/features/desktop/desktop_listening_shell.dart',
     ]) {
