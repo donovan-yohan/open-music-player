@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
@@ -8,9 +9,11 @@ import '../cache/playback_cache_manager.dart';
 import '../engine/click_audition_projection.dart';
 import '../engine/click_auditioner.dart';
 import '../engine/playback_engine.dart';
+import '../engine/native_playback_backend.dart';
 import '../engine/tempo_automation.dart';
 import '../engine/timeline_model.dart';
 import '../../models/mix_plan.dart';
+import '../../models/stem_edits.dart';
 import '../../models/timeline_clip.dart';
 import '../../models/track.dart' show QueueTrack;
 import '../../models/track_analysis.dart';
@@ -73,6 +76,57 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// B finishes resolving, that stale pending request must not auto-start B.
   int _playRequestGeneration = 0;
   int _transportCommandGeneration = 0;
+  int _accountGeneration = 0;
+  Future<void>? _accountRetirement;
+  bool _accountPersistenceSuppressed = false;
+
+  /// Native/queue teardown completion. Failure blocks account admission.
+  Future<void> get accountRetirement => _accountRetirement ?? Future.value();
+
+  /// Auth intent is not stop: revoke pending work synchronously, then retire
+  /// metadata through the existing owner. Never save the empty reset against
+  /// mutable token storage, or erase the retired account's resumable queue.
+  Future<void> retireAccount() {
+    _accountGeneration++;
+    _accountPersistenceSuppressed = true;
+    _persistenceTimer?.cancel();
+    _persistenceTimer = null;
+    _persistenceDirty = false;
+    _mixPreview = null;
+    _cancelContinuation();
+    _transportCommandGeneration++;
+    _cancelPendingPlayRequests();
+    _playbackContext = null;
+    _playbackError = null;
+    _recentTrackIds.clear();
+    final previous = _accountRetirement;
+    final generation = _accountGeneration;
+    final retirement = () async {
+      if (previous != null) {
+        try {
+          await previous;
+        } catch (_) {/* Retry teardown only. */}
+      }
+      await _queueController.stop();
+      await _queueController.engine.selectLegacyBackend();
+      await _queueController.setQueue(const []);
+      if (generation == _accountGeneration) {
+        _playbackContext = null;
+        // Retiring a held startup restore also completes its storage decision.
+        _persistenceReady = true;
+      }
+    }();
+    _accountRetirement = retirement;
+    unawaited(retirement.then((_) {
+      if (identical(_accountRetirement, retirement)) _accountRetirement = null;
+    }, onError: (Object _, StackTrace __) {}));
+    return retirement;
+  }
+
+  void _persistAdmittedQueue() {
+    _accountPersistenceSuppressed = false;
+    _persistQueue();
+  }
 
   /// End-of-queue continuation (#352). The source is injected so the playback
   /// core never learns about the library API; a null source (tests, or a build
@@ -186,6 +240,9 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   Stream<LoopMode> get loopModeStream => _queueController.loopModeStream;
   PlaybackSnapshot get snapshot => _queueController.snapshot;
 
+  /// Monotonic canonical incarnation, including reloads of the same saved ID.
+  int get sessionGeneration => _queueController.sessionGeneration;
+
   /// Live global mix timeline state for the waveform surface. This is the raw
   /// engine clock/model contract, not the source-relative player position.
   Stream<int> get timelinePositionMsStream =>
@@ -257,6 +314,33 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     String pitchMode,
   ) =>
       _queueController.setPitchModeByQueueItemId(queueItemId, pitchMode);
+  Future<void> setQueueStemEditsByQueueItemId(
+    String queueItemId,
+    StemEdits? edits, {
+    required String expectedSourceFileHash,
+  }) =>
+      _queueController.setStemEditsByQueueItemId(
+        queueItemId,
+        edits,
+        expectedSourceFileHash: expectedSourceFileHash,
+      );
+  Future<StemGainAcknowledgement> setStemGain(
+          String queueItemId, String channel, double gain,
+          {int rampMs = 8}) =>
+      _queueController.setStemGain(queueItemId, channel, gain, rampMs: rampMs);
+  bool get supportsNativePreparedPlayback =>
+      _queueController.engine.supportsNativePreparedPlayback;
+  bool get usesNativePreparedPlayback =>
+      _queueController.engine.usesNativeBackend;
+
+  /// Accepted live targets only, never a second playhead or persisted document.
+  Map<String, Map<String, double>> get liveStemOverrides =>
+      _queueController.engine.liveStemOverrides;
+
+  /// Restores authored source-time replay after the owning native block ACK.
+  Future<void> clearStemOverrides(String queueItemId) =>
+      _queueController.clearStemOverrides(queueItemId);
+  bool get hasUnsupportedStemEdits => _queueController.hasUnsupportedStemEdits;
   Future<void> setTransitionSnapMode(BeatSnapMode mode) =>
       _queueController.setTransitionSnapMode(mode);
   Future<void> applyAudioDefaults(AudioPlaybackDefaults defaults) =>
@@ -269,15 +353,21 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   ) =>
       _queueController.moveQueueItemByQueueItemId(queueItemId, delta);
 
-  void beginTimelineScrub() {
+  Future<void> beginTimelineScrub() {
     _cancelContinuation();
-    _queueController.engine.beginScrub();
+    _transportCommandGeneration++;
+    return _queueController.beginLocalScrub();
   }
 
-  void updateTimelineScrub(int globalMs) =>
-      _queueController.engine.updateScrub(globalMs);
-  Future<void> endTimelineScrub(int globalMs) =>
-      _queueController.engine.endScrub(globalMs);
+  Future<void> updateTimelineScrub(int globalMs) {
+    _transportCommandGeneration++;
+    return _queueController.updateTimelineScrub(globalMs);
+  }
+
+  Future<void> endTimelineScrub(int globalMs) {
+    _transportCommandGeneration++;
+    return _queueController.endTimelineScrub(globalMs);
+  }
 
   PlaybackState(
     PlaybackEngine engine, {
@@ -310,6 +400,10 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
 
   void _init() {
     _subscriptions = [
+      _queueController.engine.playbackErrors.listen((error) {
+        _playbackError = error.toString();
+        notifyListeners();
+      }),
       _queueController.snapshotStream
           .map((snapshot) => snapshot.continuationDisposition)
           .distinct()
@@ -419,7 +513,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// the running session is torn down. Empty when carry-over is switched off,
   /// which restores the older replace-everything behavior.
   List<MediaItem> _manualCarryOver() {
-    if (!_preserveManualQueue) return const [];
+    if (!_preserveManualQueue || _accountPersistenceSuppressed) return const [];
     return unplayedManualItems(queue, currentIndex);
   }
 
@@ -515,6 +609,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         if (!_isCurrentPlayRequest(generation)) return;
         await _queueController.setQueue([item, ...carriedOver]);
         if (!_isCurrentPlayRequest(generation)) return;
+        _persistAdmittedQueue();
         await _queueController.play();
       });
     }, generation: generation);
@@ -537,7 +632,10 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
 
     await _resolveSignedUrls(() async {
       await _startWithRecovery(() async {
-        final resolved = await _sourceResolver.resolveQueue(tracks);
+        final resolved = await _sourceResolver.resolveQueue(
+          tracks,
+          startIndex: startIndex,
+        );
         if (!_isCurrentPlayRequest(generation)) return;
         final startAt = resolved.isEmpty
             ? 0
@@ -549,6 +647,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         );
         await _queueController.setQueue(items, initialIndex: startAt);
         if (!_isCurrentPlayRequest(generation)) return;
+        _persistAdmittedQueue();
         await _queueController.play();
       });
     }, generation: generation);
@@ -568,11 +667,32 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   }) async {
     if (tracks.isEmpty || plan.clips.isEmpty) return;
     _validateMixPlanOrder(tracks, plan);
+    final prepared = plan.clips.any((clip) => clip.stemEdits != null);
+    if (prepared && !_queueController.engine.supportsNativePreparedPlayback) {
+      _playbackError =
+          'Native prepared-stem playback is unavailable on this platform.';
+      notifyListeners();
+      throw UnsupportedError(_playbackError!);
+    }
     final generation = await _beginPlaybackReplacement(context: context);
-
+    if (!_isCurrentPlayRequest(generation)) return;
     await _resolveSignedUrls(() async {
+      if (prepared) {
+        await _queueController.engine
+            .selectPreparedBackend(expectedSourceHashes: {
+          for (var i = 0; i < plan.clips.length; i++)
+            if (plan.clips[i].stemEdits?.sourceFileHash ??
+                    tracks[i]['sourceFileHash'] ??
+                    tracks[i]['source_file_hash']
+                case final String hash)
+              plan.clips[i].queueItemId: hash,
+        });
+      }
       await _startWithRecovery(() async {
-        final items = await _sourceResolver.resolveQueue(tracks);
+        final items = prepared
+            ? await _preparedMediaItems(tracks)
+            : await _sourceResolver.resolveQueue(tracks,
+                startIndex: startIndex);
         if (!_isCurrentPlayRequest(generation)) return;
         final session = MixSession.fromMixPlan(plan: plan, queue: items);
         await _queueController.setQueue(
@@ -581,9 +701,20 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
           session: session,
         );
         if (!_isCurrentPlayRequest(generation)) return;
+        _persistAdmittedQueue();
         await _queueController.play();
       });
     }, generation: generation);
+  }
+
+  Future<List<MediaItem>> _preparedMediaItems(
+      List<Map<String, dynamic>> tracks) async {
+    final account = await _accountIdProvider?.call();
+    return [
+      for (final track in tracks)
+        PlaybackSourceResolver.buildPreparedMediaItem(track,
+            likedAccountId: account)
+    ];
   }
 
   /// Auditions one seam of [plan] through the existing playback session.
@@ -606,6 +737,9 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     _validateMixPlanOrder(tracks, plan);
 
     _cancelContinuation();
+    final generation = ++_playRequestGeneration;
+    await accountRetirement;
+    if (!_isCurrentPlayRequest(generation)) return;
     _mixPreview ??= _MixPreviewSnapshot(
       queue: List<MediaItem>.from(_queueController.queue),
       session: _queueController.session,
@@ -616,13 +750,19 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     );
 
     await _queueController.pause();
-    final items = await _sourceResolver.resolveQueue(tracks);
+    if (_disposed || !_isCurrentPlayRequest(generation)) return;
+    final items = await _sourceResolver.resolveQueue(
+      tracks,
+      startIndex: seamIndex,
+    );
+    if (_disposed || !_isCurrentPlayRequest(generation)) return;
     final session = MixSession.fromMixPlan(plan: plan, queue: items);
     await _queueController.setQueue(
       items,
       initialIndex: seamIndex,
       session: session,
     );
+    if (_disposed || !_isCurrentPlayRequest(generation)) return;
     _playbackContext = context;
     // The seam is the end of the outgoing clip. Start [leadIn] before the
     // point where the overlap begins so the run-in is audible too.
@@ -636,7 +776,9 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       outgoing.selectedDurationMs - overlapMs - leadIn.inMilliseconds,
     );
     await _queueController.seek(Duration(milliseconds: startMs));
+    if (_disposed || !_isCurrentPlayRequest(generation)) return;
     await _queueController.play();
+    if (_disposed || !_isCurrentPlayRequest(generation)) return;
     notifyListeners();
   }
 
@@ -648,11 +790,14 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     final snapshot = _mixPreview;
     if (snapshot == null) return;
     _mixPreview = null;
+    final generation = ++_playRequestGeneration;
 
     await _queueController.pause();
+    if (_disposed || !_isCurrentPlayRequest(generation)) return;
     _playbackContext = snapshot.context;
     if (snapshot.queue.isEmpty) {
       await _queueController.setQueue(const []);
+      if (_disposed || !_isCurrentPlayRequest(generation)) return;
       notifyListeners();
       return;
     }
@@ -661,10 +806,13 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       initialIndex: snapshot.currentIndex ?? 0,
       session: snapshot.session,
     );
+    if (_disposed || !_isCurrentPlayRequest(generation)) return;
     await _queueController.seek(snapshot.position);
+    if (_disposed || !_isCurrentPlayRequest(generation)) return;
     if (snapshot.playing) {
       await _queueController.play();
     }
+    if (_disposed || !_isCurrentPlayRequest(generation)) return;
     notifyListeners();
   }
 
@@ -697,6 +845,11 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     required PlaybackContext? context,
   }) async {
     final generation = ++_playRequestGeneration;
+    await accountRetirement;
+    if (!_isCurrentPlayRequest(generation)) return generation;
+    // A new listening request owns the session. Dismissing an older preview
+    // must not restore the queue that existed before this replacement.
+    _mixPreview = null;
     _cancelContinuation();
     _transportCommandGeneration++;
     _playbackContext = context;
@@ -711,6 +864,10 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     // the pause button appear to "stop A and start B" once the pending request
     // finally resolves.
     try {
+      await _queueController.pause();
+      if (!_isCurrentPlayRequest(generation)) return generation;
+      await _queueController.engine.selectLegacyBackend();
+      if (!_isCurrentPlayRequest(generation)) return generation;
       await _queueController.setQueue(const []);
     } catch (_) {
       if (_isCurrentPlayRequest(generation)) {
@@ -723,10 +880,16 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   }
 
   bool _isCurrentPlayRequest(int generation) {
-    return generation == _playRequestGeneration;
+    return !_disposed && generation == _playRequestGeneration;
   }
 
+  bool _isCurrentAccount(int generation) =>
+      !_disposed &&
+      generation == _accountGeneration &&
+      _accountRetirement == null;
+
   void _cancelPendingPlayRequests() {
+    _queueController.engine.cancelPreparedRequests();
     _playRequestGeneration += 1;
     if (_isResolvingSignedUrl) {
       _isResolvingSignedUrl = false;
@@ -765,6 +928,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         if (!_isCurrentPlayRequest(generation)) return;
         await _queueController.setQueue([item]);
         if (!_isCurrentPlayRequest(generation)) return;
+        _persistAdmittedQueue();
         await _queueController.play();
       });
     }, generation: generation);
@@ -776,6 +940,9 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// is the "Add to queue" action; it operates on the real playing queue, not
   /// the separate Redis edit-queue.
   Future<void> enqueue(Map<String, dynamic> track) async {
+    final accountGeneration = _accountGeneration;
+    await accountRetirement;
+    if (!_isCurrentAccount(accountGeneration)) return;
     if (queue.isEmpty) {
       await _startManualTrack(track);
       return;
@@ -784,9 +951,62 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       await _sourceResolver.resolveTrack(track),
       queueOriginManual,
     );
+    if (!_isCurrentAccount(accountGeneration)) return;
     await _queueController.insertIntoQueue(
       manualEnqueueIndex(queue, currentIndex),
       item,
+      guard: () => _isCurrentAccount(accountGeneration),
+    );
+  }
+
+  /// Admits a host-approved request into the canonical listening queue without
+  /// starting transport. [stillCurrent] must bind the captured account auth
+  /// session, Jam and designated host identity, and must never revive old work.
+  Future<String> admitJamRequest({
+    required String jamId,
+    required String requestId,
+    required Map<String, dynamic> track,
+    required String expectedSessionId,
+    required bool Function() stillCurrent,
+  }) async {
+    final generation = _queueController.sessionGeneration;
+    final accountGeneration = _accountGeneration;
+    if (jamId.trim().isEmpty ||
+        jamId.length > 128 ||
+        requestId.trim().isEmpty ||
+        requestId.length > 128) {
+      throw ArgumentError(
+          'Jam and request IDs must be nonblank, at most 128 characters');
+    }
+    void checkCurrent() {
+      if (_disposed ||
+          accountGeneration != _accountGeneration ||
+          _accountRetirement != null ||
+          !stillCurrent() ||
+          _queueController.sessionGeneration != generation ||
+          snapshot.sessionId != expectedSessionId) {
+        throw StateError('Jam admission is no longer current');
+      }
+    }
+
+    checkCurrent();
+    // Freeze the JSON track payload before the resolver's first await. Callers
+    // may refresh/mutate their management snapshot while approval is pending.
+    final frozenTrack = jsonDecode(jsonEncode(track)) as Map<String, dynamic>;
+    final item = markOrigin(
+      await _sourceResolver.resolveTrack(frozenTrack),
+      queueOriginManual,
+    );
+    checkCurrent();
+    return _queueController.admitJamRequest(
+      jamId: jamId,
+      requestId: requestId,
+      item: item,
+      expectedSessionId: expectedSessionId,
+      stillCurrent: () {
+        checkCurrent();
+        return true;
+      },
     );
   }
 
@@ -812,7 +1032,9 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     List<Map<String, dynamic>> tracks, {
     String origin = queueOriginManual,
   }) async {
-    if (tracks.isEmpty) return 0;
+    final accountGeneration = _accountGeneration;
+    await accountRetirement;
+    if (!_isCurrentAccount(accountGeneration) || tracks.isEmpty) return 0;
     final claimed = <String>{
       for (final item in queue)
         if (item.id.trim().isNotEmpty) item.id.trim(),
@@ -826,6 +1048,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     if (pending.isEmpty) return 0;
 
     final resolved = await _sourceResolver.resolveQueue(pending);
+    if (!_isCurrentAccount(accountGeneration)) return 0;
     final items = origin == queueOriginContext
         ? resolved
         : [for (final item in resolved) markOrigin(item, origin)];
@@ -833,14 +1056,18 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     await _queueController.insertAllIntoQueue(
       manualEnqueueIndex(queue, currentIndex),
       items,
+      guard: () => _isCurrentAccount(accountGeneration),
     );
-    return items.length;
+    return _isCurrentAccount(accountGeneration) ? items.length : 0;
   }
 
   /// Inserts [track] to play immediately after the current item ("Play next").
   /// Starts a fresh queue with just this track and plays it when nothing is
   /// playing yet.
   Future<void> playNext(Map<String, dynamic> track) async {
+    final accountGeneration = _accountGeneration;
+    await accountRetirement;
+    if (!_isCurrentAccount(accountGeneration)) return;
     if (queue.isEmpty) {
       // Identical to [enqueue]'s empty-queue branch: the user named this track,
       // so it is manual rather than context ambient state, and it must begin
@@ -853,7 +1080,9 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       await _sourceResolver.resolveTrack(track),
       queueOriginManual,
     );
-    await _queueController.insertIntoQueue((currentIndex ?? -1) + 1, item);
+    if (!_isCurrentAccount(accountGeneration)) return;
+    await _queueController.insertIntoQueue((currentIndex ?? -1) + 1, item,
+        guard: () => _isCurrentAccount(accountGeneration));
   }
 
   /// Runs [start], retrying it once if the failure looks like a stale/expired
@@ -903,7 +1132,9 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       rethrow;
     } catch (error) {
       if (!requestIsCurrent()) return;
-      _playbackError = 'Playback failed before audio could start.';
+      _playbackError = error is UnsupportedError || error is StateError
+          ? error.toString()
+          : 'Playback failed before audio could start.';
       if (kDebugMode) {
         debugPrint('Playback start failed: $error');
       }
@@ -939,9 +1170,19 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   Future<void> play() async {
     _cancelContinuation();
     final commandGeneration = ++_transportCommandGeneration;
+    await accountRetirement;
+    if (commandGeneration != _transportCommandGeneration) return;
     await _refreshCurrentSignedUrlIfNeeded();
     if (commandGeneration != _transportCommandGeneration) return;
     try {
+      if (!_queueController.engine.usesNativeBackend &&
+          _queueController.hasUnsupportedStemEdits) {
+        final model = _queueController.engine.model;
+        final position = _queueController.engine.positionMs;
+        await _queueController.engine.selectPreparedBackend();
+        await _queueController.engine.loadPreparedMixAt(model, position);
+        if (commandGeneration != _transportCommandGeneration) return;
+      }
       await _queueController.play();
     } catch (error) {
       if (!_isRecoverableObjectUrlFailure(error)) rethrow;
@@ -986,7 +1227,9 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     if (trackId == null || trackId <= 0) return;
     if (!force) return;
 
+    final accountGeneration = _accountGeneration;
     final descriptor = await _signedAudioUrlService.requireDescriptor(trackId);
+    if (!_isCurrentAccount(accountGeneration)) return;
     final extras = Map<String, dynamic>.from(item.extras ?? const {});
     extras['url'] = descriptor.url;
     extras['expiresAt'] = descriptor.expiresAt.toIso8601String();
@@ -1130,25 +1373,40 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
 
   Future<void> stop() async {
     _cancelContinuation();
+    // Stop also revokes the preview's right to restore a playing snapshot.
+    _mixPreview = null;
     _transportCommandGeneration++;
     _cancelPendingPlayRequests();
     await _queueController.stop();
+    // Explicit stop/account changes end native asset ownership. The saved
+    // canonical document stays intact; subsequent play must prepare it again.
+    await _queueController.engine.selectLegacyBackend();
   }
 
   Future<void> seek(Duration position) {
     _cancelContinuation();
+    // Revoke submitted recording leases at intent, before this command waits
+    // behind a native gain acknowledgement in the controller queue.
+    _transportCommandGeneration++;
     return _queueController.seek(position);
   }
 
-  void beginLocalScrub() {
+  Future<void> beginLocalScrub() {
     _cancelContinuation();
-    _queueController.beginLocalScrub();
+    _transportCommandGeneration++;
+    return _queueController.beginLocalScrub();
   }
 
-  void updateLocalScrub(Duration position) =>
-      _queueController.updateLocalScrub(position);
-  Future<void> endLocalScrub(Duration position) =>
-      _queueController.endLocalScrub(position);
+  Future<void> updateLocalScrub(Duration position) {
+    _transportCommandGeneration++;
+    return _queueController.updateLocalScrub(position);
+  }
+
+  Future<void> endLocalScrub(Duration position) {
+    _transportCommandGeneration++;
+    return _queueController.endLocalScrub(position);
+  }
+
   Future<void> skipToNext() async {
     _cancelContinuation();
     _transportCommandGeneration++;
@@ -1189,25 +1447,40 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   Future<void> restore() async {
     final store = _persistence;
     if (store == null) return;
+    final accountGeneration = _accountGeneration;
 
     try {
+      await accountRetirement;
+      if (!_isCurrentAccount(accountGeneration)) return;
       final snapshot = await store.load();
+      if (!_isCurrentAccount(accountGeneration)) return;
       if (snapshot.isEmpty) return;
-      final resolved = await _sourceResolver.resolveQueue(snapshot.tracks);
+      final prepared =
+          snapshot.session?.clips.any((clip) => clip.stemEdits != null) == true;
+      final resolved = prepared
+          ? await _preparedMediaItems(snapshot.tracks)
+          : await _sourceResolver.resolveQueue(snapshot.tracks,
+              startIndex: snapshot.currentIndex);
       final items = [
         for (var index = 0; index < resolved.length; index++)
           _withPersistedOrigin(resolved[index], snapshot.tracks[index]),
       ];
-      if (items.isEmpty) return;
+      if (items.isEmpty || !_isCurrentAccount(accountGeneration)) return;
       // A queue change made while loading/resolving is newer than the durable
       // startup snapshot. Leave it authoritative and replay it in [finally].
       if (_persistenceDirty) return;
       final index = snapshot.currentIndex.clamp(0, items.length - 1);
+      if (snapshot.session?.clips.any((clip) => clip.stemEdits != null) ==
+          true) {
+        await _queueController.engine.selectPreparedBackend();
+      }
+      if (!_isCurrentAccount(accountGeneration)) return;
       await _queueController.setQueue(
         items,
         initialIndex: index,
         session: snapshot.session,
       );
+      if (!_isCurrentAccount(accountGeneration)) return;
       // Playback modes are restored against the rebuilt queue: shuffle has to
       // run after setQueue so the fresh permutation covers the restored items
       // (setQueue always resets the play order to linear).
@@ -1231,8 +1504,8 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       // The load/restore decision is complete, including empty and failure
       // paths. Future queue changes may now persist, including an empty queue
       // that deliberately clears stale storage.
-      _persistenceReady = true;
-      if (_persistenceDirty) {
+      if (accountGeneration == _accountGeneration) _persistenceReady = true;
+      if (accountGeneration == _accountGeneration && _persistenceDirty) {
         _persistenceDirty = false;
         _persistQueue();
       }
@@ -1255,7 +1528,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// stale saved state).
   void _persistQueue({bool isStartupSeed = false}) {
     final store = _persistence;
-    if (store == null) return;
+    if (store == null || _accountPersistenceSuppressed) return;
     // The throwaway preview queue must never win the persistence race: if the
     // process dies mid-preview, the next launch should restore the listening
     // queue, not a seam preview. endMixSeamPreview restores and re-persists.
@@ -1273,7 +1546,9 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     _persistenceTimer?.cancel();
     _persistenceTimer = null;
     final store = _persistence;
-    if (store == null || !_persistenceReady) return;
+    if (store == null || !_persistenceReady || _accountPersistenceSuppressed) {
+      return;
+    }
     final currentQueue = queue;
     final snapshot = currentQueue.isEmpty
         ? const QueueSnapshot()

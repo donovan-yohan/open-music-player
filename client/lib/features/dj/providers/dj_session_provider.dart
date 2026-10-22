@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../../../core/audio/audio_preparation_service.dart';
 import '../../../core/engine/engine_audio_source_resolver.dart';
 import '../../../core/engine/gain_envelope.dart';
 import '../../../core/engine/tempo_automation.dart';
@@ -9,6 +10,7 @@ import '../../../core/engine/voice.dart';
 import '../../../core/cache/playback_cache_manager.dart';
 import '../../../core/stems/stem_channel_source.dart';
 import '../../../models/track.dart';
+import '../../stems/track_stem_channel_source.dart';
 import '../../dj/engine/deck_controller.dart';
 import '../engine/deck_sync.dart';
 import '../engine/deck_tempo_target.dart';
@@ -35,10 +37,17 @@ class DjSessionProvider extends ChangeNotifier {
     required DeckController deckA,
     required DeckController deckB,
     StemChannelSource? stems,
+    Map<DjDeckId, StemChannelSource>? deckStems,
     DjSyncClock? clock,
   })  : _decks = {DjDeckId.a: deckA, DjDeckId.b: deckB},
         _clock = clock ?? _elapsedWallMs,
-        stems = stems ?? const UnavailableStemChannelSource() {
+        _deckStems = {
+          DjDeckId.a: deckStems?[DjDeckId.a] ??
+              stems ??
+              const UnavailableStemChannelSource(),
+          DjDeckId.b:
+              deckStems?[DjDeckId.b] ?? const UnavailableStemChannelSource(),
+        } {
     _snapshotTimer = Timer.periodic(const Duration(milliseconds: 33), (_) {
       _refreshSnapshots();
     });
@@ -54,7 +63,9 @@ class DjSessionProvider extends ChangeNotifier {
     VoiceFactory? voiceFactory,
     EngineAudioSourceResolver? resolver,
     PlaybackCacheManager? cacheManager,
+    AudioPreparationService? preparationService,
     StemChannelSource? stems,
+    Map<DjDeckId, StemChannelSource>? deckStems,
     DjSyncClock? clock,
   }) {
     final makeVoice = voiceFactory ?? () => JustAudioVoice(debugId: 'dj-voice');
@@ -65,19 +76,36 @@ class DjSessionProvider extends ChangeNotifier {
         deckId: DjDeckId.a,
         voice: makeVoice(),
         resolver: sourceResolver,
+        preparationService: preparationService,
       ),
       deckB: DeckController.empty(
         deckId: DjDeckId.b,
         voice: makeVoice(),
         resolver: sourceResolver,
+        preparationService: preparationService,
       ),
       stems: stems,
+      deckStems: deckStems,
       clock: clock,
     );
   }
 
   final Map<DjDeckId, DeckController> _decks;
-  final StemChannelSource stems;
+  final Map<DjDeckId, StemChannelSource> _deckStems;
+
+  /// Compatibility for callers supplying the original deck-A source.
+  StemChannelSource get stems => stemsFor(DjDeckId.a);
+  StemChannelSource stemsFor(DjDeckId deck) => _deckStems[deck]!;
+  final Map<DjDeckId, int> _loadGenerations = {};
+
+  void _bindStems(DjDeckId deck, String? trackRef) {
+    final source = stemsFor(deck);
+    if (source is! TrackStemChannelSource) return;
+    final id = int.tryParse(trackRef ?? '');
+    // Stem network work must not delay loading the other deck's voice.
+    unawaited(source.bindTrack(id != null && id > 0 ? id : null));
+  }
+
   final Map<DjDeckId, Map<int, DjHotCue>> _hotCues = {
     DjDeckId.a: {},
     DjDeckId.b: {},
@@ -444,10 +472,12 @@ class DjSessionProvider extends ChangeNotifier {
       final picked = await filePicker();
       if (picked != null) seeds.add(picked);
     }
-    // Deck A is still awaited before deck B: the prototype's two voices share
-    // one audio session, so their loads must not overlap.
-    if (seeds.isNotEmpty) await _seedDeck(DjDeckId.a, seeds.first);
-    if (seeds.length > 1) await _seedDeck(DjDeckId.b, seeds[1]);
+    // Each deck serializes its own native mutations. Descriptor/metadata IO
+    // and bounded original preparation must not head-of-line block its peer.
+    await Future.wait([
+      if (seeds.isNotEmpty) _seedDeck(DjDeckId.a, seeds.first),
+      if (seeds.length > 1) _seedDeck(DjDeckId.b, seeds[1]),
+    ]);
   }
 
   /// Loads one deck without letting its outcome decide the other's (#409).
@@ -473,9 +503,15 @@ class DjSessionProvider extends ChangeNotifier {
     // A deck taking new audio drops whatever sync role it held: the match was
     // against a track it no longer holds. Awaited before the load, so the
     // follower's restoring rate command and this deck's load do not overlap on
-    // the audio session `seed` deliberately serialises.
+    // that deck's native player. Other decks remain independently preparable.
+    final generation = (_loadGenerations[deck] ?? 0) + 1;
+    _loadGenerations[deck] = generation;
+    _bindStems(deck, null);
     await _releaseSyncRole(deck);
+    if (_disposed || _loadGenerations[deck] != generation) return;
     await _decks[deck]!.load(seed);
+    if (_disposed || _loadGenerations[deck] != generation) return;
+    _bindStems(deck, stateFor(deck).trackRef);
     _applyDeckGains();
     _notify();
   }
@@ -931,6 +967,10 @@ class DjSessionProvider extends ChangeNotifier {
 
   Future<void> stopAll() async {
     if (_disposed) return;
+    for (final deck in _decks.keys) {
+      _loadGenerations[deck] = (_loadGenerations[deck] ?? 0) + 1;
+      _bindStems(deck, null);
+    }
     _syncMaster = null;
     // No restoring rate command here, unlike `_releaseSyncRole`: every deck is
     // released on the next line, so it holds no audio for a rate to apply to.

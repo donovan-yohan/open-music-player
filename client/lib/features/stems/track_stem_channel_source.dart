@@ -38,6 +38,10 @@ class TrackStemChannelSource extends ChangeNotifier
   int? _trackId;
   TrackStems? _stems;
   bool _loading = false;
+  bool _disposed = false;
+  int _generation = 0;
+
+  bool _isCurrent(int generation) => !_disposed && generation == _generation;
   String? _errorMessage;
 
   final Map<String, double> _gains = <String, double>{};
@@ -96,7 +100,9 @@ class TrackStemChannelSource extends ChangeNotifier
   /// another. Passing the id already bound is a no-op so a rebuilding deck does
   /// not throw away the user's faders.
   Future<void> bindTrack(int? trackId) async {
-    if (trackId == _trackId) return;
+    if (_disposed || trackId == _trackId) return;
+    ++_generation;
+    _loading = false;
     _trackId = trackId;
     _stems = null;
     _errorMessage = null;
@@ -109,17 +115,23 @@ class TrackStemChannelSource extends ChangeNotifier
   /// Re-reads the durable row. Safe to call repeatedly while pending.
   Future<void> refresh() async {
     final trackId = _trackId;
-    if (trackId == null || _loading) return;
+    if (_disposed || trackId == null || _loading) return;
+    final generation = _generation;
     _loading = true;
     _errorMessage = null;
     notifyListeners();
     try {
-      _adopt(await _service.getTrackStems(trackId, channelSet: channelSet));
+      final stems =
+          await _service.getTrackStems(trackId, channelSet: channelSet);
+      if (!_isCurrent(generation)) return;
+      _adopt(stems);
     } catch (error) {
-      _errorMessage = '$error';
+      if (_isCurrent(generation)) _errorMessage = '$error';
     } finally {
-      _loading = false;
-      notifyListeners();
+      if (_isCurrent(generation)) {
+        _loading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -129,8 +141,9 @@ class TrackStemChannelSource extends ChangeNotifier
   /// when stems are already ready or already in flight.
   Future<void> requestSeparation() async {
     final trackId = _trackId;
-    if (trackId == null || _loading) return;
+    if (_disposed || trackId == null || _loading) return;
     if (isAvailable || isPending) return;
+    final generation = _generation;
     _loading = true;
     _errorMessage = null;
     notifyListeners();
@@ -138,6 +151,7 @@ class TrackStemChannelSource extends ChangeNotifier
     try {
       final result =
           await _service.requestSeparation(trackId, channelSet: channelSet);
+      if (!_isCurrent(generation)) return;
       // The trigger response carries the durable status but no manifest, so the
       // row stays the authority for the channel list.
       _adopt(
@@ -151,21 +165,23 @@ class TrackStemChannelSource extends ChangeNotifier
       );
       triggered = true;
     } catch (error) {
-      _errorMessage = '$error';
+      if (_isCurrent(generation)) _errorMessage = '$error';
     } finally {
-      _loading = false;
-      notifyListeners();
+      if (_isCurrent(generation)) {
+        _loading = false;
+        notifyListeners();
+      }
     }
     // Only re-read after a trigger that landed. Refreshing after a failed POST
     // would clear the error the user needs to see and leave the panel looking
     // like nothing happened.
-    if (triggered) await refresh();
+    if (triggered && _isCurrent(generation)) await refresh();
   }
 
   /// Sets a channel's client-side gain. Not audible — see the class doc.
   @override
   Future<void> setGain(String id, double gain) async {
-    if (!_hasChannel(id)) return;
+    if (_disposed || !_hasChannel(id)) return;
     _gains[id] = gain.clamp(0.0, 1.0).toDouble();
     notifyListeners();
   }
@@ -173,13 +189,22 @@ class TrackStemChannelSource extends ChangeNotifier
   /// Sets a channel's client-side mute. Not audible — see the class doc.
   @override
   Future<void> setMute(String id, bool muted) async {
-    if (!_hasChannel(id)) return;
+    if (_disposed || !_hasChannel(id)) return;
     if (muted) {
       _muted.add(id);
     } else {
       _muted.remove(id);
     }
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    ++_generation;
+    _loading = false;
+    super.dispose();
   }
 
   void _adopt(TrackStems stems) {

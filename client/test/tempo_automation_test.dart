@@ -5,6 +5,66 @@ import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 
 void main() {
+  group('playback rate integration', () {
+    test('uses half-open segment membership at shared and final endpoints', () {
+      const first = PlaybackRateSegment(
+        startMs: 10,
+        endMs: 20,
+        startRate: 0.75,
+        endRate: 0.5,
+        tempoScale: 2,
+      );
+      const touching = PlaybackRateSegment(
+        startMs: 20,
+        endMs: 30,
+        startRate: 1.5,
+        endRate: 1.75,
+        tempoScale: 0.5,
+      );
+      // Direct construction deliberately gives the earlier interval precedence.
+      const automation = PlaybackRateAutomation(segments: [touching, first]);
+
+      expect(first.contains(10), isTrue);
+      expect(first.contains(19), isTrue);
+      expect(first.contains(20), isFalse);
+      expect(first.rateAt(20), 0.5,
+          reason: 'endpoint interpolation is retained');
+      expect(automation.rateAt(20), 1.5);
+      expect(automation.tempoScaleAt(20), 0.5);
+      expect(automation.rateAt(30), 1);
+      expect(automation.tempoScaleAt(30), 1);
+    });
+
+    test('keeps source time continuous at a discontinuous rate boundary', () {
+      const automation = PlaybackRateAutomation(
+        segments: [
+          PlaybackRateSegment(
+            startMs: 10000,
+            endMs: 20000,
+            startRate: 0.5,
+            endRate: 1,
+          ),
+        ],
+      );
+
+      expect(
+        [
+          for (final time in [9999, 10000, 20000])
+            automation.sourceElapsedMs(timelineStartMs: 0, timelineMs: time),
+        ],
+        [9999, 10000, 17500],
+      );
+      expect(
+        automation.timelineMsForSourceElapsed(
+          timelineStartMs: 0,
+          sourceElapsedMs: 9800,
+          maxTimelineMs: 20000,
+        ),
+        9800,
+      );
+    });
+  });
+
   group('tempo-matched transition planner', () {
     test('canonical manual phase selects downbeats without mutating beats', () {
       const beats = [100, 600, 1100, 1600, 2100, 2600, 3100, 3600];
@@ -487,6 +547,7 @@ void main() {
         bpmConfidence: 0.1,
         beatsMs: [0, 700, 1500, 2400, 3400, 4500, 5700, 7000],
         beatGridProvenance: manualTempoProvenance,
+        beatAnchorMs: 0, // Explicit group origin, independent of BPM fit.
       );
 
       expect(manualGrid.hasReliableBeatGrid, isTrue);
@@ -609,7 +670,9 @@ void main() {
       );
 
       expect(grid.hasReliableBeatGrid, isTrue);
-      expect(beatMarkersForSnapMode(grid, BeatSnapMode.beat4), [0, 2000]);
+      // Reliable beat positions alone do not establish an ordinal group origin.
+      expect(beatMarkersForSnapMode(grid, BeatSnapMode.beat1), grid.beatsMs);
+      expect(beatMarkersForSnapMode(grid, BeatSnapMode.beat4), isEmpty);
     });
 
     test('half and double BPM grids are not rejected by BPM octave labels', () {
@@ -633,6 +696,7 @@ void main() {
         nativeBpm: 120,
         bpmConfidence: 0.9,
         beatsMs: [0, 500, 1010, 1530, 2065, 2615, 3180, 3760],
+        beatAnchorMs: 0, // Event-domain origin, not an extrapolated pulse.
       );
 
       expect(variableTempoGrid.hasReliableBeatGrid, isTrue);
@@ -865,6 +929,25 @@ void main() {
         nativeBpm: 120,
         bpmConfidence: 0.9,
         downbeatsMs: [0, 2000, 4000, 6000, 8000],
+        beatsMs: [
+          0,
+          500,
+          1000,
+          1500,
+          2000,
+          2500,
+          3000,
+          3500,
+          4000,
+          4500,
+          5000,
+          5500,
+          6000,
+          6500,
+          7000,
+          7500,
+          8000
+        ],
       );
       final tolerance = downbeatSnapToleranceMs(
         tempo,

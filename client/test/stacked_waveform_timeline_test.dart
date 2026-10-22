@@ -589,9 +589,10 @@ void main() {
       );
     });
 
-    test('four-beat trim snap uses every fourth analyzed beat', () {
+    test('four-beat trim snap uses every fourth anchored analyzed beat', () {
       const tempo = ClipTempoMetadata(
         nativeBpm: 120,
+        beatAnchorMs: 120,
         beatsMs: [120, 620, 1120, 1620, 2120, 2620, 3120, 3620],
       );
 
@@ -1003,14 +1004,15 @@ void main() {
     }
 
     final painter = _waveformPainter(tester, 'trimmed-80hz');
-    expect(painter.mixClip!.timelineDurationMs, 120000);
+    // First rounded source-integral reach at rate 0.5 is one ms earlier.
+    expect(painter.mixClip!.timelineDurationMs, 119999);
     expect(painter.waveform!.coveredSourceFrameCount, 4800);
     expect(painter.waveform!.frames.length, lessThanOrEqualTo(4800));
     final maxUsefulPps = waveformMaxUsefulPixelsPerSecond(
       realFrameCount: 4800,
       timelineDurationMs: painter.mixClip!.timelineDurationMs,
     );
-    expect(maxUsefulPps, 200);
+    expect(maxUsefulPps, 4800 * 5 * 1000 / 119999);
     expect(
       painter.viewportPixelsPerMs * 1000,
       lessThanOrEqualTo(maxUsefulPps),

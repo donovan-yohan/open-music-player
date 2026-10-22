@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import '../audio/audio_source_resolution_policy.dart';
 import '../audio/local_audio_artifact_resolver.dart';
 import '../audio/signed_audio_url_service.dart';
 import '../cache/playback_cache_manager.dart';
@@ -10,12 +9,21 @@ class ResolvedAudioSource {
   final Uri uri;
   final bool isLocal;
   final SignedAudioDescriptor? descriptor;
+  final Future<void> Function()? _onRelease;
+  Future<void>? _released;
 
-  const ResolvedAudioSource.local(this.uri)
+  ResolvedAudioSource.local(this.uri, {Future<void> Function()? onRelease})
       : isLocal = true,
-        descriptor = null;
+        descriptor = null,
+        _onRelease = onRelease;
 
-  const ResolvedAudioSource.remote(this.uri, this.descriptor) : isLocal = false;
+  ResolvedAudioSource.remote(this.uri, this.descriptor)
+      : isLocal = false,
+        _onRelease = null;
+
+  /// Exactly one transport owner holds this source through native unload.
+  Future<void> release() =>
+      _released ??= _onRelease?.call() ?? Future<void>.value();
 }
 
 abstract class TrackAudioDescriptorProvider {
@@ -53,7 +61,9 @@ abstract class EngineAudioSourceResolver {
 }
 
 class DirectEngineAudioSourceResolver implements EngineAudioSourceResolver {
-  const DirectEngineAudioSourceResolver();
+  const DirectEngineAudioSourceResolver({this.acquireLocal});
+
+  final Future<PlaybackCacheLease?> Function(String path)? acquireLocal;
 
   @override
   Future<ResolvedAudioSource> resolve(MixClip clip) async {
@@ -61,6 +71,11 @@ class DirectEngineAudioSourceResolver implements EngineAudioSourceResolver {
     if (uri == null || (!uri.hasScheme && uri.path.isEmpty)) {
       throw ArgumentError(
           'Invalid audio source for ${clip.id}: ${clip.audioSourceRef}');
+    }
+    if (!uri.hasScheme || uri.scheme == 'file') {
+      final localUri = uri.hasScheme ? uri : Uri.file(uri.path);
+      final lease = await acquireLocal?.call(localUri.toFilePath());
+      return ResolvedAudioSource.local(localUri, onRelease: lease?.release);
     }
     return ResolvedAudioSource.remote(uri, null);
   }
@@ -92,16 +107,23 @@ class DefaultEngineAudioSourceResolver implements EngineAudioSourceResolver {
 
   @override
   Future<ResolvedAudioSource> resolve(MixClip clip) async {
-    final trackId = _readTrackId(clip.audioSourceRef);
-    final resolution = await resolveAudioSourceByPolicy<SignedAudioDescriptor>(
-      downloadPath: () => _localResolver?.localAudioPath(trackId),
-      remoteSource: () => _descriptorFor(trackId),
-      cachePath: (descriptor) => _cacheManager?.get(trackId, descriptor),
-    );
-    if (resolution.isLocal) {
-      return ResolvedAudioSource.local(Uri.file(resolution.localPath!));
+    final uri = Uri.tryParse(clip.audioSourceRef);
+    if (uri?.scheme == 'file' || clip.audioSourceRef.startsWith('/')) {
+      return DirectEngineAudioSourceResolver(
+              acquireLocal: _cacheManager?.acquirePath)
+          .resolve(clip);
     }
-    final descriptor = resolution.remoteSource!;
+    final trackId = _readTrackId(clip.audioSourceRef);
+    final download = await _localResolver?.localAudioPath(trackId);
+    if (download != null) {
+      return ResolvedAudioSource.local(Uri.file(download));
+    }
+    final descriptor = await _descriptorFor(trackId);
+    final lease = await _cacheManager?.acquire(trackId, descriptor);
+    if (lease != null) {
+      return ResolvedAudioSource.local(Uri.file(lease.localPath),
+          onRelease: lease.release);
+    }
     return ResolvedAudioSource.remote(Uri.parse(descriptor.url), descriptor);
   }
 

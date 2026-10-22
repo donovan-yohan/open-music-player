@@ -15,6 +15,207 @@ import 'support/fake_voice.dart';
 
 void main() {
   group('QueueTimelineController', () {
+    test(
+        'invalid replacement session leaves accepted playback and queue unchanged',
+        () async {
+      final voices = <_CountingVoice>[];
+      final harness = _Harness(voiceFactory: () {
+        final voice = _CountingVoice('v${voices.length}');
+        voices.add(voice);
+        return voice;
+      });
+      addTearDown(harness.dispose);
+      await harness.controller.setQueue([_item('accepted')]);
+      await harness.controller.play();
+      await harness.controller.seek(const Duration(milliseconds: 750));
+      await Future<void>.delayed(Duration.zero);
+      final beforeQueue = harness.controller.queue;
+      final beforeSession = harness.controller.session;
+      final beforeSnapshot = harness.controller.snapshot;
+      final beforeModel = harness.engine.model;
+      for (final voice in voices) {
+        voice.clearInteractionLog();
+      }
+      final items = [for (var i = 0; i < 5; i++) _item('same')];
+      final invalid = _sessionWithStarts(items, [0, 0, 0, 0, 0]);
+      await expectLater(harness.controller.setQueue(items, session: invalid),
+          throwsStateError);
+      expect(harness.controller.queue, same(beforeQueue));
+      expect(harness.controller.session, same(beforeSession));
+      expect(harness.controller.snapshot, same(beforeSnapshot));
+      expect(harness.engine.model, same(beforeModel));
+      expect(harness.engine.positionMs, 750);
+      expect(harness.engine.isPlaying, isTrue);
+      expect(
+          voices.every((v) =>
+              v.seekLog.isEmpty && v.pauseCount == 0 && v.releaseCount == 0),
+          isTrue);
+      await harness.controller.setQueue([_item('next')]);
+      expect(harness.controller.snapshot.sessionId, 'session_2');
+    });
+
+    test('fifth-overlap edit fails explicitly and retains all four instances',
+        () async {
+      final harness = _Harness();
+      addTearDown(harness.dispose);
+      final items = [for (var i = 0; i < 5; i++) _item('same')];
+      await harness.controller.setQueue(items,
+          session: _sessionWithStarts(items, [0, 0, 0, 0, 5000]));
+      await harness.controller.play();
+      final beforeSession = harness.controller.session;
+      final beforeModel = harness.engine.model;
+      await expectLater(
+          harness.controller.setTimelineStartMs(4, 0, snapToDownbeat: false),
+          throwsStateError);
+      expect(harness.controller.session, same(beforeSession));
+      expect(harness.engine.model, same(beforeModel));
+      expect(harness.engine.model.clips, hasLength(5));
+      expect(harness.engine.model.activeClipsAt(0), hasLength(4));
+      expect(harness.engine.isPlaying, isTrue);
+    });
+
+    test('invalid bulk insertion preserves canonical queue and session',
+        () async {
+      final harness = _Harness();
+      addTearDown(harness.dispose);
+      final items = [for (var i = 0; i < 4; i++) _item('same')];
+      final authored = _sessionWithStarts(items, [0, 0, 0, 0]);
+      final slow = MixSession(
+        sessionId: authored.sessionId,
+        transitionSnapMode: BeatSnapMode.free,
+        clips: [
+          for (final clip in authored.clips)
+            MixSessionClip(
+              clipId: clip.clipId,
+              queueItemId: clip.queueItemId,
+              trackId: clip.trackId,
+              sourceDurationMs: 5000,
+              sourceStartMs: 0,
+              sourceEndMs: 5000,
+              timelineStartMs: 0,
+              playbackRate: 0.5,
+            )
+        ],
+      );
+      await harness.controller.setQueue(items, session: slow);
+      await harness.controller.play();
+      final beforeQueue = harness.controller.queue;
+      final beforeSession = harness.controller.session;
+      final beforeModel = harness.engine.model;
+      await expectLater(
+          harness.controller.appendToQueue([_item('extra')]), throwsStateError);
+      expect(harness.controller.queue, same(beforeQueue));
+      expect(harness.controller.session, same(beforeSession));
+      expect(harness.engine.model, same(beforeModel));
+      expect(harness.engine.isPlaying, isTrue);
+    });
+
+    test('invalid removal reflow leaves playback queue and controls unchanged',
+        () async {
+      final harness = _Harness();
+      addTearDown(harness.dispose);
+      final items = [for (var i = 0; i < 6; i++) _item('same')];
+      final slow = MixSession(
+        sessionId: 'slow',
+        transitionSnapMode: BeatSnapMode.free,
+        defaultCrossfadeMs: 2500,
+        clips: [
+          for (var i = 0; i < items.length; i++)
+            MixSessionClip(
+              clipId: 'clip-$i',
+              queueItemId: 'item-$i',
+              trackId: 'same',
+              sourceDurationMs: 5000,
+              sourceStartMs: 0,
+              sourceEndMs: 5000,
+              timelineStartMs: i < 4 ? 0 : (i - 3) * 10000,
+              playbackRate: 0.5,
+            )
+        ],
+      );
+      await harness.controller.setQueue(items, session: slow);
+      await harness.controller.play();
+      final beforeQueue = harness.controller.queue;
+      final beforeSession = harness.controller.session;
+      final beforeModel = harness.engine.model;
+      await expectLater(
+          harness.controller.removeFromQueue(3), throwsStateError);
+      expect(harness.controller.queue, same(beforeQueue));
+      expect(harness.controller.session, same(beforeSession));
+      expect(harness.engine.model, same(beforeModel));
+      expect(harness.controller.currentIndex, 0);
+      expect(harness.engine.isPlaying, isTrue);
+    });
+
+    test(
+        'long authored session preserves every repeated recording and empty cue',
+        () async {
+      final harness = _Harness();
+      addTearDown(harness.dispose);
+      final items = [
+        for (var i = 0; i < 150; i++) _item('same', seconds: i % 5 == 4 ? 0 : 5)
+      ];
+      final starts = [for (var i = 0; i < items.length; i++) (i ~/ 5) * 5000];
+      await harness.controller
+          .setQueue(items, session: _sessionWithStarts(items, starts));
+      expect(harness.controller.queue, hasLength(150));
+      expect(harness.controller.snapshot.cues, hasLength(150));
+      expect(harness.engine.model.clips, hasLength(150));
+      expect(harness.engine.model.clips.map((clip) => clip.id).toSet(),
+          hasLength(150));
+      expect(harness.engine.model.clips.map((clip) => clip.queueItemId).toSet(),
+          hasLength(150));
+      expect(harness.engine.model.overlapDepthAt(5000), 4);
+      expect(harness.engine.durationMs, 150000);
+    });
+
+    test(
+        'invalid initial session does not start the engine or consume a session ID',
+        () async {
+      var voiceCreations = 0;
+      final harness = _Harness(voiceFactory: () {
+        voiceCreations++;
+        return FakeVoice('v');
+      });
+      addTearDown(harness.dispose);
+      final items = [for (var i = 0; i < 5; i++) _item('same')];
+      final beforeModel = harness.engine.model;
+      final beforeSnapshot = harness.controller.snapshot;
+      await expectLater(
+          harness.controller.setQueue(items,
+              session: _sessionWithStarts(items, [0, 0, 0, 0, 0])),
+          throwsStateError);
+      expect(harness.controller.queue, isEmpty);
+      expect(harness.controller.snapshot, same(beforeSnapshot));
+      expect(harness.engine.model, same(beforeModel));
+      expect(voiceCreations, 0);
+      await harness.controller.setQueue([_item('valid')]);
+      expect(harness.controller.snapshot.sessionId, 'session_1');
+    });
+
+    test('invalid trim expansion leaves accepted source range unchanged',
+        () async {
+      final harness = _Harness();
+      addTearDown(harness.dispose);
+      final items = [
+        _item('long', seconds: 10),
+        for (var i = 0; i < 4; i++) _item('same')
+      ];
+      var authored = _sessionWithStarts(items, [0, 5000, 5000, 5000, 5000]);
+      authored = authored.withPlacementAt(
+          0,
+          authored.clips[0].placement
+              .withSourceRange(sourceStartMs: 0, sourceEndMs: 5000));
+      await harness.controller.setQueue(items, session: authored);
+      final beforeSession = harness.controller.session;
+      final beforeModel = harness.engine.model;
+      await expectLater(
+          harness.controller.setSourceEndMs(0, 10000), throwsStateError);
+      expect(harness.controller.session, same(beforeSession));
+      expect(harness.engine.model, same(beforeModel));
+      expect(harness.controller.session.clips.first.sourceEndMs, 5000);
+    });
+
     test('queue projection and skip boundaries stay sequential', () async {
       final harness = _Harness();
       await harness.controller.setQueue([
@@ -708,7 +909,7 @@ void main() {
       await harness.dispose();
     });
 
-    test('default transitions align offset downbeats at BPM-matched start rate',
+    test('unsafe tempo pull keeps native rates and aligns the offset anchor',
         () async {
       final harness = _Harness();
       await harness.controller.setDefaultCrossfadeMs(8000);
@@ -735,11 +936,13 @@ void main() {
 
       expect(
         harness.controller.timelineClipForIndex(1)?.timelineStartMs,
-        closeTo(13500, 250),
+        14000,
       );
       final outgoing = harness.engine.model.clips[0];
       final incoming = harness.engine.model.clips[1];
       final incomingAnchor = incoming.tempo.downbeatsMs.first;
+      expect(outgoing.playbackRateAt(incoming.timelineStartMs), 1);
+      expect(incoming.playbackRateAt(incoming.timelineStartMs), 1);
       final incomingGlobal = incoming.timelineMsForSourcePosition(
         incomingAnchor,
       );
@@ -903,7 +1106,7 @@ void main() {
       await harness.dispose();
     });
 
-    test('refreshed manual analysis rebuilds tempo diagnostics and automation',
+    test('refreshed manual analysis preserves existing volume-only intent',
         () async {
       final harness = _Harness();
       await harness.controller.setDefaultCrossfadeMs(8000);
@@ -976,8 +1179,12 @@ void main() {
       final overlapEndMs = clips[0].timelineEndMs < clips[1].timelineEndMs
           ? clips[0].timelineEndMs
           : clips[1].timelineEndMs;
-      expect(clips[0].playbackRateAt(overlapEndMs - 1), greaterThan(1));
-      expect(clips[1].playbackRateAt(clips[1].timelineStartMs), lessThan(1));
+      expect(clips[0].playbackRateAt(overlapEndMs - 1), 1);
+      expect(clips[1].playbackRateAt(clips[1].timelineStartMs), 1);
+      expect(clips.map((clip) => clip.tempoPolicy),
+          everyElement(TempoPolicy.volumeOnly));
+      expect(
+          clips.every((clip) => clip.rateAutomation.segments.isEmpty), isTrue);
 
       final diagnostics = diagnoseTransition(clips[0], clips[1]);
       final codes = diagnostics.diagnostics.map((item) => item.code).toList();
@@ -1247,7 +1454,7 @@ void main() {
       await harness.dispose();
     });
 
-    test('tempo-adjusted clip windows drive snapshot and current index',
+    test('BPM-only clips retain native windows in snapshot and current index',
         () async {
       final harness = _Harness();
       await harness.controller.setQueue([
@@ -1267,8 +1474,10 @@ void main() {
 
       final outgoing = harness.engine.model.clips[0];
       final incoming = harness.engine.model.clips[1];
-      expect(outgoing.timelineEndMs, lessThan(10000));
-      expect(incoming.timelineEndMs, greaterThan(15000));
+      expect(outgoing.timelineEndMs, 10000);
+      expect(incoming.timelineEndMs, 15000);
+      expect(outgoing.rateAutomation.segments, isEmpty);
+      expect(incoming.rateAutomation.segments, isEmpty);
       expect(
         harness.controller.snapshot.globalDuration.inMilliseconds,
         harness.engine.model.durationMs,
@@ -1284,8 +1493,6 @@ void main() {
       final expectedIncomingSpeed = incoming.playbackRateAt(7500);
       final expectedLocalPosition =
           incoming.sourcePositionAt(7500) - incoming.placement.sourceStartMs;
-      final expectedSharedBpm =
-          incoming.tempo.nativeBpm! * expectedIncomingSpeed;
 
       expect(harness.controller.currentIndex, 1);
       expect(
@@ -1300,11 +1507,11 @@ void main() {
       expect(tempoStates.keys, containsAll([outgoing.id, incoming.id]));
       expect(
         tempoStates[outgoing.id]?.effectiveBpm,
-        closeTo(expectedSharedBpm, 0.0001),
+        100,
       );
       expect(
         tempoStates[incoming.id]?.effectiveBpm,
-        closeTo(expectedSharedBpm, 0.0001),
+        125,
       );
       expect(
         tempoStates[incoming.id]?.effectiveSpeed,
@@ -1312,7 +1519,7 @@ void main() {
       );
 
       final probeMs = outgoing.timelineEndMs + 50;
-      expect(probeMs, lessThan(10000));
+      expect(probeMs, 10050);
 
       await harness.engine.seek(probeMs);
       await Future<void>.delayed(Duration.zero);
@@ -1799,6 +2006,18 @@ Map<String, dynamic> _bpmOnlyAnalysis({required double bpm}) => {
         'confidence': 0.95,
       },
     };
+
+MixSession _sessionWithStarts(List<MediaItem> items, List<int> starts) {
+  var session = MixSession.fromQueue(
+      sessionId: 'authored',
+      queue: items,
+      transitionSnapMode: BeatSnapMode.free);
+  for (var i = 0; i < starts.length; i++) {
+    session = session.withPlacementAt(
+        i, session.clips[i].placement.withTimelineStartMs(starts[i]));
+  }
+  return session;
+}
 
 class _Harness {
   _Harness({FakeVoice Function()? voiceFactory}) {

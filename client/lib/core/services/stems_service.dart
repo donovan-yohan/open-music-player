@@ -1,5 +1,36 @@
 import '../api/api_client.dart';
 import '../stems/stem_channel_source.dart';
+import '../stems/prepared_stem_manifest.dart';
+
+/// Additive typed resolution keeps existing UI service implementers compatible.
+/// Member bytes travel through AudioArtifactDownloader, never this auth client.
+extension PreparedStemManifestResolution on StemsService {
+  Future<PreparedStemManifest> getPreparedManifest(
+    int trackId, {
+    required String expectedSourceFileHash,
+    String channelSet = defaultStemChannelSet,
+    int? expectedGeneration,
+    DateTime? now,
+    bool allowLoopbackHttp = false,
+  }) async {
+    PreparedStemManifest.validateRequest(
+        trackId, channelSet, expectedSourceFileHash, expectedGeneration);
+    return _apiClient.withServerError('Failed to load prepared stems',
+        () async {
+      final response = await _apiClient.get<Map<String, dynamic>>(
+        '/tracks/$trackId/stems',
+        queryParameters: {'channelSet': channelSet, 'includeUrls': '1'},
+      );
+      return PreparedStemManifest.fromStatusJson(response.data!,
+          expectedTrackId: trackId,
+          channelSet: channelSet,
+          expectedSourceFileHash: expectedSourceFileHash,
+          expectedGeneration: expectedGeneration,
+          now: now,
+          allowLoopbackHttp: allowLoopbackHttp);
+    });
+  }
+}
 
 /// Default channel set requested by this client. Matches
 /// `stems.DefaultChannelSet` in the backend.
@@ -18,6 +49,8 @@ class TrackStems {
     required this.channelSet,
     required this.status,
     this.stemModelVersion = '',
+    this.sourceFileHash,
+    this.generation,
     this.channels = const <String>[],
     this.error = '',
     this.queuePosition = -1,
@@ -37,10 +70,24 @@ class TrackStems {
 
   factory TrackStems.fromJson(Map<String, dynamic> json) {
     final artifacts = json['artifacts'];
+    final hash = json['sourceFileHash'];
+    final generation = json['generation'];
+    if ((json.containsKey('sourceFileHash') &&
+            (hash is! String ||
+                !RegExp(r'^sha256:[0-9a-f]{64}$').hasMatch(hash))) ||
+        (json.containsKey('generation') &&
+            (generation is! int ||
+                generation < 1 ||
+                generation > 9007199254740991))) {
+      throw const FormatException(
+          'Invalid stem source identity or generation.');
+    }
     return TrackStems(
       trackId: (json['trackId'] as num?)?.toInt() ?? 0,
       channelSet: json['channelSet'] as String? ?? defaultStemChannelSet,
       stemModelVersion: json['stemModelVersion'] as String? ?? '',
+      sourceFileHash: json['sourceFileHash'] as String?,
+      generation: json['generation'] as int?,
       status: stemsStatusFromWire(json['status'] as String?),
       channels: _channelsFromArtifacts(artifacts),
       error: json['error'] as String? ?? '',
@@ -51,6 +98,8 @@ class TrackStems {
   final int trackId;
   final String channelSet;
   final String stemModelVersion;
+  final String? sourceFileHash;
+  final int? generation;
   final StemsStatus status;
 
   /// Canonical channel names present in the manifest, in manifest order.

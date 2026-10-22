@@ -29,10 +29,23 @@ android {
         applicationId = "com.openmusicplayer.app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = maxOf(flutter.minSdkVersion, 26) // Native AAudio output requires API 26.
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        externalNativeBuild {
+            cmake {
+                arguments += "-DSQ_DEVICE_TESTS=OFF"
+                targets += "soundq_device"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("../../native/device_host/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     signingConfigs {
