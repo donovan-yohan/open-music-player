@@ -19,7 +19,7 @@ const LEGACY_AUTH_TOKEN_KEY = 'auth_token';
 // required for these to remain usable.
 const UNKNOWN_TOKEN_EXPIRY = Number.MAX_SAFE_INTEGER;
 
-const DEFAULT_API_BASE_URL = 'ws://localhost:8080/api/v1';
+const DEFAULT_API_BASE_URL = 'wss://soundq.fish-rattlesnake.ts.net/api/v1';
 
 export async function getAuthTokens(): Promise<AuthTokens | null> {
   return new Promise((resolve) => {

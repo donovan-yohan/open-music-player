@@ -19,6 +19,8 @@ import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/engine/native_playback_backend.dart';
 import 'package:open_music_player/core/services/stems_service.dart';
 import 'package:open_music_player/core/stems/prepared_stem_assets.dart';
+import 'package:open_music_player/core/stems/prepared_stem_manifest.dart';
+import 'package:open_music_player/core/stems/native_stem_decoder.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -50,6 +52,249 @@ class _FakeDevice {
 }
 
 class _FixtureHttpOverrides extends HttpOverrides {}
+
+/// Advance only native replenishment; decoder/file IO keeps its real event loop.
+class _PreparationPulse implements Timer {
+  _PreparationPulse(this.callback);
+  final void Function(Timer) callback;
+  @override
+  bool isActive = true;
+  @override
+  int tick = 0;
+  void fire() {
+    expect(isActive, isTrue);
+    tick++;
+    callback(this);
+  }
+
+  @override
+  void cancel() => isActive = false;
+}
+
+Future<void> _stopPreparationTracer({required bool queued}) async {
+  final path = Platform.environment['SOUNDQ_NATIVE_DEVICE_TEST_LIBRARY'];
+  expect(path, isNotNull,
+      reason: 'Fake-only native host required; no OS audio.');
+  final fake = _FakeDevice(path!);
+  expect(fake.reset(), 0);
+  final root = await Directory.systemTemp.createTemp('native-retirement-');
+  final source = File('${root.path}/source.opus');
+  final encoded = await Process.run('ffmpeg', [
+    '-v',
+    'error',
+    '-f',
+    'lavfi',
+    '-i',
+    'anullsrc=r=48000:cl=stereo',
+    '-t',
+    '1',
+    '-c:a',
+    'libopus',
+    source.path
+  ]);
+  expect(encoded.exitCode, 0, reason: '${encoded.stderr}');
+  final bytes = await source.readAsBytes();
+  final invalidBytes = utf8.encode('verified bytes, deliberately not Opus');
+  PreparedStemManifest manifest(int generation, List<int> data) {
+    final body = preparedStatus();
+    body['generation'] = generation;
+    body['publishedManifest']['generation'] = generation;
+    final digest = sha256.convert(data).toString();
+    final head = String.fromCharCodes(data).indexOf('OpusHead');
+    for (var i = 0; i < preparedRoles.length; i++) {
+      final role = preparedRoles[i];
+      final key = 'stems/42/$preparedModel/${'a' * 64}/g$generation/'
+          '${role == 'melody' ? 'other' : role}/$digest.opus';
+      final member = body['publishedManifest']['artifacts']['objects'][i];
+      member['key'] = key;
+      member['sha256'] = digest;
+      member['bytes'] = data.length;
+      member['encoder_delay_frames'] =
+          head < 0 ? 312 : data[head + 10] | (data[head + 11] << 8);
+      final download = body['memberDownloads'][i];
+      download['key'] = key;
+      download['sha256'] = digest;
+      download['bytes'] = data.length;
+      download['url'] = 'https://objects.invalid/$key';
+      download['expiresAt'] =
+          DateTime.now().add(const Duration(hours: 1)).toIso8601String();
+    }
+    return PreparedStemManifest.fromStatusJson(body,
+        expectedTrackId: 42,
+        channelSet: 'stems5-hybrid-v1',
+        expectedSourceFileHash: preparedSource,
+        expectedGeneration: generation);
+  }
+
+  final initial = manifest(7, bytes);
+  final incoming = manifest(8, invalidBytes);
+  final assetRoot = Directory('${root.path}/assets');
+  final assets = PreparedStemAssets(
+      rootDirectory: assetRoot,
+      downloader: (url, filePath, {cancelToken, onProgress}) async {
+        await File(filePath)
+            .writeAsBytes(url.contains('/g8/') ? invalidBytes : bytes);
+      });
+  var entered = Completer<CancelToken>();
+  var release = Completer<void>();
+  if (queued) release.complete();
+  var acquisitions = 0;
+  Object? acquisitionFailure;
+  final engine = PlaybackEngine(
+      voiceFactory: () => FakeVoice('unused'),
+      nativeBackendFactory: () => createNativePlaybackBackend(
+          libraryPath: path,
+          loadManifest: (clip, hash, token) async =>
+              clip.queueItemId == 'incoming' ? incoming : initial,
+          loadPreparedAsset: (manifest, token) async {
+            acquisitions++;
+            if (manifest.generation == 8) {
+              entered.complete(token);
+              await release.future;
+              if (acquisitionFailure != null) throw acquisitionFailure!;
+            }
+            return assets.acquire(manifest, cancelToken: token);
+          }));
+  final state = PlaybackState(engine,
+      signedAudioUrlService: SignedAudioUrlService.withRequester((_) async =>
+          throw StateError('Prepared playback must not sign original audio')));
+  final errors = <Object>[];
+  final subscription = engine.playbackErrors.listen(errors.add);
+  final pulses = <_PreparationPulse>[];
+  Future<void> start() async {
+    final now = DateTime.utc(2026);
+    final edits = StemEdits(
+        channelSet: StemChannelSet.stems5Hybrid,
+        sourceFileHash: preparedSource);
+    // Four simultaneous occurrences share one decoder. The two imminent clips
+    // share it too; the third upcoming publication is deliberately not resident.
+    final clips = [
+      for (var i = 0; i < 7; i++)
+        MixPlanClip(
+            clipId: 'clip$i',
+            queueItemId: i == 6 ? 'incoming' : 'q$i',
+            trackId: '42',
+            sourceStartMs: 0,
+            sourceEndMs: 1000,
+            timelineStartMs: i < 4 ? 0 : (i - 2) * 1000,
+            stemEdits: edits)
+    ];
+    await state.playMixPlan(
+        [
+          for (var i = 0; i < clips.length; i++)
+            {'id': 42, 'title': 'Occurrence $i', 'duration': 1}
+        ],
+        MixPlan(
+            id: 'retirement',
+            schemaVersion: 1,
+            name: 'Retirement',
+            clips: clips,
+            summary: MixPlanSummary(
+                clipCount: clips.length,
+                trackIds: List.filled(clips.length, '42'),
+                durationMs: 5000),
+            version: 1,
+            createdAt: now,
+            updatedAt: now));
+    for (var frames = 0; frames < 48000; frames += 128) {
+      expect(fake.callback(128), 0);
+    }
+    expect(engine.positionMs, 1000);
+  }
+
+  try {
+    await runZoned(() async {
+      await start();
+      expect(engine.nativeDecoderCount, 1);
+      pulses.single.fire();
+      CancelToken? retired;
+      if (!queued) retired = await entered.future;
+      var stopped = false;
+      final stop = state.stop().then((_) => stopped = true);
+      if (retired != null) {
+        await retired.whenCancel;
+        expect(retired.cancelError!.error, 'Prepared request cancelled');
+        expect(stopped, isFalse, reason: 'Stop must drain held preparation.');
+        expect(await assetRoot.list().isEmpty, isFalse,
+            reason: 'Native decoder still owns its verified file lease.');
+        release.complete();
+      }
+      await stop;
+      expect(engine.usesNativeBackend, isFalse);
+      expect(engine.nativeDecoderCount, 0);
+      expect(engine.preparedNativeBytes, 0);
+      expect(engine.positionMs, 1000,
+          reason: 'Canonical stop retains position.');
+      expect(await assetRoot.list().isEmpty, isTrue);
+      expect(pulses.single.isActive, isFalse);
+      expect(errors, isEmpty,
+          reason: 'Retired preparation is not playback failure.');
+      if (queued) {
+        expect(acquisitions, 1,
+            reason: 'Retired queued work must not acquire.');
+      }
+
+      // A fresh lifetime must not inherit cancellation. Its actual decoder open
+      // failure (hash-verified but invalid Opus) must remain user-visible.
+      entered = Completer<CancelToken>();
+      release = Completer<void>();
+      final activeFailure = engine.playbackErrors
+          .firstWhere((e) => e is NativeStemDecoderException);
+      await start();
+      expect(engine.usesNativeBackend, isTrue);
+      expect(engine.positionMs, 1000);
+      pulses.last.fire();
+      final current = await entered.future;
+      expect(current.isCancelled, isFalse);
+      expect(retired?.isCancelled, queued ? isNull : isTrue);
+      release.complete();
+      final failure = await activeFailure;
+      expect(failure.toString(), contains('open vocals: native status'));
+      // A control barrier also ensures stream publication is consumed.
+      await state.pause();
+      expect(errors, hasLength(1));
+      expect(state.playbackError, contains('open vocals: native status'));
+      // Cancellation-shaped failures from a still-current request are errors
+      // too: never replace operation ownership with a blanket Dio filter.
+      entered = Completer<CancelToken>();
+      release = Completer<void>();
+      acquisitionFailure = DioException(
+          requestOptions: RequestOptions(path: '/active-preparation'),
+          type: DioExceptionType.cancel,
+          error: 'Prepared request cancelled');
+      final activeCancellation = engine.playbackErrors
+          .firstWhere((e) => identical(e, acquisitionFailure));
+      await state.play();
+      pulses.last.fire();
+      final uncancelled = await entered.future;
+      expect(uncancelled.isCancelled, isFalse);
+      release.complete();
+      expect(await activeCancellation, same(acquisitionFailure));
+      await state.pause();
+      expect(errors, hasLength(2));
+      await state.stop();
+      expect(engine.nativeDecoderCount, 0);
+      expect(await assetRoot.list().isEmpty, isTrue);
+    }, zoneSpecification: ZoneSpecification(
+        createPeriodicTimer: (self, parent, zone, duration, callback) {
+      if (duration != const Duration(milliseconds: 250)) {
+        return parent.createPeriodicTimer(zone, duration, callback);
+      }
+      final pulse = _PreparationPulse(zone.bindUnaryCallback(callback));
+      pulses.add(pulse);
+      return pulse;
+    }));
+  } finally {
+    if (!release.isCompleted) release.complete();
+    await engine.dispose();
+    state.dispose();
+    await subscription.cancel();
+    expect(fake.reset(), 0, reason: 'Native device ownership must be closed.');
+    expect(pulses.every((pulse) => !pulse.isActive), isTrue);
+    expect(await assetRoot.list().isEmpty, isTrue);
+    await root.delete(recursive: true);
+  }
+}
 
 Future<void> _nativeAppTracer() async {
   final path = Platform.environment['SOUNDQ_NATIVE_DEVICE_TEST_LIBRARY'];
@@ -758,6 +1003,10 @@ void main() {
       'actual app owner renders verified five-bus PCM and acknowledges live gains',
       () => HttpOverrides.runWithHttpOverrides(
           _nativeAppTracer, _FixtureHttpOverrides()));
+  test('stop retires held native replenishment without playback failure',
+      () => _stopPreparationTracer(queued: false));
+  test('stop retires queued native replenishment before it can acquire',
+      () => _stopPreparationTracer(queued: true));
   test(
       'saved stem documents never play original audio without native capability',
       () async {

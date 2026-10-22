@@ -40,14 +40,20 @@ export const ErrorCodes = {
 
 export type ErrorCode = typeof ErrorCodes[keyof typeof ErrorCodes];
 
-/** API error response format from backend */
-export interface ApiErrorResponse {
-  error: {
-    code: string;
-    message: string;
-    request_id?: string;
-    details?: Record<string, unknown>;
-  };
+interface ApiErrorBody {
+  code?: string;
+  message?: string;
+  request_id?: string;
+  details?: Record<string, unknown>;
+}
+
+/** Both the flat handler format and the nested backend error envelope. */
+export interface ApiErrorResponse extends ApiErrorBody {
+  error?: ApiErrorBody | string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** Application error class */
@@ -111,21 +117,16 @@ export class AppError extends Error {
   }
 
   /** Create from API response */
-  static fromApiResponse(response: Response, body?: ApiErrorResponse): AppError {
-    if (body?.error) {
-      return new AppError({
-        code: body.error.code as ErrorCode,
-        message: body.error.message,
-        statusCode: response.status,
-        requestId: body.error.request_id,
-        details: body.error.details,
-      });
-    }
-
+  static fromApiResponse(response: Response, body?: unknown): AppError {
+    const envelope = isRecord(body) ? body : {};
+    const error = isRecord(envelope.error) ? envelope.error : envelope;
     return new AppError({
-      code: ErrorCodes.INTERNAL_ERROR,
-      message: `API error: ${response.status}`,
+      code: typeof error.code === 'string' && error.code ? error.code : ErrorCodes.INTERNAL_ERROR,
+      message: typeof error.message === 'string' && error.message ? error.message :
+        typeof envelope.error === 'string' && envelope.error ? envelope.error : `API error: ${response.status}`,
       statusCode: response.status,
+      requestId: typeof error.request_id === 'string' ? error.request_id : undefined,
+      details: isRecord(error.details) ? error.details : undefined,
     });
   }
 
