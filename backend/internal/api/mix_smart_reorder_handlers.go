@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -164,8 +165,28 @@ func (h *PlaylistSmartReorderHandlers) SmartReorderPlaylist(w http.ResponseWrite
 			writeMixPlanError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to get mix plan")
 			return
 		}
-		if err := json.Unmarshal(plan.Payload, &planPayload); err != nil {
-			writeMixPlanError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to decode mix plan")
+		// Regeneration must not silently erase authoring data this backend
+		// cannot interpret, even when the document is already persisted.
+		if err := validateMixTempoPolicyKeys(plan.Payload); err != nil {
+			writeMixPlanError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
+			return
+		}
+		decoder := json.NewDecoder(bytes.NewReader(plan.Payload))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&planPayload); err != nil {
+			writeMixPlanError(w, http.StatusBadRequest, "VALIDATION_ERROR", "mix plan contains invalid or unsupported fields; cannot safely reorder")
+			return
+		}
+		if err := decoder.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+			writeMixPlanError(w, http.StatusBadRequest, "VALIDATION_ERROR", "mix plan must contain a single JSON value; cannot safely reorder")
+			return
+		}
+		if _, _, _, err := buildMixPlanPayload(&SaveMixPlanRequest{
+			SchemaVersion: planPayload.SchemaVersion,
+			Name:          planPayload.Name,
+			Clips:         planPayload.Clips,
+		}); err != nil {
+			writeMixPlanError(w, http.StatusBadRequest, "VALIDATION_ERROR", "mix plan is invalid; cannot safely reorder: "+err.Error())
 			return
 		}
 		if !smartReorderPlanCoversPlaylist(planPayload.Clips, previousOrder) {
@@ -301,12 +322,16 @@ func decodeSmartReorderRequest(w http.ResponseWriter, r *http.Request) (*SmartRe
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, mixPlanMaxRequestBodyBytes)
 	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(req); err != nil {
 		// An absent body is the documented "just reorder" call.
 		if errors.Is(err, io.EOF) {
 			return &SmartReorderRequest{}, nil
 		}
-		return nil, errors.New("invalid request body")
+		return nil, errors.New("invalid or unsupported request body")
+	}
+	if err := decoder.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return nil, errors.New("request body must contain a single JSON value")
 	}
 	return req, nil
 }
@@ -380,7 +405,29 @@ func smartReorderRegeneratePlan(
 		transitions[i].OverlapMs = preserved
 	}
 
-	return layoutAutoBlendClips(playlistID, newFacts, overlaps), transitions, kept
+	clips := layoutAutoBlendClips(playlistID, newFacts, overlaps)
+	// Generated position IDs are not clip identity. Match each track occurrence
+	// to its original clip (stable occurrence order for repeated tracks), then
+	// carry the original clip/queue identity and its source-anchored document.
+	// Never key authoring data by TrackID alone: two clips can edit one source
+	// differently. Regeneration changes placement/fades, not edit timestamps.
+	previousByTrack := make(map[int64][]MixPlanClip, len(previousClips))
+	for _, clip := range previousClips {
+		previousByTrack[clip.TrackID] = append(previousByTrack[clip.TrackID], clip)
+	}
+	for i := range clips {
+		matches := previousByTrack[clips[i].TrackID]
+		if len(matches) == 0 {
+			continue // The handler checks the exact track multiset before writes.
+		}
+		original := matches[0]
+		previousByTrack[clips[i].TrackID] = matches[1:]
+		clips[i].ClipID = original.ClipID
+		clips[i].QueueItemID = original.QueueItemID
+		clips[i].StemEdits = original.StemEdits
+		clips[i].TempoPolicy = effectiveMixTempoPolicy(original.TempoPolicy)
+	}
+	return clips, transitions, kept
 }
 
 type smartReorderSeamKey struct {

@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/discovery"
@@ -20,6 +22,8 @@ import (
 )
 
 type Router struct {
+	jamHandlers             *JamHandlers
+	connectHandlers         *ConnectHandlers
 	mux                     *http.ServeMux
 	authHandlers            *auth.Handlers
 	authService             *auth.Service
@@ -45,6 +49,7 @@ type Router struct {
 	nearbyTracksHandlers    *NearbyTracksHandlers
 	listenBrainzHandlers    *ListenBrainzHandlers
 	mixPlanHandlers         *MixPlanHandlers
+	mixExchangeHandlers     *MixExchangeHandlers
 	downloadHandlers        *DownloadHandlers
 	sourceSelectionHandlers *SourceSelectionHandlers
 	maintenanceHandlers     *MaintenanceHandlers
@@ -64,6 +69,8 @@ var defaultCORSAllowedOrigins = []string{
 
 // RouterConfig holds configuration for creating a new router
 type RouterConfig struct {
+	JamHandlers             *JamHandlers
+	ConnectHandlers         *ConnectHandlers
 	AuthHandlers            *auth.Handlers
 	AuthService             *auth.Service
 	SearchHandlers          *search.Handlers
@@ -87,6 +94,7 @@ type RouterConfig struct {
 	NearbyTracksHandlers    *NearbyTracksHandlers
 	ListenBrainzHandlers    *ListenBrainzHandlers
 	MixPlanHandlers         *MixPlanHandlers
+	MixExchangeHandlers     *MixExchangeHandlers
 	DownloadHandlers        *DownloadHandlers
 	SourceSelectionHandlers *SourceSelectionHandlers
 	MaintenanceHandlers     *MaintenanceHandlers
@@ -129,6 +137,8 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 	}
 
 	r := &Router{
+		jamHandlers:             cfg.JamHandlers,
+		connectHandlers:         cfg.ConnectHandlers,
 		mux:                     http.NewServeMux(),
 		authHandlers:            cfg.AuthHandlers,
 		authService:             cfg.AuthService,
@@ -154,6 +164,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		nearbyTracksHandlers:    cfg.NearbyTracksHandlers,
 		listenBrainzHandlers:    cfg.ListenBrainzHandlers,
 		mixPlanHandlers:         cfg.MixPlanHandlers,
+		mixExchangeHandlers:     cfg.MixExchangeHandlers,
 		downloadHandlers:        cfg.DownloadHandlers,
 		sourceSelectionHandlers: cfg.SourceSelectionHandlers,
 		maintenanceHandlers:     cfg.MaintenanceHandlers,
@@ -182,6 +193,22 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) setupRoutes() {
+	hostJamMux := http.NewServeMux()
+	r.jamHandlers.RegisterHostRoutes(hostJamMux)
+	for _, pattern := range []string{
+		"POST /api/v1/jams", "GET /api/v1/jams/{jamId}",
+		"POST /api/v1/jams/{jamId}/invites", "PUT /api/v1/jams/{jamId}/host",
+		"PUT /api/v1/jams/{jamId}/requests/{requestId}", "DELETE /api/v1/jams/{jamId}",
+	} {
+		r.mux.HandleFunc(pattern, r.withJamHostAuth(hostJamMux.ServeHTTP))
+	}
+	r.jamHandlers.RegisterGuestRoutes(r.mux)
+	r.jamHandlers.RegisterGuestWebRoutes(r.mux)
+
+	// Private device visibility, including authenticated fail-closed Redis-off routes.
+	for _, path := range []string{"GET /api/v1/me/devices", "POST /api/v1/me/devices", "PUT /api/v1/me/devices/{id}", "DELETE /api/v1/me/devices/{id}"} {
+		r.mux.HandleFunc(path, r.withConnect(r.connectHandlers.ServeHTTP))
+	}
 	// Private async-agent gateway. It is absent, rather than merely unauthenticated,
 	// until the server is configured with a service token.
 	if r.agentToolsHandler != nil {
@@ -392,6 +419,10 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/mix-plans", r.withAuth(r.mixPlanHandlers.CreateMixPlan))
 	r.mux.HandleFunc("GET /api/v1/mix-plans/{mixPlanId}", r.withAuth(r.mixPlanHandlers.GetMixPlan))
 	r.mux.HandleFunc("PUT /api/v1/mix-plans/{mixPlanId}", r.withAuth(r.mixPlanHandlers.UpdateMixPlan))
+	if r.mixExchangeHandlers != nil {
+		r.mux.HandleFunc("GET /api/v1/mix-plans/{mixPlanId}/export", r.withAuth(r.mixExchangeHandlers.ExportMixPlan))
+		r.mux.HandleFunc("POST /api/v1/mix-plans/import", r.withAuth(r.mixExchangeHandlers.ImportMixPlan))
+	}
 
 	// Download routes (auth required, Redis/worker-backed)
 	if r.downloadHandlers != nil {
@@ -453,6 +484,29 @@ func unavailableHandler(message string) http.HandlerFunc {
 			"code":    "SERVICE_DISABLED",
 			"message": message,
 		})
+	}
+}
+
+// Jam SQL owns the current-generation check under its users -> jams locks.
+// Never hold withConnect's outer user FOR SHARE transaction here: the Jam
+// repository takes FOR UPDATE on that same user via another connection.
+func (r *Router) withJamHostAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		response := &connectResponse{header: make(http.Header)}
+		ctx, cancel := context.WithTimeout(req.Context(), 5*time.Second)
+		defer cancel()
+		r.withAuth(next)(response, req.WithContext(ctx))
+		for name, values := range response.header {
+			w.Header()[name] = values
+		}
+		jamHeaders(w)
+		if response.status == 0 {
+			response.status = http.StatusOK
+		}
+		w.WriteHeader(response.status)
+		if response.status != http.StatusNoContent {
+			_, _ = w.Write(response.body.Bytes())
+		}
 	}
 }
 

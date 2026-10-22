@@ -264,7 +264,7 @@ func TestIngestAndBackfillExposeStoredObjectFFprobeFactsThroughLibraryAPI(t *tes
 	`, *job.TrackID); err != nil {
 		t.Fatalf("clear artifact facts for backfill: %v", err)
 	}
-	maintenance := NewMaintenanceHandlers(trackRepo, jobProcessor)
+	maintenance := NewMaintenanceHandlers(trackRepo, jobProcessor, MaintenanceConfig{AdminUserIDs: []uuid.UUID{userID}})
 	first := qualityMaintenanceRequest(t, maintenance, userID, 1)
 	if first.Summary.Selected != 1 || first.Summary.AudioQualityDone != 1 || first.Summary.Errors != 0 {
 		t.Fatalf("backfill summary = %+v, want one successful repair", first.Summary)

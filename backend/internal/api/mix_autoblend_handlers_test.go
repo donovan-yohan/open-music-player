@@ -27,7 +27,9 @@ func autoBlendTrack(id int64, durationMs int32, bpm float64, hasBPM bool, camelo
 		summary["camelot"] = map[string]any{"value": camelot}
 	}
 	if len(downbeats) > 0 {
-		summary["downbeats"] = map[string]any{"positions_ms": downbeats}
+		// Algorithm fixtures explicitly represent projected legacy manual
+		// markers, not generated arrays with missing phase authority.
+		summary["downbeats"] = map[string]any{"positions_ms": downbeats, "confidence": 1, "provenance": "manual_override"}
 	}
 	payload, err := json.Marshal(summary)
 	if err != nil {
@@ -161,15 +163,15 @@ func TestAutoBlendInvalidAndSparseGridsUseSimpleFade(t *testing.T) {
 	}
 }
 
-func TestAutoBlendFiltersSortsAndDeduplicatesGrid(t *testing.T) {
+func TestAutoBlendDoesNotPromoteMalformedManualGrid(t *testing.T) {
 	out := factsFor(autoBlendTrack(10, 200000, 120, true, "8A",
 		200001, 192000, 184000, 184000, -1, 0))
 	in := factsFor(autoBlendTrack(11, 200000, 122, true, "8A", 8000, 0, 0))
 
 	transition := computeAutoBlendTransition(0, out, in)
-	if transition.Confidence.SimpleFade || transition.Preset != PresetBlend ||
-		transition.OverlapMs != 16000 {
-		t.Fatalf("transition = %+v, want validated 16s aligned Blend", transition)
+	if !transition.Confidence.SimpleFade || transition.Preset != PresetFade ||
+		transition.Bars != 0 || transition.OverlapMs != 8000 {
+		t.Fatalf("transition = %+v, want conservative Fade without repairing authority", transition)
 	}
 }
 
@@ -184,14 +186,15 @@ func TestAutoBlendSlowTempoUsesFourBars(t *testing.T) {
 	}
 }
 
-func TestAutoBlendUsesAnalyzedMeterForBarGeometry(t *testing.T) {
+func TestAutoBlendUsesManualMeterForBarGeometry(t *testing.T) {
 	outTrack := autoBlendTrack(10, 200000, 120, true, "8A",
 		0, 1500, 188000, 189500)
 	var summary map[string]any
 	if err := json.Unmarshal(outTrack.AnalysisSummary, &summary); err != nil {
 		t.Fatal(err)
 	}
-	summary["meter"] = map[string]any{"beats_per_bar": 3}
+	summary["meter"] = map[string]any{"beats_per_bar": 3, "confidence": 1, "provenance": "manual_override"}
+	summary["downbeat_phase"] = map[string]any{"index": 0, "confidence": 1, "provenance": "manual_override"}
 	payload, err := json.Marshal(summary)
 	if err != nil {
 		t.Fatal(err)
@@ -199,6 +202,9 @@ func TestAutoBlendUsesAnalyzedMeterForBarGeometry(t *testing.T) {
 	outTrack.AnalysisSummary = payload
 	out := factsFor(outTrack)
 	in := factsFor(autoBlendTrack(11, 200000, 121, true, "8A", 0, 1500))
+	// The pair has one shared explicitly selected meter; legacy implicit 4/4
+	// on the incoming side would not establish a common three-beat bar.
+	in.BeatsPerBar = 3
 
 	transition := computeAutoBlendTransition(0, out, in)
 	if out.BeatsPerBar != 3 {
@@ -476,6 +482,52 @@ func TestCreateAutoMixGeneratesTransitionsAndClips(t *testing.T) {
 
 	if resp.MixPlan.Summary.ClipCount != 3 {
 		t.Fatalf("mix plan summary clipCount = %d, want 3", resp.MixPlan.Summary.ClipCount)
+	}
+}
+
+func TestAutoBlendSharedValidationAcceptsGeneratedOverlapGeometry(t *testing.T) {
+	for _, durations := range [][]int32{
+		{1, 1, 1, 1, 1, 1},
+		{3000, 1000, 2500, 500, 2000, 4000},
+		{200000, 150000, 180000, 200000, 150000, 180000},
+	} {
+		t.Run(strconv.Itoa(int(durations[0])), func(t *testing.T) {
+			userID := uuid.New()
+			tracks := make([]db.Track, len(durations))
+			for i, duration := range durations {
+				// Repeated recordings remain independent instances even in a
+				// generated multi-seam playlist.
+				tracks[i] = autoBlendTrack(42, duration, 120, true, "8A", 0, 8000, 184000, 192000)
+			}
+			store := &fakeMixPlanStore{}
+			h := NewPlaylistAutoBlendHandlers(&fakePlaylistMixReader{playlist: autoBlendPlaylist(userID, 7, tracks)}, store, true)
+			w := httptest.NewRecorder()
+			h.CreateAutoMixFromPlaylist(w, playlistMixRequest(userID, 7))
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			payload := assertPersistedMixValid(t, store.created, len(tracks))
+			var resp AutoMixResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			for i, clip := range payload.Clips {
+				if clip.TrackID != 42 || clip.SourceEndMs != int64(durations[i]) {
+					t.Fatalf("instance[%d] changed: %+v", i, clip)
+				}
+				if i == 0 {
+					continue
+				}
+				out := payload.Clips[i-1]
+				overlap := out.TimelineStartMs + out.SourceEndMs - clip.TimelineStartMs
+				if overlap != resp.Transitions[i-1].OverlapMs {
+					t.Fatalf("seam[%d] overlap=%d transition=%d", i-1, overlap, resp.Transitions[i-1].OverlapMs)
+				}
+				if overlap > 0 && (clip.FadeInMs == nil || out.FadeOutMs == nil || *clip.FadeInMs != overlap || *out.FadeOutMs != overlap) {
+					t.Fatalf("seam[%d] fades do not cover persisted overlap", i-1)
+				}
+			}
+		})
 	}
 }
 

@@ -61,6 +61,32 @@ def fake_separator(_audio_path: str, sample_rate: int):
     }
 
 
+class SourceLinkedPublicationTest(unittest.TestCase):
+    @unittest.skipUnless(HAVE_FFMPEG, "ffmpeg required")
+    def test_encoded_members_have_verified_identity_and_pcm_timeline(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.wav"
+            source.write_bytes(b"source-identity-fixture")
+            manifest = stems_dsp.run_separation(audio_path=str(source), out_dir=root,
+                track_id=42, separator=fake_separator, generation=3)
+            expected = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+            self.assertEqual(manifest["source_file_hash"], expected)
+            for obj in manifest["artifacts"]["objects"]:
+                encoded = Path(obj["path"]).read_bytes()
+                self.assertEqual(obj["sha256"], hashlib.sha256(encoded).hexdigest())
+                self.assertEqual(obj["bytes"], len(encoded))
+                self.assertEqual(obj["sample_frames"], 144000)
+                self.assertEqual(obj["sample_rate_hz"], 48000)
+                self.assertEqual(obj["channels"], 2)
+                self.assertEqual(obj["origin_frame"], 0)
+                self.assertEqual(obj["delay_frames"], 0)
+                self.assertGreater(obj["encoder_delay_frames"], 0)
+                self.assertIn(expected[7:] + "/g3/", obj["key"])
+                self.assertTrue(obj["key"].endswith(obj["sha256"] + ".opus"))
+                self.assertNotEqual(obj["sample_frames"], manifest["artifacts"]["energy"]["frame_count"])
+
+
 class ChannelVocabularyTest(unittest.TestCase):
     def test_canonical_channel_sets(self):
         self.assertEqual(
@@ -397,8 +423,10 @@ class FfmpegRoundTripTest(unittest.TestCase):
 
     def test_full_pipeline_with_encoding(self):
         with tempfile.TemporaryDirectory() as out_dir:
+            source = Path(out_dir) / "source.wav"
+            source.write_bytes(b"injected-separator-source")
             manifest = stems_dsp.run_separation(
-                audio_path="unused.wav",
+                audio_path=str(source),
                 out_dir=out_dir,
                 track_id=9,
                 separator=fake_separator,

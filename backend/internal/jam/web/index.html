@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>SoundQ · Join Jam</title><link rel="stylesheet" href="/join/app.css"><script defer src="/join/app.js"></script></head>
+<body><main><header><span class="brand">SoundQ</span><h1>Join the Jam</h1><p>Playback is on the host. Requests need host approval.</p></header>
+<p id="message" role="status" aria-live="polite"></p>
+<form id="join-form"><label for="name">Your name</label><input id="name" name="name" maxlength="32" autocomplete="off" value="Listener" required><button id="join" type="submit">Join Jam</button></form>
+<section id="session" hidden><div class="status"><strong id="state"></strong><button id="leave" type="button">Leave</button></div><section><h2>On the host</h2><p id="playing">Waiting for host</p></section><section><h2>Choose a track</h2><div id="catalog" class="list"></div></section><section><h2>Requests</h2><ol id="requests" class="list"></ol></section></section>
+</main></body></html>
