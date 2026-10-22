@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openmusicplayer/backend/internal/stems"
 	"github.com/openmusicplayer/backend/internal/storage"
 )
 
@@ -74,22 +75,17 @@ var outputMapping = map[string]string{
 }
 
 type separateRequest struct {
-	SchemaVersion         int    `json:"schema_version"`
-	TrackID               int64  `json:"track_id"`
-	StorageKey            string `json:"storage_key"`
-	ChannelSet            string `json:"channel_set"`
-	ExpectedWorker        string `json:"expected_worker"`
-	ExpectedWorkerVersion string `json:"expected_worker_version"`
+	Generation             int64  `json:"generation"`
+	ExpectedSourceFileHash string `json:"expected_source_file_hash"`
+	SchemaVersion          int    `json:"schema_version"`
+	TrackID                int64  `json:"track_id"`
+	StorageKey             string `json:"storage_key"`
+	ChannelSet             string `json:"channel_set"`
+	ExpectedWorker         string `json:"expected_worker"`
+	ExpectedWorkerVersion  string `json:"expected_worker_version"`
 }
 
-type manifestObject struct {
-	Channel    string `json:"channel"`
-	Key        string `json:"key"`
-	Path       string `json:"path,omitempty"`
-	Bytes      int64  `json:"bytes"`
-	DurationMs int    `json:"duration_ms"`
-	Derivation string `json:"derivation"`
-}
+type manifestObject = stems.Member
 
 type manifestArtifacts struct {
 	Objects []manifestObject `json:"objects"`
@@ -99,6 +95,7 @@ type manifestArtifacts struct {
 }
 
 type separateManifest struct {
+	Generation       int64                  `json:"generation"`
 	SchemaVersion    int                    `json:"schema_version"`
 	TrackID          int64                  `json:"track_id"`
 	ChannelSet       string                 `json:"channel_set"`
@@ -209,8 +206,19 @@ func (s *stemsServer) handleSeparate(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req separateRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBytes)).Decode(&req); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request JSON"})
+		return
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "trailing request payload"})
+		return
+	}
+	if req.SchemaVersion != 0 && req.SchemaVersion != 1 {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "unsupported schema_version"})
 		return
 	}
 	if strings.TrimSpace(req.StorageKey) == "" {
@@ -260,6 +268,10 @@ func (s *stemsServer) handleSeparate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer cleanupAudio()
+	if req.ExpectedSourceFileHash != "" && req.ExpectedSourceFileHash != sourceHash {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "source file hash changed before decode"})
+		return
+	}
 
 	outDir, err := os.MkdirTemp("", "omp-stems-out-")
 	if err != nil {
@@ -283,6 +295,40 @@ func (s *stemsServer) handleSeparate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for _, member := range manifest.Artifacts.Objects {
+		resolved, err := filepath.EvalSymlinks(member.Path)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "member local file unavailable"})
+			return
+		}
+		root, err := filepath.EvalSymlinks(outDir)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "output directory unavailable"})
+			return
+		}
+		relative, err := filepath.Rel(root, resolved)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) || filepath.IsAbs(relative) {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "member path escapes private output directory"})
+			return
+		}
+	}
+	if manifest.SourceFileHash != sourceHash {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "helper source hash differs from downloaded bytes"})
+		return
+	}
+	manifest.Generation = req.Generation
+	manifest.SourceFileHash = sourceHash
+	manifest.SourceStorageKey = req.StorageKey
+	// Build keys here, not from helper-supplied storage paths. Digest verification
+	// below makes retries content-addressed even if encoding is nondeterministic.
+	for i := range manifest.Artifacts.Objects {
+		obj := &manifest.Artifacts.Objects[i]
+		obj.Key = stems.MemberKey(req.TrackID, modelVersion, sourceHash, req.Generation, obj.Channel, obj.SHA256)
+	}
+	if err := validatePublication(manifest, req); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 	if err := s.uploadObjects(ctx, manifest); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -345,7 +391,42 @@ func (s *stemsServer) downloadObject(ctx context.Context, key string) (string, s
 	return path, "sha256:" + hex.EncodeToString(digest.Sum(nil)), cleanup, nil
 }
 
+func validatePublication(manifest *separateManifest, req separateRequest) error {
+	// Local paths are private upload handles, never transport metadata.
+	clone := *manifest
+	clone.Artifacts.Objects = append([]manifestObject(nil), manifest.Artifacts.Objects...)
+	for i := range clone.Artifacts.Objects {
+		clone.Artifacts.Objects[i].Path = ""
+	}
+	data, err := json.Marshal(clone)
+	if err != nil {
+		return err
+	}
+	var wire stems.Manifest
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	return stems.ValidateManifest(&wire, stems.Request{TrackID: req.TrackID, StorageKey: req.StorageKey, ChannelSet: manifest.ChannelSet, Generation: req.Generation, ExpectedSourceFileHash: req.ExpectedSourceFileHash})
+}
+
 func (s *stemsServer) uploadObjects(ctx context.Context, manifest *separateManifest) error {
+	// Verify ALL local bytes before the first upload, so a corrupt later member
+	// cannot leave an apparently complete publication.
+	for _, obj := range manifest.Artifacts.Objects {
+		file, err := os.Open(obj.Path)
+		if err != nil {
+			return err
+		}
+		digest := sha256.New()
+		n, err := io.Copy(digest, file)
+		_ = file.Close()
+		if err != nil {
+			return err
+		}
+		if n != obj.Bytes || hex.EncodeToString(digest.Sum(nil)) != obj.SHA256 {
+			return fmt.Errorf("stem %s digest/size mismatch", obj.Channel)
+		}
+	}
 	for index := range manifest.Artifacts.Objects {
 		obj := &manifest.Artifacts.Objects[index]
 		if strings.TrimSpace(obj.Path) == "" {

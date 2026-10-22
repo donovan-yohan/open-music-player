@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
 )
 
 type Config struct {
@@ -26,6 +28,10 @@ type Config struct {
 	RedisAddr          string
 	RedisURL           string
 	WorkerCount        int
+
+	// Global HTTP maintenance is denied unless a trusted user UUID is listed.
+	MaintenanceAdminUserIDs []uuid.UUID
+	maintenanceConfigErr    error
 
 	// S3/MinIO storage configuration
 	S3Endpoint       string
@@ -159,6 +165,7 @@ type Config struct {
 
 func Load() *Config {
 	workerCount := parseWorkerCount()
+	maintenanceAdminUserIDs, maintenanceConfigErr := parseMaintenanceAdminUserIDs(os.Getenv("MAINTENANCE_ADMIN_USER_IDS"))
 
 	minioUseSSL, _ := strconv.ParseBool(getEnvOrDefault("MINIO_USE_SSL", "false"))
 	redisEnabled := parseBoolEnv("REDIS_ENABLED", true)
@@ -197,18 +204,20 @@ func Load() *Config {
 	}
 
 	return &Config{
-		ServerAddr:         getEnvOrDefault("SERVER_ADDR", ":8080"),
-		DBHost:             getEnvOrDefault("DB_HOST", "localhost"),
-		DBPort:             getEnvOrDefault("DB_PORT", "5432"),
-		DBUser:             getEnvOrDefault("DB_USER", "omp"),
-		DBPassword:         getEnvOrDefault("DB_PASSWORD", "omp_dev_password"),
-		DBName:             getEnvOrDefault("DB_NAME", "openmusicplayer"),
-		JWTSecret:          getEnvOrDefault("JWT_SECRET", generateDefaultSecret()),
-		CORSAllowedOrigins: parseCORSAllowedOrigins(),
-		RedisEnabled:       redisEnabled,
-		RedisAddr:          getEnvOrDefault("REDIS_ADDR", "localhost:6380"),
-		RedisURL:           getEnvOrDefault("REDIS_URL", "redis://localhost:6380"),
-		WorkerCount:        workerCount,
+		ServerAddr:              getEnvOrDefault("SERVER_ADDR", ":8080"),
+		DBHost:                  getEnvOrDefault("DB_HOST", "localhost"),
+		DBPort:                  getEnvOrDefault("DB_PORT", "5432"),
+		DBUser:                  getEnvOrDefault("DB_USER", "omp"),
+		DBPassword:              getEnvOrDefault("DB_PASSWORD", "omp_dev_password"),
+		DBName:                  getEnvOrDefault("DB_NAME", "openmusicplayer"),
+		JWTSecret:               getEnvOrDefault("JWT_SECRET", generateDefaultSecret()),
+		CORSAllowedOrigins:      parseCORSAllowedOrigins(),
+		RedisEnabled:            redisEnabled,
+		RedisAddr:               getEnvOrDefault("REDIS_ADDR", "localhost:6380"),
+		RedisURL:                getEnvOrDefault("REDIS_URL", "redis://localhost:6380"),
+		WorkerCount:             workerCount,
+		MaintenanceAdminUserIDs: maintenanceAdminUserIDs,
+		maintenanceConfigErr:    maintenanceConfigErr,
 
 		// S3/MinIO configuration
 		S3Endpoint:       getEnvOrDefault("MINIO_ENDPOINT", "http://localhost:9000"),
@@ -313,6 +322,37 @@ func Load() *Config {
 		ResearchCancelGrace:          parseBoundedDurationMsEnv("RESEARCH_CANCEL_GRACE_MS", 2*time.Second, 100*time.Millisecond, 30*time.Second),
 		ResearchShutdownTimeout:      parseBoundedDurationMsEnv("RESEARCH_SHUTDOWN_TIMEOUT_MS", 30*time.Second, time.Second, 30*time.Second),
 	}
+}
+
+// ValidateMaintenance must run before opening services or exposing HTTP repair.
+// Load preserves errors to keep its existing signature while failing startup closed.
+func (c *Config) ValidateMaintenance() error {
+	if c == nil {
+		return errors.New("maintenance configuration is required")
+	}
+	return c.maintenanceConfigErr
+}
+
+func parseMaintenanceAdminUserIDs(value string) ([]uuid.UUID, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	var ids []uuid.UUID
+	seen := make(map[uuid.UUID]struct{})
+	for i, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		id, err := uuid.Parse(part)
+		// Parse also accepts compact, braced and URN forms; configuration only
+		// accepts canonical hyphenated UUIDs (hex casing is insignificant).
+		if err != nil || id == uuid.Nil || !strings.EqualFold(part, id.String()) {
+			return nil, fmt.Errorf("MAINTENANCE_ADMIN_USER_IDS entry %d must be a nonzero hyphenated UUID", i+1)
+		}
+		if _, exists := seen[id]; !exists {
+			ids = append(ids, id)
+			seen[id] = struct{}{}
+		}
+	}
+	return ids, nil
 }
 
 // ValidateResearchRollout rejects unsafe deep-agent rollout combinations.

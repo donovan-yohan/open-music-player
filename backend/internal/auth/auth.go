@@ -28,8 +28,9 @@ var (
 )
 
 type Claims struct {
-	UserID string `json:"user_id"`
-	Email  string `json:"email"`
+	ConnectGeneration int64  `json:"connectGeneration"`
+	UserID            string `json:"user_id"`
+	Email             string `json:"email"`
 	jwt.RegisteredClaims
 }
 
@@ -102,39 +103,29 @@ func (s *Service) Login(ctx context.Context, email, password string) (*AuthRespo
 }
 
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthResponse, error) {
-	tokenHash := hashToken(refreshToken)
-
-	storedToken, err := s.tokenRepo.GetByHash(ctx, tokenHash)
-	if err != nil {
-		if errors.Is(err, db.ErrTokenNotFound) {
-			return nil, ErrInvalidToken
-		}
-		return nil, err
-	}
-
-	if storedToken.Revoked {
+	hash := hashToken(refreshToken)
+	// This initial lookup only discovers the owner. Authority is checked again
+	// under user-then-token locks by IssueForUser.
+	token, err := s.tokenRepo.GetByHash(ctx, hash)
+	if errors.Is(err, db.ErrTokenNotFound) {
 		return nil, ErrInvalidToken
 	}
-
-	if time.Now().After(storedToken.ExpiresAt) {
-		return nil, ErrTokenExpired
-	}
-
-	// Revoke the old token (rotation)
-	if err := s.tokenRepo.Revoke(ctx, storedToken.ID); err != nil {
-		return nil, err
-	}
-
-	user, err := s.userRepo.GetByID(ctx, storedToken.UserID)
 	if err != nil {
 		return nil, err
 	}
-
-	return s.generateTokens(ctx, user)
+	return s.issueTokens(ctx, token.UserID, hash)
 }
 
 func (s *Service) Logout(ctx context.Context, userID uuid.UUID) error {
-	return s.tokenRepo.RevokeAllForUser(ctx, userID)
+	return s.tokenRepo.RevokeAllAndAdvanceConnectGeneration(ctx, userID)
+}
+
+func (s *Service) WithConnectGeneration(ctx context.Context, userID uuid.UUID, generation int64, operation func() error) error {
+	err := s.userRepo.WithConnectGeneration(ctx, userID, generation, operation)
+	if errors.Is(err, db.ErrTokenRevoked) || errors.Is(err, db.ErrUserNotFound) {
+		return ErrInvalidToken
+	}
+	return err
 }
 
 func (s *Service) ValidateAccessToken(tokenString string) (*Claims, error) {
@@ -165,36 +156,42 @@ func (s *Service) GetUserByID(ctx context.Context, id uuid.UUID) (*db.User, erro
 }
 
 func (s *Service) generateTokens(ctx context.Context, user *db.User) (*AuthResponse, error) {
-	// Generate access token
-	accessToken, err := s.generateAccessToken(user)
+	return s.issueTokens(ctx, user.ID, "")
+}
+
+func (s *Service) issueTokens(ctx context.Context, id uuid.UUID, oldHash string) (*AuthResponse, error) {
+	var response *AuthResponse
+	err := s.tokenRepo.IssueForUser(ctx, id, oldHash, func(user *db.User) (*db.RefreshToken, error) {
+		access, err := s.generateAccessToken(user)
+		if err != nil {
+			return nil, err
+		}
+		bytes := make([]byte, 32)
+		if _, err = rand.Read(bytes); err != nil {
+			return nil, err
+		}
+		refresh := hex.EncodeToString(bytes)
+		now := time.Now()
+		response = &AuthResponse{AccessToken: access, RefreshToken: refresh, ExpiresIn: int(AccessTokenExpiry.Seconds()), User: &UserInfo{ID: user.ID.String(), Email: user.Email, Username: user.Username, CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt}}
+		return &db.RefreshToken{ID: uuid.New(), UserID: user.ID, TokenHash: hashToken(refresh), ExpiresAt: now.Add(RefreshTokenExpiry), CreatedAt: now}, nil
+	})
+	if errors.Is(err, db.ErrTokenRevoked) || errors.Is(err, db.ErrTokenNotFound) {
+		return nil, ErrInvalidToken
+	}
+	if errors.Is(err, db.ErrTokenExpired) {
+		return nil, ErrTokenExpired
+	}
 	if err != nil {
 		return nil, err
 	}
-
-	// Generate refresh token
-	refreshToken, err := s.generateRefreshToken(ctx, user.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	return &AuthResponse{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ExpiresIn:    int(AccessTokenExpiry.Seconds()),
-		User: &UserInfo{
-			ID:        user.ID.String(),
-			Email:     user.Email,
-			Username:  user.Username,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-		},
-	}, nil
+	return response, nil
 }
 
 func (s *Service) generateAccessToken(user *db.User) (string, error) {
 	claims := &Claims{
-		UserID: user.ID.String(),
-		Email:  user.Email,
+		ConnectGeneration: user.ConnectAuthGeneration,
+		UserID:            user.ID.String(),
+		Email:             user.Email,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(AccessTokenExpiry)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -204,32 +201,6 @@ func (s *Service) generateAccessToken(user *db.User) (string, error) {
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(s.jwtSecret)
-}
-
-func (s *Service) generateRefreshToken(ctx context.Context, userID uuid.UUID) (string, error) {
-	// Generate secure random token
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		return "", err
-	}
-	tokenString := hex.EncodeToString(tokenBytes)
-
-	// Store hashed version in database
-	tokenHash := hashToken(tokenString)
-	refreshToken := &db.RefreshToken{
-		ID:        uuid.New(),
-		UserID:    userID,
-		TokenHash: tokenHash,
-		ExpiresAt: time.Now().Add(RefreshTokenExpiry),
-		CreatedAt: time.Now(),
-		Revoked:   false,
-	}
-
-	if err := s.tokenRepo.Create(ctx, refreshToken); err != nil {
-		return "", err
-	}
-
-	return tokenString, nil
 }
 
 func hashToken(token string) string {
