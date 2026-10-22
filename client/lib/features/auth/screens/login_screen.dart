@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../../core/auth/auth_state.dart';
+import '../../../shared/widgets/app_snack_bar.dart';
 
 import '../auth_frame.dart';
 
@@ -68,7 +69,7 @@ class _LoginScreenState extends State<LoginScreen> {
       context.go(safeNext);
     } else if (mounted && authState.error != null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(authState.error!),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
@@ -138,7 +139,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     ? null
                     : () {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
+                          const AppSnackBar(
                             content: Text('Forgot password coming soon'),
                           ),
                         );

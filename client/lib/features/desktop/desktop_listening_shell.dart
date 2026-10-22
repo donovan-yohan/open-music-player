@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'desktop_motion.dart';
+import '../../shared/widgets/app_snack_bar.dart';
 
 /// Desktop chrome only; neither navigation nor this panel observes playback.
 class DesktopListeningShell extends StatefulWidget {
@@ -58,7 +59,10 @@ class _DesktopListeningShellState extends State<DesktopListeningShell> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      AppFeedbackTheme(child: Builder(builder: _buildChrome));
+
+  Widget _buildChrome(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     var railWidth = widget.compact ? 80.0 : 224.0;
     final scaler = MediaQuery.textScalerOf(context);
@@ -104,6 +108,10 @@ class _DesktopListeningShellState extends State<DesktopListeningShell> {
           focusNode: _shellFocusNode,
           child: Scaffold(
             key: const ValueKey('soundq_desktop_shell'),
+            bottomNavigationBar: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [widget.miniPlayer],
+            ),
             body: Column(children: [
               Expanded(
                 child: Row(children: [
@@ -161,7 +169,6 @@ class _DesktopListeningShellState extends State<DesktopListeningShell> {
                   ),
                 ]),
               ),
-              widget.miniPlayer,
             ]),
           ),
         ),

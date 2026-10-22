@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -94,7 +96,7 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content:
               Text(playback.playbackError ?? 'Could not play Liked Songs.'),
           backgroundColor: Colors.red,
@@ -150,7 +152,7 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not update liked status')),
+        const AppSnackBar(content: Text('Could not update liked status')),
       );
     }
   }
@@ -175,12 +177,12 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
       await playback.queueTrack(track.toPlaybackJson(), mode: mode);
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(content: Text(mode.confirmationFor(track.title))),
+        AppSnackBar(content: Text(mode.confirmationFor(track.title))),
       );
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
-        const SnackBar(content: Text('Could not add to queue')),
+        const AppSnackBar(content: Text('Could not add to queue')),
       );
     }
   }
@@ -197,7 +199,7 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(playback.playbackError ?? 'Could not play this track.'),
           backgroundColor: Colors.red,
         ),

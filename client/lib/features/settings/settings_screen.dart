@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 // ignore_for_file: deprecated_member_use
 
 import 'package:flutter/material.dart';
@@ -157,7 +159,7 @@ class _AccountSection extends ConsumerWidget {
 
     if (!context.mounted) return;
     messenger.showSnackBar(
-      SnackBar(
+      AppSnackBar(
         content: Text(
           success
               ? enabled
@@ -214,7 +216,7 @@ class _AccountSection extends ConsumerWidget {
           }
           if (parentContext.mounted) {
             ScaffoldMessenger.of(parentContext).showSnackBar(
-              const SnackBar(content: Text('Logged out successfully')),
+              const AppSnackBar(content: Text('Logged out successfully')),
             );
           }
         },
@@ -555,7 +557,7 @@ class _SettingsStorageSectionState
               });
               ScaffoldMessenger.of(
                 parentContext,
-              ).showSnackBar(SnackBar(
+              ).showSnackBar(AppSnackBar(
                 content: Text(
                   result.isComplete
                       ? 'Cache cleared'

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../../core/auth/auth_state.dart';
+import '../../../shared/widgets/app_snack_bar.dart';
 import '../auth_frame.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -91,7 +92,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       context.go('/home');
     } else if (mounted && authState.error != null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(authState.error!),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),

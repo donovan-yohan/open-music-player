@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import '../../shared/widgets/now_playing_row.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -106,7 +108,7 @@ class _HomeScreenState extends State<HomeScreen> {
       // library, so no playback URL will be issued for it. Say that, rather
       // than the transport-level "no longer available" copy.
       messenger.showSnackBar(
-        const SnackBar(content: Text(homeNotInLibraryMessage)),
+        const AppSnackBar(content: Text(homeNotInLibraryMessage)),
       );
       return;
     }
@@ -123,7 +125,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(playback.playbackError ?? 'Could not play this track.'),
           backgroundColor: Colors.red,
         ),
@@ -139,12 +141,12 @@ class _HomeScreenState extends State<HomeScreen> {
       await playback.queueTrack(track.toPlaybackJson(), mode: mode);
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(content: Text(mode.confirmationFor(track.title))),
+        AppSnackBar(content: Text(mode.confirmationFor(track.title))),
       );
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
-        const SnackBar(content: Text('Could not add to queue')),
+        const AppSnackBar(content: Text('Could not add to queue')),
       );
     }
   }

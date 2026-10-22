@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/services/playlist_import_service.dart';
@@ -218,7 +220,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
         if (!mounted) return;
         setState(() => _playlists.insert(0, playlist));
         messenger.showSnackBar(
-          SnackBar(content: Text('Created playlist "${playlist.name}"')),
+          AppSnackBar(content: Text('Created playlist "${playlist.name}"')),
         );
       },
     );
@@ -278,12 +280,12 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               setState(() => _playlists[index] = updated);
             }
             messenger.showSnackBar(
-              const SnackBar(content: Text('Playlist updated')),
+              const AppSnackBar(content: Text('Playlist updated')),
             );
           } catch (e) {
             if (!mounted) return;
             messenger.showSnackBar(
-              SnackBar(content: Text('Failed to update playlist: $e')),
+              AppSnackBar(content: Text('Failed to update playlist: $e')),
             );
           }
         },
@@ -314,12 +316,12 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
                 setState(
                     () => _playlists.removeWhere((p) => p.id == playlist.id));
                 messenger.showSnackBar(
-                  SnackBar(content: Text('Deleted "${playlist.name}"')),
+                  AppSnackBar(content: Text('Deleted "${playlist.name}"')),
                 );
               } catch (e) {
                 if (!mounted) return;
                 messenger.showSnackBar(
-                  SnackBar(content: Text('Failed to delete playlist: $e')),
+                  AppSnackBar(content: Text('Failed to delete playlist: $e')),
                 );
               }
             },

@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import 'dart:async';
 
 import 'package:dio/dio.dart';
@@ -135,7 +137,7 @@ class _ShareImportScreenState extends State<ShareImportScreen> {
         _downloadJobId = job.jobId.isEmpty ? null : job.jobId;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Added to library downloads')),
+        const AppSnackBar(content: Text('Added to library downloads')),
       );
     } on TimeoutException {
       if (!mounted) return;
