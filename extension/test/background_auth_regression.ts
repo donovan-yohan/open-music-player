@@ -177,9 +177,10 @@ async function addToLibraryTransientRefreshKeepsTokens(): Promise<void> {
   await assertTokensPreserved('ADD_TO_LIBRARY');
 }
 
-async function updateMetadataTransientRefreshKeepsTokens(): Promise<void> {
+async function unsupportedMetadataEditingMakesNoRequest(): Promise<void> {
   resetTokens();
-  installFetch([expiredAccessResponse(), transientRefreshResponse()]);
+  let requests = 0;
+  globalThis.fetch = async () => { requests++; return jsonResponse({}); };
 
   const result = await sendBackgroundMessage<{ success: boolean; error?: string }>({
     type: 'UPDATE_METADATA',
@@ -187,14 +188,16 @@ async function updateMetadataTransientRefreshKeepsTokens(): Promise<void> {
     metadata: { title: 'new title', artist: 'artist' },
   });
 
-  assertEqual(result.success, false, 'UPDATE_METADATA should fail when refresh is transiently unavailable');
-  assert(result.error !== 'not_logged_in', 'UPDATE_METADATA should not report not_logged_in for refresh 5xx');
+  assertEqual(requests, 0, 'UPDATE_METADATA must not call an unregistered backend route');
+  assertEqual(result.success, false, 'UPDATE_METADATA should report unsupported');
+  assertEqual(result.error, 'Metadata editing is not supported by this extension. Use the Sound Q app.', 'editing should explain the limitation');
   await assertTokensPreserved('UPDATE_METADATA');
 }
 
-async function mergeTracksTransientRefreshKeepsTokens(): Promise<void> {
+async function unsupportedMergingMakesNoRequest(): Promise<void> {
   resetTokens();
-  installFetch([expiredAccessResponse(), transientRefreshResponse()]);
+  let requests = 0;
+  globalThis.fetch = async () => { requests++; return jsonResponse({}); };
 
   const result = await sendBackgroundMessage<{ success: boolean; error?: string }>({
     type: 'MERGE_TRACKS',
@@ -202,8 +205,9 @@ async function mergeTracksTransientRefreshKeepsTokens(): Promise<void> {
     targetTrackId: 'target-track',
   });
 
-  assertEqual(result.success, false, 'MERGE_TRACKS should fail when refresh is transiently unavailable');
-  assert(result.error !== 'not_logged_in', 'MERGE_TRACKS should not report not_logged_in for refresh 5xx');
+  assertEqual(requests, 0, 'MERGE_TRACKS must not call an unregistered backend route');
+  assertEqual(result.success, false, 'MERGE_TRACKS should report unsupported');
+  assertEqual(result.error, 'Track merging is not supported by this extension.', 'merging should explain the limitation');
   await assertTokensPreserved('MERGE_TRACKS');
 }
 
@@ -223,6 +227,17 @@ async function explicitRefreshRejectionStillClearsTokens(): Promise<void> {
   assertEqual(await getAuthTokens(), null, 'rejected refresh token should clear tokens');
 }
 
+async function legacyStringErrorPreservesMessage(): Promise<void> {
+  resetTokens();
+  installFetch([jsonResponse({ code: 'INVALID_URL', error: 'unsupported source URL' }, 400)]);
+  const result = await sendBackgroundMessage<{ success: boolean; error?: string; errorCode?: string }>({
+    type: 'ADD_TO_LIBRARY', url: 'https://www.youtube.com/watch?v=test',
+    sourceType: 'youtube', metadata: { title: 'test video' },
+  });
+  assertEqual(result.errorCode, 'INVALID_URL', 'legacy error should preserve its code');
+  assertEqual(result.error, 'unsupported source URL', 'legacy error should preserve its message');
+}
+
 async function main(): Promise<void> {
   installChromeMocks();
   installNavigatorOnline();
@@ -230,9 +245,13 @@ async function main(): Promise<void> {
   await import('../src/background');
 
   await addToLibraryTransientRefreshKeepsTokens();
-  await updateMetadataTransientRefreshKeepsTokens();
-  await mergeTracksTransientRefreshKeepsTokens();
+  const failures: string[] = [];
+  for (const check of [unsupportedMetadataEditingMakesNoRequest, unsupportedMergingMakesNoRequest]) {
+    try { await check(); } catch (error) { failures.push(String(error)); }
+  }
+  if (failures.length) throw new Error(failures.join('\n'));
   await explicitRefreshRejectionStillClearsTokens();
+  await legacyStringErrorPreservesMessage();
 }
 
 void main().then(() => {

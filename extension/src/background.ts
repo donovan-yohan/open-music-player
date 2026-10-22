@@ -6,16 +6,12 @@ import type {
   DownloadResponse,
   MetadataResponse,
   AuthState,
-  UpdateMetadataMessage,
-  UpdateMetadataResult,
-  UpdateMetadataRequest,
-  UpdateMetadataResponse,
 } from './types';
-import { AppError, ErrorCodes, toAppError, type ApiErrorResponse } from './errors';
+import { AppError, ErrorCodes, toAppError } from './errors';
 import { apiClient } from './utils/api';
 import { getAuthTokens, saveAccessToken, clearAuthTokens } from './storage';
 
-const API_BASE_URL = 'http://localhost:8080/api/v1';
+const API_BASE_URL = 'https://soundq.fish-rattlesnake.ts.net/api/v1';
 const CONTEXT_MENU_ID = 'add-to-omp';
 
 // Backend availability state
@@ -55,25 +51,7 @@ async function checkBackendAvailability(): Promise<boolean> {
 
 // Parse API error response
 function parseApiError(response: Response, body?: unknown): { code: string; message: string } {
-  const defaultMessage = `Request failed with status ${response.status}`;
-
-  if (body && typeof body === 'object') {
-    const errorBody = body as ApiErrorResponse;
-    if (errorBody.error) {
-      return {
-        code: errorBody.error.code || 'UNKNOWN_ERROR',
-        message: errorBody.error.message || defaultMessage,
-      };
-    }
-    // Legacy format
-    const legacyBody = body as { code?: string; message?: string; error?: string };
-    return {
-      code: legacyBody.code || 'UNKNOWN_ERROR',
-      message: legacyBody.message || legacyBody.error || defaultMessage,
-    };
-  }
-
-  return { code: 'UNKNOWN_ERROR', message: defaultMessage };
+  return AppError.fromApiResponse(response, body);
 }
 
 const TRANSIENT_REFRESH_ERROR = 'Authentication refresh temporarily unavailable. Please try again.';
@@ -122,7 +100,7 @@ async function addToLibrary(
       success: false,
       error: 'backend_unavailable',
       errorCode: ErrorCodes.NETWORK_ERROR,
-    } as AddToLibraryResponse & { errorCode?: string };
+    };
   }
 
   const auth = await checkAuth();
@@ -171,7 +149,7 @@ async function addToLibrary(
         success: false,
         error: TRANSIENT_REFRESH_ERROR,
         errorCode: ErrorCodes.NETWORK_ERROR,
-      } as AddToLibraryResponse & { errorCode?: string };
+      };
     }
 
     if (await clearAuthTokensForInvalidSession(response, code)) {
@@ -195,7 +173,7 @@ async function addToLibrary(
       success: false,
       error: errorMessage,
       errorCode: code,
-    } as AddToLibraryResponse & { errorCode?: string };
+    };
   } catch (err) {
     markBackendReachable(false);
     const appError = toAppError(err);
@@ -204,189 +182,6 @@ async function addToLibrary(
       success: false,
       error: appError.displayMessage,
       errorCode: appError.code,
-    } as AddToLibraryResponse & { errorCode?: string };
-  }
-}
-
-// Update track metadata via API
-async function updateMetadata(
-  message: UpdateMetadataMessage & { force?: boolean }
-): Promise<UpdateMetadataResult> {
-  // Check backend availability first
-  const isAvailable = await checkBackendAvailability();
-  if (!isAvailable) {
-    return {
-      type: 'UPDATE_METADATA_RESULT',
-      success: false,
-      error: 'Backend is currently unavailable. Please try again later.',
-    };
-  }
-
-  const auth = await checkAuth();
-
-  if (!auth.isLoggedIn || !auth.token) {
-    return {
-      type: 'UPDATE_METADATA_RESULT',
-      success: false,
-      error: 'not_logged_in',
-    };
-  }
-
-  const requestBody: UpdateMetadataRequest & { force?: boolean } = {
-    title: message.metadata.title,
-    artist: message.metadata.artist,
-    album: message.metadata.album,
-    version: message.metadata.version,
-    cover_art_url: message.metadata.cover_art_url,
-  };
-
-  // Include force flag if provided
-  if (message.force) {
-    requestBody.force = true;
-  }
-
-  try {
-    const response = await apiClient.authorizedFetch(
-      `/api/v1/tracks/${message.trackId}/metadata`,
-      {
-        method: 'PUT',
-        body: JSON.stringify(requestBody),
-      }
-    );
-    markBackendReachable(true);
-
-    if (response.ok) {
-      const data: UpdateMetadataResponse = await response.json();
-      return {
-        type: 'UPDATE_METADATA_RESULT',
-        success: true,
-        track: data.track,
-        identityHashChanged: data.identity_hash_changed,
-      };
-    }
-
-    // Parse error body
-    const errorBody = await response.json().catch(() => undefined);
-    const { code, message: errorMessage } = parseApiError(response, errorBody);
-
-    // Handle specific error codes
-    if (isAuthInvalidDueToTransientRefresh(response, code)) {
-      return {
-        type: 'UPDATE_METADATA_RESULT',
-        success: false,
-        error: TRANSIENT_REFRESH_ERROR,
-      };
-    }
-
-    if (await clearAuthTokensForInvalidSession(response, code)) {
-      return {
-        type: 'UPDATE_METADATA_RESULT',
-        success: false,
-        error: 'not_logged_in',
-      };
-    }
-
-    if (response.status === 409 || code === ErrorCodes.CONFLICT) {
-      // Duplicate found
-      const typedBody = errorBody as UpdateMetadataResponse | undefined;
-      return {
-        type: 'UPDATE_METADATA_RESULT',
-        success: false,
-        duplicateFound: true,
-        duplicateTrackId: typedBody?.duplicate_track_id,
-        error: 'duplicate_found',
-      };
-    }
-
-    if (response.status === 404 || code === ErrorCodes.NOT_FOUND) {
-      return {
-        type: 'UPDATE_METADATA_RESULT',
-        success: false,
-        error: 'Track not found',
-      };
-    }
-
-    return {
-      type: 'UPDATE_METADATA_RESULT',
-      success: false,
-      error: errorMessage,
-    };
-  } catch (err) {
-    markBackendReachable(false);
-    const appError = toAppError(err);
-    return {
-      type: 'UPDATE_METADATA_RESULT',
-      success: false,
-      error: appError.displayMessage,
-    };
-  }
-}
-
-// Merge tracks via API
-async function mergeTracks(
-  sourceTrackId: string,
-  targetTrackId: string
-): Promise<{ success: boolean; error?: string }> {
-  // Check backend availability first
-  const isAvailable = await checkBackendAvailability();
-  if (!isAvailable) {
-    return {
-      success: false,
-      error: 'Backend is currently unavailable. Please try again later.',
-    };
-  }
-
-  const auth = await checkAuth();
-
-  if (!auth.isLoggedIn || !auth.token) {
-    return {
-      success: false,
-      error: 'not_logged_in',
-    };
-  }
-
-  try {
-    const response = await apiClient.authorizedFetch(
-      `/api/v1/tracks/${targetTrackId}/merge`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ source_track_id: sourceTrackId }),
-      }
-    );
-    markBackendReachable(true);
-
-    if (response.ok) {
-      return { success: true };
-    }
-
-    // Parse error body
-    const errorBody = await response.json().catch(() => undefined);
-    const { code, message: errorMessage } = parseApiError(response, errorBody);
-
-    if (isAuthInvalidDueToTransientRefresh(response, code)) {
-      return {
-        success: false,
-        error: TRANSIENT_REFRESH_ERROR,
-      };
-    }
-
-    if (await clearAuthTokensForInvalidSession(response, code)) {
-      return {
-        success: false,
-        error: 'not_logged_in',
-      };
-    }
-
-    return {
-      success: false,
-      error: errorMessage,
-    };
-  } catch (err) {
-    markBackendReachable(false);
-    const appError = toAppError(err);
-    return {
-      success: false,
-      error: appError.displayMessage,
     };
   }
 }
@@ -524,12 +319,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'UPDATE_METADATA') {
-    updateMetadata(message as UpdateMetadataMessage & { force?: boolean }).then(sendResponse);
+    // The backend's per-user metadata-override API is not this legacy contract.
+    sendResponse({
+      type: 'UPDATE_METADATA_RESULT', success: false,
+      error: 'Metadata editing is not supported by this extension. Use the Sound Q app.',
+    });
     return true;
   }
 
   if (message.type === 'MERGE_TRACKS') {
-    mergeTracks(message.sourceTrackId, message.targetTrackId).then(sendResponse);
+    // No track-merge route is registered by the backend.
+    sendResponse({ success: false, error: 'Track merging is not supported by this extension.' });
     return true;
   }
 
