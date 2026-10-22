@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart'
     hide Provider, ChangeNotifierProvider;
@@ -8,6 +9,12 @@ import 'package:provider/provider.dart';
 import '../core/api/api_client.dart';
 import '../core/audio/playback_state.dart';
 import '../core/auth/auth_state.dart';
+import '../core/connect/connect_service.dart';
+import '../core/connect/device_presence_service.dart';
+import '../core/jam/jam_host_controller.dart';
+import '../core/jam/jam_playback_admission.dart';
+import '../core/jam/jam_service.dart';
+import '../core/storage/secure_storage.dart';
 import '../core/commands/app_command.dart';
 import '../core/commands/command_registry.dart';
 import '../core/commands/command_widgets.dart';
@@ -19,6 +26,7 @@ import '../core/share/shared_url_parser.dart';
 import '../providers/queue_provider.dart';
 import 'router.dart';
 import 'theme.dart';
+import '../shared/widgets/app_snack_bar.dart';
 
 class OpenMusicPlayerApp extends ConsumerStatefulWidget {
   final ApiClient apiClient;
@@ -28,12 +36,16 @@ class OpenMusicPlayerApp extends ConsumerStatefulWidget {
   final SharedIntentReceiver sharedIntentReceiver;
   final SearchFocusController searchFocusController;
 
+  /// Production supplies the canonical retirement barrier from main.
+  final Future<void> Function()? playbackAccountRetirement;
+
   factory OpenMusicPlayerApp({
     Key? key,
     required ApiClient apiClient,
     required AuthState authState,
     required PlaybackState playbackState,
     SharedIntentReceiver? sharedIntentReceiver,
+    Future<void> Function()? playbackAccountRetirement,
   }) {
     final searchFocusController = SearchFocusController();
     return OpenMusicPlayerApp._(
@@ -45,6 +57,7 @@ class OpenMusicPlayerApp extends ConsumerStatefulWidget {
         authState,
         searchFocusController: searchFocusController,
       ),
+      playbackAccountRetirement: playbackAccountRetirement,
       sharedIntentReceiver: sharedIntentReceiver ?? SharedIntentReceiver(),
       searchFocusController: searchFocusController,
     );
@@ -57,6 +70,7 @@ class OpenMusicPlayerApp extends ConsumerStatefulWidget {
     required this.playbackState,
     required this.router,
     required this.sharedIntentReceiver,
+    required this.playbackAccountRetirement,
     required this.searchFocusController,
   });
 
@@ -70,12 +84,41 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
   String? _pendingSharedText;
   late final CommandRegistry _commandRegistry;
   bool _shortcutHelpOpen = false;
+  late final ConnectService _connectService;
+  late final DevicePresenceService _presence;
+  int? _connectRevision;
+  AuthSessionScope? _connectScope;
+  Object? _connectAdmission;
+  JamHostController? _jamHost;
+
+  JamHostController _createJamHost() {
+    final service = JamService(widget.apiClient);
+    return _jamHost ??= JamHostController(
+      service: service,
+      presence: _presence,
+      source: widget.playbackState.snapshotStream,
+      canonicalSessionGeneration: () => widget.playbackState.sessionGeneration,
+      accountChanges: widget.authState,
+      accountRevision: () => widget.authState.sessionRevision,
+      admit: canonicalJamAdmission(
+          playback: widget.playbackState, service: service),
+    );
+  }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _connectService = ConnectService(widget.apiClient);
+    _presence = DevicePresenceService(
+      _connectService,
+      label: kIsWeb ? 'SoundQ browser' : 'SoundQ ${defaultTargetPlatform.name}',
+      platform: kIsWeb ? 'web' : defaultTargetPlatform.name.toLowerCase(),
+    );
+    _presence.setActive(
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.detached);
     widget.authState.addListener(_handleAuthStateChanged);
+    _syncConnectSession();
     _commandRegistry = CommandRegistry(playbackState: widget.playbackState);
     _startShareIntentListener();
     final settings = ref.read(settingsProvider);
@@ -89,6 +132,9 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.authState.removeListener(_handleAuthStateChanged);
+    _connectAdmission = null;
+    _jamHost?.dispose();
+    _presence.dispose();
     _sharedTextSubscription?.cancel();
     _commandRegistry.dispose();
     super.dispose();
@@ -96,6 +142,10 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Window focus and UI visibility do not determine whether audio is alive.
+    // Paused mobile processes keep best-effort heartbeats while Dart can run;
+    // hard suspension is bounded by the server lease rather than a UI clock.
+    _presence.setActive(state != AppLifecycleState.detached);
     if (shouldLockForBiometricLifecycleState(state)) {
       widget.authState.lockIfBiometricRequired();
     }
@@ -124,6 +174,11 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
     return MultiProvider(
       providers: [
         Provider<ApiClient>.value(value: widget.apiClient),
+        Provider<ConnectService>.value(value: _connectService),
+        // Created on first use, retained above routes until application teardown.
+        // Screen owns its AnimatedBuilder subscription. Merely exposing this
+        // app-owned capability must not subscribe ancestors during route init.
+        InheritedProvider<JamHostController>(create: (_) => _createJamHost()),
         ChangeNotifierProvider.value(value: widget.authState),
         ChangeNotifierProvider.value(value: widget.playbackState),
         Provider<CommandRegistry>.value(value: _commandRegistry),
@@ -152,7 +207,7 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
               playbackState: widget.playbackState,
               navigation: navigation,
             ),
-            child: child ?? const SizedBox.shrink(),
+            child: AppFeedbackTheme(child: child ?? const SizedBox.shrink()),
           );
         },
       ),
@@ -205,12 +260,69 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
       widget.authState.status == AuthStatus.checking;
 
   void _handleAuthStateChanged() {
+    _syncConnectSession();
     if (!mounted || _isAuthCheckInFlight) return;
     final sharedText = _pendingSharedText;
     if (sharedText == null) return;
 
     _pendingSharedText = null;
     _goToShareImport(sharedText);
+  }
+
+  void _syncConnectSession() {
+    final auth = widget.authState;
+    // Unauthenticated harnesses need neither playback nor revision access.
+    if (!auth.isAuthenticated) {
+      // Local biometric UI locking is not credential revocation: background
+      // playback keeps the admitted lease, but a locked startup cannot attach.
+      if (_connectScope != null &&
+          auth.isBiometricLocked &&
+          _connectRevision == auth.sessionRevision) {
+        return;
+      }
+      _connectAdmission = null;
+      if (_connectScope != null) _presence.detach();
+      _connectRevision = null;
+      _connectScope = null;
+      return;
+    }
+    if (_connectRevision != auth.sessionRevision) {
+      _connectAdmission = null;
+      _presence.detach();
+      _connectScope = null;
+      _connectRevision = auth.sessionRevision;
+    }
+    if (auth.isLoading) return;
+    final attached = _connectScope;
+    if (attached != null) {
+      if (!widget.apiClient.acceptsAuthSession(attached)) _presence.detach();
+      return;
+    }
+    final scope = widget.apiClient.captureAuthSession();
+    if (!widget.apiClient.acceptsAuthSession(scope)) return;
+    if (_connectAdmission != null) return;
+    final admission = Object();
+    final revision = auth.sessionRevision;
+    _connectAdmission = admission;
+    unawaited(() async {
+      try {
+        await widget.playbackAccountRetirement?.call();
+        if (!mounted ||
+            !identical(_connectAdmission, admission) ||
+            revision != auth.sessionRevision ||
+            !auth.isAuthenticated ||
+            auth.isLoading ||
+            !widget.apiClient.acceptsAuthSession(scope)) {
+          return;
+        }
+        _connectScope = scope;
+        _presence.attach(widget.playbackState.snapshotStream, scope);
+      } catch (error) {
+        debugPrint('Connect playback admission blocked: $error');
+      } finally {
+        if (identical(_connectAdmission, admission)) _connectAdmission = null;
+      }
+    }());
   }
 
   void _goToShareImport(String sharedText) {

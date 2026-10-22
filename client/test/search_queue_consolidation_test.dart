@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -26,6 +28,110 @@ import 'package:provider/provider.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('native startup ignores the macOS sandbox file Uri.base', () {
+    final sandbox = Directory(
+      '/Users/soundq-fixture/Library/Containers/'
+      'com.openmusicplayer.openMusicPlayer/Data/',
+    );
+    IOOverrides.runZoned(() {
+      expect(Uri.base, sandbox.uri);
+      expect(Uri.base.scheme, 'file');
+      final router = createRouter(_StartupAuth());
+      addTearDown(router.dispose);
+      expect(router.routeInformationProvider.value.uri.toString(), '/');
+      expect(router.configuration.findMatch('/').error, isNull);
+    }, getCurrentDirectory: () => sandbox);
+  }, skip: kIsWeb);
+
+  test('web startup retains the browser Uri.base path fallback', () {
+    final router = createRouter(_StartupAuth());
+    addTearDown(router.dispose);
+    final path = Uri.base.path;
+    expect(router.routeInformationProvider.value.uri.toString(),
+        path.isEmpty ? '/' : path);
+  }, skip: !kIsWeb);
+
+  final shared = Uri(path: '/share', queryParameters: {
+    'text': 'https://youtu.be/test-video?list=one&index=2',
+    'auto': '1',
+  }).toString();
+  const imports = '/queue/imports?importJobId=startup-job#progress';
+
+  for (final location in [imports, shared]) {
+    testWidgets('platform startup deep link preserves $location',
+        (tester) async {
+      tester.binding.platformDispatcher.defaultRouteNameTestValue = location;
+      addTearDown(() {
+        tester.binding.platformDispatcher.defaultRouteNameTestValue = '/';
+      });
+      final router = createRouter(_StartupAuth());
+      addTearDown(router.dispose);
+      expect(router.overridePlatformDefaultLocation, isFalse);
+      expect(router.routeInformationProvider.value.uri.toString(), location);
+      final parsed = await _parseStartupLocation(tester, router);
+      expect(parsed.error, isNull);
+      expect(parsed.uri.toString(), location);
+    });
+  }
+
+  testWidgets('runtime platform deep link retains shared text and auto query',
+      (tester) async {
+    final router = createRouter(_StartupAuth());
+    addTearDown(router.dispose);
+    void listener() {}
+    router.routeInformationProvider.addListener(listener);
+    addTearDown(() => router.routeInformationProvider.removeListener(listener));
+    expect(
+        await router.routeInformationProvider
+            .didPushRouteInformation(RouteInformation(uri: Uri.parse(shared))),
+        isTrue);
+    final parsed = await _parseStartupLocation(tester, router);
+    expect(parsed.error, isNull);
+    expect(parsed.uri.toString(), shared);
+    expect(parsed.uri.queryParameters, {
+      'text': 'https://youtu.be/test-video?list=one&index=2',
+      'auto': '1',
+    });
+  });
+
+  for (final locked in [false, true]) {
+    testWidgets('platform deep link survives auth gate locked=$locked',
+        (tester) async {
+      tester.binding.platformDispatcher.defaultRouteNameTestValue = imports;
+      addTearDown(() {
+        tester.binding.platformDispatcher.defaultRouteNameTestValue = '/';
+      });
+      final auth = _StartupAuth(authenticated: false, locked: locked);
+      final router = createRouter(auth);
+      addTearDown(router.dispose);
+      final gated = await _parseStartupLocation(tester, router);
+      expect(gated.error, isNull);
+      expect(gated.uri.path, locked ? '/unlock' : '/login');
+      expect(gated.uri.queryParameters['next'], imports);
+      // Exercise the existing post-login redirect with the retained destination.
+      auth.authenticated = true;
+      auth.locked = false;
+      router.go('/login?next=${Uri.encodeComponent(imports)}');
+      final resumed = await _parseStartupLocation(tester, router);
+      expect(resumed.error, isNull);
+      expect(resumed.uri.toString(), imports);
+    });
+  }
+
+  testWidgets('platform login next preserves the public share query',
+      (tester) async {
+    tester.binding.platformDispatcher.defaultRouteNameTestValue =
+        '/login?next=${Uri.encodeComponent(shared)}';
+    addTearDown(() {
+      tester.binding.platformDispatcher.defaultRouteNameTestValue = '/';
+    });
+    final router = createRouter(_StartupAuth());
+    addTearDown(router.dispose);
+    final parsed = await _parseStartupLocation(tester, router);
+    expect(parsed.error, isNull);
+    expect(parsed.uri.toString(), shared);
+  });
 
   setUp(() {
     FlutterSecureStorage.setMockInitialValues({});
@@ -173,6 +279,11 @@ void main() {
       final queueProvider = QueueProvider(queueClient);
       final playbackState = _RouterPlaybackState();
       final commandRegistry = CommandRegistry(playbackState: playbackState);
+      tester.binding.platformDispatcher.defaultRouteNameTestValue =
+          '/queue/imports';
+      addTearDown(() {
+        tester.binding.platformDispatcher.defaultRouteNameTestValue = '/';
+      });
       final router = createRouter(authState);
       addTearDown(router.dispose);
       addTearDown(queueProvider.dispose);
@@ -188,7 +299,6 @@ void main() {
           router: router,
         ),
       );
-      router.go('/queue/imports');
       await tester.pumpAndSettle();
 
       expect(router.routeInformationProvider.value.uri.path, '/queue/imports');
@@ -223,6 +333,11 @@ void main() {
     final queueProvider = QueueProvider(_QueueMutationClient());
     final playbackState = _RouterPlaybackState();
     final commandRegistry = CommandRegistry(playbackState: playbackState);
+    tester.binding.platformDispatcher.defaultRouteNameTestValue =
+        '/queue/imports';
+    addTearDown(() {
+      tester.binding.platformDispatcher.defaultRouteNameTestValue = '/';
+    });
     final router = createRouter(authState);
     addTearDown(router.dispose);
     addTearDown(queueProvider.dispose);
@@ -238,7 +353,6 @@ void main() {
         router: router,
       ),
     );
-    router.go('/queue/imports');
     await tester.pumpAndSettle();
 
     final location = router.routeInformationProvider.value.uri;
@@ -247,6 +361,38 @@ void main() {
     expect(find.text('Sign in to continue'), findsOneWidget);
     expect(find.byKey(const ValueKey('soundq_mobile_shell')), findsNothing);
   });
+}
+
+// Use production provider/parser/auth redirects without mounting audio/network
+// owners. Startup tests never call go() to replace the initial route.
+Future<RouteMatchList> _parseStartupLocation(
+    WidgetTester tester, GoRouter router) async {
+  late BuildContext context;
+  await tester.pumpWidget(Directionality(
+    textDirection: TextDirection.ltr,
+    child: Builder(builder: (value) {
+      context = value;
+      return const SizedBox.shrink();
+    }),
+  ));
+  return router.routeInformationParser.parseRouteInformationWithDependencies(
+      router.routeInformationProvider.value, context);
+}
+
+class _StartupAuth extends Fake implements AuthState {
+  _StartupAuth({this.authenticated = true, this.locked = false});
+  bool authenticated;
+  bool locked;
+  @override
+  bool get hasLocalSession => authenticated || locked;
+  @override
+  bool get isBiometricLocked => locked;
+  @override
+  bool get isAuthenticated => authenticated;
+  @override
+  void addListener(VoidCallback listener) {}
+  @override
+  void removeListener(VoidCallback listener) {}
 }
 
 Widget _productionRouterHost({

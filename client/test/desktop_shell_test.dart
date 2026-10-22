@@ -18,7 +18,28 @@ import 'package:open_music_player/features/player/widgets/mini_player.dart';
 import 'package:open_music_player/shared/models/models.dart';
 
 void main() {
-  testWidgets('Home follows full viewport shell breakpoints exactly', (
+  testWidgets('desktop Home uses wide space without decorative clipping',
+      (tester) async {
+    final router = _homeRouter();
+    addTearDown(router.dispose);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    tester.view.devicePixelRatio = 1;
+    await _pumpAt(tester, router, const Size(2560, 1440));
+    expect(find.text('39'), findsNothing);
+    final heading = find.text('Your rotation');
+    final firstTitle =
+        find.text('A deliberately long desktop track title number 0');
+    expect(tester.getTopLeft(firstTitle).dy - tester.getBottomLeft(heading).dy,
+        lessThan(420));
+    final grid = tester.widget<SliverGrid>(find.byType(SliverGrid).first);
+    final geometry =
+        grid.gridDelegate as SliverGridDelegateWithFixedCrossAxisCount;
+    expect(geometry.crossAxisCount, greaterThanOrEqualTo(6));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Home follows shell breakpoints and available content width', (
     tester,
   ) async {
     final router = _homeRouter();
@@ -35,7 +56,7 @@ void main() {
       (960, false, 80, 3),
       (1199, false, 80, 3),
       (1200, true, 224, 3),
-      (1439, true, 224, 3),
+      (1439, true, 224, 4),
       (1440, true, 224, 4),
     ]) {
       await _resize(tester, Size(expectation.$1, 900));

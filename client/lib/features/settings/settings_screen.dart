@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 // ignore_for_file: deprecated_member_use
 
 import 'package:flutter/material.dart';
@@ -104,6 +106,18 @@ class _AccountSection extends ConsumerWidget {
             onTap: () => _showLogoutDialog(context),
           ),
           ListTile(
+            leading: const Icon(Icons.devices_outlined),
+            title: const Text('Connected devices'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => context.push('/devices'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.group_outlined),
+            title: const Text('Jam'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => context.push('/jam'),
+          ),
+          ListTile(
             leading: const Icon(Icons.history),
             title: const Text('Listening history'),
             subtitle: const Text('Songs you played, newest first'),
@@ -145,7 +159,7 @@ class _AccountSection extends ConsumerWidget {
 
     if (!context.mounted) return;
     messenger.showSnackBar(
-      SnackBar(
+      AppSnackBar(
         content: Text(
           success
               ? enabled
@@ -202,7 +216,7 @@ class _AccountSection extends ConsumerWidget {
           }
           if (parentContext.mounted) {
             ScaffoldMessenger.of(parentContext).showSnackBar(
-              const SnackBar(content: Text('Logged out successfully')),
+              const AppSnackBar(content: Text('Logged out successfully')),
             );
           }
         },
@@ -536,14 +550,24 @@ class _SettingsStorageSectionState
           FilledButton(
             onPressed: () async {
               Navigator.pop(dialogContext);
-              await manager.clear();
+              final result = await manager.clear();
               if (!mounted || !parentContext.mounted) return;
               setState(() {
                 _cacheSize = manager.currentSizeBytes();
               });
               ScaffoldMessenger.of(
                 parentContext,
-              ).showSnackBar(const SnackBar(content: Text('Cache cleared')));
+              ).showSnackBar(AppSnackBar(
+                content: Text(
+                  result.isComplete
+                      ? 'Cache cleared'
+                      : result.failedFiles > 0
+                          ? 'Some cached audio could not be removed'
+                          : result.deferredFiles > 0
+                              ? 'In-use audio will clear after playback releases it'
+                              : 'Cache clearing is finishing',
+                ),
+              ));
             },
             child: const Text('Clear'),
           ),

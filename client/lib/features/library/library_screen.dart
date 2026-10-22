@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import '../../shared/widgets/now_playing_row.dart';
 import '../../shared/widgets/song_list_item.dart';
 import 'dart:async';
@@ -355,7 +357,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       playlistImportService: PlaylistImportService(api: _apiClient),
       onBlankCreated: (playlist) {
         messenger.showSnackBar(
-          SnackBar(content: Text('Created playlist "${playlist.name}"')),
+          AppSnackBar(content: Text('Created playlist "${playlist.name}"')),
         );
       },
     );
@@ -876,7 +878,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(playback.playbackError ?? 'Could not play this track.'),
           backgroundColor: Colors.red,
         ),
@@ -972,7 +974,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
           );
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
+              AppSnackBar(
                 content: Text(
                     'Matched to "${suggestion.title}" by ${suggestion.artist}'),
                 backgroundColor: Colors.green,
@@ -983,7 +985,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
         } catch (e) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
+              AppSnackBar(
                 content: Text('Failed to confirm match: $e'),
                 backgroundColor: Colors.red,
               ),
@@ -1004,7 +1006,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     } catch (_) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(playback.playbackError ?? 'Could not play this track.'),
           backgroundColor: Colors.red,
         ),
@@ -1167,12 +1169,12 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
       );
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(content: Text(mode.confirmationFor(track.title))),
+        AppSnackBar(content: Text(mode.confirmationFor(track.title))),
       );
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
-        const SnackBar(content: Text('Could not add to queue')),
+        const AppSnackBar(content: Text('Could not add to queue')),
       );
     }
   }
@@ -1185,7 +1187,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
       await context.read<LikedTracksState>().toggle(track.id);
     } catch (_) {
       messenger.showSnackBar(
-        const SnackBar(content: Text('Could not update liked status')),
+        const AppSnackBar(content: Text('Could not update liked status')),
       );
     } finally {
       if (mounted) setState(() => _likeInFlight = false);
@@ -1295,7 +1297,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     if (result == null) return;
     onTrackUpdated?.call();
     messenger.showSnackBar(
-      SnackBar(
+      AppSnackBar(
         content: Text(
           result.action == TrackMetadataEditAction.reset
               ? 'Restored the original metadata'
@@ -1323,7 +1325,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
   void _goToArtist() {
     if (!canBrowseLocalName(track.artist)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No artist name for this track')),
+        const AppSnackBar(content: Text('No artist name for this track')),
       );
       return;
     }
@@ -1335,7 +1337,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
   void _goToAlbum() {
     if (!canBrowseLocalName(track.album)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No album name for this track')),
+        const AppSnackBar(content: Text('No album name for this track')),
       );
       return;
     }
@@ -1346,7 +1348,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     final mbid = track.mbArtistId;
     if (mbid == null || mbid.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No artist details for this track')),
+        const AppSnackBar(content: Text('No artist details for this track')),
       );
       return;
     }
@@ -1364,7 +1366,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     final mbid = track.mbReleaseId;
     if (mbid == null || mbid.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No album details for this track')),
+        const AppSnackBar(content: Text('No album details for this track')),
       );
       return;
     }
@@ -1383,12 +1385,12 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     try {
       await _libraryService.removeTrackFromLibrary(track.id.toString());
       messenger.showSnackBar(
-        const SnackBar(content: Text('Removed from library')),
+        const AppSnackBar(content: Text('Removed from library')),
       );
       onTrackUpdated?.call();
     } catch (_) {
       messenger.showSnackBar(
-        const SnackBar(content: Text('Failed to remove from library')),
+        const AppSnackBar(content: Text('Failed to remove from library')),
       );
     }
   }

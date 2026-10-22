@@ -28,11 +28,14 @@ class AuthService {
         _biometricUnlockService =
             biometricUnlockService ?? LocalAuthBiometricUnlockService();
 
+  AuthSessionScope beginAuthIntent() => _storage.beginAuthIntent();
+
   Future<AuthResult> register({
     required String email,
     required String password,
     required String username,
   }) async {
+    final intent = beginAuthIntent();
     try {
       final response = await _api.post(
         '/auth/register',
@@ -41,11 +44,11 @@ class AuthService {
 
       if (response.statusCode == 201) {
         final tokens = parseAuthTokens(response.data);
-        await _storage.saveTokens(
-          accessToken: tokens.accessToken,
-          refreshToken: tokens.refreshToken,
-        );
-        return const AuthResult.success();
+        final saved = await _storage.saveTokensForIntent(intent,
+            accessToken: tokens.accessToken, refreshToken: tokens.refreshToken);
+        return saved
+            ? const AuthResult.success()
+            : const AuthResult.failure('Session changed');
       }
       return const AuthResult.failure('Registration failed');
     } on DioException catch (e) {
@@ -59,6 +62,7 @@ class AuthService {
     required String email,
     required String password,
   }) async {
+    final intent = beginAuthIntent();
     try {
       final response = await _api.post(
         '/auth/login',
@@ -67,11 +71,11 @@ class AuthService {
 
       if (response.statusCode == 200) {
         final tokens = parseAuthTokens(response.data);
-        await _storage.saveTokens(
-          accessToken: tokens.accessToken,
-          refreshToken: tokens.refreshToken,
-        );
-        return const AuthResult.success();
+        final saved = await _storage.saveTokensForIntent(intent,
+            accessToken: tokens.accessToken, refreshToken: tokens.refreshToken);
+        return saved
+            ? const AuthResult.success()
+            : const AuthResult.failure('Session changed');
       }
       return const AuthResult.failure('Login failed');
     } on DioException catch (e) {
@@ -82,18 +86,13 @@ class AuthService {
   }
 
   Future<void> logout() async {
+    final intent = beginAuthIntent();
     try {
-      await _api.post('/auth/logout');
+      await _api.logoutForIntent(intent);
     } catch (_) {
-      // Logout even if the API call fails
+      // Always retire the local session even if remote cleanup is offline.
     } finally {
-      // Biometric unlock protects an existing saved session; it is not
-      // passwordless login. Logging out removes the saved session and its
-      // unlock enrollment so the next login requires the account password.
-      await Future.wait([
-        _storage.clearTokens(),
-        _storage.setBiometricUnlockEnabled(false),
-      ]);
+      await _storage.clearTokensForIntent(intent);
     }
   }
 
