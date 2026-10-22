@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    """Check isolated Compose storage without using persistent data or proxies."""
     project = "omp-ci-storage-" + uuid.uuid4().hex[:12]
     env = os.environ.copy()
     # Never consume a checkout's .env, Compose project, credentials or ports.
@@ -38,6 +39,7 @@ def main():
         compose = ["docker", "compose", "--env-file", "/dev/null", "-p", project, "-f", str(compose_file)]
 
         def run(*args, **kwargs):
+            """Run only this probe's generated Compose project."""
             return subprocess.check_output(compose + list(args), env=env, **kwargs)
 
         try:
@@ -53,8 +55,11 @@ def main():
             endpoint = "http://" + run("port", "minio", "9000").decode().strip()
             payload = b"SoundQ disposable storage Range fixture\n" * 128
             key = "/" + bucket + "/fixture.bin"
+            # These generated loopback requests must never enter a runner proxy.
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
             def request(method, path, data=None, headers=None, signed=True):
+                """Send a fixture S3 request directly to disposable local storage."""
                 headers = dict(headers or {})
                 if signed:
                     now = datetime.now(timezone.utc)
@@ -74,7 +79,7 @@ def main():
                                     "Authorization": f"AWS4-HMAC-SHA256 Credential={root_user}/{scope}, SignedHeaders={signed_headers}, Signature={signature}"})
                 req = urllib.request.Request(endpoint + path, data=data, headers=headers, method=method)
                 try:
-                    with urllib.request.urlopen(req, timeout=15) as response:
+                    with opener.open(req, timeout=15) as response:
                         return response.status, response.headers, response.read()
                 except urllib.error.HTTPError as error:
                     return error.code, error.headers, error.read()

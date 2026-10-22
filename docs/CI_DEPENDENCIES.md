@@ -80,6 +80,9 @@ scripts/lint analyzer            # Includes offline dependency-source regression
 scripts/test analyzer
 scripts/build analyzer          # Real checkpoint download/checksum/model/DSP gates
 python3 scripts/ci-storage-smoke.py
+# Regression: loopback requests bypass even an unusable runner HTTP proxy.
+http_proxy=http://127.0.0.1:1 HTTP_PROXY=http://127.0.0.1:1 \
+  no_proxy=never.invalid NO_PROXY=never.invalid python3 scripts/ci-storage-smoke.py
 ```
 
 The storage smoke derives only `minio`/`minio-init` from the low-memory Compose

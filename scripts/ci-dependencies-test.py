@@ -17,6 +17,7 @@ MODEL_URL = (
 
 class DependencySourcesTest(unittest.TestCase):
     def test_checkpoint_transport_changes_without_changing_model_identity(self):
+        """Keep the checkpoint digest and runtime gates when transport changes."""
         dockerfile = (ROOT / "backend/Dockerfile").read_text()
         self.assertIn(f'ARG BEAT_THIS_MODEL_URL="{MODEL_URL}"', dockerfile)
         self.assertIn(f'ARG BEAT_THIS_MODEL_SHA256="{MODEL_SHA256}"', dockerfile)
@@ -31,6 +32,7 @@ class DependencySourcesTest(unittest.TestCase):
         )
 
     def test_compose_builds_official_pinned_storage_sources(self):
+        """Require verified storage sources without changing the default image."""
         dockerfile = (ROOT / "backend/Dockerfile").read_text()
         for filename in ("docker-compose.yml", "docker-compose.local-low-memory.yml"):
             with self.subTest(compose=filename):
