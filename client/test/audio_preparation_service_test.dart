@@ -17,6 +17,30 @@ class _Downloads implements LocalAudioArtifactResolver {
   Future<String?> localAudioPath(int trackId) async => path;
 }
 
+// Hold the pre-cache lookup independently for each track. Returning null still
+// exercises the real cache miss, staged file verification and lease acquisition.
+class _GatedDownloadMisses implements LocalAudioArtifactResolver {
+  final entered = <int>[];
+  final _gates = <int, Completer<String?>>{
+    1: Completer<String?>(),
+    2: Completer<String?>(),
+  };
+
+  @override
+  Future<String?> localAudioPath(int trackId) {
+    entered.add(trackId);
+    return _gates[trackId]?.future ?? Future<String?>.value();
+  }
+
+  void allow(int trackId) => _gates[trackId]!.complete(null);
+
+  void allowAll() {
+    for (final gate in _gates.values) {
+      if (!gate.isCompleted) gate.complete(null);
+    }
+  }
+}
+
 void main() {
   late Directory dir;
   late FakePlaybackCacheStore store;
@@ -102,16 +126,48 @@ void main() {
   test(
       'horizon selects nearby assets within explicit time count and byte budgets',
       () async {
+    final misses = _GatedDownloadMisses();
     final downloaded = <int>[];
+    final downloadStarted = {
+      1: Completer<void>(),
+      2: Completer<void>(),
+    };
+    final downloadGates = {
+      1: Completer<void>(),
+      2: Completer<void>(),
+    };
+    final delivered = <PreparedAudioAsset>[];
+    var running = 0;
+    var peak = 0;
     final cache = PlaybackCacheManager(
       store: store,
       cacheDirectoryProvider: () async => dir.path,
       downloader: (url, path, {cancelToken, onProgress}) async {
-        downloaded.add(int.parse(Uri.parse(url).pathSegments.last));
-        await File(path).writeAsBytes(List.filled(100, 1));
+        final id = int.parse(Uri.parse(url).pathSegments.last);
+        downloaded.add(id);
+        running++;
+        if (running > peak) peak = running;
+        downloadStarted[id]?.complete();
+        try {
+          await downloadGates[id]?.future;
+          await File(path).writeAsBytes(List.filled(100, id));
+        } finally {
+          running--;
+        }
       },
     );
-    final service = AudioPreparationService(cache: cache);
+    final service =
+        AudioPreparationService(cache: cache, explicitDownloads: misses);
+    addTearDown(() async {
+      misses.allowAll();
+      for (final gate in downloadGates.values) {
+        if (!gate.isCompleted) gate.complete();
+      }
+      await service.dispose();
+      for (final asset in delivered) {
+        await asset.release();
+      }
+    });
     final requests = service.prepareHorizon([
       AudioPreparationCandidate(audio(9),
           startsIn: const Duration(seconds: 90)),
@@ -121,13 +177,138 @@ void main() {
       AudioPreparationCandidate(audio(3),
           startsIn: const Duration(seconds: 30)),
     ], maxAhead: const Duration(seconds: 40), maxAssets: 3, maxBytes: 200);
-    final assets = await Future.wait(requests.map((request) => request.future));
-    expect(downloaded, [1, 2]);
+    final futures = requests
+        .map((request) => request.future.then((asset) {
+              delivered.add(asset);
+              return asset;
+            }))
+        .toList();
+    final allAssets = Future.wait(futures);
+
+    // Admission is nearest-first, even though the real cache miss for track 1
+    // is held while the second worker reaches its downloader first.
+    expect(requests, hasLength(2));
+    expect(misses.entered, [1, 2]);
+    expect(downloaded, isEmpty);
+    misses.allow(2);
+    await downloadStarted[2]!.future;
+    expect(downloaded, [2]);
+    misses.allow(1);
+    await downloadStarted[1]!.future;
+    expect(downloaded, [2, 1]);
+    expect(running, 2);
+    expect(peak, 2);
+
+    // Complete in the opposite order to admission as well. Waiting for the
+    // actual asset proves cache verification/pinning finished, not just IO.
+    downloadGates[2]!.complete();
+    await futures[1];
+    expect(delivered.map((asset) => asset.identity.trackId), [2]);
+    downloadGates[1]!.complete();
+    final assets = await allAssets;
+    expect(delivered.map((asset) => asset.identity.trackId), [2, 1]);
+    expect(assets.map((asset) => asset.identity), [
+      AudioAssetIdentity.original(audio(1)),
+      AudioAssetIdentity.original(audio(2))
+    ]);
+    expect(await cache.currentSizeBytes(), 200);
     for (final asset in assets) {
+      expect(asset.ownership, PreparedAudioOwnership.playbackCache);
+      expect(asset.sizeBytes, 100);
+      expect(await File(asset.localPath).readAsBytes(),
+          List.filled(100, asset.identity.trackId));
       await asset.release();
     }
-    await service.dispose();
+    // Selection is exact; downloader invocation order is not the horizon's
+    // ordering contract when two admitted workers perform asynchronous IO.
+    expect(downloaded, unorderedEquals([1, 2]));
   });
+
+  for (final scenario in [
+    (
+      name: 'time',
+      candidates: [
+        AudioPreparationCandidate(audio(9),
+            startsIn: const Duration(seconds: 90)),
+        AudioPreparationCandidate(audio(3),
+            startsIn: const Duration(seconds: 40)),
+        AudioPreparationCandidate(audio(8),
+            startsIn: const Duration(seconds: -1)),
+        AudioPreparationCandidate(audio(2),
+            startsIn: const Duration(seconds: 20)),
+      ],
+      maxAssets: 10,
+      maxBytes: 1000,
+      expected: [2, 3],
+    ),
+    (
+      name: 'count',
+      candidates: [
+        AudioPreparationCandidate(audio(3),
+            startsIn: const Duration(seconds: 30)),
+        AudioPreparationCandidate(audio(2),
+            startsIn: const Duration(seconds: 20)),
+        AudioPreparationCandidate(audio(1),
+            startsIn: const Duration(seconds: 1)),
+      ],
+      maxAssets: 2,
+      maxBytes: 1000,
+      expected: [1, 2],
+    ),
+    (
+      name: 'bytes',
+      candidates: [
+        AudioPreparationCandidate(audio(2, size: 150),
+            startsIn: const Duration(seconds: 20)),
+        AudioPreparationCandidate(audio(3),
+            startsIn: const Duration(seconds: 30)),
+        AudioPreparationCandidate(audio(1),
+            startsIn: const Duration(seconds: 1)),
+      ],
+      maxAssets: 10,
+      maxBytes: 200,
+      expected: [1, 3],
+    ),
+  ]) {
+    test('horizon independently enforces the ${scenario.name} budget',
+        () async {
+      final downloaded = <int>[];
+      final cache = PlaybackCacheManager(
+        store: store,
+        cacheDirectoryProvider: () async => dir.path,
+        downloader: (url, path, {cancelToken, onProgress}) async {
+          final id = int.parse(Uri.parse(url).pathSegments.last);
+          downloaded.add(id);
+          final descriptor = scenario.candidates
+              .firstWhere((candidate) => candidate.descriptor.trackId == id)
+              .descriptor;
+          await File(path).writeAsBytes(List.filled(descriptor.sizeBytes!, id));
+        },
+      );
+      final service = AudioPreparationService(cache: cache);
+      final assets = <PreparedAudioAsset>[];
+      addTearDown(() async {
+        await service.dispose();
+        for (final asset in assets) {
+          await asset.release();
+        }
+      });
+      final requests = service.prepareHorizon(scenario.candidates,
+          maxAhead: const Duration(seconds: 40),
+          maxAssets: scenario.maxAssets,
+          maxBytes: scenario.maxBytes);
+      expect(requests, hasLength(scenario.expected.length));
+      assets
+          .addAll(await Future.wait(requests.map((request) => request.future)));
+      final expectedIdentities = scenario.expected.map((id) =>
+          AudioAssetIdentity.original(scenario.candidates
+              .firstWhere((candidate) => candidate.descriptor.trackId == id)
+              .descriptor));
+      expect(assets.map((asset) => asset.identity), expectedIdentities);
+      expect(downloaded, unorderedEquals(scenario.expected));
+      expect(await cache.currentSizeBytes(), 200);
+    });
+  }
 
   test(
       'cancelled running work keeps its worker occupied until shared download settles',
