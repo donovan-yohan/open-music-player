@@ -1,3 +1,5 @@
+import '../../../shared/widgets/app_snack_bar.dart';
+
 import 'dart:async';
 
 import 'package:audio_service/audio_service.dart' show MediaItem;
@@ -226,7 +228,8 @@ class MiniPlayer extends StatelessWidget {
     final trackId = int.tryParse(mediaItemId);
     if (trackId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('This track is not in your library yet')),
+        const AppSnackBar(
+            content: Text('This track is not in your library yet')),
       );
       return;
     }

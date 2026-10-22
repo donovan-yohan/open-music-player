@@ -26,6 +26,7 @@ import '../core/share/shared_url_parser.dart';
 import '../providers/queue_provider.dart';
 import 'router.dart';
 import 'theme.dart';
+import '../shared/widgets/app_snack_bar.dart';
 
 class OpenMusicPlayerApp extends ConsumerStatefulWidget {
   final ApiClient apiClient;
@@ -206,7 +207,7 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
               playbackState: widget.playbackState,
               navigation: navigation,
             ),
-            child: child ?? const SizedBox.shrink(),
+            child: AppFeedbackTheme(child: child ?? const SizedBox.shrink()),
           );
         },
       ),

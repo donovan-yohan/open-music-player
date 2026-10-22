@@ -11,6 +11,7 @@ import 'package:open_music_player/core/auth/auth_state.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/features/auth/screens/login_screen.dart';
 import 'package:open_music_player/features/auth/screens/register_screen.dart';
+import 'package:open_music_player/shared/widgets/app_snack_bar.dart';
 import 'package:provider/provider.dart';
 
 Future<void> pumpAuth(WidgetTester tester, Widget screen,
@@ -48,6 +49,60 @@ Future<void> pumpAuth(WidgetTester tester, Widget screen,
 }
 
 void main() {
+  for (final registration in [false, true]) {
+    testWidgets(
+        'auth failure stays bounded and dismissible registration=$registration',
+        (tester) async {
+      final auth = _SubmissionAuth(
+          failure:
+              List.filled(80, 'The service could not complete this request.')
+                  .join(' '));
+      addTearDown(auth.dispose);
+      await pumpAuth(
+          tester,
+          AppFeedbackTheme(
+              child:
+                  registration ? const RegisterScreen() : const LoginScreen()),
+          size: const Size(960, 640),
+          scale: 2,
+          auth: auth);
+      final fields = find.byType(TextFormField);
+      if (registration) {
+        await tester.enterText(fields.at(0), 'listener');
+        await tester.enterText(fields.at(1), 'listener@example.com');
+        await tester.enterText(fields.at(2), 'fixture-password');
+        await tester.enterText(fields.at(3), 'fixture-password');
+      } else {
+        await tester.enterText(fields.first, 'listener@example.com');
+        await tester.enterText(fields.last, 'fixture-password');
+      }
+      await tester.ensureVisible(find.byType(FilledButton));
+      await tester.tap(find.byType(FilledButton));
+      await tester.pump();
+      auth.finish(false);
+      await tester.pumpAndSettle();
+      final close = find.byTooltip('Close');
+      expect(close.hitTestable(), findsOneWidget);
+      final notification = find
+          .descendant(
+              of: find.byType(SnackBar), matching: find.byType(Material))
+          .first;
+      expect(tester.getRect(notification).width, 400);
+      expect(tester.getRect(notification).top, greaterThanOrEqualTo(0));
+      final scrollable = find
+          .descendant(
+              of: find.byType(SnackBar), matching: find.byType(Scrollable))
+          .first;
+      expect(tester.state<ScrollableState>(scrollable).position.maxScrollExtent,
+          greaterThan(0));
+      await tester.tap(close);
+      await tester.pumpAndSettle();
+      expect(find.byType(SnackBar), findsNothing);
+      expect(auth.calls, 1);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets(
       'login retains autofill, next focus, keyboard submission and loading',
       (tester) async {
@@ -331,11 +386,12 @@ void main() {
 
 // Screen contract fake: no HTTP, token writes or real account credentials.
 class _SubmissionAuth extends AuthState {
-  _SubmissionAuth()
+  _SubmissionAuth({this.failure = 'Fixture sign-in failure'})
       : super(
             authService:
                 AuthService(api: ApiClient(), storage: SecureStorage()));
   final _result = Completer<bool>();
+  final String failure;
   bool _loading = false;
   String? _message;
   int calls = 0;
@@ -353,7 +409,7 @@ class _SubmissionAuth extends AuthState {
     notifyListeners();
     final result = await _result.future;
     _loading = false;
-    _message = result ? null : 'Fixture sign-in failure';
+    _message = result ? null : failure;
     notifyListeners();
     return result;
   }

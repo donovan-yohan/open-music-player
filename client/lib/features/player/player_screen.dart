@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import 'dart:async';
 
 import 'package:audio_service/audio_service.dart' show MediaItem;
@@ -292,7 +294,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
     if (result == null) return;
     messenger.showSnackBar(
-      const SnackBar(
+      const AppSnackBar(
         content: Text('Updated metadata. The player refreshes on replay.'),
       ),
     );
@@ -647,7 +649,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   } catch (_) {
                     if (!context.mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
+                      const AppSnackBar(
                         content: Text('Could not update liked status'),
                       ),
                     );
@@ -675,7 +677,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   } catch (_) {
                     if (!context.mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
+                      const AppSnackBar(
                         content: Text('Could not open the share sheet'),
                       ),
                     );

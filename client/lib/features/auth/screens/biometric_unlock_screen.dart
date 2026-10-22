@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/auth/auth_state.dart';
+import '../../../shared/widgets/app_snack_bar.dart';
 
 class BiometricUnlockScreen extends StatefulWidget {
   const BiometricUnlockScreen({super.key});
@@ -34,7 +35,7 @@ class _BiometricUnlockScreenState extends State<BiometricUnlockScreen> {
       context.go(next);
     } else if (authState.error != null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(authState.error!),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),

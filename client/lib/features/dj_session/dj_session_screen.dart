@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import '../../shared/widgets/now_playing_row.dart';
 import 'dart:async';
 import 'dart:math';
@@ -384,7 +386,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
       if (!mounted) return;
       setState(() => _pendingPinBlockId = null);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content:
               Text(wasPinned ? "Couldn't unpin" : "Couldn't pin that vibe"),
         ),
@@ -476,7 +478,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
     if (pending.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Everything here is already queued')),
+          const AppSnackBar(content: Text('Everything here is already queued')),
         );
       }
       return;
@@ -502,18 +504,19 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
     final messenger = ScaffoldMessenger.of(context);
     if (enqueued == 0) {
       messenger.showSnackBar(
-        const SnackBar(content: Text('Everything here is already queued')),
+        const AppSnackBar(content: Text('Everything here is already queued')),
       );
       return;
     }
     if (enqueued < pending.length) {
       messenger.showSnackBar(
-        SnackBar(content: Text('Queued $enqueued of ${pending.length} tracks')),
+        AppSnackBar(
+            content: Text('Queued $enqueued of ${pending.length} tracks')),
       );
       return;
     }
     messenger.showSnackBar(
-      SnackBar(content: Text('Session queued · $enqueued tracks')),
+      AppSnackBar(content: Text('Session queued · $enqueued tracks')),
     );
   }
 
@@ -550,7 +553,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
     if (!mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
+      AppSnackBar(
         content: Text(playNext ? 'Playing next' : 'Added to queue'),
       ),
     );

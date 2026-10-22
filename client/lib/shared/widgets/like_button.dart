@@ -1,3 +1,5 @@
+import 'app_snack_bar.dart';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -76,7 +78,7 @@ class LikeToggleButton extends StatelessWidget {
       await likedState.toggle(trackId);
     } catch (_) {
       messenger.showSnackBar(
-        const SnackBar(content: Text('Could not update liked status')),
+        const AppSnackBar(content: Text('Could not update liked status')),
       );
     }
   }

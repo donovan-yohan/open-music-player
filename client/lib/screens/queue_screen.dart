@@ -1,3 +1,5 @@
+import '../shared/widgets/app_snack_bar.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -1037,7 +1039,7 @@ class _QueueScreenState extends State<QueueScreen> {
       }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not play "${entry.item.title}"')),
+        AppSnackBar(content: Text('Could not play "${entry.item.title}"')),
       );
     }
   }
@@ -1051,7 +1053,7 @@ class _QueueScreenState extends State<QueueScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not remove "${entry.item.title}"')),
+        AppSnackBar(content: Text('Could not remove "${entry.item.title}"')),
       );
     }
   }
@@ -1516,7 +1518,7 @@ class _QueueScreenState extends State<QueueScreen> {
       final message = playback.playbackError ?? 'Playback failed to start.';
       ScaffoldMessenger.of(
         this.context,
-      ).showSnackBar(SnackBar(content: Text(message)));
+      ).showSnackBar(AppSnackBar(content: Text(message)));
     }
   }
 
@@ -1638,7 +1640,7 @@ class _QueueScreenState extends State<QueueScreen> {
     final trackIds = saveableQueueTrackIds(context.read<PlaybackState>().queue);
     if (trackIds.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No saveable tracks in the queue')),
+        const AppSnackBar(content: Text('No saveable tracks in the queue')),
       );
       return Future.value();
     }
@@ -1672,7 +1674,7 @@ class _QueueScreenState extends State<QueueScreen> {
   }) async {
     if (!_canEditAnalysis(track)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No analysis target for "${track.title}"')),
+        AppSnackBar(content: Text('No analysis target for "${track.title}"')),
       );
       return;
     }
@@ -1693,7 +1695,7 @@ class _QueueScreenState extends State<QueueScreen> {
     } catch (_) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
+          AppSnackBar(
             content: Text(
               'Could not load the latest analysis for "${track.title}".',
             ),
@@ -1903,7 +1905,8 @@ class _QueueScreenState extends State<QueueScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(this.context).showSnackBar(
-        SnackBar(content: Text('Could not save analysis for "${track.title}"')),
+        AppSnackBar(
+            content: Text('Could not save analysis for "${track.title}"')),
       );
     }
   }

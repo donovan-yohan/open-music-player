@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -80,7 +82,7 @@ class _ListeningHistoryScreenState extends State<ListeningHistoryScreen> {
       if (!mounted) return;
       setState(() => _isLoadingMore = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not load more history')),
+        const AppSnackBar(content: Text('Could not load more history')),
       );
     }
   }
@@ -98,7 +100,7 @@ class _ListeningHistoryScreenState extends State<ListeningHistoryScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(playback.playbackError ?? 'Could not play this track.'),
         ),
       );

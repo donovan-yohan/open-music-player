@@ -1,3 +1,5 @@
+import '../../../shared/widgets/app_snack_bar.dart';
+
 import 'package:flutter/material.dart';
 import '../../../core/audio/playback_state.dart';
 
@@ -7,7 +9,7 @@ Future<void> cancelRadio(BuildContext context, PlaybackState playback) async {
     await playback.pause();
   } catch (_) {
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+    ScaffoldMessenger.of(context).showSnackBar(const AppSnackBar(
       content: Text('Could not pause playback. Please try again.'),
     ));
   }
