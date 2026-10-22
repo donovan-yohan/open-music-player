@@ -113,7 +113,11 @@ func (s *Service) queueKey(userID string) string {
 
 // GetQueue retrieves the current queue for a user
 func (s *Service) GetQueue(ctx context.Context, userID string) (*QueueState, error) {
-	data, err := s.client.Get(ctx, s.queueKey(userID)).Result()
+	return s.loadQueue(ctx, s.client, userID)
+}
+
+func (s *Service) loadQueue(ctx context.Context, client redis.Cmdable, userID string) (*QueueState, error) {
+	data, err := client.Get(ctx, s.queueKey(userID)).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			// Return empty queue if none exists
@@ -136,11 +140,6 @@ func (s *Service) GetQueue(ctx context.Context, userID string) (*QueueState, err
 
 // AddToQueue adds a track to the queue
 func (s *Service) AddToQueue(ctx context.Context, userID string, trackID int64, position string) (*QueueState, error) {
-	state, err := s.GetQueue(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-
 	now := time.Now()
 	trackIDCopy := trackID
 	newItem := QueueItem{
@@ -156,24 +155,17 @@ func (s *Service) AddToQueue(ctx context.Context, userID string, trackID int64, 
 		UpdatedAt:     now,
 	}
 
-	insertIdx, adjustCurrent, err := resolveInsertPosition(state, position)
-	if err != nil {
-		return nil, err
-	}
-	state.Items = insertAt(state.Items, insertIdx, newItem)
-	if adjustCurrent {
-		state.CurrentPosition++
-	}
-
-	// Recalculate positions
-	s.recalculatePositions(state)
-	state.UpdatedAt = time.Now()
-
-	if err := s.saveQueue(ctx, userID, state); err != nil {
-		return nil, err
-	}
-
-	return state, nil
+	return s.mutateQueue(ctx, userID, func(state *QueueState) (queueMutation, error) {
+		insertIdx, adjustCurrent, err := resolveInsertPosition(state, position)
+		if err != nil {
+			return queueUnchanged, err
+		}
+		state.Items = insertAt(state.Items, insertIdx, newItem)
+		if adjustCurrent {
+			state.CurrentPosition++
+		}
+		return queueWrite, nil
+	})
 }
 
 // ValidateInsertPosition verifies that a queue insertion position can be
@@ -217,16 +209,6 @@ func (s *Service) AddSourceCandidate(ctx context.Context, userID string, candida
 // EnsureSourceCandidateWithID adds one source item for a durable intent. The
 // stable item ID keeps restart recovery idempotent.
 func (s *Service) EnsureSourceCandidateWithID(ctx context.Context, userID, queueItemID string, candidate SourceCandidate, downloadJobID, position string) (*QueueState, error) {
-	state, err := s.GetQueue(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	for _, item := range state.Items {
-		if item.ID == queueItemID || item.DownloadJobID == downloadJobID {
-			return state, nil
-		}
-	}
-
 	now := time.Now()
 	newItem := QueueItem{
 		ID:            queueItemID,
@@ -242,30 +224,26 @@ func (s *Service) EnsureSourceCandidateWithID(ctx context.Context, userID, queue
 		UpdatedAt:     now,
 	}
 
-	insertIdx, adjustCurrent, err := resolveInsertPosition(state, position)
-	if err != nil {
-		return nil, err
-	}
-	state.Items = insertAt(state.Items, insertIdx, newItem)
-	if adjustCurrent {
-		state.CurrentPosition++
-	}
-
-	s.recalculatePositions(state)
-	state.UpdatedAt = time.Now()
-	if err := s.saveQueue(ctx, userID, state); err != nil {
-		return nil, err
-	}
-	return state, nil
+	return s.mutateQueue(ctx, userID, func(state *QueueState) (queueMutation, error) {
+		for _, item := range state.Items {
+			if item.ID == queueItemID || item.DownloadJobID == downloadJobID {
+				return queueUnchanged, nil
+			}
+		}
+		insertIdx, adjustCurrent, err := resolveInsertPosition(state, position)
+		if err != nil {
+			return queueUnchanged, err
+		}
+		state.Items = insertAt(state.Items, insertIdx, newItem)
+		if adjustCurrent {
+			state.CurrentPosition++
+		}
+		return queueWrite, nil
+	})
 }
 
 // AddMultipleToQueue adds multiple tracks to the queue (for playlist support)
 func (s *Service) AddMultipleToQueue(ctx context.Context, userID string, trackIDs []int64, position string) (*QueueState, error) {
-	state, err := s.GetQueue(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-
 	now := time.Now()
 	newItems := make([]QueueItem, len(trackIDs))
 	for i, trackID := range trackIDs {
@@ -283,88 +261,60 @@ func (s *Service) AddMultipleToQueue(ctx context.Context, userID string, trackID
 			UpdatedAt:     now,
 		}
 	}
-
-	insertIdx, adjustCurrent, err := resolveInsertPosition(state, position)
-	if err != nil {
-		return nil, err
-	}
-	state.Items = insertMultipleAt(state.Items, insertIdx, newItems)
-	if adjustCurrent {
-		state.CurrentPosition += len(newItems)
-	}
-
-	s.recalculatePositions(state)
-	state.UpdatedAt = time.Now()
-
-	if err := s.saveQueue(ctx, userID, state); err != nil {
-		return nil, err
-	}
-
-	return state, nil
+	return s.mutateQueue(ctx, userID, func(state *QueueState) (queueMutation, error) {
+		insertIdx, adjustCurrent, err := resolveInsertPosition(state, position)
+		if err != nil {
+			return queueUnchanged, err
+		}
+		state.Items = insertMultipleAt(state.Items, insertIdx, newItems)
+		if adjustCurrent {
+			state.CurrentPosition += len(newItems)
+		}
+		return queueWrite, nil
+	})
 }
 
 // RemoveFromQueue removes a track at the specified position
 func (s *Service) RemoveFromQueue(ctx context.Context, userID string, position int) (*QueueState, error) {
-	state, err := s.GetQueue(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
+	return s.mutateQueue(ctx, userID, func(state *QueueState) (queueMutation, error) {
+		return removeQueuePosition(state, position)
+	})
+}
 
+func removeQueuePosition(state *QueueState, position int) (queueMutation, error) {
 	if position < 0 || position >= len(state.Items) {
-		return nil, ErrInvalidPosition
+		return queueUnchanged, ErrInvalidPosition
 	}
-
-	// Remove the item
 	state.Items = append(state.Items[:position], state.Items[position+1:]...)
-
-	// Adjust current position if needed
 	if position < state.CurrentPosition {
 		state.CurrentPosition--
 	} else if position == state.CurrentPosition && state.CurrentPosition >= len(state.Items) {
-		// If we removed the current track and it was the last one, move back
 		if len(state.Items) > 0 {
 			state.CurrentPosition = len(state.Items) - 1
 		} else {
 			state.CurrentPosition = 0
 		}
 	}
-
-	s.recalculatePositions(state)
-	state.UpdatedAt = time.Now()
-
-	if err := s.saveQueue(ctx, userID, state); err != nil {
-		return nil, err
-	}
-
-	return state, nil
+	return queueWrite, nil
 }
 
 // ReorderQueue moves a track from one position to another
 func (s *Service) ReorderQueue(ctx context.Context, userID string, fromPos, toPos int) (*QueueState, error) {
-	state, err := s.GetQueue(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
+	return s.mutateQueue(ctx, userID, func(state *QueueState) (queueMutation, error) {
+		return reorderQueuePositions(state, fromPos, toPos)
+	})
+}
 
-	if fromPos < 0 || fromPos >= len(state.Items) {
-		return nil, ErrInvalidPosition
+func reorderQueuePositions(state *QueueState, fromPos, toPos int) (queueMutation, error) {
+	if fromPos < 0 || fromPos >= len(state.Items) || toPos < 0 || toPos >= len(state.Items) {
+		return queueUnchanged, ErrInvalidPosition
 	}
-	if toPos < 0 || toPos >= len(state.Items) {
-		return nil, ErrInvalidPosition
-	}
-
 	if fromPos == toPos {
-		return state, nil
+		return queueUnchanged, nil
 	}
-
-	// Remove item from original position
 	item := state.Items[fromPos]
 	state.Items = append(state.Items[:fromPos], state.Items[fromPos+1:]...)
-
-	// Insert at new position
 	state.Items = insertAt(state.Items, toPos, item)
-
-	// Adjust current position
 	if state.CurrentPosition == fromPos {
 		state.CurrentPosition = toPos
 	} else if fromPos < state.CurrentPosition && toPos >= state.CurrentPosition {
@@ -372,43 +322,31 @@ func (s *Service) ReorderQueue(ctx context.Context, userID string, fromPos, toPo
 	} else if fromPos > state.CurrentPosition && toPos <= state.CurrentPosition {
 		state.CurrentPosition++
 	}
-
-	s.recalculatePositions(state)
-	state.UpdatedAt = time.Now()
-
-	if err := s.saveQueue(ctx, userID, state); err != nil {
-		return nil, err
-	}
-
-	return state, nil
+	return queueWrite, nil
 }
 
 // RemoveQueueItem removes the queue item with the specified server ID.
 func (s *Service) RemoveQueueItem(ctx context.Context, userID, queueItemID string) (*QueueState, error) {
-	state, err := s.GetQueue(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	for _, item := range state.Items {
-		if item.ID == queueItemID {
-			return s.RemoveFromQueue(ctx, userID, item.Position)
+	return s.mutateQueue(ctx, userID, func(state *QueueState) (queueMutation, error) {
+		for i, item := range state.Items {
+			if item.ID == queueItemID {
+				return removeQueuePosition(state, i)
+			}
 		}
-	}
-	return nil, ErrTrackNotFound
+		return queueUnchanged, ErrTrackNotFound
+	})
 }
 
 // ReorderQueueItem moves a queue item by server ID.
 func (s *Service) ReorderQueueItem(ctx context.Context, userID, queueItemID string, toPos int) (*QueueState, error) {
-	state, err := s.GetQueue(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	for _, item := range state.Items {
-		if item.ID == queueItemID {
-			return s.ReorderQueue(ctx, userID, item.Position, toPos)
+	return s.mutateQueue(ctx, userID, func(state *QueueState) (queueMutation, error) {
+		for i, item := range state.Items {
+			if item.ID == queueItemID {
+				return reorderQueuePositions(state, i, toPos)
+			}
 		}
-	}
-	return nil, ErrTrackNotFound
+		return queueUnchanged, ErrTrackNotFound
+	})
 }
 
 // QueueItemDownloadJobID returns the download job backing a queue item without
@@ -434,48 +372,110 @@ func (s *Service) QueueItemDownloadJobID(ctx context.Context, userID, queueItemI
 
 // RetryQueueItem marks a failed download-backed item as queued again.
 func (s *Service) RetryQueueItem(ctx context.Context, userID, queueItemID string) (*QueueState, string, error) {
-	state, err := s.GetQueue(ctx, userID)
+	jobID := ""
+	state, err := s.mutateQueue(ctx, userID, func(state *QueueState) (queueMutation, error) {
+		for i := range state.Items {
+			item := &state.Items[i]
+			if item.ID != queueItemID || item.DownloadJobID == "" {
+				continue
+			}
+			item.PlaybackState = "queued"
+			item.Progress = 0
+			item.Error = ""
+			item.CanPlay = false
+			item.CanRetry = false
+			item.CanRemove = true
+			item.UpdatedAt = time.Now()
+			jobID = item.DownloadJobID
+			return queueWrite, nil
+		}
+		return queueUnchanged, ErrTrackNotFound
+	})
 	if err != nil {
 		return nil, "", err
 	}
-	for i := range state.Items {
-		item := &state.Items[i]
-		if item.ID != queueItemID {
-			continue
-		}
-		if item.DownloadJobID == "" {
-			return nil, "", ErrTrackNotFound
-		}
-		item.PlaybackState = "queued"
-		item.Progress = 0
-		item.Error = ""
-		item.CanPlay = false
-		item.CanRetry = false
-		item.CanRemove = true
-		item.UpdatedAt = time.Now()
-		state.UpdatedAt = item.UpdatedAt
-		s.recalculatePositions(state)
-		if err := s.saveQueue(ctx, userID, state); err != nil {
-			return nil, "", err
-		}
-		return state, item.DownloadJobID, nil
-	}
-	return nil, "", ErrTrackNotFound
+	return state, jobID, nil
 }
 
 // ClearQueue clears all items from the queue
 func (s *Service) ClearQueue(ctx context.Context, userID string) error {
-	return s.client.Del(ctx, s.queueKey(userID)).Err()
+	_, err := s.mutateQueue(ctx, userID, func(state *QueueState) (queueMutation, error) {
+		state.Items = []QueueItem{}
+		state.CurrentPosition = 0
+		return queueDelete, nil
+	})
+	return err
 }
 
-// saveQueue saves the queue state to Redis with TTL
-func (s *Service) saveQueue(ctx context.Context, userID string, state *QueueState) error {
-	data, err := json.Marshal(state)
-	if err != nil {
-		return fmt.Errorf("failed to marshal queue: %w", err)
-	}
+type queueMutation uint8
 
-	return s.client.Set(ctx, s.queueKey(userID), data, queueTTL).Err()
+const (
+	queueUnchanged queueMutation = iota
+	queueWrite
+	queueDelete
+	maxQueueMutationAttempts = 32
+)
+
+// mutateQueue is the only queue write authority. Each attempt reads and edits
+// the value watched by this transaction; callbacks must have no external side
+// effects and must not retain state between attempts. In particular, stable IDs
+// must be resolved again here, never translated to positions before WATCH.
+func (s *Service) mutateQueue(ctx context.Context, userID string, mutate func(*QueueState) (queueMutation, error)) (*QueueState, error) {
+	key := s.queueKey(userID)
+	for attempt := 0; attempt < maxQueueMutationAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var result *QueueState
+		err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+			state, err := s.loadQueue(ctx, tx, userID)
+			if err != nil {
+				return err
+			}
+			action, err := mutate(state)
+			if err != nil {
+				return err
+			}
+			if action == queueUnchanged {
+				result = state
+				return nil
+			}
+			var data []byte
+			if action == queueWrite {
+				s.recalculatePositions(state)
+				state.UpdatedAt = time.Now()
+				data, err = json.Marshal(state)
+				if err != nil {
+					return fmt.Errorf("failed to marshal queue: %w", err)
+				}
+			}
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				if action == queueDelete {
+					pipe.Del(ctx, key)
+				} else {
+					pipe.Set(ctx, key, data, queueTTL)
+				}
+				return nil
+			})
+			if err == nil {
+				result = state
+			}
+			return err
+		}, key)
+		if !errors.Is(err, redis.TxFailedErr) {
+			return result, err
+		}
+		if attempt+1 < maxQueueMutationAttempts {
+			delay := time.NewTimer(time.Duration(min(attempt+1, 10)) * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				delay.Stop()
+				return nil, ctx.Err()
+			case <-delay.C:
+			}
+		}
+	}
+	return nil, fmt.Errorf("queue mutation conflicted after %d attempts: %w", maxQueueMutationAttempts, redis.TxFailedErr)
 }
 
 // recalculatePositions updates the position field for all items

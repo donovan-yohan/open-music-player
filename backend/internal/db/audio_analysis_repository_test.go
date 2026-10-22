@@ -20,6 +20,62 @@ func newPostgresAnalysisTestDB(t *testing.T) (*DB, context.Context) {
 		"TRUNCATE TABLE tracks RESTART IDENTITY CASCADE")
 }
 
+func TestAnalysisRepositoryDuplicateRequestPreservesPublishedAnalysisAgainstPostgres(t *testing.T) {
+	database, ctx := newPostgresAnalysisTestDB(t)
+	track, _, err := NewTrackRepository(database).CreateTrackFromMetadata(ctx, "Canonical Artist", "Canonical Song", "", 123000, WithStorage("tracks/canonical-a.wav", 4096))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewAnalysisRepository(database)
+	canonical := json.RawMessage(`{"source":{"storage_key":"tracks/canonical-a.wav","source_file_hash":"canonical-a"}}`)
+	queued, err := repo.RequestAnalysisIfNeeded(ctx, track.ID, canonical)
+	if err != nil || !queued {
+		t.Fatalf("initial request = %v, %v; want scheduled", queued, err)
+	}
+	queued, err = repo.RequestAnalysisIfNeeded(ctx, track.ID, json.RawMessage(`{"source":{"storage_key":"tracks/candidate-b.wav"}}`))
+	if err != nil || queued {
+		t.Fatalf("duplicate pending request = %v, %v; want no work", queued, err)
+	}
+	if err := repo.MarkAnalyzing(ctx, track.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.MarkAnalyzing(ctx, track.ID, nil); !errors.Is(err, ErrAnalysisResultSuperseded) {
+		t.Fatalf("duplicate active claim = %v; want rejected", err)
+	}
+	if err := repo.StoreResult(ctx, track.ID, AnalysisResult{SummaryJSON: json.RawMessage(`{"bpm":{"value":124}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := repo.GetByTrackID(ctx, track.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err = repo.RequestAnalysisIfNeeded(ctx, track.ID, json.RawMessage(`{"source":{"storage_key":"tracks/candidate-b.wav"}}`))
+	if err != nil || queued {
+		t.Fatalf("analyzed duplicate = %v, %v; want no work", queued, err)
+	}
+	if err := repo.MarkAnalyzing(ctx, track.ID, nil); !errors.Is(err, ErrAnalysisResultSuperseded) {
+		t.Fatalf("published result claim = %v; want rejected", err)
+	}
+	after, err := repo.GetByTrackID(ctx, track.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != AnalysisStatusAnalyzed || string(after.ProvenanceJSON) != string(before.ProvenanceJSON) || string(after.SummaryJSON) != string(before.SummaryJSON) || !after.RequestedAt.Equal(before.RequestedAt) || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("duplicate request mutated published analysis: before=%+v after=%+v", before, after)
+	}
+	var provenance struct {
+		Source struct {
+			StorageKey string `json:"storage_key"`
+		} `json:"source"`
+	}
+	if err := json.Unmarshal(after.ProvenanceJSON, &provenance); err != nil {
+		t.Fatal(err)
+	}
+	if provenance.Source.StorageKey != "tracks/canonical-a.wav" {
+		t.Fatalf("canonical source was overwritten: %s", after.ProvenanceJSON)
+	}
+}
+
 func TestAnalysisRepositoryMarksStaleByAnalyzerVersionAgainstPostgres(t *testing.T) {
 	database, ctx := newPostgresAnalysisTestDB(t)
 	trackRepo := NewTrackRepository(database)
@@ -219,6 +275,9 @@ func TestAnalysisRepositoryManualTimingRevisionConflictsAndResetSurvivesRerunAga
 	}
 	if afterConflict.ManualOverrideRevision != 2 || strings.Contains(string(afterConflict.OverridesJSON), `122`) {
 		t.Fatalf("stale write mutated revision/payload: revision=%d overrides=%s", afterConflict.ManualOverrideRevision, afterConflict.OverridesJSON)
+	}
+	if repair, err := analysisRepo.RequestRepairAnalysis(ctx, track.ID, nil, true, false, time.Minute); err != nil || !repair.Queued {
+		t.Fatalf("request explicit analysis rerun: %+v, %v", repair, err)
 	}
 	if err := analysisRepo.MarkAnalyzing(ctx, track.ID, nil); err != nil {
 		t.Fatalf("mark analysis rerun: %v", err)

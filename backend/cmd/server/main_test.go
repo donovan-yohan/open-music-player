@@ -3,17 +3,93 @@ package main
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/openmusicplayer/backend/internal/analyzer"
+	"github.com/openmusicplayer/backend/internal/api"
+	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/config"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/research"
 )
+
+func TestStemsProductionCompositionIncludesMemberStorage(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "NewStemsHandlers" {
+			return true
+		}
+		calls++
+		if len(call.Args) != 5 {
+			t.Errorf("stem handlers require existing member storage, got %d constructor arguments", len(call.Args))
+			return true
+		}
+		storage, ok := call.Args[4].(*ast.Ident)
+		if !ok || storage.Name != "storageClient" {
+			t.Error("stem member signing must use the existing storage client")
+		}
+		return true
+	})
+	if calls != 1 {
+		t.Fatalf("expected one production stem handler composition, got %d", calls)
+	}
+}
+
+func TestMaintenanceStartupConfiguration(t *testing.T) {
+	id := uuid.MustParse("53b676c8-7b11-4705-89a6-08dcebcbe674")
+	for _, tc := range []struct {
+		name, value string
+		invalid     bool
+		status      int
+	}{
+		{"default_denied", "", false, http.StatusForbidden},
+		{"operator_admitted", id.String(), false, http.StatusServiceUnavailable},
+		{"malformed_fails_startup", id.String() + ",nope", true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("MAINTENANCE_ADMIN_USER_IDS", tc.value)
+			cfg, err := maintenanceStartupConfig(config.Load())
+			if (err != nil) != tc.invalid {
+				t.Fatalf("startup error=%v, invalid=%v", err, tc.invalid)
+			}
+			if tc.invalid {
+				return
+			}
+			handler := api.NewMaintenanceHandlers(nil, nil, cfg)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/maintenance/repair", strings.NewReader(`{}`))
+			req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.UserContext{UserID: id}))
+			response := httptest.NewRecorder()
+			handler.RepairTracks(response, req)
+			if response.Code != tc.status {
+				t.Fatalf("configured handler status=%d, want %d", response.Code, tc.status)
+			}
+		})
+	}
+	if _, err := maintenanceStartupConfig(nil); err == nil {
+		t.Fatal("nil config passed startup validation")
+	}
+}
 
 func TestDiscoveryServiceConfigFromEnvDefaults(t *testing.T) {
 	cfg := discoveryServiceConfigFromEnv(func(string) string { return "" })

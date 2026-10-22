@@ -49,7 +49,7 @@ type metadataMatcher interface {
 
 // AnalysisStore is the audio-analysis persistence surface used by Processor.
 type AnalysisStore interface {
-	RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error
+	RequestAnalysisIfNeeded(ctx context.Context, trackID int64, provenance json.RawMessage) (bool, error)
 	MarkAnalyzing(ctx context.Context, trackID int64, provenance json.RawMessage) error
 	StoreResult(ctx context.Context, trackID int64, result db.AnalysisResult) error
 	MarkFailed(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error
@@ -218,7 +218,7 @@ func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, prog
 	log.Printf("Processing job %s: adding to library", job.ID)
 	job.Status = download.StatusUploading
 	if err := p.addToLibrary(ctx, job.UserID, track.ID); err != nil {
-		log.Printf("Warning: failed to add track %d to library: %v", track.ID, err)
+		return fmt.Errorf("library insertion failed: %w", err)
 	}
 	if err := p.attachTrackToPlaylistIntent(ctx, job, track.ID); err != nil {
 		// Only the import intent reaches here: a pick swallows its own failures
@@ -1202,9 +1202,23 @@ func (p *Processor) markPlaylistImportFailed(ctx context.Context, job *download.
 	}
 }
 
-func (p *Processor) enqueueAnalysis(ctx context.Context, track *db.Track, metadata *TrackMetadata) {
-	if p.analysisRepo == nil || p.analyzerClient == nil || track == nil || metadata == nil {
+func (p *Processor) enqueueAnalysis(ctx context.Context, track *db.Track, _ *TrackMetadata) {
+	if p.analysisRepo == nil || p.analyzerClient == nil || track == nil {
 		return
+	}
+	// Dedupe may return an older canonical object. Candidate metadata describes
+	// the discarded upload and must not identify the bytes being analyzed.
+	metadata := trackMetadataFromDBTrack(track)
+	if metadata.StorageKey == "" {
+		return
+	}
+	sourceFileHash := ""
+	if p.trackRepo != nil {
+		var err error
+		sourceFileHash, err = p.trackRepo.GetSourceFileHash(ctx, track.ID)
+		if err != nil {
+			log.Printf("Warning: failed to read canonical source hash for track %d: %v", track.ID, err)
+		}
 	}
 	expectedAnalyzer, expectedVersion := p.analyzerIdentity()
 	provenance, _ := json.Marshal(map[string]interface{}{
@@ -1212,13 +1226,18 @@ func (p *Processor) enqueueAnalysis(ctx context.Context, track *db.Track, metada
 		"expected_analyzer":         expectedAnalyzer,
 		"expected_analyzer_version": expectedVersion,
 		"source": map[string]interface{}{
-			"storage_key": metadata.StorageKey,
-			"source_type": metadata.SourceType,
-			"duration_ms": metadata.DurationMs,
+			"storage_key":      metadata.StorageKey,
+			"source_file_hash": sourceFileHash,
+			"source_type":      metadata.SourceType,
+			"duration_ms":      metadata.DurationMs,
 		},
 	})
-	if err := p.analysisRepo.RequestAnalysis(ctx, track.ID, provenance); err != nil {
+	shouldSchedule, err := p.analysisRepo.RequestAnalysisIfNeeded(ctx, track.ID, provenance)
+	if err != nil {
 		log.Printf("Warning: failed to request audio analysis for track %d: %v", track.ID, err)
+		return
+	}
+	if !shouldSchedule {
 		return
 	}
 	if p.requireAnalyzerIdentity && expectedAnalyzer == "" {
