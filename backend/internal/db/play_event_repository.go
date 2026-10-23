@@ -164,6 +164,9 @@ func (r *PlayEventRepository) CountRecentSkips(ctx context.Context, userID uuid.
 // row per track at its most recent play), newest first, honoring limit/offset.
 // Skipped events are excluded: a skip is not a listen, so a track whose only
 // events are skips never appears here.
+// Page the aggregate before hydrating tracks and analysis. The track foreign key
+// and one-row-per-track analysis join preserve membership and page cardinality;
+// the outer ORDER BY preserves the same deterministic order after hydration.
 func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]RecentlyPlayedTrack, error) {
 	if limit <= 0 {
 		limit = 20
@@ -192,11 +195,12 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 			   FROM play_events
 			   WHERE user_id = $1 AND NOT skipped
 			   GROUP BY track_id
+			   ORDER BY last_played_at DESC, track_id DESC
+			   LIMIT $2 OFFSET $3
 			   ) pe
 			   JOIN tracks t ON t.id = pe.track_id
 			   LEFT JOIN track_analysis ta ON ta.track_id = t.id
 			   ORDER BY pe.last_played_at DESC, t.id DESC
-			   LIMIT $2 OFFSET $3
 			   `
 
 	rows, err := r.db.QueryContext(ctx, query, userID, limit, offset)
