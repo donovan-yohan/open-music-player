@@ -108,7 +108,7 @@ class PlaybackService : Service() {
         if (busy >= 32) {listener?.invoke(snapshot,"command_backpressure");return}
         val kind = value.optString("command")
         if (kind in listOf("select","resume","retry")) wantsPlayback = true
-        if (kind in listOf("pause","logout","login")) {wantsPlayback = false;try {player?.pause()} catch (_: IllegalStateException) {}}
+        if (kind in listOf("pause","logout","login")) {wantsPlayback = false;if (playerReady) {try {player?.pause()} catch (_: IllegalStateException) {}}}
         val admitted = epoch
         val raw = value.toString()
         busy++
@@ -171,7 +171,7 @@ class PlaybackService : Service() {
                 try { next.setDataSource(effect.getString("path")); next.prepareAsync() }
                 catch (_: Exception) { report("failed") }
             }
-            "pause" -> { try { player?.pause() } catch (_: IllegalStateException) {}; abandonFocus() }
+            "pause" -> { if (playerReady) {try { player?.pause() } catch (_: IllegalStateException) {}}; abandonFocus() }
             "play" -> startPlayer()
             "seek" -> try { nativeTerminalState=null;if (playerReady) player?.seekTo(effect.getLong("position_ms"), MediaPlayer.SEEK_CLOSEST) else pendingSeekMs = effect.getLong("position_ms") } catch (_: IllegalStateException) { report("failed") }
             "stop" -> retireAudio()

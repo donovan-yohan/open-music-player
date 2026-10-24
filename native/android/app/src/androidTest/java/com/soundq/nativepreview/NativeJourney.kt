@@ -108,13 +108,15 @@ class NativeJourney : Instrumentation() {
             onMain {service!!.command(JSONObject().put("command","resume"))}
             waitFor("resume actual cursor") {it.snapshot.optString("transport")=="playing" && it.snapshot.optLong("position_ms")>6200}
             // Re-select same occurrence via one canonical owner, warm bytes.
+            var precedingSession=0L
+            onMain {precedingSession=service!!.snapshot.optLong("session")}
             start = SystemClock.elapsedRealtimeNanos()
             onMain {service!!.select(id)}
-            waitFor("warm cache native decoder advances") {it.snapshot.optString("transport")=="playing" && it.snapshot.optLong("position_ms") in 201..5000}
+            waitFor("warm cache native decoder advances") {it.snapshot.optLong("session")>precedingSession && it.nativePlaying() && it.nativePositionMs() in 201..5000}
             onMain {check(service!!.lastEffectCached) {"warm not cached"}}
             sample("warm_selection_to_first_reported_200ms_cursor",start)
-            onMain {service!!.command(JSONObject().put("command","retry"))}
-            waitFor("retry advances") {it.snapshot.optString("transport")=="playing" && it.snapshot.optLong("position_ms")>200}
+            onMain {precedingSession=service!!.snapshot.optLong("session");service!!.command(JSONObject().put("command","retry"))}
+            waitFor("retry advances") {it.snapshot.optLong("session")>precedingSession && it.nativePlaying() && it.nativePositionMs()>200}
             val controller = MediaController(context,service!!.sessionToken)
             controller.transportControls.pause()
             waitFor("OS media session pause dispatch") {it.snapshot.optString("transport")=="paused" && !it.nativePlaying()}
@@ -132,6 +134,14 @@ class NativeJourney : Instrumentation() {
             waitFor("bound UI absent background playback") {it.snapshot.optString("transport")=="playing" && it.snapshot.optLong("position_ms")>13500}
             controller.transportControls.pause()
             waitFor("final OS pause") {it.snapshot.optString("transport")=="paused"}
+            onMain {precedingSession=service!!.snapshot.optLong("session");service!!.command(JSONObject().put("command","retry"));service!!.command(JSONObject().put("command","pause"))}
+            waitFor("pause while preparing retains healthy decoder") {it.snapshot.optLong("session")>precedingSession && it.snapshot.optString("transport")=="paused" && !it.nativePlaying()}
+            Thread.sleep(650)
+            onMain {check(!service!!.nativePlaying() && service!!.snapshot.optString("transport")!="failed") {"late preparation revived pause or poisoned decoder"}}
+            controller.transportControls.play()
+            waitFor("explicit play after preparation pause") {it.nativePlaying() && it.nativePositionMs()>200}
+            controller.transportControls.pause()
+            waitFor("final native pause") {!it.nativePlaying()}
             result.put("status","passed")
         } catch (error: Throwable) {code = 1; result.put("status","failed").put("failure",error.javaClass.simpleName+": "+error.message)}
         finally {
