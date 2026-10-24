@@ -35,6 +35,26 @@ struct State {
 }
 type Result<T> = std::result::Result<T, &'static str>;
 
+fn container_suffix(content_type: &str) -> Result<&'static str> {
+    match content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "audio/mpeg" => Ok("mp3"),
+        "audio/mp4" => Ok("m4a"),
+        "audio/aac" => Ok("aac"),
+        "audio/wav" | "audio/x-wav" => Ok("wav"),
+        "audio/ogg" => Ok("ogg"),
+        "audio/opus" => Ok("opus"),
+        "audio/flac" | "audio/x-flac" => Ok("flac"),
+        _ => Err("unsupported_container"),
+    }
+}
+
 impl Core {
     pub fn open(endpoint: &str, root: PathBuf) -> Result<Self> {
         if endpoint.bytes().any(|b| b <= 0x20 || b == 0x7f) {
@@ -645,14 +665,7 @@ impl Core {
         if d.size_bytes == 0 || d.size_bytes > MAX_AUDIO_BYTES {
             return Err("audio_too_large");
         }
-        let suffix = match d.content_type.split(';').next().unwrap_or("") {
-            "audio/mpeg" => "mp3",
-            "audio/mp4" | "audio/aac" => "m4a",
-            "audio/wav" | "audio/x-wav" => "wav",
-            "audio/ogg" | "audio/opus" => "opus",
-            "audio/flac" | "audio/x-flac" => "flac",
-            _ => return Err("unsupported_container"),
-        };
+        let suffix = container_suffix(&d.content_type)?;
         let url = reqwest::Url::parse(&d.url).map_err(|_| "invalid_descriptor")?;
         if !matches!(url.scheme(), "https" | "http")
             || !url.username().is_empty()
@@ -802,6 +815,17 @@ mod tests {
         assert_eq!(
             c.execute(Command::Seek { position_ms: 0 }).code,
             "invalid_seek"
+        );
+    }
+    #[test]
+    fn original_codec_containers_keep_their_native_suffix() {
+        assert_eq!(container_suffix("audio/aac"), Ok("aac"));
+        assert_eq!(container_suffix("audio/mp4"), Ok("m4a"));
+        assert_eq!(container_suffix("Audio/OGG; codecs=vorbis"), Ok("ogg"));
+        assert_eq!(container_suffix("audio/opus"), Ok("opus"));
+        assert_eq!(
+            container_suffix("application/octet-stream"),
+            Err("unsupported_container")
         );
     }
 }
