@@ -1,0 +1,4 @@
+module SoundQCore {
+    header "../../core/include/soundq_core.h"
+    export *
+}

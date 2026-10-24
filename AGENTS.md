@@ -64,6 +64,9 @@ See `docs/context-map.md` for the fuller map and harness table.
   `scripts/agentic-cycle --run --evidence /tmp/omp-cycle.json`
 - Release/closeout audit: `scripts/release-audit --pr <number> --issue <number>`
 - Build checks: `scripts/build client` builds the Android arm64 debug APK;
+  native experimental clients use `scripts/test native`,
+  `scripts/build native-macos`, and `scripts/build native-android`; see
+  `docs/adr/0013-native-client-application-core.md`. These never install apps.
   `scripts/build analyzer` verifies the pinned Beat This/librosa image and
   model checksum
 - Local backend smoke: `scripts/smoke`
