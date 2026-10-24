@@ -12,7 +12,7 @@ android {
         testInstrumentationRunner = "com.soundq.nativepreview.NativeJourney"
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild { cmake { arguments += "-DANDROID_STL=c++_static" } }
-        buildConfigField("String", "API_BASE", "\"${providers.environmentVariable("OMP_API_BASE_URL").getOrElse("https://soundq.fish-rattlesnake.ts.net/api/v1")}\"")
+        buildConfigField("String", "API_BASE", "\"${providers.environmentVariable("OMP_API_BASE_URL").getOrElse("http://10.0.2.2:8080/api/v1")}\"")
         buildConfigField("String", "SOURCE_REF", "\"${providers.environmentVariable("OMP_SOURCE_REF").getOrElse("local")}\"")
     }
     buildFeatures { buildConfig = true }

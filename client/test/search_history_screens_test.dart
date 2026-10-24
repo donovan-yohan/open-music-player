@@ -23,7 +23,10 @@ void main() {
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
-    FlutterSecureStorage.setMockInitialValues({'access_token': token});
+    FlutterSecureStorage.setMockInitialValues({});
+    // Use the production writer so this fixture follows endpoint-scoped keys.
+    await SecureStorage()
+        .saveTokens(accessToken: token, refreshToken: 'fixture');
   });
 
   testWidgets(

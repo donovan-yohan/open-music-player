@@ -102,7 +102,7 @@ class MainActivity : Activity() {
         val current = snapshot.optJSONArray("queue")?.optJSONObject(0)?.optJSONObject("track")?.optString("title")
         title.text = current ?: "SoundQ / Library"
         status.text = (error ?: snapshot.optString("error").takeUnless { it == "null" || it.isBlank() })?.replace('_', ' ')
-            ?: "${next.size} of ${snapshot.optLong("total")} tracks · ${snapshot.optString("transport")}" 
+            ?: "${next.size} of ${snapshot.optLong("total")} tracks · ${snapshot.optString("transport")}"
         play.text = if (snapshot.optString("transport") == "playing") "Pause" else "Play"
         play.isEnabled = current != null
         seek.isEnabled = current != null

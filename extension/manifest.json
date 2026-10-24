@@ -14,10 +14,7 @@
     "https://www.youtube.com/*",
     "https://youtube.com/*",
     "https://soundcloud.com/*",
-    "https://www.soundcloud.com/*",
-    "http://localhost:8080/*",
-    "https://soundq.fish-rattlesnake.ts.net/*",
-    "https://*.openmusicplayer.app/*"
+    "https://www.soundcloud.com/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -57,5 +58,47 @@ func TestPresignGetObjectDefaultsToInternalEndpoint(t *testing.T) {
 	}
 	if parsed.Scheme != "http" || parsed.Host != "minio:9000" {
 		t.Fatalf("presigned URL endpoint = %s://%s, want http://minio:9000; url=%s", parsed.Scheme, parsed.Host, rawURL)
+	}
+}
+
+func TestMalformedEndpointErrorsNeverLeakUserinfo(t *testing.T) {
+	for _, endpoint := range []string{
+		"https://user:private-password@media.example.test:invalid",
+		"https://user:private-password@media.example.test/%xx",
+		"https://user:private-password@media.example.test/\x00",
+	} {
+		for _, public := range []bool{false, true} {
+			cfg := &Config{Endpoint: endpoint, AccessKey: "fixture", SecretKey: "fixture", Bucket: "audio-files"}
+			if public {
+				cfg.Endpoint, cfg.PublicEndpoint = "minio:9000", endpoint
+			}
+			_, err := New(cfg)
+			if err == nil {
+				t.Fatal("malformed endpoint accepted")
+			}
+			if strings.Contains(err.Error(), "user") || strings.Contains(err.Error(), "private-password") {
+				t.Fatal("malformed endpoint leaked userinfo")
+			}
+		}
+	}
+}
+
+func TestPublicEndpointRejectsCredentialsAndAmbiguousURLs(t *testing.T) {
+	for _, endpoint := range []string{
+		"https://user:pass@media.example.test", "https://media.example.test?",
+		"https://user:pass@media.example.test/prefix",
+		"https://media.example.test#", "https://media.example.test/prefix",
+		"ftp://media.example.test", "https://media.example.test:99999",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			_, err := New(&Config{Endpoint: "minio:9000", PublicEndpoint: endpoint,
+				AccessKey: "fixture", SecretKey: "fixture", Bucket: "audio-files"})
+			if err == nil {
+				t.Fatal("unsafe public endpoint accepted")
+			}
+			if strings.Contains(err.Error(), "user:pass") {
+				t.Fatal("endpoint validation leaked userinfo in error")
+			}
+		})
 	}
 }

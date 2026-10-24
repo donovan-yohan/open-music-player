@@ -29,12 +29,79 @@ struct State {
     snapshot: Snapshot,
     credentials: Option<Credentials>,
     credentials_changed: bool,
+    credential_version: u64,
+    account_scope_v1: u64,
     current_path: Option<PathBuf>,
     next_occurrence: u64,
     retry_target: Option<i64>,
     delivered_paths: HashSet<PathBuf>,
 }
 type Result<T> = std::result::Result<T, &'static str>;
+
+// Names are only candidates. Exclusive creation, not PID/counter uniqueness,
+// establishes ownership across handles, processes and leftovers after restart.
+static NEXT_CACHE_TEMPORARY: AtomicU64 = AtomicU64::new(0);
+struct CacheTemporary(PathBuf, bool);
+impl Drop for CacheTemporary {
+    fn drop(&mut self) {
+        // Only a successfully created private name is ever eligible for cleanup.
+        if self.1 {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+}
+impl CacheTemporary {
+    // The caller must sync and close its sole writer first. No platform may
+    // replace a final name, including one already owned by a decoder.
+    fn publish(&mut self, destination: &Path) -> std::io::Result<()> {
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        {
+            use std::{ffi::CString, os::unix::ffi::OsStrExt};
+            let from = CString::new(self.0.as_os_str().as_bytes())?;
+            let to = CString::new(destination.as_os_str().as_bytes())?;
+            #[cfg(any(target_os = "android", target_os = "linux"))]
+            // Bionic's renameat2 symbol requires API30; the kernel operation is
+            // available independently. Never fall back to overwriting rename.
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_renameat2,
+                    libc::AT_FDCWD,
+                    from.as_ptr(),
+                    libc::AT_FDCWD,
+                    to.as_ptr(),
+                    libc::RENAME_NOREPLACE,
+                )
+            };
+            #[cfg(target_os = "macos")]
+            let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+            if result != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Rename consumed our name. It can immediately belong to a new
+            // allocator; dropping this guard must not unlink that new owner.
+            self.1 = false;
+            Ok(())
+        }
+        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+        fs::hard_link(&self.0, destination)
+    }
+}
+fn cache_temporary(dir: &Path, prefix: &str, suffix: &str) -> Result<(CacheTemporary, fs::File)> {
+    for _ in 0..128 {
+        let serial = NEXT_CACHE_TEMPORARY.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!("{prefix}-{}-{serial}.{suffix}", std::process::id()));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((CacheTemporary(path, true), file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err("cache_io"),
+        }
+    }
+    Err("cache_io")
+}
 
 fn container_suffix(content_type: &str) -> Result<&'static str> {
     match content_type
@@ -108,6 +175,8 @@ impl Core {
                 },
                 credentials: None,
                 credentials_changed: false,
+                credential_version: 0,
+                account_scope_v1: 0,
                 current_path: None,
                 next_occurrence: 1,
                 retry_target: None,
@@ -138,6 +207,11 @@ impl Core {
     /// Capture epoch at enqueue, not at dequeue. Old queued intent must never
     /// acquire authority over a later selection merely because it ran later.
     pub fn execute_at(&self, command: Command, epoch: u64) -> Reply {
+        self.execute_scoped_at(command, epoch, None)
+    }
+    // Additive adapter envelope v1. Account intent must retire the previous
+    // account even if a later selection already cancelled its playback epoch.
+    pub fn execute_scoped_at(&self, command: Command, epoch: u64, scope: Option<u64>) -> Reply {
         let transport_only = matches!(
             &command,
             Command::AudioReport { .. }
@@ -149,7 +223,16 @@ impl Core {
             Ok(s) => s,
             Err(p) => p.into_inner(),
         };
-        if self.check(epoch).is_err() {
+        let stale_account = scope.is_some_and(|scope| scope < state.account_scope_v1);
+        if let Some(scope) = scope.filter(|scope| *scope > state.account_scope_v1) {
+            // Preserve the pair only through this current explicit logout's
+            // single best-effort request. A cancelled logout retires immediately.
+            if !matches!(&command, Command::Logout {}) || self.check(epoch).is_err() {
+                self.retire_account(&mut state);
+            }
+            state.account_scope_v1 = scope;
+        }
+        if stale_account || self.check(epoch).is_err() {
             return Reply {
                 ok: false,
                 code: "cancelled".into(),
@@ -175,7 +258,6 @@ impl Core {
             state.snapshot.selected_occurrence = None;
             state.current_path = None;
         }
-        state.credentials_changed = false;
         let result = self.apply(&mut state, command, epoch);
         state.snapshot.revision = state.snapshot.revision.saturating_add(1);
         let (ok, code, audio, mut credentials) = match result {
@@ -187,8 +269,9 @@ impl Core {
                 (false, code, None, None)
             }
         };
-        // Refresh rotation can succeed before a later library read fails. The
-        // private adapter still must durably persist that new session.
+        // Delivery is not durable acknowledgement. Keep the current account's
+        // rotation pending across playback revocation and failed storage until
+        // an exact version is acknowledged by its private adapter.
         if state.credentials_changed {
             credentials = state.credentials.clone();
         }
@@ -270,6 +353,11 @@ impl Core {
         match command {
             Command::Snapshot {} => {}
             Command::Credentials {} => return Ok((None, s.credentials.clone())),
+            Command::AcknowledgeCredentials { version } => {
+                if s.credentials.as_ref().is_some_and(|c| c.version == version) {
+                    s.credentials_changed = false;
+                }
+            }
             Command::Login { email, password } => {
                 self.retire_account(s);
                 if email.len() > 254 || password.len() > 1024 {
@@ -300,10 +388,12 @@ impl Core {
                 refresh_token,
                 account_id,
             } => {
+                self.retire_account(s);
                 if access_token.is_empty() || refresh_token.is_empty() || account_id.is_empty() {
                     return Err("invalid_credentials");
                 }
                 let c = Credentials {
+                    version: 0,
                     access_token,
                     refresh_token,
                     account_id,
@@ -326,6 +416,9 @@ impl Core {
                     // retry/offline work after a transient service failure.
                     // Retire any previous account's content before accepting it.
                     self.retire_account(s);
+                    s.credential_version += 1;
+                    let mut c = c;
+                    c.version = s.credential_version;
                     s.credentials = Some(c);
                     s.credentials_changed = true;
                     s.snapshot.authenticated = true;
@@ -339,6 +432,7 @@ impl Core {
                     let _ = self.request(s, "POST", "/auth/logout", None, epoch, false);
                 }
                 s.credentials = None;
+                s.credentials_changed = false;
                 s.snapshot.authenticated = false;
                 s.snapshot.library.clear();
                 s.snapshot.total = 0;
@@ -467,15 +561,18 @@ impl Core {
                 }
             }
             Command::Retry {} => {
+                let id = s.retry_target.ok_or("no_selection")?;
                 if s.current_path.is_none() {
-                    let id = s.retry_target.ok_or("no_selection")?;
                     return self.apply(s, Command::Select { track_id: id }, epoch);
                 }
-                let path = s.current_path.clone().ok_or("no_selection")?;
+                let (path, cached) = self.prepare(s, id, epoch)?;
+                self.check(epoch)?;
+                s.current_path = Some(path.clone());
+                s.delivered_paths.insert(path.clone());
                 s.snapshot.session += 1;
                 s.snapshot.transport = AudioState::Preparing;
                 s.snapshot.position_ms = 0;
-                return Ok((Some(self.effect(s, "load", Some(path), true)), None));
+                return Ok((Some(self.effect(s, "load", Some(path), cached)), None));
             }
             Command::ClearCache {} => {
                 let dir = self.account_dir(s)?;
@@ -490,13 +587,18 @@ impl Core {
         Ok((None, None))
     }
     fn auth(&self, route: &str, data: Value, epoch: u64) -> Result<AuthResponse> {
+        self.auth_response(route, data, Some(epoch))
+    }
+    fn auth_response(&self, route: &str, data: Value, epoch: Option<u64>) -> Result<AuthResponse> {
         let response = self
             .client
             .post(format!("{}/auth/{route}", self.endpoint))
             .json(&data)
             .send()
             .map_err(|_| "network_unavailable")?;
-        self.check(epoch)?;
+        if let Some(epoch) = epoch {
+            self.check(epoch)?;
+        }
         if !response.status().is_success() {
             return Err(match response.status().as_u16() {
                 401 | 403 => "authentication_failed",
@@ -505,7 +607,7 @@ impl Core {
                 _ => "authentication_refused",
             });
         }
-        let result: AuthResponse = serde_json::from_value(self.read_json(response, epoch)?)
+        let result: AuthResponse = serde_json::from_value(self.read_json_scoped(response, epoch)?)
             .map_err(|_| "invalid_auth_response")?;
         if result.access_token.is_empty()
             || result.refresh_token.is_empty()
@@ -517,6 +619,7 @@ impl Core {
     }
     fn retire_account(&self, s: &mut State) {
         s.credentials = None;
+        s.credentials_changed = false;
         s.current_path = None;
         s.retry_target = None;
         s.snapshot.authenticated = false;
@@ -530,6 +633,9 @@ impl Core {
     }
     fn admit(&self, s: &mut State, a: AuthResponse, epoch: u64) -> Result<()> {
         self.check(epoch)?;
+        self.admit_credentials(s, a)
+    }
+    fn admit_credentials(&self, s: &mut State, a: AuthResponse) -> Result<()> {
         if s.credentials
             .as_ref()
             .is_some_and(|c| c.account_id != a.user.id)
@@ -541,7 +647,9 @@ impl Core {
             s.current_path = None;
             s.snapshot.session += 1;
         }
+        s.credential_version += 1;
         s.credentials = Some(Credentials {
+            version: s.credential_version,
             access_token: a.access_token,
             refresh_token: a.refresh_token,
             account_id: a.user.id,
@@ -586,11 +694,15 @@ impl Core {
                     .ok_or("unauthenticated")?
                     .refresh_token
                     .clone();
-                let auth = self.auth("refresh", json!({"refreshToken":refresh}), epoch)?;
+                // This is an existing admitted account's rotation, not a new
+                // login/restore. Selection may cancel the read, but cannot
+                // discard a server-committed replacement pair. The state mutex
+                // retains that account until a queued newer account scope retires it.
+                let auth = self.auth_response("refresh", json!({"refreshToken":refresh}), None)?;
                 if Some(&auth.user.id) != s.credentials.as_ref().map(|c| &c.account_id) {
                     return Err("account_mismatch");
                 }
-                self.admit(s, auth, epoch)?;
+                self.admit_credentials(s, auth)?;
                 continue;
             }
             if !response.status().is_success() {
@@ -609,6 +721,13 @@ impl Core {
         Err("unauthenticated")
     }
     fn read_json(&self, response: reqwest::blocking::Response, epoch: u64) -> Result<Value> {
+        self.read_json_scoped(response, Some(epoch))
+    }
+    fn read_json_scoped(
+        &self,
+        response: reqwest::blocking::Response,
+        epoch: Option<u64>,
+    ) -> Result<Value> {
         const MAX_JSON: u64 = 4 * 1024 * 1024;
         if response.content_length().is_some_and(|n| n > MAX_JSON) {
             return Err("response_too_large");
@@ -618,7 +737,9 @@ impl Core {
             .take(MAX_JSON + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| "network_unavailable")?;
-        self.check(epoch)?;
+        if let Some(epoch) = epoch {
+            self.check(epoch)?;
+        }
         if bytes.len() as u64 > MAX_JSON {
             return Err("response_too_large");
         }
@@ -705,9 +826,8 @@ impl Core {
         if !response.status().is_success() {
             return Err("download_failed");
         }
-        let stage = dir.join(format!("{id}-{epoch}.partial"));
-        let outcome = (|| {
-            let mut file = fs::File::create(&stage).map_err(|_| "cache_io")?;
+        let (mut stage, mut file) = cache_temporary(&dir, &format!("{id}-{epoch}"), "partial")?;
+        (|| {
             let mut hash = Sha256::new();
             let mut buffer = [0u8; 65536];
             let mut size = 0u64;
@@ -728,6 +848,7 @@ impl Core {
                 return Err("invalid_audio_size");
             }
             file.sync_all().map_err(|_| "cache_io")?;
+            drop(file); // Retire the sole writer before publishing this inode.
             self.check(epoch)?;
             let digest = format!("{:x}", hash.finalize());
             let name = format!("{id}-{digest}.{suffix}");
@@ -741,28 +862,46 @@ impl Core {
             if used > MAX_CACHE_BYTES {
                 return Err("cache_full");
             }
-            // No replacement/deletion of a decoder-owned path. Identical immutable bytes may share it.
-            if path.exists() {
-                fs::remove_file(&stage).map_err(|_| "cache_io")?;
-            } else {
-                fs::rename(&stage, &path).map_err(|_| "cache_io")?;
+            // Publish only the closed, exclusively created inode. A peer may
+            // win the same-content name; verify it rather than replace it.
+            match stage.publish(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // An existing name is not proof of identical bytes. Never
+                    // replace or unlink it: a decoder may own that exact inode.
+                    let mut existing = fs::File::open(&path).map_err(|_| "cache_io")?;
+                    if existing.metadata().map_err(|_| "cache_io")?.len() != size {
+                        return Err("cache_corrupt");
+                    }
+                    let mut actual = Sha256::new();
+                    loop {
+                        self.check(epoch)?;
+                        let n = existing.read(&mut buffer).map_err(|_| "cache_io")?;
+                        if n == 0 {
+                            break;
+                        }
+                        actual.update(&buffer[..n]);
+                    }
+                    if format!("{:x}", actual.finalize()) != digest {
+                        return Err("cache_corrupt");
+                    }
+                }
+                Err(_) => return Err("cache_io"),
             }
             let record =
                 json!({"name":name,"sha256":digest,"etag":d.etag,"version":d.storage_key_version});
-            let pending = index.with_extension("json.pending");
-            fs::write(
-                &pending,
-                serde_json::to_vec(&record).map_err(|_| "cache_io")?,
-            )
-            .map_err(|_| "cache_io")?;
+            let (mut pending, mut record_file) =
+                cache_temporary(&dir, &format!("{id}-{epoch}"), "json.pending")?;
+            record_file
+                .write_all(&serde_json::to_vec(&record).map_err(|_| "cache_io")?)
+                .map_err(|_| "cache_io")?;
+            record_file.sync_all().map_err(|_| "cache_io")?;
+            drop(record_file);
             self.check(epoch)?;
-            fs::rename(pending, index).map_err(|_| "cache_io")?;
+            fs::rename(&pending.0, index).map_err(|_| "cache_io")?;
+            pending.1 = false;
             Ok((path, false))
-        })();
-        if stage.exists() {
-            let _ = fs::remove_file(stage);
-        }
-        outcome
+        })()
     }
 }
 
@@ -771,6 +910,60 @@ mod ffi;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn published_temporary_cleanup_cannot_unlink_reused_name() {
+        let dir = std::env::temp_dir().join(format!("sq-publish-{}", SystemTimeSeed::next()));
+        fs::create_dir(&dir).unwrap();
+        let (mut stage, mut writer) = cache_temporary(&dir, "owned", "partial").unwrap();
+        writer.write_all(b"verified-complete").unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let name = stage.0.clone();
+        let destination = dir.join("immutable.wav");
+        stage.publish(&destination).unwrap();
+        // Rename has consumed our stage name. A new exclusive owner may now
+        // reuse it before the old guard is dropped.
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        {
+            let mut peer = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&name)
+                .unwrap();
+            peer.write_all(b"foreign-new-owner").unwrap();
+            drop(peer);
+            drop(stage);
+            assert_eq!(fs::read(&name).unwrap(), b"foreign-new-owner");
+        }
+        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+        drop(stage);
+        assert_eq!(fs::read(&destination).unwrap(), b"verified-complete");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn exclusive_publication_preserves_existing_destination_and_owned_stage() {
+        let dir = std::env::temp_dir().join(format!("sq-collision-{}", SystemTimeSeed::next()));
+        fs::create_dir(&dir).unwrap();
+        let (mut stage, mut writer) = cache_temporary(&dir, "owned", "partial").unwrap();
+        writer.write_all(b"new-complete").unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let name = stage.0.clone();
+        let destination = dir.join("immutable.wav");
+        fs::write(&destination, b"decoder-owned").unwrap();
+        assert_eq!(
+            stage.publish(&destination).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&destination).unwrap(), b"decoder-owned");
+        assert_eq!(fs::read(&name).unwrap(), b"new-complete");
+        drop(stage);
+        assert!(!name.exists());
+        assert_eq!(fs::read(&destination).unwrap(), b"decoder-owned");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     fn core() -> Core {
         let path = std::env::temp_dir().join(format!(
             "sq-core-test-{}-{}",

@@ -33,7 +33,7 @@ struct AudioEffect: Decodable {
     let position_ms: UInt64
     let cached: Bool
 }
-struct Credentials: Codable { let access_token: String; let refresh_token: String; let account_id: String }
+struct Credentials: Codable { let access_token: String; let refresh_token: String; let account_id: String; let version: UInt64? }
 struct Reply: Decodable { let ok: Bool; let code: String; let snapshot: Snapshot?; let audio: AudioEffect?; let credentials: Credentials? }
 
 // Only this serial non-UI executor crosses the blocking core boundary. Immutable
@@ -88,6 +88,8 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     var journeyStarted = false
     var lastEffectCached = false
     var wantsPlayback = false
+    var accountScope: UInt64 = 1
+    var storedCredentialVersion: UInt64 = 0
 
     func fixtureCacheRoot() -> URL? {
         guard endpoint.stringValue == "http://127.0.0.1:54761/api/v1",
@@ -98,7 +100,7 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let environment = ProcessInfo.processInfo.environment
-        endpoint.stringValue = environment["OMP_API_BASE_URL"] ?? "https://soundq.fish-rattlesnake.ts.net/api/v1"
+        endpoint.stringValue = environment["OMP_API_BASE_URL"] ?? "http://127.0.0.1:8080/api/v1"
         let root = fixtureCacheRoot() ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("com.soundq.native.preview")
         bridge = Bridge(endpoint: endpoint.stringValue, root: root)
         buildWindow()
@@ -183,17 +185,23 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
         let menu = NSMenu();let item = NSMenuItem();menu.addItem(item);let appMenu = NSMenu();appMenu.addItem(withTitle:"Quit SoundQ Native Preview",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q");item.submenu = appMenu;NSApp.mainMenu = menu
     }
     func command(_ value: [String:Any], completion: (@MainActor () -> Void)? = nil) {
-        guard busy < 32 else {status.stringValue = "Playback is busy. Try again.";return}
         let kind = value["command"] as? String ?? ""
+        if ["login","register","restore","logout"].contains(kind) {
+            accountScope += 1;storedCredentialVersion = 0
+            if kind != "restore", ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_FIXTURE_HOME"] == nil {deleteCredentials()}
+        }
+        guard busy < 32 else {status.stringValue = "Playback is busy. Try again.";return}
         if ["select","resume","retry"].contains(kind) {wantsPlayback = true}
         if ["pause","logout","login"].contains(kind) {wantsPlayback = false;player?.pause()}
-        guard let data = try? JSONSerialization.data(withJSONObject:value) else {return}
+        var scopedValue = value;scopedValue["account_scope_v1"] = accountScope
+        guard let data = try? JSONSerialization.data(withJSONObject:scopedValue) else {return}
         let admittedEpoch = epoch
+        let admittedAccount = accountScope
         busy += 1
         bridge.send(data, epoch: admittedEpoch) { [weak self] data in
             Task { @MainActor in
                 guard let self else{return};self.busy -= 1
-                guard admittedEpoch == self.epoch else{self.reportPending = false;return}
+                guard admittedEpoch == self.epoch, admittedAccount == self.accountScope else{self.reportPending = false;return}
                 guard let reply = try? JSONDecoder().decode(Reply.self,from:data) else {self.status.stringValue = "Invalid native response";self.reportPending = false;return}
                 if let snapshot = reply.snapshot, snapshot.epoch == self.epoch {self.apply(snapshot)}
                 if !reply.ok {self.status.stringValue = reply.code.replacingOccurrences(of:"_",with:" ")}
@@ -291,12 +299,18 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     func keychainQuery()->[String:Any] { [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:keychainService,kSecAttrAccount as String:endpoint.stringValue,kSecUseDataProtectionKeychain as String:false] }
     func loadCredentials()->Credentials? {var q = keychainQuery();q[kSecReturnData as String] = true;q[kSecMatchLimit as String] = kSecMatchLimitOne;var result:CFTypeRef?;guard SecItemCopyMatching(q as CFDictionary,&result) == errSecSuccess,let data = result as? Data else{return nil};return try? JSONDecoder().decode(Credentials.self,from:data)}
     func storeCredentials(_ credentials: Credentials,epoch admitted: UInt64) {
-        guard epoch == admitted,let bytes = try? JSONEncoder().encode(credentials) else{return}
+        guard epoch == admitted,let version = credentials.version,version > 0 else{return}
+        if storedCredentialVersion == version {
+            command(["command":"acknowledge_credentials","version":version]);return
+        }
+        guard let bytes = try? JSONEncoder().encode(credentials) else{return}
         var q = keychainQuery();q[kSecValueData as String] = bytes;q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let result = SecItemAdd(q as CFDictionary,nil)
         if result == errSecDuplicateItem {
-            if SecItemUpdate(keychainQuery() as CFDictionary,[kSecValueData as String:bytes] as CFDictionary) != errSecSuccess {status.stringValue = "Could not save session"}
-        } else if result != errSecSuccess {status.stringValue = "Could not save session"}
+            guard SecItemUpdate(keychainQuery() as CFDictionary,[kSecValueData as String:bytes] as CFDictionary) == errSecSuccess else {status.stringValue = "Could not save session";return}
+        } else if result != errSecSuccess {status.stringValue = "Could not save session";return}
+        storedCredentialVersion = version
+        command(["command":"acknowledge_credentials","version":version])
     }
     func deleteCredentials() {SecItemDelete(keychainQuery() as CFDictionary)}
     func applicationWillTerminate(_ notification:Notification) {timer?.invalidate();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;_ = bridge.revoke()}

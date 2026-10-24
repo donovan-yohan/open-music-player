@@ -12,6 +12,31 @@ use std::{
 
 static HANDLES: OnceLock<Mutex<HashMap<u64, Arc<Core>>>> = OnceLock::new();
 static NEXT: AtomicU64 = AtomicU64::new(1);
+struct Envelope(serde_json::Map<String, serde_json::Value>);
+impl<'de> serde::Deserialize<'de> for Envelope {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Fields;
+        impl<'de> serde::de::Visitor<'de> for Fields {
+            type Value = Envelope;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("unique command fields")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut fields: A,
+            ) -> Result<Envelope, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some((name, value)) = fields.next_entry::<String, serde_json::Value>()? {
+                    if values.insert(name, value).is_some() {
+                        return Err(serde::de::Error::custom("duplicate command field"));
+                    }
+                }
+                Ok(Envelope(values))
+            }
+        }
+        d.deserialize_map(Fields)
+    }
+}
 fn handles() -> &'static Mutex<HashMap<u64, Arc<Core>>> {
     HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -79,11 +104,22 @@ pub unsafe extern "C" fn sq_core_execute(
         let Some(core) = get(id) else {
             return output(r#"{"ok":false,"code":"invalid_handle"}"#.into());
         };
-        let Ok(command) = serde_json::from_slice::<Command>(raw.to_bytes()) else {
+        let Ok(Envelope(mut envelope)) = serde_json::from_slice::<Envelope>(raw.to_bytes()) else {
+            return output(r#"{"ok":false,"code":"invalid_command"}"#.into());
+        };
+        let scope = match envelope.remove("account_scope_v1") {
+            None => None,
+            Some(value) => match value.as_u64() {
+                Some(scope) if scope > 0 => Some(scope),
+                _ => return output(r#"{"ok":false,"code":"invalid_command"}"#.into()),
+            },
+        };
+        let Ok(command) = serde_json::from_value::<Command>(serde_json::Value::Object(envelope))
+        else {
             return output(r#"{"ok":false,"code":"invalid_command"}"#.into());
         };
         output(
-            serde_json::to_string(&core.execute_at(command, epoch))
+            serde_json::to_string(&core.execute_scoped_at(command, epoch, scope))
                 .unwrap_or_else(|_| r#"{"ok":false,"code":"serialization_failed"}"#.into()),
         )
     }))

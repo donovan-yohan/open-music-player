@@ -47,6 +47,9 @@ class PlaybackService : Service() {
     private var wantsPlayback = false
     private var pendingReports = false
     private var busy = 0
+    // Account intent, not playback selection, owns delayed private storage.
+    private var credentialEpoch = 1L
+    private var storedCredentialVersion = 0L
     var epoch = 1L
         private set
     var snapshot = JSONObject()
@@ -77,7 +80,14 @@ class PlaybackService : Service() {
         focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
             .setOnAudioFocusChangeListener({ change ->
-                if (change <= AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) command(JSONObject().put("command", "pause"))
+                when (change) {
+                    AudioManager.AUDIOFOCUS_LOSS,
+                    AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+                    AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                        abandonFocus()
+                        command(JSONObject().put("command", "pause"))
+                    }
+                }
                 // No automatic replay after focus loss. User explicitly resumes.
             }, main).build()
         session = MediaSession(this, "SoundQNative")
@@ -105,27 +115,38 @@ class PlaybackService : Service() {
         return START_NOT_STICKY
     }
     fun command(value: JSONObject, done: (() -> Unit)? = null) {
-        if (busy >= 32) {listener?.invoke(snapshot,"command_backpressure");return}
         val kind = value.optString("command")
+        if (kind == "restore") value.remove("version")
+        if (kind in listOf("login", "register", "restore", "logout")) {
+            credentialEpoch++
+            storedCredentialVersion = 0L
+            if (kind != "restore") getSharedPreferences("native-session", MODE_PRIVATE).edit().clear().commit()
+        }
         if (kind in listOf("select","resume","retry")) wantsPlayback = true
         if (kind in listOf("pause","logout","login")) {wantsPlayback = false;if (playerReady) {try {player?.pause()} catch (_: IllegalStateException) {}}}
+        // Local pause is synchronous even under pressure; the next native
+        // report reconciles paused state if core command admission is full.
+        if (busy >= 32) {listener?.invoke(snapshot,"command_backpressure");return}
         val admitted = epoch
-        val raw = value.toString()
+        val admittedAccount = credentialEpoch
+        val raw = value.put("account_scope_v1", admittedAccount).toString()
         busy++
         worker.execute {
             val result = try { JSONObject(bridge.execute(core, admitted, raw)) } catch (_: Exception) { JSONObject().put("ok", false).put("code", "binding_failure") }
             main.post {
                 busy--
-                if (admitted != epoch) {pendingReports = false;return@post}
+                if (admitted != epoch || admittedAccount != credentialEpoch) {pendingReports = false;return@post}
                 val next = result.optJSONObject("snapshot")
                 if (next != null && next.optLong("epoch") == epoch) {
                     if (next.optBoolean("library_unchanged")) next.put("library",snapshot.optJSONArray("library") ?: org.json.JSONArray())
                     snapshot = next
                     listener?.invoke(snapshot, if (result.optBoolean("ok")) null else result.optString("code"))
                 } else if (!result.optBoolean("ok")) listener?.invoke(snapshot, result.optString("code"))
+                // Listener callbacks may synchronously change selection/account.
+                if (admitted != epoch || admittedAccount != credentialEpoch) return@post
                 result.optJSONObject("audio")?.let { if (it.optLong("epoch") == epoch) applyAudio(it) }
                 // A refresh may rotate successfully before a subsequent read
-                // fails. Persist its private epoch-bound effect, not only green reads.
+                // fails. Selection does not revoke this admitted account effect.
                 result.optJSONObject("credentials")?.let {saveCredentials(it)}
                 updateSession()
                 done?.invoke()
@@ -140,7 +161,6 @@ class PlaybackService : Service() {
     }
     fun logout() {
         retireAudio(); epoch = bridge.revoke(core)
-        getSharedPreferences("native-session", MODE_PRIVATE).edit().clear().commit()
         command(JSONObject().put("command", "logout"))
     }
     fun library(offset: Int = 0, query: String = "") {
@@ -240,15 +260,28 @@ class PlaybackService : Service() {
         }.generateKey()
     }
     private fun saveCredentials(credentials: JSONObject) {
-        val admitted = epoch
+        val admitted = credentialEpoch
+        val version = credentials.optLong("version")
+        if (version <= 0 || version < storedCredentialVersion) return
+        if (version == storedCredentialVersion) {
+            command(JSONObject().put("command", "acknowledge_credentials").put("version", version))
+            return
+        }
         worker.execute {
             try {
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.ENCRYPT_MODE, key())
                 val encrypted = cipher.doFinal(credentials.toString().toByteArray(Charsets.UTF_8))
-                main.post { if (epoch == admitted) getSharedPreferences("native-session", MODE_PRIVATE).edit()
-                    .putString(endpoint + ":iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
-                    .putString(endpoint + ":data", Base64.encodeToString(encrypted, Base64.NO_WRAP)).commit() }
-            } catch (_: Exception) { main.post { listener?.invoke(snapshot, "secure_storage_failed") } }
+                main.post {
+                    if (credentialEpoch != admitted || version < storedCredentialVersion) return@post
+                    val saved = getSharedPreferences("native-session", MODE_PRIVATE).edit()
+                        .putString(endpoint + ":iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+                        .putString(endpoint + ":data", Base64.encodeToString(encrypted, Base64.NO_WRAP)).commit()
+                    if (saved) {
+                        storedCredentialVersion = version
+                        command(JSONObject().put("command", "acknowledge_credentials").put("version", version))
+                    } else listener?.invoke(snapshot, "secure_storage_failed")
+                }
+            } catch (_: Exception) { main.post { if (credentialEpoch == admitted) listener?.invoke(snapshot, "secure_storage_failed") } }
         }
     }
     private fun loadCredentials(): JSONObject? = try {
@@ -261,6 +294,7 @@ class PlaybackService : Service() {
         }
     } catch (_: Exception) { null }
     override fun onDestroy() {
+        credentialEpoch++
         main.removeCallbacks(tick); unregisterReceiver(noisy); retireAudio(); session.release()
         epoch = bridge.revoke(core); worker.execute { bridge.close(core) }; worker.shutdown()
         super.onDestroy()

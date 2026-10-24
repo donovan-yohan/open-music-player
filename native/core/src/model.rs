@@ -43,6 +43,10 @@ pub enum Command {
     Logout {},
     Snapshot {},
     Credentials {},
+    // Additive JSON contract v1: acknowledge only after durable private storage.
+    AcknowledgeCredentials {
+        version: u64,
+    },
     ClearCache {},
 }
 
@@ -119,6 +123,8 @@ pub struct AudioEffect {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Credentials {
+    #[serde(default)]
+    pub version: u64,
     pub access_token: String,
     pub refresh_token: String,
     pub account_id: String,

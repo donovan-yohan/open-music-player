@@ -1,6 +1,7 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'token_storage_backend.dart';
+import '../api/api_endpoint.dart';
 
 TokenStorageBackend createTokenStorageBackend({FlutterSecureStorage? storage}) {
   return SecureTokenStorage(
@@ -15,9 +16,12 @@ TokenStorageBackend createTokenStorageBackend({FlutterSecureStorage? storage}) {
 }
 
 class SecureTokenStorage implements TokenStorageBackend {
-  static const _accessTokenKey = 'access_token';
-  static const _refreshTokenKey = 'refresh_token';
-  static const _biometricUnlockKey = 'biometric_unlock_enabled';
+  // Never adopt unbound credentials from a prior host/build. First upgrade
+  // requires sign-in; each endpoint then keeps its own secure session.
+  static final _accessTokenKey = 'access_token:${ApiEndpoint.baseUrl}';
+  static final _refreshTokenKey = 'refresh_token:${ApiEndpoint.baseUrl}';
+  static final _biometricUnlockKey =
+      'biometric_unlock_enabled:${ApiEndpoint.baseUrl}';
 
   final FlutterSecureStorage _storage;
 

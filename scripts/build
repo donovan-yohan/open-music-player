@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Ordinary local/dev checks, not production-approved migration artifacts.
+# Approved artifact-only migration builds must use scripts/private-vm-build.
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${1:-all}"
 

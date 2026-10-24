@@ -2,15 +2,17 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:web/web.dart' as web;
 
 import 'token_storage_backend.dart';
+import '../api/api_endpoint.dart';
 
 TokenStorageBackend createTokenStorageBackend({FlutterSecureStorage? storage}) {
   return WebSessionTokenStorage();
 }
 
 class WebSessionTokenStorage implements TokenStorageBackend {
-  static const _accessTokenKey = 'access_token';
-  static const _refreshTokenKey = 'refresh_token';
-  static const _biometricUnlockKey = 'biometric_unlock_enabled';
+  static final _accessTokenKey = 'access_token:${ApiEndpoint.baseUrl}';
+  static final _refreshTokenKey = 'refresh_token:${ApiEndpoint.baseUrl}';
+  static final _biometricUnlockKey =
+      'biometric_unlock_enabled:${ApiEndpoint.baseUrl}';
 
   @override
   Future<void> saveTokens({
@@ -63,6 +65,8 @@ class WebSessionTokenStorage implements TokenStorageBackend {
   }
 
   void _clearLegacyDurableTokens() {
+    _removeDurableToken('access_token');
+    _removeDurableToken('refresh_token');
     _removeDurableToken(_accessTokenKey);
     _removeDurableToken(_refreshTokenKey);
   }

@@ -272,7 +272,7 @@ def plan_gates(
 
     if "native" in components:
         gates.append(Gate("native core tests", ("scripts/test", "native"), "Rust ABI/lifecycle regression suite"))
-        manual.append(Gate("native platform qualification", ("python3", "scripts/native-client", "all"), "Native Mac and explicitly selected emulator runtime/performance receipts required; never installs automatically"))
+        manual.append(Gate("native platform qualification", ("python3", "scripts/native-client", "all"), "Native build/test only; separate Mac and explicitly selected emulator runtime/performance receipts required; never installs automatically"))
 
     if "client" in components:
         gates.extend(
@@ -298,7 +298,7 @@ def plan_gates(
                 Gate("extension build", ("scripts/build", "extension"), "extension package build")
             )
 
-    if include_device and "native" not in components:
+    if include_device and ("client" in components or "native" not in components):
         gates.append(
             Gate(
                 "android dogfood",
@@ -306,7 +306,7 @@ def plan_gates(
                 "physical Android playback/device evidence",
             )
         )
-    elif requires_android_dogfood and "native" not in components:
+    elif requires_android_dogfood and ("client" in components or "native" not in components):
         manual.append(
             Gate(
                 "android dogfood",
@@ -510,6 +510,21 @@ def self_test() -> int:
         failures.append("android dogfood manual gate should be empty when --include-device is set")
     if ("scripts/dogfood-android", "all") not in {gate.command for gate in gates}:
         failures.append("mobile/audio plan must run android dogfood with --include-device")
+
+    for components in ({"native"}, {"client"}, {"native", "client"}):
+        for include_device in (False, True):
+            gates, manual = plan_gates(
+                components,
+                include_build=False,
+                include_smoke=False,
+                include_device=include_device,
+                requires_android_dogfood=True,
+            )
+            dogfood = ("scripts/dogfood-android", "all")
+            if (dogfood in {g.command for g in gates}) != ("client" in components and include_device):
+                failures.append(f"{components}: explicit device gate lost or misrouted")
+            if (dogfood in {g.command for g in manual}) != ("client" in components and not include_device):
+                failures.append(f"{components}: manual device gate lost or misrouted")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         path = Path(temp_dir) / "evidence.json"
