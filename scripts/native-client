@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Build/test native clients without changing the user's shell or SDK settings."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+NATIVE = ROOT / "native"
+
+def run(argv, env, cwd, evidence):
+    started = time.time()
+    result = subprocess.run(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    receipt = {"argv": [str(a) for a in argv], "cwd": str(cwd), "exitCode": result.returncode,
+               "startedUtcEpoch": started, "durationSeconds": time.time()-started}
+    if evidence:
+        evidence.mkdir(parents=True, exist_ok=True)
+        stem = f"{time.time_ns()}-{Path(str(argv[0])).name}"
+        log = evidence / (stem + ".log")
+        log.write_bytes(result.stdout)
+        receipt["log"] = str(log)
+        receipt["logSha256"] = hashlib.sha256(result.stdout).hexdigest()
+        (evidence / (stem + ".json")).write_text(json.dumps(receipt, indent=2)+"\n")
+    sys.stdout.buffer.write(result.stdout)
+    if result.returncode:
+        raise SystemExit(result.returncode)
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("action", choices=["test", "macos", "android", "all"])
+    p.add_argument("--evidence", type=Path)
+    args = p.parse_args()
+    env = os.environ.copy()
+    local_rust = Path.home()/".rustup/toolchains/1.99.1-aarch64-apple-darwin/bin"
+    rust = Path(env.get("SOUNDQ_RUST_BIN", str(local_rust if local_rust.exists() else Path(shutil.which("cargo") or "cargo").parent)))
+    env["PATH"] = str(rust)+os.pathsep+env["PATH"]
+    env["CARGO_BUILD_JOBS"] = "2"
+    # Work around an incomplete local rust-objcopy rpath without modifying SDKs.
+    env["DYLD_LIBRARY_PATH"] = str(rust.parent/"lib")
+    cargo = [str(rust/"cargo")]
+    manifest = str(NATIVE/"core/Cargo.toml")
+    if args.action in ("test", "all"):
+        run(cargo+["fmt", "--manifest-path", manifest, "--check"], env, ROOT, args.evidence)
+        run(cargo+["test", "--locked", "--manifest-path", manifest], env, ROOT, args.evidence)
+    if args.action in ("macos", "all"):
+        run(cargo+["build", "--release", "--locked", "--manifest-path", manifest], env, ROOT, args.evidence)
+        run(["/usr/bin/swift", "build", "--package-path", str(NATIVE/"macos"), "-c", "release", "--jobs", "2"], env, ROOT, args.evidence)
+        app = NATIVE/"artifacts/SoundQ Native Preview.app"
+        (app/"Contents/MacOS").mkdir(parents=True, exist_ok=True)
+        (app/"Contents/Frameworks").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(NATIVE/"macos/.build/release/SoundQNative", app/"Contents/MacOS/SoundQNative")
+        shutil.copy2(NATIVE/"core/target/release/libsoundq_core.dylib", app/"Contents/Frameworks/libsoundq_core.dylib")
+        import plistlib
+        (app/"Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier":"com.soundq.native.preview", "CFBundleName":"SoundQ Native Preview", "CFBundleExecutable":"SoundQNative", "CFBundlePackageType":"APPL", "CFBundleShortVersionString":"0.1.0", "LSMinimumSystemVersion":"14.0", "NSHighResolutionCapable":True}))
+        executable = app/"Contents/MacOS/SoundQNative"
+        links = subprocess.check_output(["/usr/bin/otool", "-L", str(executable)], text=True)
+        core_links = [line.strip().split(" (",1)[0] for line in links.splitlines()[1:] if "libsoundq_core.dylib" in line]
+        if len(core_links) != 1:
+            raise SystemExit("expected exactly one linked application core")
+        run(["/usr/bin/install_name_tool", "-change", core_links[0], "@executable_path/../Frameworks/libsoundq_core.dylib", str(executable)],env,ROOT,args.evidence)
+        run(["/usr/bin/install_name_tool", "-id", "@rpath/libsoundq_core.dylib", str(app/"Contents/Frameworks/libsoundq_core.dylib")],env,ROOT,args.evidence)
+        run(["/usr/bin/codesign", "--force", "--sign", "-", str(app/"Contents/Frameworks/libsoundq_core.dylib")],env,ROOT,args.evidence)
+        run(["/usr/bin/codesign", "--force", "--sign", "-", str(app)],env,ROOT,args.evidence)
+        run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)],env,ROOT,args.evidence)
+        print(app)
+    if args.action in ("android", "all"):
+        sdk = Path(env.get("ANDROID_HOME", str(Path.home()/"Library/Android/sdk")))
+        host = "darwin-x86_64" if sys.platform == "darwin" else "linux-x86_64"
+        ndk = sdk/"ndk/28.2.13676358/toolchains/llvm/prebuilt"/host/"bin"
+        compiler = str(ndk/"aarch64-linux-android26-clang")
+        env.update({"CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER":compiler,"CC_aarch64_linux_android":compiler,"AR_aarch64_linux_android":str(ndk/"llvm-ar")})
+        env["RUSTFLAGS"] = "-C link-arg=-Wl,-soname,libsoundq_core.so"
+        run(cargo+["build", "--release", "--locked", "--target", "aarch64-linux-android", "--manifest-path", manifest],env,ROOT,args.evidence)
+        dest=NATIVE/"android/app/src/main/jniLibs/arm64-v8a"
+        dest.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(NATIVE/"core/target/aarch64-linux-android/release/libsoundq_core.so",dest/"libsoundq_core.so")
+        env["ANDROID_HOME"]=str(sdk)
+        default_java = "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home" if sys.platform == "darwin" else env.get("JAVA_HOME","")
+        env["JAVA_HOME"]=env.get("SOUNDQ_JAVA_HOME",default_java)
+        gradles=sorted((Path.home()/".gradle/wrapper/dists/gradle-9.1.0-all").glob("*/gradle-9.1.0/bin/gradle"))
+        gradle=env.get("SOUNDQ_GRADLE",str(gradles[0]) if gradles else "gradle")
+        run([gradle,"-p",str(NATIVE/"android"),"--no-daemon","--max-workers=2","assembleDebug"],env,ROOT,args.evidence)
+        print(NATIVE/"android/app/build/outputs/apk/debug/app-debug.apk")
+
+if __name__ == "__main__": main()

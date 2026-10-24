@@ -1,0 +1,10 @@
+core/target/
+macos/.build/
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/app/src/main/jniLibs/
+android/local.properties
+artifacts/
+!core/Cargo.lock
