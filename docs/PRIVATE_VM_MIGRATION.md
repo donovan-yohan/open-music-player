@@ -23,7 +23,7 @@ No secrets, restored records or live VM services are needed for code gates.
 | Extension webpack | `OMP_API_BASE_URL`, `OMP_HEALTH_URL`, `OMP_WEB_LOGIN_URL`, optional `OMP_WS_URL` | Complete explicit bundle. Setting any endpoint requires all three HTTP(S) inputs. No mutable stored server setting. Health/login are independent, not derived paths. Optional WS input is a full WS(S) URL. |
 | Backend storage | `MINIO_ENDPOINT`, `MINIO_PUBLIC_ENDPOINT`, `MINIO_USE_SSL`, credentials, bucket, region | Internal S3 connection versus browser/device-reachable signing origin. Backend issues absolute presigned URLs. There is **no client media-base override**. Public MinIO endpoint supports an origin/host:port, **not a path prefix**. |
 | Backend browser access | `OMP_CORS_ALLOWED_ORIGINS` (legacy alias `CORS_ALLOWED_ORIGINS`) | Comma-separated exact frontend origins; prefixes are not origins. Main Compose forwards `OMP_...` explicitly; empty denies browser origins rather than invoking router local defaults. |
-| Main Compose | `OMP_BIND_ADDRESS`, existing `SERVER_PORT`, `POSTGRES_PORT`, `REDIS_PORT`, `MINIO_PORT`, `MINIO_CONSOLE_PORT`, `HTTP_PORT`, `HTTPS_PORT` | Published bindings now default to loopback. This is not tailnet enrollment/firewalling. Anko must verify the chosen proxy/bind arrangement before any access change. Internal service ports remain unchanged. |
+| Main Compose | `OMP_BIND_ADDRESS`, existing `SERVER_PORT`, `POSTGRES_PORT`, `REDIS_PORT`, `MINIO_PORT`, `MINIO_CONSOLE_PORT`, `HTTP_PORT`, `HTTPS_PORT` | `OMP_BIND_ADDRESS` controls only backend/nginx host bindings and defaults to loopback. PostgreSQL, Redis and both MinIO host bindings stay literal `127.0.0.1` independently; all existing local port overrides remain. This is not tailnet enrollment/firewalling. Anko must verify the chosen application proxy/bind arrangement before any access change. Internal service ports remain unchanged. |
 
 HTTP config rejects credentials, queries, fragments, unsupported schemes and
 ambiguous paths (including doubled separators, dot traversal and encoded
@@ -176,10 +176,11 @@ scripts/private-vm-preflight --opt-in \
   --anko-verification "$ANKO_VERIFICATION_JSON" --evidence "$MIGRATION_EVIDENCE_JSON"
 ```
 
-Choose a **fresh** evidence path under the agent scratch directory, not a live
-stack. Both commands exclusively create evidence: they refuse existing files,
-including the input record, rather than overwriting it. A failed rerun does not
-refresh an old passing receipt; existing evidence is not current-run approval.
+Choose a **fresh** evidence path under the agent scratch directory, outside the
+source checkout and not a live stack. Both commands exclusively create evidence:
+they refuse existing files, including the input record, rather than overwriting
+it. A failed rerun does not refresh an old passing receipt; existing evidence is
+not current-run approval.
 Preflight fails without opt-in, complete URLs/identities and every acknowledgment.
 It does **not** build or deploy.
 
@@ -206,7 +207,11 @@ or invoking build tools. Ignored build outputs/dependencies do not constitute
 source approval; the extension always runs `npm ci`, even if `node_modules`
 already exists, before `npm run build`. Keep the checkout unchanged throughout
 the build, and place approval/receipt files outside its source tree. The build
-adds `source: {commit, tree, clean: true}` to the existing receipt; this records
+rejects source-contained evidence paths, including ignored directories, missing
+nested directories and outside symlink aliases into the checkout, before its
+source checks, clean-source claim or build tools. It resolves existing path
+ancestors rather than relying on a checkout-name prefix. The build adds
+`source: {commit, tree, clean: true}` to the existing receipt; this records
 the local Git check, not operator authentication or live route verification.
 It then exclusively writes a **preflight-only** receipt and invokes
 Flutter/npm. It passes the reviewed API/source/build identities as Flutter

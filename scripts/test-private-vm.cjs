@@ -127,6 +127,93 @@ test('migration build rejects mismatched or dirty source before tools and eviden
     assert(!fs.existsSync(evidence), `${kind} minted evidence`);
   }
 });
+test('migration build keeps evidence outside the canonical source checkout before clean claims or tools', async t => {
+  const kinds = ['inside', 'missing-inside', 'ignored-inside', 'outside-alias-inside',
+    'outside-alias-missing-inside', 'outside-alias-ignored-inside', 'symlinked-parent-inside',
+    'sibling-prefix-outside', 'outside-alias-outside', 'symlinked-parent-outside'];
+  for (const kind of kinds) await t.test(kind, () => {
+    const dir = fs.mkdtempSync(path.join(scratch, 'evidence-location-'));
+    const fixture = buildFixture(dir);
+    const approval = structuredClone(record); approval.inputs.OMP_SOURCE_REF = fixture.head;
+    const verification = path.join(dir, 'approval.json');
+    fs.writeFileSync(verification, JSON.stringify(approval));
+    let checkout = fixture.checkout;
+    let evidence;
+    const outside = kind.endsWith('-outside');
+    if (kind.startsWith('symlinked-parent-')) {
+      const alias = path.join(dir, 'parent-alias'); fs.symlinkSync(dir, alias, 'dir');
+      checkout = path.join(alias, 'checkout');
+      evidence = path.join(alias, outside ? 'receipts' : 'checkout/receipts', 'receipt.json');
+    } else if (kind.startsWith('outside-alias-')) {
+      const alias = path.join(dir, 'output-alias');
+      const destination = outside ? path.join(dir, 'receipts') : fixture.checkout;
+      if (outside) fs.mkdirSync(destination);
+      fs.symlinkSync(destination, alias, 'dir');
+      evidence = path.join(alias, kind.includes('ignored') ? 'extension/node_modules/receipt.json' :
+        kind.includes('missing') ? 'not-created/nested/receipt.json' : 'receipt.json');
+    } else {
+      evidence = path.join(kind === 'sibling-prefix-outside' ? fixture.checkout + '-receipts' : fixture.checkout,
+        kind === 'ignored-inside' ? 'extension/node_modules/receipt.json' :
+          kind === 'missing-inside' ? 'not-created/nested/receipt.json' : 'receipt.json');
+    }
+    // Snapshot only this explicit synthetic source; never traverse Git metadata.
+    const snapshot = () => {
+      const entries = {};
+      const visit = relative => {
+        for (const item of fs.readdirSync(path.join(fixture.checkout, relative), { withFileTypes: true })) {
+          if (!relative && item.name === '.git') continue;
+          const name = path.join(relative, item.name);
+          entries[name] = item.isDirectory() ? 'directory' : fs.readFileSync(path.join(fixture.checkout, name), 'hex');
+          if (item.isDirectory()) visit(name);
+        }
+      };
+      visit(''); return entries;
+    };
+    const before = snapshot();
+    assert.equal(fixture.git('status', '--porcelain=v1', '--untracked-files=all'), '');
+    const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
+    const commands = path.join(dir, 'commands.jsonl');
+    const gitLog = path.join(dir, 'git.jsonl');
+    const realGit = process.env.PATH.split(path.delimiter).map(p => path.join(p, 'git')).find(p => fs.existsSync(p));
+    assert(realGit);
+    fs.writeFileSync(path.join(bin, 'git'), `#!${process.execPath}\n` +
+      `const {spawnSync}=require('node:child_process'); require('node:fs').appendFileSync(${JSON.stringify(gitLog)}, JSON.stringify(process.argv.slice(2))+'\\n');\n` +
+      `const r=spawnSync(${JSON.stringify(realGit)},process.argv.slice(2),{stdio:'inherit'}); process.exit(r.status ?? 2);\n`, { mode: 0o755 });
+    for (const name of ['npm', 'flutter']) fs.writeFileSync(path.join(bin, name), `#!${process.execPath}\n` +
+      `const fs=require('node:fs'); fs.appendFileSync(${JSON.stringify(commands)}, JSON.stringify({name:${JSON.stringify(name)},args:process.argv.slice(2),receipt:JSON.parse(fs.readFileSync(${JSON.stringify(evidence)}))})+'\\n');\n`, { mode: 0o755 });
+    const invoke = () => spawnSync(process.execPath, [path.join(checkout, 'scripts/private-vm-build'),
+      '--opt-in', '--anko-verification', verification, '--evidence', evidence, '--target', 'extension'], {
+      encoding: 'utf8', env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH },
+    });
+    const result = invoke();
+    const afterStatus = fixture.git('status', '--porcelain=v1', '--untracked-files=all');
+    t.diagnostic(JSON.stringify({ kind, exit: result.status, stderr: result.stderr,
+      evidenceExists: fs.existsSync(evidence), sourceStatusAfter: afterStatus,
+      receipt: fs.existsSync(evidence) ? JSON.parse(fs.readFileSync(evidence)) : null,
+      gitChecks: fs.existsSync(gitLog) ? fs.readFileSync(gitLog, 'utf8').trim().split('\n').map(JSON.parse) : [] }));
+    if (!outside) {
+      assert.equal(result.status, 2, 'source-contained evidence must be refused');
+      assert.match(result.stderr, /evidence.*outside.*source checkout/i);
+      assert(!fs.existsSync(evidence), 'must not mint a false clean-source receipt');
+      assert(!fs.existsSync(commands), 'must not launch build tools');
+      assert(!fs.existsSync(gitLog), 'reject output before source-clean checks');
+    } else {
+      assert.equal(result.status, 0, result.stderr);
+      const receipt = fs.readFileSync(evidence, 'utf8');
+      const observed = fs.readFileSync(commands, 'utf8').trim().split('\n').map(JSON.parse);
+      assert.deepEqual(observed.map(c => [c.name, c.args]), [['npm', ['ci']], ['npm', ['run', 'build']]]);
+      for (const command of observed) assert.deepEqual(command.receipt.source,
+        { commit: fixture.head, tree: fixture.tree, clean: true }, 'receipt precedes tools');
+      const rerun = invoke();
+      assert.equal(rerun.status, 2);
+      assert.match(rerun.stderr, /fresh.*evidence/i);
+      assert.equal(fs.readFileSync(evidence, 'utf8'), receipt, 'outside receipts remain immutable');
+      assert.equal(fs.readFileSync(commands, 'utf8').trim().split('\n').length, 2, 'rerun must not launch tools');
+    }
+    assert.equal(afterStatus, '', 'source remains clean');
+    assert.deepEqual(snapshot(), before, 'including ignored source paths and absent nested directories');
+  });
+});
 test('preflight requires an exact full lowercase commit SHA, without repairing source tokens', () => {
   const dir = fs.mkdtempSync(path.join(scratch, 'source-format-'));
   const verification = path.join(dir, 'approval.json');
@@ -242,6 +329,29 @@ test('main compose forwards explicit browser endpoints and defaults to private s
   assert(!/exit 0/.test(init));
 });
 
+test('main Compose keeps internal services loopback when application bindings and local ports change', async t => {
+  const ports = { SERVER_PORT: '18080', POSTGRES_PORT: '15434', REDIS_PORT: '16380',
+    MINIO_PORT: '19000', MINIO_CONSOLE_PORT: '19001', HTTP_PORT: '18081', HTTPS_PORT: '18443' };
+  const expected = { backend: [[8080, ports.SERVER_PORT]], postgres: [[5432, ports.POSTGRES_PORT]],
+    redis: [[6379, ports.REDIS_PORT]], minio: [[9000, ports.MINIO_PORT], [9001, ports.MINIO_CONSOLE_PORT]],
+    nginx: [[80, ports.HTTP_PORT], [443, ports.HTTPS_PORT]] };
+  for (const bind of ['0.0.0.0', '198.51.100.24']) await t.test(bind, () => {
+    const result = spawnSync('docker', ['compose', '--env-file', '/dev/null', '-f',
+      path.join(root, 'docker-compose.yml'), '--profile', 'production', 'config', '--format', 'json'], {
+      encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME,
+        COMPOSE_DISABLE_ENV_FILE: 'true', DOCKER_HOST: 'unix:///nonexistent-soundq-config-only.sock',
+        OMP_BIND_ADDRESS: bind, ...ports },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const { services } = JSON.parse(result.stdout);
+    t.diagnostic(JSON.stringify({ bind, ports: Object.fromEntries(Object.keys(expected).map(name => [name, services[name].ports])) }));
+    for (const [name, mappings] of Object.entries(expected)) {
+      assert.deepEqual(services[name].ports.map(p => [p.target, p.published]), mappings, `${name} port overrides preserved`);
+      for (const port of services[name].ports) assert.equal(port.host_ip,
+        ['backend', 'nginx'].includes(name) ? bind : '127.0.0.1', `${name} host binding`);
+    }
+  });
+});
 test('preflight fails closed until opt-in and Anko verified inputs, writes local evidence only', () => {
   const verification = path.join(scratch, 'anko.json');
   const evidence = path.join(scratch, 'evidence.json');
