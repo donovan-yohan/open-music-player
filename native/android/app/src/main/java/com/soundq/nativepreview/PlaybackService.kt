@@ -124,7 +124,9 @@ class PlaybackService : Service() {
                     listener?.invoke(snapshot, if (result.optBoolean("ok")) null else result.optString("code"))
                 } else if (!result.optBoolean("ok")) listener?.invoke(snapshot, result.optString("code"))
                 result.optJSONObject("audio")?.let { if (it.optLong("epoch") == epoch) applyAudio(it) }
-                if (result.optBoolean("ok") && kind in listOf("restore","library") && snapshot.optBoolean("authenticated")) saveCredentials()
+                // A refresh may rotate successfully before a subsequent read
+                // fails. Persist its private epoch-bound effect, not only green reads.
+                result.optJSONObject("credentials")?.let {saveCredentials(it)}
                 updateSession()
                 done?.invoke()
             }
@@ -133,7 +135,7 @@ class PlaybackService : Service() {
     fun login(email: String, password: String) {
         retireAudio(); epoch = bridge.revoke(core)
         command(JSONObject().put("command", "login").put("email", email.trim()).put("password", password)) {
-            if (snapshot.optBoolean("authenticated")) { saveCredentials(); library() }
+            if (snapshot.optBoolean("authenticated")) library()
         }
     }
     fun logout() {
@@ -237,10 +239,9 @@ class PlaybackService : Service() {
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
         }.generateKey()
     }
-    private fun saveCredentials() {
+    private fun saveCredentials(credentials: JSONObject) {
         val admitted = epoch
         worker.execute {
-            val credentials = JSONObject(bridge.execute(core, admitted, "{\"command\":\"credentials\"}")).optJSONObject("credentials") ?: return@execute
             try {
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.ENCRYPT_MODE, key())
                 val encrypted = cipher.doFinal(credentials.toString().toByteArray(Charsets.UTF_8))

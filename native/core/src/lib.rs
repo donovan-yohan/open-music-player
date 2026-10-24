@@ -28,6 +28,7 @@ pub struct Core {
 struct State {
     snapshot: Snapshot,
     credentials: Option<Credentials>,
+    credentials_changed: bool,
     current_path: Option<PathBuf>,
     next_occurrence: u64,
     retry_target: Option<i64>,
@@ -106,6 +107,7 @@ impl Core {
                     error: None,
                 },
                 credentials: None,
+                credentials_changed: false,
                 current_path: None,
                 next_occurrence: 1,
                 retry_target: None,
@@ -173,9 +175,10 @@ impl Core {
             state.snapshot.selected_occurrence = None;
             state.current_path = None;
         }
+        state.credentials_changed = false;
         let result = self.apply(&mut state, command, epoch);
         state.snapshot.revision = state.snapshot.revision.saturating_add(1);
-        let (ok, code, audio, credentials) = match result {
+        let (ok, code, audio, mut credentials) = match result {
             Ok((audio, credentials)) => (true, "ok", audio, credentials),
             Err(code) => {
                 if code != "cancelled" {
@@ -184,6 +187,11 @@ impl Core {
                 (false, code, None, None)
             }
         };
+        // Refresh rotation can succeed before a later library read fails. The
+        // private adapter still must durably persist that new session.
+        if state.credentials_changed {
+            credentials = state.credentials.clone();
+        }
         let mut snapshot = if transport_only {
             Snapshot {
                 abi: 1,
@@ -300,10 +308,10 @@ impl Core {
                     refresh_token,
                     account_id,
                 };
-                // Keep credentials on transient network failure. Never delete legacy data.
-                s.credentials = Some(c.clone());
-                s.snapshot.authenticated = true;
                 let response = self.auth("refresh", json!({"refreshToken":c.refresh_token}), epoch);
+                // Restore is provisional until the held request completes in
+                // its admitted epoch. Cancellation must not commit credentials.
+                self.check(epoch)?;
                 if let Ok(response) = response {
                     if response.user.id != c.account_id {
                         self.retire_account(s);
@@ -313,6 +321,15 @@ impl Core {
                 } else if matches!(response, Err("authentication_failed")) {
                     self.retire_account(s);
                     return Err("authentication_failed");
+                } else {
+                    // The secure-store session remains usable for explicit
+                    // retry/offline work after a transient service failure.
+                    // Retire any previous account's content before accepting it.
+                    self.retire_account(s);
+                    s.credentials = Some(c);
+                    s.credentials_changed = true;
+                    s.snapshot.authenticated = true;
+                    return Err(response.err().unwrap_or("network_unavailable"));
                 }
             }
             Command::Logout {} => {
@@ -481,7 +498,12 @@ impl Core {
             .map_err(|_| "network_unavailable")?;
         self.check(epoch)?;
         if !response.status().is_success() {
-            return Err("authentication_failed");
+            return Err(match response.status().as_u16() {
+                401 | 403 => "authentication_failed",
+                429 => "rate_limited",
+                500..=599 => "service_unavailable",
+                _ => "authentication_refused",
+            });
         }
         let result: AuthResponse = serde_json::from_value(self.read_json(response, epoch)?)
             .map_err(|_| "invalid_auth_response")?;
@@ -524,6 +546,7 @@ impl Core {
             refresh_token: a.refresh_token,
             account_id: a.user.id,
         });
+        s.credentials_changed = true;
         s.snapshot.authenticated = true;
         Ok(())
     }

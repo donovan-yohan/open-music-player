@@ -198,7 +198,7 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
                 if let snapshot = reply.snapshot, snapshot.epoch == self.epoch {self.apply(snapshot)}
                 if !reply.ok {self.status.stringValue = reply.code.replacingOccurrences(of:"_",with:" ")}
                 if let effect = reply.audio, effect.epoch == self.epoch {self.applyAudio(effect)}
-                if reply.ok && ["restore","library"].contains(kind) && self.snapshot?.authenticated == true && ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_FIXTURE_HOME"] == nil {self.persistCredentials()}
+                if let credentials = reply.credentials, ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_FIXTURE_HOME"] == nil {self.storeCredentials(credentials,epoch:admittedEpoch)}
                 completion?()
             }
         }
@@ -257,7 +257,7 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
 
         command(["command":"login","email":email.stringValue.trimmingCharacters(in:.whitespacesAndNewlines),"password":password.stringValue]) { [weak self] in
             guard let self,self.snapshot?.authenticated == true else{return}
-            self.password.stringValue = "";self.persistCredentials();self.loadLibrary()
+            self.password.stringValue = "";self.loadLibrary()
         }
     }
     @objc func signOut() {player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();deleteCredentials();command(["command":"logout"])}
@@ -290,7 +290,14 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     }
     func keychainQuery()->[String:Any] { [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:keychainService,kSecAttrAccount as String:endpoint.stringValue,kSecUseDataProtectionKeychain as String:false] }
     func loadCredentials()->Credentials? {var q = keychainQuery();q[kSecReturnData as String] = true;q[kSecMatchLimit as String] = kSecMatchLimitOne;var result:CFTypeRef?;guard SecItemCopyMatching(q as CFDictionary,&result) == errSecSuccess,let data = result as? Data else{return nil};return try? JSONDecoder().decode(Credentials.self,from:data)}
-    func persistCredentials() {let admitted = epoch;bridge.send(Data(#"{"command":"credentials"}"#.utf8), epoch: admitted) { [weak self] data in Task { @MainActor in guard let self,self.epoch == admitted,let reply = try? JSONDecoder().decode(Reply.self,from:data),let credentials = reply.credentials,let bytes = try? JSONEncoder().encode(credentials) else{return};var q = self.keychainQuery();q[kSecValueData as String] = bytes;q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;let result = SecItemAdd(q as CFDictionary,nil);if result == errSecDuplicateItem {let update = [kSecValueData as String:bytes];if SecItemUpdate(self.keychainQuery() as CFDictionary,update as CFDictionary) != errSecSuccess {self.status.stringValue = "Could not save session"}}else if result != errSecSuccess {self.status.stringValue = "Could not save session"} } } }
+    func storeCredentials(_ credentials: Credentials,epoch admitted: UInt64) {
+        guard epoch == admitted,let bytes = try? JSONEncoder().encode(credentials) else{return}
+        var q = keychainQuery();q[kSecValueData as String] = bytes;q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let result = SecItemAdd(q as CFDictionary,nil)
+        if result == errSecDuplicateItem {
+            if SecItemUpdate(keychainQuery() as CFDictionary,[kSecValueData as String:bytes] as CFDictionary) != errSecSuccess {status.stringValue = "Could not save session"}
+        } else if result != errSecSuccess {status.stringValue = "Could not save session"}
+    }
     func deleteCredentials() {SecItemDelete(keychainQuery() as CFDictionary)}
     func applicationWillTerminate(_ notification:Notification) {timer?.invalidate();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;_ = bridge.revoke()}
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {true}
