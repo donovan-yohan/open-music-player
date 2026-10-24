@@ -166,6 +166,10 @@ func (h *PlaybackHandlers) CreatePlaybackURLs(w http.ResponseWriter, r *http.Req
 			if r.Context().Err() != nil {
 				return
 			}
+			if !storage.IsObjectNotFound(err) {
+				writePlaybackError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "playback URL issuance is unavailable")
+				return
+			}
 			resp.Unavailable = append(resp.Unavailable, PlaybackUnavailableItem{
 				TrackID: trackID,
 				Code:    playbackUnavailableCodeArtifactMissing,

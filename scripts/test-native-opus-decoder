@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Isolated local Opus gate: source builds + ffmpeg oracle, no app/audio device."""
+import argparse
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--scratch', required=True, type=Path)
+    parser.add_argument('--archive-dir', type=Path, help='Optional pre-fetched pinned archives')
+    parser.add_argument('--android-ndk', required=True, type=Path)
+    parser.add_argument('--sanitize', action='store_true')
+    args = parser.parse_args()
+    scratch = args.scratch.resolve(strict=True)
+    ndk = args.android_ndk.resolve(strict=True)
+    toolchain = ndk/'build/cmake/android.toolchain.cmake'
+    if not toolchain.is_file():
+        parser.error('NDK toolchain is missing')
+    root = Path(__file__).resolve().parent.parent
+    source = root/'client/native/opus_decoder'
+    evidence = Path(tempfile.mkdtemp(prefix='soundq-opus-gate.', dir=scratch))
+    os.chmod(evidence, 0o700)
+    receipt_path = evidence/'receipt.json'
+    receipt = {'status': 'running', 'cwd': str(root), 'evidence': str(evidence), 'commands': [],
+               'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()}
+    receipt['source_sha256'] = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                               for p in sorted(source.rglob('*'))
+                               if p.is_file() and '__pycache__' not in p.parts}
+    receipt['runner_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+    def save():
+        receipt_path.write_text(json.dumps(receipt, indent=2)+'\n')
+
+    def run(argv, label, timeout=300):
+        argv = [str(x) for x in argv]
+        started = time.monotonic()
+        entry = {'argv': argv, 'cwd': str(root), 'timeout_seconds': timeout,
+                 'TMPDIR': str(evidence), 'label': label}
+        try:
+            p = subprocess.run(argv, cwd=root, env=dict(os.environ, TMPDIR=str(evidence)),
+                               stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
+            stdout, stderr = p.stdout, p.stderr
+            entry['exit_code'] = p.returncode
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            stdout, stderr = getattr(exc, 'stdout', None) or b'', getattr(exc, 'stderr', None) or b''
+            entry.update(exit_code=None, error=str(exc))
+        entry.update(duration_seconds=time.monotonic()-started,
+                     stdout=stdout.decode(errors='replace'), stderr=stderr.decode(errors='replace'),
+                     stdout_base64=base64.b64encode(stdout).decode(),
+                     stderr_base64=base64.b64encode(stderr).decode())
+        receipt['commands'].append(entry)
+        (evidence/(label+'.log')).write_bytes(stdout+b'\n'+stderr)
+        save()
+        print(label+': exit='+str(entry['exit_code']), flush=True)
+        if entry['exit_code'] != 0:
+            print(entry['stdout'][-4000:]+entry['stderr'][-4000:], file=sys.stderr)
+            raise RuntimeError('failed: '+label)
+        # Do not accept upstream CMake message(ERROR ...) that still exits zero.
+        if 'ERRORRuntime' in entry['stdout']+entry['stderr']:
+            raise RuntimeError('upstream semantic configuration error: '+label)
+        return stdout.decode(errors='replace')
+
+    try:
+        run(['cmake', '--version'], 'cmake-version')
+        run(['clang', '--version'], 'clang-version')
+        run(['ffmpeg', '-version'], 'ffmpeg-version')
+        fixtures = evidence/'fixtures'
+        run([sys.executable, source/'tests/test_decoder.py', '--generate', '--fixtures', fixtures], 'fixtures')
+        # A compressed one-hour fixture never expands to whole-song PCM in this gate.
+        run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
+             '-t', '3600', '-c:a', 'libopus', '-b:a', '32000', fixtures/'hour.opus'], 'hour-encode')
+        builds = [('macos', [])]
+        if args.sanitize:
+            builds.append(('asan-ubsan', ['-DSQ_OPUS_SANITIZE=ON']))
+        builds.append(('android-arm64-api26', ['-DCMAKE_TOOLCHAIN_FILE='+str(toolchain),
+                                              '-DANDROID_ABI=arm64-v8a', '-DANDROID_PLATFORM=android-26']))
+        for name, options in builds:
+            build = evidence/name
+            common = ['-DCMAKE_BUILD_TYPE=RelWithDebInfo', '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON',
+                      '-DSQ_OPUS_BUILD_SMOKE=ON']
+            if args.archive_dir:
+                common += ['-DSQ_OPUS_ARCHIVE_DIR='+str(args.archive_dir.resolve(strict=True))]
+            run(['cmake', '-S', source, '-B', build, *common, *options], name+'-configure')
+            run(['cmake', '--build', build, '-j', '4'], name+'-build')
+            commands = (build/'compile_commands.json').read_text()
+            assert '/opt/homebrew' not in commands, 'host include/library path leaked into source build'
+            if name == 'macos':
+                receipt['upstream_licenses'] = {}
+                for dep, notice in [('sq_ogg', 'libogg-COPYING'), ('sq_opus', 'opus-COPYING'),
+                                    ('sq_opusfile', 'opusfile-COPYING')]:
+                    upstream = build/'_deps'/(dep+'-src')/'COPYING'
+                    assert upstream.read_bytes() == (source/'licenses'/notice).read_bytes()
+                    receipt['upstream_licenses'][notice] = hashlib.sha256(upstream.read_bytes()).hexdigest()
+                if args.archive_dir:
+                    pins = {'libogg-1.3.6.tar.gz': '83e6704730683d004d20e21b8f7f55dcb3383cdf84c0daedf30bde175f774638',
+                            'opus-1.6.1.tar.gz': '6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1',
+                            'opusfile-0.12.tar.gz': '118d8601c12dd6a44f52423e68ca9083cc9f2bfe72da7a8c1acb22a80ae3550b'}
+                    receipt['archives'] = {}
+                    for archive, digest in pins.items():
+                        path = args.archive_dir/archive
+                        assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+                        receipt['archives'][archive] = {'sha256': digest, 'bytes': path.stat().st_size}
+                dylib = build/'libsq_opus_decoder.dylib'
+                run([sys.executable, source/'tests/test_decoder.py', '--library', dylib,
+                     '--fixtures', fixtures], 'macos-alignment-bounds')
+                run([build/'sq_opus_smoke', fixtures], 'macos-native-smoke')
+                run([build/'sq_opus_bounded', fixtures/'hour.opus'], 'macos-hour-bounded')
+                deps = run(['otool', '-L', dylib], 'macos-linkage')
+                assert '/opt/homebrew' not in deps
+            elif name == 'asan-ubsan':
+                run([build/'sq_opus_smoke', fixtures], 'asan-ubsan-native-smoke')
+            else:
+                readelf = ndk/'toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-readelf'
+                shared = build/'libsq_opus_decoder.so'
+                info = run([readelf, '-h', '-d', shared], 'android-elf-linkage')
+                assert 'AArch64' in info and 'libopus' not in info and 'libogg' not in info
+                assert '/opt/homebrew' not in info
+                run([readelf, '--dyn-syms', shared], 'android-exports')
+        receipt['artifacts'] = {str(p.relative_to(evidence)): {'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),
+                                                            'bytes': p.stat().st_size}
+                                for p in sorted(evidence.rglob('*'))
+                                if p.is_file() and (p.suffix in ('.opus', '.dylib', '.so') or p.name in ('sq_opus_smoke', 'sq_opus_bounded'))}
+        receipt['status'] = 'passed'
+        result = 0
+    except Exception as exc:
+        receipt.update(status='failed', error=str(exc))
+        print(str(exc), file=sys.stderr)
+        result = 1
+    save()
+    print('receipt='+str(receipt_path), flush=True)
+    return result
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

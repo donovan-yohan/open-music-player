@@ -7,9 +7,11 @@ import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 
 import '../engine/playback_engine.dart';
+import '../engine/native_playback_backend.dart';
 import '../engine/tempo_automation.dart';
 import '../engine/timeline_model.dart';
 import '../../models/timeline_clip.dart';
+import '../../models/stem_edits.dart';
 import 'playback_session.dart';
 import 'queue_persistence.dart';
 
@@ -98,11 +100,28 @@ class QueueTimelineController {
   ProcessingState _processingState = ProcessingState.idle;
   bool _started = false;
   bool _suppressPositionSync = false;
+  bool _nativeCandidatePending = false;
   bool _deferredLegacyDefaultCrossfadeAdoption = false;
   Future<void> _commandChain = Future<void>.value();
+  // One active Jam's bounded, ephemeral admission history, not another queue.
+  // Keep receipts/tombstones after row removal and queue replacement: neither
+  // permits reapproval. Only a newly designated Jam ID resets this history.
+  // Callers must retire old host identities monotonically (never revive an old
+  // stillCurrent closure). Restart loses history; never auto-replay approvals.
+  String? _jamAdmissionId;
+  final Map<String, ({String trackId, String? receipt})> _jamAdmissions = {};
 
   PlaybackEngine get engine => _engine;
   MixSession get session => _session;
+
+  /// Incarnation fence even when a saved mix reuses its persisted session ID.
+  int get sessionGeneration => _sessionGeneration;
+
+  /// The legacy voice renderer does not execute saved stem automation.
+  /// Metadata acceptance must not be presented as audible replay.
+  bool get hasUnsupportedStemEdits =>
+      _session.clips.any((clip) => clip.stemEdits != null) &&
+      !_engine.usesNativeBackend;
   List<MediaItem> get queue => _queue;
   int? get currentIndex => _currentIndex;
   MediaItem? get currentMediaItem => _currentMediaItemSubject.valueOrNull;
@@ -189,71 +208,108 @@ class QueueTimelineController {
     int? reflowDefaultTransitionsFromIndex,
     MixSession? session,
   }) async {
-    cancelContinuation();
-    await start();
     final previousTimeline = _cueTimeline;
     final previousModel = _engine.model;
     final wasPlaying = _engine.isPlaying;
     final previousCurrentIndex = _currentIndex;
     final previousLocalPositionMs = livePosition.inMilliseconds;
-    _sessionGeneration += 1;
-    _queue = List.unmodifiable(items);
-    _playOrder = [for (var i = 0; i < _queue.length; i++) i];
-    _sessionId = session?.sessionId ?? 'session_$_sessionGeneration';
+    final nextQueue = List<MediaItem>.unmodifiable(items);
+    final nextPlayOrder = [for (var i = 0; i < nextQueue.length; i++) i];
+    final nextSessionId =
+        session?.sessionId ?? 'session_${_sessionGeneration + 1}';
     final transitionSnapMode =
         session?.transitionSnapMode ?? _session.transitionSnapMode;
     final defaultCrossfadeMs = _configuredDefaultCrossfadeMs ??
         session?.defaultCrossfadeMs ??
         _session.defaultCrossfadeMs;
+    var deferredAdoption = _deferredLegacyDefaultCrossfadeAdoption;
+    MixSession nextSession;
     if (session == null) {
-      _session = preserveTimelineEdits
-          ? _session.normalizedForQueue(_queue)
+      nextSession = preserveTimelineEdits
+          ? _session.normalizedForQueue(nextQueue)
           : MixSession.fromQueue(
-              sessionId: _sessionId,
-              queue: _queue,
+              sessionId: nextSessionId,
+              queue: nextQueue,
               transitionSnapMode: transitionSnapMode,
               defaultCrossfadeMs: defaultCrossfadeMs,
             );
-      if (!preserveTimelineEdits) {
-        _deferredLegacyDefaultCrossfadeAdoption = false;
-      }
+      if (!preserveTimelineEdits) deferredAdoption = false;
     } else {
-      final normalizedSession = session.normalizedForQueue(_queue);
+      final normalizedSession = session.normalizedForQueue(nextQueue);
       if (wasPlaying &&
           normalizedSession.hasPendingLegacyDefaultCrossfadeAdoption) {
-        _session = normalizedSession.deferLegacyDefaultCrossfadeMs(
-          defaultCrossfadeMs,
-        );
-        _deferredLegacyDefaultCrossfadeAdoption = true;
+        nextSession =
+            normalizedSession.deferLegacyDefaultCrossfadeMs(defaultCrossfadeMs);
+        deferredAdoption = true;
       } else {
-        _session = normalizedSession.withDefaultCrossfadeMs(defaultCrossfadeMs);
-        _deferredLegacyDefaultCrossfadeAdoption = false;
+        nextSession =
+            normalizedSession.withDefaultCrossfadeMs(defaultCrossfadeMs);
+        deferredAdoption = false;
       }
     }
     if (reflowDefaultTransitionsFromIndex != null) {
-      _session = _session.reflowDefaultTransitionsFrom(
-        reflowDefaultTransitionsFromIndex,
-      );
+      nextSession = nextSession
+          .reflowDefaultTransitionsFrom(reflowDefaultTransitionsFromIndex);
     }
-    if (_queue.isEmpty) {
-      _currentIndex = null;
-      _session = MixSession.empty(
-        sessionId: _sessionId,
+    if (nextQueue.isEmpty) {
+      nextSession = MixSession.empty(
+        sessionId: nextSessionId,
         transitionSnapMode: transitionSnapMode,
         defaultCrossfadeMs: defaultCrossfadeMs,
       );
+      deferredAdoption = false;
+    } else if ((session == null && !preserveTimelineEdits) ||
+        reflowDefaultTransitionsFromIndex != null) {
+      nextSession = _refineSessionRuntimeBeatAlignments(nextSession,
+          queue: nextQueue, playOrder: nextPlayOrder);
+    }
+    // Build and validate the complete candidate before changing queue/session,
+    // publishing snapshots, cancelling continuation, or touching the engine.
+    final nextTimeline = CueTimeline.fromSession(
+      session: nextSession,
+      queue: nextQueue,
+      playOrder: nextPlayOrder,
+    );
+    final nextModel = nextTimeline.toTimelineModel();
+    final nativeLoaded = _engine.usesNativeBackend;
+    if (nativeLoaded) {
+      // Admit/ACK complete native candidate before publishing canonical state.
+      final targetIndex =
+          (preserveCurrentTransport ? previousCurrentIndex ?? 0 : initialIndex)
+              .clamp(0, math.max(0, nextQueue.length - 1))
+              .toInt();
+      final cue = nextTimeline.cueForQueueIndex(targetIndex);
+      final targetLocal = preserveCurrentTransport
+          ? previousLocalPositionMs
+          : initialPosition.inMilliseconds;
+      final targetMs = cue == null
+          ? 0
+          : nextTimeline
+              .globalFor(cue, Duration(milliseconds: targetLocal))
+              .inMilliseconds;
+      if (wasPlaying) {
+        await _engine.replacePreparedMix(nextModel);
+      } else {
+        await _engine.loadPreparedMixAt(nextModel, targetMs);
+      }
+    }
+    cancelContinuation();
+    await start();
+    _sessionGeneration += 1;
+    _queue = nextQueue;
+    _playOrder = nextPlayOrder;
+    _sessionId = nextSessionId;
+    _session = nextSession;
+    _deferredLegacyDefaultCrossfadeAdoption = deferredAdoption;
+    if (_queue.isEmpty) {
+      _currentIndex = null;
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
-      _deferredLegacyDefaultCrossfadeAdoption = false;
       await _engine.pause();
-      await _engine.loadMix(TimelineModel());
+      await _engine.loadMix(nextModel);
       await _engine.seek(0);
       _publishQueueState();
       return;
-    }
-    if ((session == null && !preserveTimelineEdits) ||
-        reflowDefaultTransitionsFromIndex != null) {
-      _session = _refineSessionRuntimeBeatAlignments(_session);
     }
     final requestedInitialIndex = preserveCurrentTransport
         ? (previousCurrentIndex ?? 0).clamp(0, _queue.length - 1).toInt()
@@ -263,12 +319,6 @@ class QueueTimelineController {
         : initialPosition.inMilliseconds;
     _currentIndex = requestedInitialIndex;
     _processingState = ProcessingState.ready;
-    final nextTimeline = CueTimeline.fromSession(
-      session: _session,
-      queue: _queue,
-      playOrder: _playOrder,
-    );
-    final nextModel = nextTimeline.toTimelineModel();
     final transportUnchanged = previousCurrentIndex == requestedInitialIndex &&
         previousLocalPositionMs == requestedLocalPositionMs;
     final metadataOnly = transportUnchanged &&
@@ -281,7 +331,9 @@ class QueueTimelineController {
         wasPlaying &&
         _soundingClipPlacementsUnchanged(previousModel, nextModel);
     _cueTimeline = nextTimeline;
-    if (metadataOnly) {
+    if (nativeLoaded) {
+      _publishPosition(_engine.positionMs);
+    } else if (metadataOnly) {
       _engine.replaceMixMetadata(nextModel);
       _publishPosition(_engine.positionMs);
     } else {
@@ -299,8 +351,10 @@ class QueueTimelineController {
     await _enqueueCommand(() => _insertIntoQueue(_queue.length, item));
   }
 
-  Future<void> insertIntoQueue(int index, MediaItem item) async {
-    await _enqueueCommand(() => _insertIntoQueue(index, item));
+  Future<void> insertIntoQueue(int index, MediaItem item,
+      {bool Function()? guard}) async {
+    await _enqueueCommand(
+        () => _insertAllIntoQueue(index, [item], guard: guard));
   }
 
   /// Inserts [items] contiguously at [index] in a single command, preserving
@@ -312,13 +366,17 @@ class QueueTimelineController {
   /// context tail sort itself between two items of the same batch, because each
   /// single insert recomputes where the *next* manual item belongs. Splice
   /// order here is the caller's order.
-  Future<void> insertAllIntoQueue(int index, List<MediaItem> items) async {
+  Future<void> insertAllIntoQueue(int index, List<MediaItem> items,
+      {bool Function()? guard}) async {
     if (items.isEmpty) return;
-    await _enqueueCommand(() => _insertAllIntoQueue(index, items));
+    await _enqueueCommand(
+        () => _insertAllIntoQueue(index, items, guard: guard));
   }
 
   Future<void> _insertAllIntoQueue(int index, List<MediaItem> items,
-      {bool appendOnly = false, bool Function()? guard}) async {
+      {bool appendOnly = false,
+      bool Function()? guard,
+      void Function()? beforeMutation}) async {
     if (items.isEmpty) return;
     await start();
     if (guard != null && !guard()) return;
@@ -335,24 +393,33 @@ class QueueTimelineController {
     );
     final nextQueue = List<MediaItem>.from(_queue)
       ..insertAll(insertIndex, items);
-    _queue = List.unmodifiable(nextQueue);
     final minimumStartMs = _exhaustion == null ? 0 : _engine.positionMs;
+    var nextCurrentIndex = previousCurrent;
     if (previousCurrent == null) {
-      _currentIndex = 0;
+      nextCurrentIndex = 0;
     } else if (insertIndex <= previousCurrent) {
-      _currentIndex = previousCurrent + items.length;
+      nextCurrentIndex = previousCurrent + items.length;
     }
-    _updatePlayOrderForInsert(insertIndex, items.length,
+    final nextPlayOrder = _playOrderForInsert(
+        insertIndex, items.length, nextQueue, nextCurrentIndex,
         appendOnly: appendOnly);
-    _session = _session
+    var nextSession = _session
         .insertAllInPlayOrder(
           insertIndex,
           items,
-          _playOrder,
+          nextPlayOrder,
           minimumStartMs: minimumStartMs,
         )
-        .normalizedForQueue(_queue);
-    _session = _refineSessionRuntimeBeatAlignments(_session);
+        .normalizedForQueue(nextQueue);
+    nextSession = _refineSessionRuntimeBeatAlignments(nextSession,
+        queue: nextQueue, playOrder: nextPlayOrder);
+    _validateSession(nextSession, queue: nextQueue, playOrder: nextPlayOrder);
+    if (guard != null && !guard()) return;
+    beforeMutation?.call();
+    _queue = List.unmodifiable(nextQueue);
+    _currentIndex = nextCurrentIndex;
+    _playOrder = nextPlayOrder;
+    _session = nextSession;
     _processingState = ProcessingState.ready;
     await _loadModel(
       seekToCurrent: !preserveActivePlayback,
@@ -360,6 +427,66 @@ class QueueTimelineController {
       preserveActivePlayback: preserveActivePlayback,
     );
     _publishQueueState();
+  }
+
+  /// Appends one approved occurrence; source IO belongs outside this command.
+  Future<String> admitJamRequest({
+    required String jamId,
+    required String requestId,
+    required MediaItem item,
+    required String expectedSessionId,
+    required bool Function() stillCurrent,
+  }) {
+    final generation = _sessionGeneration;
+    return _enqueueCommand(() async {
+      if (jamId.trim().isEmpty ||
+          jamId.length > 128 ||
+          requestId.trim().isEmpty ||
+          requestId.length > 128) {
+        throw ArgumentError(
+            'Jam and request IDs must be nonblank, at most 128 characters');
+      }
+      bool valid() =>
+          !_disposed &&
+          _sessionGeneration == generation &&
+          _sessionId == expectedSessionId &&
+          stillCurrent();
+      if (!valid()) throw StateError('Jam admission is no longer current');
+      if (_jamAdmissionId != jamId) {
+        _jamAdmissions.clear();
+        _jamAdmissionId = jamId;
+      }
+      final previous = _jamAdmissions[requestId];
+      if (previous != null) {
+        if (previous.trackId != item.id) {
+          throw StateError('Jam request track changed');
+        }
+        final receipt = previous.receipt;
+        if (receipt == null) {
+          throw StateError('Jam admission outcome is uncertain; do not replay');
+        }
+        return receipt;
+      }
+      if (_jamAdmissions.length >= 50) {
+        throw StateError('Jam admission capacity reached');
+      }
+      final index = _queue.length;
+      await _insertAllIntoQueue(index, [item], appendOnly: true, guard: () {
+        if (!valid()) {
+          throw StateError('Jam admission is no longer current');
+        }
+        return true;
+      }, beforeMutation: () {
+        // From this point failures (including native rollback) are not
+        // safe to automatically replay. Only a completed load confirms
+        // the receipt. Keep uncertain markers within the same hard cap.
+        _jamAdmissions[requestId] = (trackId: item.id, receipt: null);
+      });
+      if (!valid()) throw StateError('Jam admission is no longer current');
+      final receipt = _session.clips[index].queueItemId;
+      _jamAdmissions[requestId] = (trackId: item.id, receipt: receipt);
+      return receipt;
+    });
   }
 
   /// Appends [items] to the tail of the queue in a single command.
@@ -438,39 +565,47 @@ class QueueTimelineController {
       previousCurrentQueueItemId,
     );
     final nextQueue = List<MediaItem>.from(_queue)..removeAt(index);
-    _queue = List.unmodifiable(nextQueue);
-    _session = _session.removeAt(index).normalizedForQueue(_queue);
-    if (_queue.isEmpty) {
-      _currentIndex = null;
-      _playOrder = const [];
-      _session = MixSession.empty(
+    var nextSession = _session.removeAt(index).normalizedForQueue(nextQueue);
+    var nextCurrentIndex = previousCurrent;
+    if (nextQueue.isEmpty) {
+      nextCurrentIndex = null;
+      // Do not recycle occurrence IDs when the last row is removed: Jam
+      // receipts remain valid historical admissions within this session.
+      nextSession = MixSession(
         sessionId: _sessionId,
+        clips: const [],
+        nextClipOrdinal: nextSession.nextClipOrdinal,
         transitionSnapMode: _session.transitionSnapMode,
         defaultCrossfadeMs:
             _configuredDefaultCrossfadeMs ?? _session.defaultCrossfadeMs,
       );
+    } else if (previousCurrent == index) {
+      nextCurrentIndex = math.min(index, nextQueue.length - 1);
+    } else if (previousCurrent != null && index < previousCurrent) {
+      nextCurrentIndex = previousCurrent - 1;
+    }
+    final nextPlayOrder = _playOrderKeepingCurrent(
+        queueLength: nextQueue.length, currentIndex: nextCurrentIndex);
+    nextSession = _refineSessionRuntimeBeatAlignments(nextSession,
+        queue: nextQueue, playOrder: nextPlayOrder);
+    _validateSession(nextSession, queue: nextQueue, playOrder: nextPlayOrder);
+    _queue = List.unmodifiable(nextQueue);
+    _session = nextSession;
+    _currentIndex = nextCurrentIndex;
+    _playOrder = nextPlayOrder;
+    if (_queue.isEmpty) {
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
       await _engine.pause();
       await _engine.loadMix(TimelineModel());
       await _engine.seek(0);
-    } else if (previousCurrent == index) {
-      _currentIndex = math.min(index, _queue.length - 1);
-      _rebuildPlayOrderKeepCurrent();
-      _session = _refineSessionRuntimeBeatAlignments(_session);
-      _processingState = ProcessingState.ready;
-      await _loadModel(seekToCurrent: true);
     } else {
-      if (previousCurrent != null && index < previousCurrent) {
-        _currentIndex = previousCurrent - 1;
-      }
-      _rebuildPlayOrderKeepCurrent();
-      _session = _refineSessionRuntimeBeatAlignments(_session);
       _processingState = ProcessingState.ready;
       await _loadModel(
-        seekToCurrent: !preserveActivePlayback,
-        localPositionMs: localPosition,
-        preserveActivePlayback: preserveActivePlayback,
+        seekToCurrent: previousCurrent == index || !preserveActivePlayback,
+        localPositionMs: previousCurrent == index ? 0 : localPosition,
+        preserveActivePlayback:
+            previousCurrent != index && preserveActivePlayback,
       );
     }
     _publishQueueState();
@@ -502,24 +637,31 @@ class QueueTimelineController {
     final nextQueue = List<MediaItem>.from(_queue);
     final item = nextQueue.removeAt(oldIndex);
     nextQueue.insert(newIndex, item);
-    _queue = List.unmodifiable(nextQueue);
-    _session = _session.reorder(oldIndex, newIndex).normalizedForQueue(_queue);
-
-    if (_currentIndex == oldIndex) {
-      _currentIndex = newIndex;
-    } else if (_currentIndex != null &&
-        oldIndex < _currentIndex! &&
-        newIndex >= _currentIndex!) {
-      _currentIndex = _currentIndex! - 1;
-    } else if (_currentIndex != null &&
-        oldIndex > _currentIndex! &&
-        newIndex <= _currentIndex!) {
-      _currentIndex = _currentIndex! + 1;
+    var nextCurrentIndex = _currentIndex;
+    if (nextCurrentIndex == oldIndex) {
+      nextCurrentIndex = newIndex;
+    } else if (nextCurrentIndex != null &&
+        oldIndex < nextCurrentIndex &&
+        newIndex >= nextCurrentIndex) {
+      nextCurrentIndex -= 1;
+    } else if (nextCurrentIndex != null &&
+        oldIndex > nextCurrentIndex &&
+        newIndex <= nextCurrentIndex) {
+      nextCurrentIndex += 1;
     }
-
-    _rebuildPlayOrderKeepCurrent();
-    _session = _session.reflowedByOrder(_playOrder);
-    _session = _refineSessionRuntimeBeatAlignments(_session);
+    final nextPlayOrder = _playOrderKeepingCurrent(
+        queueLength: nextQueue.length, currentIndex: nextCurrentIndex);
+    var nextSession = _session
+        .reorder(oldIndex, newIndex)
+        .normalizedForQueue(nextQueue)
+        .reflowedByOrder(nextPlayOrder);
+    nextSession = _refineSessionRuntimeBeatAlignments(nextSession,
+        queue: nextQueue, playOrder: nextPlayOrder);
+    _validateSession(nextSession, queue: nextQueue, playOrder: nextPlayOrder);
+    _queue = List.unmodifiable(nextQueue);
+    _session = nextSession;
+    _currentIndex = nextCurrentIndex;
+    _playOrder = nextPlayOrder;
     _processingState = ProcessingState.ready;
     await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
     _publishQueueState();
@@ -653,7 +795,7 @@ class QueueTimelineController {
     if (current == null || current.pitchMode == normalized) return;
 
     final nextSession = _session.withPitchModeAt(index, normalized);
-    if (!_canApplySession(nextSession)) return;
+    _validateSession(nextSession);
 
     _session = nextSession.normalizedForQueue(_queue);
     await _loadModel(
@@ -663,14 +805,71 @@ class QueueTimelineController {
     _publishQueueState();
   }
 
+  /// Saves metadata for exactly one queue occurrence; null explicitly clears it.
+  /// The caller supplies real source identity, never a hash derived from trackId.
+  /// This does not apply stem gains to the legacy renderer.
+  Future<void> setStemEditsByQueueItemId(
+    String queueItemId,
+    StemEdits? edits, {
+    required String expectedSourceFileHash,
+  }) =>
+      _enqueueCommand(() async {
+        final index = _queueIndexForQueueItemId(queueItemId);
+        if (index == null) {
+          throw ArgumentError.value(queueItemId, 'queueItemId');
+        }
+        final current = _session.clips[index];
+        final extras = _queue[index].extras;
+        final sourceHash = extras?['sourceFileHash'] ??
+            extras?['source_file_hash'] ??
+            current.stemEdits?.sourceFileHash;
+        if (!RegExp(r'^sha256:[0-9a-f]{64}$')
+                .hasMatch(expectedSourceFileHash) ||
+            sourceHash != expectedSourceFileHash ||
+            (current.stemEdits != null &&
+                current.stemEdits!.sourceFileHash != expectedSourceFileHash) ||
+            (edits != null && edits.sourceFileHash != expectedSourceFileHash)) {
+          throw StateError('Stem edit source identity is missing or changed.');
+        }
+        final nextSession = _session.withStemEditsAt(index, edits);
+        if (identical(nextSession, _session)) return;
+        _validateSession(nextSession);
+        final nextTimeline = CueTimeline.fromSession(
+          session: nextSession,
+          queue: _queue,
+          playOrder: _playOrder,
+        );
+        final nextModel = nextTimeline.toTimelineModel();
+        // Stage admission before publication. Native applies and acknowledges
+        // the full authored revision; legacy remains explicitly metadata-only.
+        if (_engine.usesNativeBackend) {
+          await _engine.replacePreparedMix(nextModel);
+        } else {
+          _engine.replaceMixMetadata(nextModel);
+        }
+        _session = nextSession;
+        _cueTimeline = nextTimeline;
+        _publishQueueState();
+      });
+
+  Future<StemGainAcknowledgement> setStemGain(
+          String queueItemId, String channel, double gain, {int rampMs = 8}) =>
+      _enqueueCommand(() =>
+          _engine.setStemGain(queueItemId, channel, gain, rampMs: rampMs));
+
+  Future<void> clearStemOverrides(String queueItemId) =>
+      _enqueueCommand(() => _engine.clearStemOverrides(queueItemId));
+
   Future<void> setTransitionSnapMode(BeatSnapMode mode) async {
     await _enqueueCommand(() => _setTransitionSnapMode(mode));
   }
 
   Future<void> setDefaultCrossfadeMs(int value) async {
     final normalized = math.max(0, value);
-    _configuredDefaultCrossfadeMs = normalized;
-    await _enqueueCommand(() => _setDefaultCrossfadeMs(normalized));
+    await _enqueueCommand(() async {
+      await _setDefaultCrossfadeMs(normalized);
+      _configuredDefaultCrossfadeMs = normalized;
+    });
   }
 
   Future<void> _setDefaultCrossfadeMs(int value) async {
@@ -681,9 +880,11 @@ class QueueTimelineController {
       // analysis-derived overlaps. Adopt that placement change before
       // publishing, so the live model and the canonical session agree.
       final placementsChanged = !_session.hasSameClipPlacementsAs(nextSession);
+      if (placementsChanged && _queue.isNotEmpty) {
+        _validateSession(nextSession);
+      }
       _session = nextSession;
       if (placementsChanged && _queue.isNotEmpty) {
-        if (!_canApplySession(_session)) return;
         _session = _session.normalizedForQueue(_queue);
         await _loadModel(
           seekToCurrent: false,
@@ -722,7 +923,7 @@ class QueueTimelineController {
         startIndex: firstFutureIndex,
       );
     }
-    if (!_canApplySession(nextSession)) return;
+    _validateSession(nextSession);
 
     _session = nextSession.normalizedForQueue(_queue);
     if (_queue.isNotEmpty) {
@@ -758,12 +959,13 @@ class QueueTimelineController {
 
   Future<void> _setTransitionSnapMode(BeatSnapMode mode) async {
     if (_session.transitionSnapMode == mode) return;
-    final nextSession = _session.withTransitionSnapMode(mode);
-    if (!_canApplySession(nextSession)) return;
+    var nextSession =
+        _session.withTransitionSnapMode(mode).normalizedForQueue(_queue);
+    nextSession = _refineSessionRuntimeBeatAlignments(nextSession);
+    _validateSession(nextSession);
 
     final localPosition = livePosition.inMilliseconds;
-    _session = nextSession.normalizedForQueue(_queue);
-    _session = _refineSessionRuntimeBeatAlignments(_session);
+    _session = nextSession;
     await _loadModel(
       seekToCurrent: true,
       localPositionMs: localPosition,
@@ -808,10 +1010,12 @@ class QueueTimelineController {
 
   Future<void> _adoptDeferredLegacyDefaultCrossfade() async {
     if (!_deferredLegacyDefaultCrossfadeAdoption) return;
-    _deferredLegacyDefaultCrossfadeAdoption = false;
-    _session = _session
+    final nextSession = _session
         .adoptDeferredLegacyDefaultCrossfade()
         .normalizedForQueue(_queue);
+    _validateSession(nextSession);
+    _deferredLegacyDefaultCrossfadeAdoption = false;
+    _session = nextSession;
     if (_queue.isNotEmpty) {
       await _loadModel(
         seekToCurrent: false,
@@ -830,11 +1034,36 @@ class QueueTimelineController {
     await _engine.seek(globalMs);
   }
 
-  void beginLocalScrub() => _engine.beginScrub();
+  Future<void> beginLocalScrub() {
+    if (_engine.usesNativeBackend) {
+      // Drain an already-submitted gain ACK before scrub gates its only
+      // consumer. Pausing first would strand that revision behind silence.
+      return _enqueueCommand(() async => _engine.beginScrub());
+    }
+    _engine.beginScrub();
+    return Future.value();
+  }
 
-  void updateLocalScrub(Duration position) {
+  Future<void> updateTimelineScrub(int globalMs) {
+    if (_engine.usesNativeBackend) {
+      return _enqueueCommand(() async => _engine.updateScrub(globalMs));
+    }
+    _engine.updateScrub(globalMs);
+    return Future.value();
+  }
+
+  Future<void> endTimelineScrub(int globalMs) =>
+      _enqueueCommand(() => _engine.endScrub(globalMs));
+
+  Future<void> updateLocalScrub(Duration position) {
+    if (_engine.usesNativeBackend) {
+      return _enqueueCommand(() async {
+        _engine.updateScrub(_globalForCurrentLocal(position.inMilliseconds));
+      });
+    }
     final globalMs = _globalForCurrentLocal(position.inMilliseconds);
     _engine.updateScrub(globalMs);
+    return Future.value();
   }
 
   Future<void> endLocalScrub(Duration position) {
@@ -913,12 +1142,20 @@ class QueueTimelineController {
     if (_shuffleEnabled == enabled) return;
     final current = _queueIndexForGlobal(_engine.positionMs) ?? _currentIndex;
     final localPosition = livePosition.inMilliseconds;
+    final nextCurrentIndex =
+        current != null && current >= 0 && current < _queue.length
+            ? current
+            : _currentIndex;
+    final nextPlayOrder = _playOrderKeepingCurrent(
+        queueLength: _queue.length,
+        currentIndex: nextCurrentIndex,
+        shuffleEnabled: enabled);
+    final nextSession = _session.reflowedByOrder(nextPlayOrder);
+    _validateSession(nextSession, playOrder: nextPlayOrder);
     _shuffleEnabled = enabled;
-    if (current != null && current >= 0 && current < _queue.length) {
-      _currentIndex = current;
-    }
-    _rebuildPlayOrderKeepCurrent();
-    _session = _session.reflowedByOrder(_playOrder);
+    _currentIndex = nextCurrentIndex;
+    _playOrder = nextPlayOrder;
+    _session = nextSession;
     await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
     if (current != null && current >= 0 && current < _queue.length) {
       _currentIndex = current;
@@ -981,18 +1218,13 @@ class QueueTimelineController {
         }),
       )
       ..add(
-        _engine.clock.completedStream.listen((_) {
+        _engine.completedStream.listen((_) {
           if (_suppressPositionSync || _disposed) return;
           unawaited(_onCompleted());
         }),
       )
-      ..add(_engine.pool.pitchFallbackClipIdsStream
+      ..add(_engine.runtimeStateStream
           .listen((_) => _publishSnapshot(_engine.positionMs)));
-    _subscriptions.add(
-      _engine.pool.voiceStatusStream.listen(
-        (_) => _publishSnapshot(_engine.positionMs),
-      ),
-    );
   }
 
   Future<T> _enqueueCommand<T>(Future<T> Function() command) {
@@ -1001,10 +1233,32 @@ class QueueTimelineController {
     }
     final completer = Completer<T>();
     final next = _commandChain.then((_) async {
+      // Native admission can await bytes and an audio-block ACK. Failed
+      // candidates never become canonical queue/session state.
+      final rollback = _engine.usesNativeBackend;
+      _nativeCandidatePending = rollback;
+      final queue = _queue, order = _playOrder;
+      final session = _session, timeline = _cueTimeline;
+      final index = _currentIndex, id = _sessionId;
+      final processing = _processingState, shuffle = _shuffleEnabled;
       try {
         completer.complete(await command());
       } catch (error, stackTrace) {
+        if (rollback) {
+          _queue = queue;
+          _playOrder = order;
+          _session = session;
+          _cueTimeline = timeline;
+          _currentIndex = index;
+          _sessionId = id;
+          _processingState = processing;
+          _shuffleEnabled = shuffle;
+          _publishQueueState();
+        }
         completer.completeError(error, stackTrace);
+      } finally {
+        _nativeCandidatePending = false;
+        if (rollback && !_disposed) _publishQueueState();
       }
     });
     _commandChain = next.then((_) {}, onError: (_) {});
@@ -1028,7 +1282,9 @@ class QueueTimelineController {
         _cueTimeline.toTimelineModel(),
         preserveActivePlayback: preserveActivePlayback,
       );
-      if (seekToCurrent && _currentIndex != null) {
+      if (seekToCurrent &&
+          _currentIndex != null &&
+          !(_engine.usesNativeBackend && _engine.isPlaying)) {
         await _engine.seek(_globalForCurrentLocal(localPositionMs));
       }
     } finally {
@@ -1124,73 +1380,99 @@ class QueueTimelineController {
 
   Future<void> _applyCueOverride(int index, TimelineClip placement) async {
     final nextSession = _session.withPlacementAt(index, placement);
-    if (!_canApplySession(nextSession)) return;
+    _validateSession(nextSession);
 
+    if (_engine.usesNativeBackend) {
+      final nextTimeline = CueTimeline.fromSession(
+          session: nextSession, queue: _queue, playOrder: _playOrder);
+      await _engine.replacePreparedMix(nextTimeline.toTimelineModel());
+      _session = nextSession.normalizedForQueue(_queue);
+      _cueTimeline = nextTimeline;
+      _publishQueueState();
+      return;
+    }
     final localPosition = livePosition.inMilliseconds;
     _session = nextSession.normalizedForQueue(_queue);
     await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
     _publishQueueState();
   }
 
-  bool _canApplySession(MixSession session) {
-    final timeline = CueTimeline.fromSession(
+  void _validateSession(
+    MixSession session, {
+    List<MediaItem>? queue,
+    List<int>? playOrder,
+  }) {
+    CueTimeline.fromSession(
       session: session,
-      queue: _queue,
-      playOrder: _playOrder,
-    );
-    final clips = timeline.cues.map((cue) => cue.toMixClip()).toList();
-    final model = TimelineModel(clips: clips);
-    return model.clips.length == clips.length;
+      queue: queue ?? _queue,
+      playOrder: playOrder ?? _playOrder,
+    ).toTimelineModel();
   }
 
-  void _updatePlayOrderForInsert(int index, int count,
+  bool _canApplySession(
+    MixSession session, {
+    List<MediaItem>? queue,
+    List<int>? playOrder,
+  }) {
+    try {
+      _validateSession(session, queue: queue, playOrder: playOrder);
+      return true;
+    } on StateError {
+      // Automatic beat-alignment proposals may be declined; authored commands
+      // use _validateSession directly so their rejection is explicit.
+      return false;
+    }
+  }
+
+  List<int> _playOrderForInsert(
+      int index, int count, List<MediaItem> nextQueue, int? nextCurrentIndex,
       {bool appendOnly = false}) {
     if (!_shuffleEnabled || _playOrder.isEmpty) {
-      _playOrder = [for (var i = 0; i < _queue.length; i++) i];
-      return;
+      return [for (var i = 0; i < nextQueue.length; i++) i];
     }
     final order = [
       for (final old in _playOrder) old >= index ? old + count : old
     ];
     var slot = order.length;
     if (!appendOnly &&
-        _queue
+        nextQueue
             .skip(index)
             .take(count)
             .every((item) => itemOrigin(item) == queueOriginManual)) {
-      slot = order.indexOf(_currentIndex!) + 1;
+      slot = order.indexOf(nextCurrentIndex!) + 1;
       while (slot < order.length &&
           order[slot] < index &&
-          itemOrigin(_queue[order[slot]]) == queueOriginManual) {
+          itemOrigin(nextQueue[order[slot]]) == queueOriginManual) {
         slot++;
       }
-    } else if (!appendOnly && index + count < _queue.length) {
+    } else if (!appendOnly && index + count < nextQueue.length) {
       slot = order.indexOf(index + count);
     }
     order.insertAll(slot, [for (var i = 0; i < count; i++) index + i]);
-    _playOrder = order;
+    return order;
   }
 
   void _rebuildPlayOrderKeepCurrent() {
+    _playOrder = _playOrderKeepingCurrent(
+        queueLength: _queue.length, currentIndex: _currentIndex);
+  }
+
+  List<int> _playOrderKeepingCurrent({
+    required int queueLength,
+    required int? currentIndex,
+    bool? shuffleEnabled,
+  }) {
     // Explicit mode changes may reshuffle; insertion must not replay history.
-    if (_queue.isEmpty) {
-      _playOrder = const [];
-      return;
+    if (queueLength == 0) return const [];
+    final current = (currentIndex ?? 0).clamp(0, queueLength - 1).toInt();
+    if (shuffleEnabled ?? _shuffleEnabled) {
+      return shufflePermutation(queueLength, current, random: _shuffleRandom);
     }
-    final current = (_currentIndex ?? 0).clamp(0, _queue.length - 1).toInt();
-    if (_shuffleEnabled) {
-      _playOrder = shufflePermutation(
-        _queue.length,
-        current,
-        random: _shuffleRandom,
-      );
-    } else {
-      _playOrder = [for (var i = 0; i < _queue.length; i++) i];
-    }
+    return [for (var i = 0; i < queueLength; i++) i];
   }
 
   void _onGlobalPosition(int globalMs) {
-    if (_suppressPositionSync) return;
+    if (_suppressPositionSync || _nativeCandidatePending) return;
     final previousIndex = _currentIndex;
     if (!_shouldDeferCurrentIndexSync(globalMs)) {
       _syncCurrentIndexFromGlobal(globalMs);
@@ -1229,6 +1511,7 @@ class QueueTimelineController {
   }
 
   void _publishPosition(int globalMs) {
+    if (_nativeCandidatePending) return;
     final localMs = _localForGlobal(globalMs);
     final position = Duration(milliseconds: localMs);
     final duration = _durationForCurrentItem();
@@ -1417,9 +1700,15 @@ class QueueTimelineController {
     return placement;
   }
 
-  MixSession _refineSessionRuntimeBeatAlignments(MixSession session) {
+  MixSession _refineSessionRuntimeBeatAlignments(
+    MixSession session, {
+    List<MediaItem>? queue,
+    List<int>? playOrder,
+  }) {
+    final candidateQueue = queue ?? _queue;
+    final candidateOrder = playOrder ?? _playOrder;
     if (session.transitionSnapMode == BeatSnapMode.free ||
-        _playOrder.length < 2) {
+        candidateOrder.length < 2) {
       return session;
     }
 
@@ -1427,8 +1716,8 @@ class QueueTimelineController {
     for (var attempt = 0; attempt < 8; attempt++) {
       final model = CueTimeline.fromSession(
         session: refined,
-        queue: _queue,
-        playOrder: _playOrder,
+        queue: candidateQueue,
+        playOrder: candidateOrder,
       ).toTimelineModel();
       final clipsById = <String, MixClip>{
         for (final clip in model.clips) clip.id: clip,
@@ -1439,9 +1728,11 @@ class QueueTimelineController {
       };
       final updates = <(int, TimelineClip)>[];
 
-      for (var orderIndex = 1; orderIndex < _playOrder.length; orderIndex++) {
-        final index = _playOrder[orderIndex];
-        final previousIndex = _playOrder[orderIndex - 1];
+      for (var orderIndex = 1;
+          orderIndex < candidateOrder.length;
+          orderIndex++) {
+        final index = candidateOrder[orderIndex];
+        final previousIndex = candidateOrder[orderIndex - 1];
         final incomingSessionClip = refined.clipAt(index);
         final outgoingSessionClip = refined.clipAt(previousIndex);
         if (incomingSessionClip == null || outgoingSessionClip == null) {
@@ -1478,7 +1769,8 @@ class QueueTimelineController {
           markExplicit: false,
         );
       }
-      if (_canApplySession(candidate)) {
+      if (_canApplySession(candidate,
+          queue: candidateQueue, playOrder: candidateOrder)) {
         refined = candidate;
         continue;
       }
@@ -1491,7 +1783,10 @@ class QueueTimelineController {
           placement,
           markExplicit: false,
         );
-        if (_canApplySession(next)) fallback = next;
+        if (_canApplySession(next,
+            queue: candidateQueue, playOrder: candidateOrder)) {
+          fallback = next;
+        }
       }
       if (identical(fallback, refined)) return refined;
       refined = fallback;
@@ -1527,6 +1822,7 @@ class QueueTimelineController {
   }
 
   void _publishQueueState({bool includeQueue = true}) {
+    if (_nativeCandidatePending) return;
     if (includeQueue) _queueSubject.add(_queue);
     _currentIndexSubject.add(_currentIndex);
     _shuffleEnabledSubject.add(_shuffleEnabled);
@@ -1541,11 +1837,13 @@ class QueueTimelineController {
   }
 
   void _publishPlayerState() {
+    if (_nativeCandidatePending) return;
     _playerStateSubject.add(PlayerState(_engine.isPlaying, _processingState));
     _publishSnapshot(_engine.positionMs);
   }
 
   void _publishSnapshot(int globalMs) {
+    if (_nativeCandidatePending) return;
     final cue = _currentCue();
     final localPosition = cue == null
         ? Duration.zero
@@ -1564,19 +1862,19 @@ class QueueTimelineController {
         continuationDisposition: _continuationDisposition,
         playing: _engine.isPlaying,
         processingState: _processingState,
-        activeVoiceCount: _engine.pool.activeVoiceCount,
+        activeVoiceCount: _engine.activeVoiceCount,
         playbackSpeed: _playbackSpeedForGlobal(globalMs),
-        pitchPreservationFallback: _engine.pool.hasPitchFallback,
-        pitchFallbackClipIds: _engine.pool.pitchFallbackClipIds,
+        pitchPreservationFallback: _engine.hasPitchFallback,
+        pitchFallbackClipIds: _engine.pitchFallbackClipIds,
         clipTempoStates: _clipTempoStatesForGlobal(globalMs),
       ),
     );
   }
 
   Map<String, ClipTempoRuntimeState> _clipTempoStatesForGlobal(int globalMs) {
-    final pitchFallbacks = _engine.pool.pitchFallbackClipIds;
+    final pitchFallbacks = _engine.pitchFallbackClipIds;
     return Map.unmodifiable({
-      for (final clip in _engine.pool.activeClips.values)
+      for (final clip in _engine.activeClips)
         clip.id: _clipTempoStateForGlobal(
           clip,
           globalMs,

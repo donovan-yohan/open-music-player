@@ -4,6 +4,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../../models/mix_plan.dart';
+import '../../models/stem_edits.dart';
 import '../../models/timeline_clip.dart';
 import '../../models/track_analysis.dart';
 import '../engine/gain_envelope.dart';
@@ -60,6 +61,13 @@ class MixSession {
         ordinal: i,
         item: queue[i],
         timelineStartMs: fallbackStartMs,
+        // Only the existing opt-in analyzed snap path requests a runtime lock.
+        // Plain queue conversion and missing saved intent remain volume-only.
+        tempoPolicy: normalizedDefaultCrossfadeMs > 0 &&
+                transitionSnapMode != BeatSnapMode.free &&
+                hasConstantTempoLockGrid(_tempoForMediaItem(queue[i]))
+            ? TempoPolicy.constantTempoLock
+            : TempoPolicy.volumeOnly,
       );
       clips.add(
         clip.withPlacement(
@@ -159,6 +167,8 @@ class MixSession {
           fadeInMs: planClip.fadeInMs,
           fadeOutMs: planClip.fadeOutMs,
           pitchMode: planClip.pitchMode,
+          tempoPolicy: planClip.tempoPolicy,
+          stemEdits: planClip.stemEdits,
           tempo: _tempoForMediaItem(item),
           analysisRef: _analysisRefForMediaItem(item),
           analysisVersion: _analysisVersionForMediaItem(item),
@@ -696,6 +706,29 @@ class MixSession {
     );
   }
 
+  /// Replaces one occurrence's saved document; null explicitly clears it.
+  MixSession withStemEditsAt(int index, StemEdits? edits) {
+    if (index < 0 || index >= clips.length) return this;
+    if (edits != null) {
+      _stemEditsFromSessionJson({'stemEdits': edits.toJson()});
+    }
+    if (clips[index].stemEdits == edits) return this;
+    final nextClips = List<MixSessionClip>.from(clips)
+      ..[index] = clips[index].withStemEdits(edits);
+    return MixSession(
+      sessionId: sessionId,
+      continuationAllowed: continuationAllowed,
+      schemaVersion: schemaVersion,
+      clips: List.unmodifiable(nextClips),
+      nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds: _deferredDefaultTransitionClipIds,
+      explicitPlacementClipIds: _explicitPlacementClipIds,
+    );
+  }
+
   MixSession withTransitionSnapMode(BeatSnapMode mode) {
     if (mode == transitionSnapMode) return this;
     final autoManagedModes = transitionSnapMode == BeatSnapMode.free
@@ -918,9 +951,11 @@ class MixSessionClip {
     this.fadeOutMs,
     this.playbackRate = 1,
     this.pitchMode = pitchModePreserve,
+    this.tempoPolicy = TempoPolicy.constantTempoLock,
     this.tempo = ClipTempoMetadata.empty,
     this.analysisRef,
     this.analysisVersion,
+    this.stemEdits,
   });
 
   factory MixSessionClip.fromMediaItem({
@@ -928,9 +963,11 @@ class MixSessionClip {
     required int ordinal,
     required MediaItem item,
     required int timelineStartMs,
+    TempoPolicy tempoPolicy = TempoPolicy.volumeOnly,
   }) {
     final durationMs = item.duration?.inMilliseconds ?? 0;
     return MixSessionClip(
+      tempoPolicy: tempoPolicy,
       clipId: '${sessionId}_clip_$ordinal',
       queueItemId: '${sessionId}_item_$ordinal',
       trackId: item.id,
@@ -948,6 +985,9 @@ class MixSessionClip {
     Map<String, dynamic> json, {
     bool readExplicitFades = true,
   }) {
+    // Authored documents must not disappear behind legacy clip sanitization.
+    final stemEdits = _stemEditsFromSessionJson(json);
+    final tempoPolicy = tempoPolicyFromJson(json);
     final clipId = (json['clipId'] as String?)?.trim();
     final queueItemId = (json['queueItemId'] as String?)?.trim();
     final trackId = json['trackId']?.toString().trim();
@@ -993,8 +1033,10 @@ class MixSessionClip {
         (json['pitchMode'] as String?) ?? pitchModePreserve,
       ),
       tempo: ClipTempoMetadata.fromSessionJson(json),
+      tempoPolicy: tempoPolicy,
       analysisRef: json['analysisRef'] as String?,
       analysisVersion: json['analysisVersion'] as String?,
+      stemEdits: stemEdits,
     );
   }
 
@@ -1010,9 +1052,13 @@ class MixSessionClip {
   final int? fadeOutMs;
   final double playbackRate;
   final String pitchMode;
+  final TempoPolicy tempoPolicy;
   final ClipTempoMetadata tempo;
   final String? analysisRef;
   final String? analysisVersion;
+
+  /// Saved source-ms metadata, not evidence of audible stem replay.
+  final StemEdits? stemEdits;
 
   int get selectedDurationMs => sourceEndMs - sourceStartMs;
   int get timelineEndMs => timelineStartMs + selectedDurationMs;
@@ -1058,9 +1104,11 @@ class MixSessionClip {
       fadeOutMs: fadeOutMs,
       playbackRate: playbackRate,
       pitchMode: pitchMode,
+      tempoPolicy: tempoPolicy,
       tempo: refreshedTempo.isEmpty ? tempo : refreshedTempo,
       analysisRef: _analysisRefForMediaItem(item) ?? analysisRef,
       analysisVersion: _analysisVersionForMediaItem(item) ?? analysisVersion,
+      stemEdits: stemEdits,
     );
   }
 
@@ -1077,9 +1125,11 @@ class MixSessionClip {
         fadeOutMs: fadeOutMs,
         playbackRate: playbackRate,
         pitchMode: pitchMode,
+        tempoPolicy: tempoPolicy,
         tempo: tempo,
         analysisRef: analysisRef,
         analysisVersion: analysisVersion,
+        stemEdits: stemEdits,
       );
 
   MixSessionClip shiftedBy(int deltaMs) {
@@ -1102,9 +1152,65 @@ class MixSessionClip {
         fadeOutMs: fadeOutMs,
         playbackRate: playbackRate,
         pitchMode: normalizePitchMode(pitchMode),
+        tempoPolicy: tempoPolicy,
         tempo: tempo,
         analysisRef: analysisRef,
         analysisVersion: analysisVersion,
+        stemEdits: stemEdits,
+      );
+
+  MixSessionClip withStemEdits(StemEdits? edits) => MixSessionClip(
+        clipId: clipId,
+        queueItemId: queueItemId,
+        trackId: trackId,
+        sourceDurationMs: sourceDurationMs,
+        sourceStartMs: sourceStartMs,
+        sourceEndMs: sourceEndMs,
+        timelineStartMs: timelineStartMs,
+        gainDb: gainDb,
+        fadeInMs: fadeInMs,
+        fadeOutMs: fadeOutMs,
+        playbackRate: playbackRate,
+        pitchMode: pitchMode,
+        tempoPolicy: tempoPolicy,
+        tempo: tempo,
+        analysisRef: analysisRef,
+        analysisVersion: analysisVersion,
+        stemEdits: edits,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is MixSessionClip &&
+      other.clipId == clipId &&
+      other.queueItemId == queueItemId &&
+      other.placement == placement &&
+      other.gainDb == gainDb &&
+      other.fadeInMs == fadeInMs &&
+      other.fadeOutMs == fadeOutMs &&
+      other.playbackRate == playbackRate &&
+      other.pitchMode == pitchMode &&
+      other.tempoPolicy == tempoPolicy &&
+      other.tempo == tempo &&
+      other.analysisRef == analysisRef &&
+      other.analysisVersion == analysisVersion &&
+      other.stemEdits == stemEdits;
+
+  @override
+  int get hashCode => Object.hash(
+        clipId,
+        queueItemId,
+        placement,
+        gainDb,
+        fadeInMs,
+        fadeOutMs,
+        playbackRate,
+        pitchMode,
+        tempoPolicy,
+        tempo,
+        analysisRef,
+        analysisVersion,
+        stemEdits,
       );
 
   Map<String, dynamic> toJson() => {
@@ -1120,10 +1226,70 @@ class MixSessionClip {
         if (fadeOutMs != null) 'fadeOutMs': fadeOutMs,
         'playbackRate': playbackRate,
         'pitchMode': pitchMode,
+        'tempoPolicy': tempoPolicy.name,
         ...tempo.toJson(),
         if (analysisRef != null) 'analysisRef': analysisRef,
         if (analysisVersion != null) 'analysisVersion': analysisVersion,
+        if (stemEdits != null) 'stemEdits': stemEdits!.toJson(),
       };
+}
+
+StemEdits? _stemEditsFromSessionJson(Map<String, dynamic> json) {
+  if (!json.containsKey('stemEdits')) return null;
+  final raw = json['stemEdits'];
+  if (raw is! Map) {
+    throw const StemEditsFormatException('stemEdits must be an object');
+  }
+  Never invalid() => throw const StemEditsFormatException(
+      'Malformed saved stemEdits; refusing to coerce source-time edits.');
+  bool integer(Object? value) => value is int;
+  if (raw['schemaVersion'] != stemEditsSchemaVersion ||
+      !integer(raw['schemaVersion']) ||
+      raw['channelSet'] is! String ||
+      raw['stemModelVersion'] is! String ||
+      (raw['stemModelVersion'] as String).isEmpty ||
+      raw['sourceFileHash'] is! String ||
+      !RegExp(r'^sha256:[0-9a-f]{64}$').hasMatch(raw['sourceFileHash']) ||
+      raw['events'] is! List) {
+    invalid();
+  }
+  final grid = raw['beatGridRef'];
+  if (raw.containsKey('beatGridRef') &&
+      (grid is! Map ||
+          grid['analysisRef'] is! String ||
+          grid['analysisVersion'] is! String)) {
+    invalid();
+  }
+  int? previousMs;
+  String? previousChannel;
+  for (final event in raw['events'] as List) {
+    if (event is! Map ||
+        event['channel'] is! String ||
+        !integer(event['atMs']) ||
+        (event['atMs'] as int) < 0 ||
+        event['gain'] is! num ||
+        !(event['gain'] as num).isFinite ||
+        (event['gain'] as num) < 0 ||
+        (event['gain'] as num) > 1 ||
+        !integer(event['rampMs']) ||
+        (event['rampMs'] as int) < stemRampMinMs ||
+        (event['rampMs'] as int) > stemRampMaxMs ||
+        (event.containsKey('beatIndex') &&
+            (!integer(event['beatIndex']) ||
+                (event['beatIndex'] as int) < 0))) {
+      invalid();
+    }
+    final atMs = event['atMs'] as int;
+    final channel = event['channel'] as String;
+    if (previousMs != null &&
+        (atMs < previousMs ||
+            (atMs == previousMs && channel.compareTo(previousChannel!) <= 0))) {
+      invalid();
+    }
+    previousMs = atMs;
+    previousChannel = channel;
+  }
+  return StemEdits.fromJson(Map<String, dynamic>.from(raw));
 }
 
 ClipTempoMetadata _tempoForMediaItem(MediaItem item) {
@@ -1178,7 +1344,9 @@ class PlaybackCue {
     this.fadeOutMs,
     this.playbackRate = 1,
     this.pitchMode = pitchModePreserve,
+    this.tempoPolicy = TempoPolicy.constantTempoLock,
     this.tempo = ClipTempoMetadata.empty,
+    this.stemEdits,
   });
 
   final String cueId;
@@ -1196,7 +1364,10 @@ class PlaybackCue {
   final int? fadeOutMs;
   final double playbackRate;
   final String pitchMode;
+  final TempoPolicy tempoPolicy;
   final ClipTempoMetadata tempo;
+
+  final StemEdits? stemEdits;
 
   Duration get selectedDuration {
     final selected = sourceEnd - sourceStart;
@@ -1222,7 +1393,53 @@ class PlaybackCue {
         queueItemId: queueItemId,
         playbackRate: playbackRate,
         pitchMode: pitchMode,
+        tempoPolicy: tempoPolicy,
         tempo: tempo,
+        stemEdits: stemEdits,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is PlaybackCue &&
+      other.cueId == cueId &&
+      other.queueItemId == queueItemId &&
+      other.queueIndex == queueIndex &&
+      other.trackId == trackId &&
+      other.mediaItem == mediaItem &&
+      other.audioUri == audioUri &&
+      other.sourceDuration == sourceDuration &&
+      other.sourceStart == sourceStart &&
+      other.sourceEnd == sourceEnd &&
+      other.timelineStart == timelineStart &&
+      other.gainDb == gainDb &&
+      other.fadeInMs == fadeInMs &&
+      other.fadeOutMs == fadeOutMs &&
+      other.playbackRate == playbackRate &&
+      other.pitchMode == pitchMode &&
+      other.tempoPolicy == tempoPolicy &&
+      other.tempo == tempo &&
+      other.stemEdits == stemEdits;
+
+  @override
+  int get hashCode => Object.hash(
+        cueId,
+        queueItemId,
+        queueIndex,
+        trackId,
+        mediaItem,
+        audioUri,
+        sourceDuration,
+        sourceStart,
+        sourceEnd,
+        timelineStart,
+        gainDb,
+        fadeInMs,
+        fadeOutMs,
+        playbackRate,
+        pitchMode,
+        tempoPolicy,
+        tempo,
+        stemEdits,
       );
 }
 
@@ -1295,7 +1512,9 @@ class CueTimeline {
         fadeOutMs: sessionClip.fadeOutMs,
         playbackRate: sessionClip.playbackRate,
         pitchMode: sessionClip.pitchMode,
+        tempoPolicy: sessionClip.tempoPolicy,
         tempo: sessionClip.tempo,
+        stemEdits: sessionClip.stemEdits,
       );
       cues.add(cue);
       cursor = cue.timelineEnd;
@@ -1312,43 +1531,154 @@ class CueTimeline {
         (maxEnd, cue) => cue.timelineEnd > maxEnd ? cue.timelineEnd : maxEnd,
       );
 
-  TimelineModel toTimelineModel() => TimelineModel(
-        clips: [
-          for (final cue in cues) cue.toMixClip(envelope: _envelopeFor(cue))
-        ],
-      );
+  TimelineModel toTimelineModel() {
+    // Validate the actual, rate-adjusted voices before any envelope work. This
+    // retains every cue (including unknown/empty sources) and reuses the engine's
+    // duplicate-ID and capacity rules without applying tempo transitions twice.
+    final validated = TimelineModel(
+      clips: cues.map((cue) => cue.toMixClip()),
+      autoTempoTransitions: false,
+    );
+    final envelopes = _envelopesFor();
+    return TimelineModel(clips: [
+      for (final clip in validated.clips)
+        clip.withEnvelope(envelopes[clip.id]!),
+    ]);
+  }
 
-  GainEnvelope _envelopeFor(PlaybackCue cue) {
-    var fadeInMs = 0;
-    var fadeOutMs = 0;
-    for (final other in cues) {
-      if (identical(other, cue)) continue;
-      final overlapStart = math.max(
-        cue.timelineStart.inMilliseconds,
-        other.timelineStart.inMilliseconds,
-      );
-      final overlapEnd = math.min(
-        cue.timelineEnd.inMilliseconds,
-        other.timelineEnd.inMilliseconds,
-      );
-      if (overlapEnd <= overlapStart) continue;
+  Map<String, GainEnvelope> _envelopesFor() {
+    final count = cues.length;
+    final starts = [for (final cue in cues) cue.timelineStart];
+    final startMs = [for (final start in starts) start.inMilliseconds];
+    final endMs = [for (final cue in cues) cue.timelineEnd.inMilliseconds];
+    final ordered = List<int>.generate(count, (index) => index)
+      ..sort((a, b) {
+        final byStart = starts[a].compareTo(starts[b]);
+        return byStart != 0
+            ? byStart
+            : cues[a].queueIndex.compareTo(cues[b].queueIndex);
+      });
+    final fadeIns = List<int>.filled(count, 0);
+    final fadeOuts = List<int>.filled(count, 0);
+    final groups = <(int, int)>[];
+    int? previousMaxEnd;
+    for (var first = 0; first < count;) {
+      var limit = first + 1;
+      final index = ordered[first];
+      var largestIndex = index;
+      var largestEnd = endMs[index];
+      int? secondLargestEnd;
+      while (limit < count &&
+          starts[ordered[limit]] == starts[index] &&
+          cues[ordered[limit]].queueIndex == cues[index].queueIndex) {
+        final next = ordered[limit++];
+        if (endMs[next] > largestEnd) {
+          secondLargestEnd = largestEnd;
+          largestIndex = next;
+          largestEnd = endMs[next];
+        } else {
+          secondLargestEnd = secondLargestEnd == null
+              ? endMs[next]
+              : math.max(secondLargestEnd, endMs[next]);
+        }
+      }
+      groups.add((first, limit));
+      for (var position = first; position < limit; position++) {
+        final current = ordered[position];
+        if (previousMaxEnd != null) {
+          fadeIns[current] = math.max(
+              0, math.min(endMs[current], previousMaxEnd) - startMs[current]);
+        }
+        // Equal starts AND equal queue indices fade out in both directions;
+        // exclude self rather than imposing a new tie-break on cue IDs.
+        final peerEnd = current == largestIndex ? secondLargestEnd : largestEnd;
+        if (peerEnd != null) {
+          fadeOuts[current] =
+              math.max(0, math.min(endMs[current], peerEnd) - startMs[current]);
+        }
+      }
+      previousMaxEnd = previousMaxEnd == null
+          ? largestEnd
+          : math.max(previousMaxEnd, largestEnd);
+      first = limit;
+    }
 
-      final overlapMs = overlapEnd - overlapStart;
-      if (other.timelineStart < cue.timelineStart) {
-        fadeInMs = math.max(fadeInMs, overlapMs);
-      } else if (other.timelineStart > cue.timelineStart) {
-        fadeOutMs = math.max(fadeOutMs, overlapMs);
-      } else if (other.queueIndex < cue.queueIndex) {
-        fadeInMs = math.max(fadeInMs, overlapMs);
-      } else {
-        fadeOutMs = math.max(fadeOutMs, overlapMs);
+    // Sweep later starts in reverse. Raw cue intervals own fade semantics, not
+    // rate-adjusted MixClip ends: their active set can legitimately exceed four.
+    // An endpoint range index therefore avoids even that case becoming all-pairs.
+    // For a later cue B, overlap with A is either B's duration (B.end <= A.end)
+    // or A.end - B.start. Prefix max-duration / suffix min-start queries cover
+    // both, including contained intervals, in O(log N) per cue.
+    final ends = endMs.toSet().toList()..sort();
+    final endIndices = {
+      for (var index = 0; index < ends.length; index++) ends[index]: index,
+    };
+    var size = 1;
+    while (size < ends.length) {
+      size *= 2;
+    }
+    final maxDurations = List<int>.filled(size * 2, 0);
+    final minStarts = List<int?>.filled(size * 2, null);
+    int? minStart(int? a, int? b) => a == null
+        ? b
+        : b == null
+            ? a
+            : math.min(a, b);
+    (int, int?) query(int left, int right) {
+      var maxDuration = 0;
+      int? earliestStart;
+      left += size;
+      right += size;
+      for (; left < right; left ~/= 2, right ~/= 2) {
+        if (left.isOdd) {
+          maxDuration = math.max(maxDuration, maxDurations[left]);
+          earliestStart = minStart(earliestStart, minStarts[left++]);
+        }
+        if (right.isOdd) {
+          --right;
+          maxDuration = math.max(maxDuration, maxDurations[right]);
+          earliestStart = minStart(earliestStart, minStarts[right]);
+        }
+      }
+      return (maxDuration, earliestStart);
+    }
+
+    for (final (first, limit) in groups.reversed) {
+      for (var position = first; position < limit; position++) {
+        final current = ordered[position];
+        if (endMs[current] <= startMs[current]) continue;
+        final split = endIndices[endMs[current]]! + 1;
+        final containedDuration = query(0, split).$1;
+        final extendingStart = query(split, ends.length).$2;
+        fadeOuts[current] = math.max(fadeOuts[current], containedDuration);
+        if (extendingStart != null) {
+          fadeOuts[current] =
+              math.max(fadeOuts[current], endMs[current] - extendingStart);
+        }
+      }
+      for (var position = first; position < limit; position++) {
+        final current = ordered[position];
+        final duration = endMs[current] - startMs[current];
+        if (duration <= 0) continue;
+        var node = size + endIndices[endMs[current]]!;
+        maxDurations[node] = math.max(maxDurations[node], duration);
+        minStarts[node] = minStart(minStarts[node], startMs[current]);
+        while ((node ~/= 2) > 0) {
+          maxDurations[node] =
+              math.max(maxDurations[node * 2], maxDurations[node * 2 + 1]);
+          minStarts[node] =
+              minStart(minStarts[node * 2], minStarts[node * 2 + 1]);
+        }
       }
     }
-    return GainEnvelope(
-      baseGainDb: cue.gainDb,
-      fadeInMs: cue.fadeInMs ?? fadeInMs,
-      fadeOutMs: cue.fadeOutMs ?? fadeOutMs,
-    );
+    return {
+      for (var index = 0; index < count; index++)
+        cues[index].cueId: GainEnvelope(
+          baseGainDb: cues[index].gainDb,
+          fadeInMs: cues[index].fadeInMs ?? fadeIns[index],
+          fadeOutMs: cues[index].fadeOutMs ?? fadeOuts[index],
+        ),
+    };
   }
 
   PlaybackCue? cueForQueueIndex(int queueIndex) {

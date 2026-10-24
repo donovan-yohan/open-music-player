@@ -1,3 +1,5 @@
+import '../shared/widgets/app_snack_bar.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -7,6 +9,7 @@ import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:flutter_riverpod/flutter_riverpod.dart'
     show ProviderContainer, ProviderScope;
 import 'package:provider/provider.dart';
+import 'package:go_router/go_router.dart';
 import '../core/api/api_client.dart';
 import '../core/audio/audition_output_route_monitor.dart';
 import '../core/audio/playback_state.dart';
@@ -38,6 +41,27 @@ import '../widgets/analysis_correction_sheet.dart';
 import '../widgets/stacked_waveform_timeline.dart';
 
 enum _QueueViewMode { list, timeline }
+
+/// The native segmented group owns the shared rule on this trailing cell.
+class _QueueMenuBorder extends RoundedRectangleBorder {
+  const _QueueMenuBorder({super.side});
+
+  @override
+  _QueueMenuBorder copyWith(
+          {BorderSide? side, BorderRadiusGeometry? borderRadius}) =>
+      _QueueMenuBorder(side: side ?? this.side);
+
+  @override
+  void paint(Canvas canvas, Rect rect, {TextDirection? textDirection}) {
+    if (side.style == BorderStyle.none || side.width == 0) return;
+    final w = side.width;
+    final path = Path()
+      ..addRect(Rect.fromLTWH(rect.left, rect.top, rect.width, w))
+      ..addRect(Rect.fromLTWH(rect.left, rect.bottom - w, rect.width, w))
+      ..addRect(Rect.fromLTWH(rect.right - w, rect.top, w, rect.height));
+    canvas.drawPath(path, Paint()..color = side.color);
+  }
+}
 
 typedef AuditionOutputRouteMonitorFactory = Future<AuditionOutputRouteMonitor>
     Function();
@@ -274,40 +298,10 @@ class _QueueScreenState extends State<QueueScreen> {
                 );
               }
 
-              if (provider.isLoading) {
-                _clearAnalysisHydration(provider);
-                return const SoundQSurfaceState(
-                  type: SoundQSurfaceStateType.loading,
-                  title: 'Loading queue',
-                );
-              }
-
-              if (provider.error != null) {
-                _clearAnalysisHydration(provider);
-                return SoundQSurfaceState(
-                  type: SoundQSurfaceStateType.error,
-                  title: 'Error loading queue',
-                  message: provider.error!,
-                  action: ElevatedButton(
-                    onPressed: () => provider.loadQueue(),
-                    child: const Text('Retry'),
-                  ),
-                );
-              }
-
-              if (provider.isEmpty) {
-                _clearAnalysisHydration(provider);
-                return const SoundQSurfaceState(
-                  type: SoundQSurfaceStateType.empty,
-                  title: 'Your queue is empty',
-                  message: 'Add songs to start playing',
-                );
-              }
-
               return Column(
                 children: [
                   _buildImportQueueHeader(context, provider),
-                  Expanded(child: _buildListView(context, provider)),
+                  Expanded(child: _buildImportQueueBody(context, provider)),
                 ],
               );
             },
@@ -317,6 +311,40 @@ class _QueueScreenState extends State<QueueScreen> {
     );
     if (MediaQuery.sizeOf(context).width >= 960) return queue;
     return Theme(data: AppTheme.darkTheme, child: queue);
+  }
+
+  Widget _buildImportQueueBody(BuildContext context, QueueProvider provider) {
+    if (provider.isLoading) {
+      _clearAnalysisHydration(provider);
+      return const SoundQSurfaceState(
+        type: SoundQSurfaceStateType.loading,
+        title: 'Loading imports',
+      );
+    }
+    if (provider.error != null) {
+      _clearAnalysisHydration(provider);
+      return SoundQSurfaceState(
+        type: SoundQSurfaceStateType.error,
+        title: 'Could not load imports',
+        message: provider.error!,
+        action: ElevatedButton(
+          onPressed: () => provider.loadQueue(),
+          child: const Text('Retry'),
+        ),
+      );
+    }
+    if (provider.isEmpty) {
+      _clearAnalysisHydration(provider);
+      return SoundQSurfaceState(
+        type: SoundQSurfaceStateType.empty,
+        title: 'No imports pending',
+        action: FilledButton(
+          onPressed: () => context.go('/search'),
+          child: const Text('Find a source'),
+        ),
+      );
+    }
+    return _buildListView(context, provider);
   }
 
   /// The import queue's own header.
@@ -332,7 +360,7 @@ class _QueueScreenState extends State<QueueScreen> {
     final usesMobileHeader = MediaQuery.sizeOf(context).width < 960;
     final headerForeground = usesMobileHeader ? colors.onPrimary : null;
     final title = Text(
-      'Import Queue',
+      'Imports',
       key: const ValueKey('import_queue_title'),
       style: Theme.of(context).textTheme.headlineSmall?.copyWith(
             color: headerForeground,
@@ -358,13 +386,22 @@ class _QueueScreenState extends State<QueueScreen> {
 
     return Container(
       key: const ValueKey('import_queue_header'),
-      color: usesMobileHeader ? AppTheme.orange : Colors.transparent,
+      color: usesMobileHeader ? AppTheme.orange : null,
+      decoration: usesMobileHeader
+          ? null
+          : BoxDecoration(
+              border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+            ),
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
       child: Row(
         children: [
           Expanded(child: title),
-          const SizedBox(width: 8),
-          menu,
+          if (!provider.isEmpty &&
+              !provider.isLoading &&
+              provider.error == null) ...[
+            const SizedBox(width: 8),
+            menu,
+          ],
         ],
       ),
     );
@@ -415,6 +452,7 @@ class _QueueScreenState extends State<QueueScreen> {
     final stackedHeader = _usesStackedQueueHeader(context);
     final usesMobileHeader = MediaQuery.sizeOf(context).width < 960;
     final headerForeground = usesMobileHeader ? colors.onPrimary : null;
+    final menuStyle = Theme.of(context).iconButtonTheme.style;
     final title = Text(
       'Playback Queue',
       style: Theme.of(
@@ -431,10 +469,28 @@ class _QueueScreenState extends State<QueueScreen> {
       tooltip: 'Queue actions',
       iconColor: headerForeground,
       padding: EdgeInsets.zero,
-      style: IconButton.styleFrom(
-        minimumSize: const Size(40, 40),
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      ),
+      iconSize: usesMobileHeader ? null : 20,
+      style: usesMobileHeader
+          ? IconButton.styleFrom(
+              minimumSize: const Size(40, 40),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            )
+          : ButtonStyle(
+              // PopupMenuButton forwards ambient IconTheme.color to its inner
+              // IconButton even when iconColor is null. Keep that fallback from
+              // pinning its glyph and native ink above the inherited states.
+              foregroundColor: menuStyle?.foregroundColor,
+              iconColor: menuStyle?.iconColor ?? menuStyle?.foregroundColor,
+              overlayColor: menuStyle?.overlayColor,
+              shape: const WidgetStatePropertyAll(_QueueMenuBorder()),
+              fixedSize: WidgetStatePropertyAll(
+                Size(40, _desktopQueueControlHeight(context)),
+              ),
+              minimumSize: const WidgetStatePropertyAll(Size(40, 40)),
+              padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+              visualDensity: VisualDensity.standard,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
       onSelected: (value) => _handleMenuAction(context, value),
       itemBuilder: (context) => [
         const PopupMenuItem(
@@ -449,6 +505,71 @@ class _QueueScreenState extends State<QueueScreen> {
       ],
     );
 
+    final summary = Selector<PlaybackState, Duration>(
+      selector: (_, playback) => playback.position,
+      builder: (context, position, _) {
+        final remainingMs = listeningQueueRemainingMs(
+          queue: queue,
+          currentIndex: playbackView.currentIndex,
+          currentPosition: position,
+        );
+        return Text(
+          [
+            if (contextLabel != null) contextLabel,
+            if (currentNumber != null) '$currentNumber of ${queue.length}',
+            '${_formatQueueRuntime(remainingMs)} remaining',
+          ].join(' • '),
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: headerForeground ?? colors.onSurfaceVariant,
+              ),
+        );
+      },
+    );
+    if (!usesMobileHeader) {
+      final controls = Row(
+        children: [
+          if (stackedHeader)
+            Expanded(child: _buildViewSwitch(context, expanded: true))
+          else ...[
+            Expanded(
+                child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: title,
+            )),
+            _buildViewSwitch(context),
+          ],
+          menu,
+        ],
+      );
+      return Container(
+        key: const ValueKey('playback_queue_header'),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (stackedHeader)
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: title,
+              ),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                border:
+                    Border(bottom: BorderSide(color: colors.outlineVariant)),
+              ),
+              child: controls,
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: summary,
+            ),
+          ],
+        ),
+      );
+    }
     return Container(
       key: const ValueKey('playback_queue_header'),
       color: usesMobileHeader ? AppTheme.orange : Colors.transparent,
@@ -475,27 +596,7 @@ class _QueueScreenState extends State<QueueScreen> {
               ],
             ),
           SizedBox(height: stackedHeader ? 8 : 4),
-          Selector<PlaybackState, Duration>(
-            selector: (_, playback) => playback.position,
-            builder: (context, position, _) {
-              final remainingMs = listeningQueueRemainingMs(
-                queue: queue,
-                currentIndex: playbackView.currentIndex,
-                currentPosition: position,
-              );
-              return Text(
-                [
-                  if (contextLabel != null) contextLabel,
-                  if (currentNumber != null)
-                    '$currentNumber of ${queue.length}',
-                  '${_formatQueueRuntime(remainingMs)} remaining',
-                ].join(' • '),
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: headerForeground ?? colors.onSurfaceVariant,
-                    ),
-              );
-            },
-          ),
+          summary,
         ],
       ),
     );
@@ -1037,7 +1138,7 @@ class _QueueScreenState extends State<QueueScreen> {
       }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not play "${entry.item.title}"')),
+        AppSnackBar(content: Text('Could not play "${entry.item.title}"')),
       );
     }
   }
@@ -1051,7 +1152,7 @@ class _QueueScreenState extends State<QueueScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not remove "${entry.item.title}"')),
+        AppSnackBar(content: Text('Could not remove "${entry.item.title}"')),
       );
     }
   }
@@ -1303,6 +1404,20 @@ class _QueueScreenState extends State<QueueScreen> {
       MediaQuery.sizeOf(context).width < 960 ||
       MediaQuery.textScalerOf(context).scale(1) >= 1.3;
 
+  double _desktopQueueControlHeight(BuildContext context) {
+    if (MediaQuery.textScalerOf(context).scale(1) >= 2.5) return 40;
+    final style = Theme.of(context).textTheme.labelLarge;
+    final painter = TextPainter(
+      text: TextSpan(text: 'Timeline', style: style),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout();
+    final height = ((painter.height + 16) / 4).ceil() * 4.0;
+    painter.dispose();
+    return height < 40 ? 40 : height;
+  }
+
   Widget _buildViewSwitch(
     BuildContext context, {
     bool expanded = false,
@@ -1311,35 +1426,57 @@ class _QueueScreenState extends State<QueueScreen> {
     final textScale = MediaQuery.textScalerOf(context).scale(1);
     final showLabels = textScale < 2.5;
     final showIcons = textScale < 1.3 || !showLabels;
+    final desktop = MediaQuery.sizeOf(context).width >= 960;
+    Widget label(String text) {
+      final child = Text(text, maxLines: 1, softWrap: false);
+      if (!desktop) return child;
+      // Native segments lay out their children intrinsically, ignoring a tight
+      // outer height. Give both labels the measured line cell, not hit padding.
+      return SizedBox(
+        height: _desktopQueueControlHeight(context) - 16,
+        child: Center(widthFactor: 1, child: child),
+      );
+    }
+
+    final desktopStyle = ButtonStyle(
+      iconSize: const WidgetStatePropertyAll(20),
+      visualDensity: VisualDensity.standard,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      padding: const WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      ),
+      foregroundColor: foregroundColor == null
+          ? null
+          : WidgetStatePropertyAll(foregroundColor),
+    );
     return SizedBox(
-      width: expanded ? double.infinity : 176,
+      width: expanded ? double.infinity : (desktop ? null : 176),
+      height: desktop ? _desktopQueueControlHeight(context) : null,
       child: SegmentedButton<_QueueViewMode>(
         key: const ValueKey('queue_view_switch'),
         segments: [
           ButtonSegment(
             value: _QueueViewMode.list,
             icon: showIcons ? const Icon(Icons.format_list_bulleted) : null,
-            label: showLabels
-                ? const Text('List', maxLines: 1, softWrap: false)
-                : null,
+            label: showLabels ? label('List') : null,
             tooltip: 'List view',
           ),
           ButtonSegment(
             value: _QueueViewMode.timeline,
             icon: showIcons ? const Icon(Icons.timeline) : null,
-            label: showLabels
-                ? const Text('Timeline', maxLines: 1, softWrap: false)
-                : null,
+            label: showLabels ? label('Timeline') : null,
             tooltip: 'Timeline view',
           ),
         ],
         selected: {_viewMode},
         showSelectedIcon: false,
-        style: foregroundColor == null
-            ? null
-            : ButtonStyle(
-                foregroundColor: WidgetStatePropertyAll(foregroundColor),
-              ),
+        style: desktop
+            ? desktopStyle
+            : foregroundColor == null
+                ? null
+                : ButtonStyle(
+                    foregroundColor: WidgetStatePropertyAll(foregroundColor),
+                  ),
         onSelectionChanged: (selection) {
           final next = selection.single;
           if (next == _QueueViewMode.list) {
@@ -1516,7 +1653,7 @@ class _QueueScreenState extends State<QueueScreen> {
       final message = playback.playbackError ?? 'Playback failed to start.';
       ScaffoldMessenger.of(
         this.context,
-      ).showSnackBar(SnackBar(content: Text(message)));
+      ).showSnackBar(AppSnackBar(content: Text(message)));
     }
   }
 
@@ -1638,7 +1775,7 @@ class _QueueScreenState extends State<QueueScreen> {
     final trackIds = saveableQueueTrackIds(context.read<PlaybackState>().queue);
     if (trackIds.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No saveable tracks in the queue')),
+        const AppSnackBar(content: Text('No saveable tracks in the queue')),
       );
       return Future.value();
     }
@@ -1672,7 +1809,7 @@ class _QueueScreenState extends State<QueueScreen> {
   }) async {
     if (!_canEditAnalysis(track)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No analysis target for "${track.title}"')),
+        AppSnackBar(content: Text('No analysis target for "${track.title}"')),
       );
       return;
     }
@@ -1693,7 +1830,7 @@ class _QueueScreenState extends State<QueueScreen> {
     } catch (_) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
+          AppSnackBar(
             content: Text(
               'Could not load the latest analysis for "${track.title}".',
             ),
@@ -1903,7 +2040,8 @@ class _QueueScreenState extends State<QueueScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(this.context).showSnackBar(
-        SnackBar(content: Text('Could not save analysis for "${track.title}"')),
+        AppSnackBar(
+            content: Text('Could not save analysis for "${track.title}"')),
       );
     }
   }

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -146,6 +147,17 @@ func (c *Client) StatObject(ctx context.Context, key string) (*ObjectInfo, error
 		ContentType: info.ContentType,
 		ETag:        info.ETag,
 	}, nil
+}
+
+// IsObjectNotFound reports confirmed object absence, including wrapped StatObject
+// errors. Bucket absence and other access/service failures are not object absence.
+func IsObjectNotFound(err error) bool {
+	var response minio.ErrorResponse
+	if errors.As(err, &response) {
+		return response.Code == "NoSuchKey"
+	}
+	var responsePtr *minio.ErrorResponse
+	return errors.As(err, &responsePtr) && responsePtr != nil && responsePtr.Code == "NoSuchKey"
 }
 
 // GetObject retrieves an entire object from storage.

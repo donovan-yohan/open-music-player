@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -127,24 +128,29 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 	defer rows.Close()
 
 	var result *PlaylistWithTracks
-	var tracks []Track
+	tracks := make([]Track, 0)
 	var totalDuration int64
 
 	for rows.Next() {
 		var p Playlist
 		var t Track
 		var trackID sql.NullInt64
+		// LEFT JOIN makes even NOT NULL track columns nullable. Keep those
+		// values separate until trackID establishes that a track is present.
+		var identityHash, title sql.NullString
+		var mbVerified sql.NullBool
+		var createdAt, updatedAt sql.NullTime
 		var analysisOverrides json.RawMessage
 		var metadataJSON sql.NullString
 
 		err := rows.Scan(
 			&p.ID, &p.UserID, &p.Name, &p.Description, &p.CoverURL, &p.IsPublic, &p.CreatedAt, &p.UpdatedAt,
-			&trackID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
-			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
+			&trackID, &identityHash, &title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
+			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &mbVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 			&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
 			&metadataJSON, &t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt,
-			&t.CreatedAt, &t.UpdatedAt,
+			&createdAt, &updatedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -158,7 +164,17 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 
 		// Add track if present (LEFT JOIN may return NULL for empty playlists)
 		if trackID.Valid {
+			// Do not turn a malformed present track's NULL required values
+			// into valid-looking zero values while handling the absent side.
+			if !identityHash.Valid || !title.Valid || !mbVerified.Valid || !createdAt.Valid || !updatedAt.Valid {
+				return nil, fmt.Errorf("playlist track %d has NULL required columns", trackID.Int64)
+			}
 			t.ID = trackID.Int64
+			t.IdentityHash = identityHash.String
+			t.Title = title.String
+			t.MBVerified = mbVerified.Bool
+			t.CreatedAt = createdAt.Time
+			t.UpdatedAt = updatedAt.Time
 			t.AnalysisSummary, _ = projectCompactAnalysis(t.AnalysisSummary, analysisOverrides)
 			tracks = append(tracks, t)
 			if t.DurationMs.Valid {

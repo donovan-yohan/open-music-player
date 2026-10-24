@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -15,7 +17,7 @@ import '../../core/providers/settings_provider.dart';
 import '../../core/services/library_service.dart';
 import '../../core/services/playlist_service.dart';
 import '../../core/api/api_client.dart';
-import '../../../models/mix_plan.dart';
+import '../../models/mix_plan.dart';
 import '../../models/nearby_tracks.dart';
 import '../../models/playback_payload.dart';
 import '../../core/storage/secure_storage.dart';
@@ -211,7 +213,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         _isMixLoading = false;
       });
       messenger.showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(
             'Blended ${result.transitions.length} transitions. Tap any seam to adjust.',
           ),
@@ -221,7 +223,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       if (!mounted) return;
       setState(() => _isMixLoading = false);
       messenger.showSnackBar(
-        const SnackBar(
+        const AppSnackBar(
           content: Text('Could not blend this playlist. Try again.'),
         ),
       );
@@ -258,7 +260,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
     if (edit == null || !mounted) return;
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-      const SnackBar(content: Text('Transition saved')),
+      const AppSnackBar(content: Text('Transition saved')),
     );
   }
 
@@ -462,7 +464,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           _mixPlan = null;
         });
         messenger.showSnackBar(
-          SnackBar(
+          AppSnackBar(
             content: Text('Removed "${track.title}"'),
             action: SnackBarAction(
               label: 'Undo',
@@ -472,7 +474,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                     await _playlistService.addTracks(_playlist!.id, [track.id]);
                 if (mounted && result.hasSkipped && !result.hasAdded) {
                   messenger.showSnackBar(
-                    SnackBar(
+                    AppSnackBar(
                       content: Text(result.feedbackMessage(playlist.name)),
                     ),
                   );
@@ -486,7 +488,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     } catch (e) {
       if (mounted) {
         messenger.showSnackBar(
-          SnackBar(content: Text('Failed to remove "${track.title}"')),
+          AppSnackBar(content: Text('Failed to remove "${track.title}"')),
         );
       }
     }
@@ -513,12 +515,12 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       await playback.queueTrack(payload, mode: mode);
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(content: Text(mode.confirmationFor(title))),
+        AppSnackBar(content: Text(mode.confirmationFor(title))),
       );
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
-        const SnackBar(content: Text('Could not add to queue')),
+        const AppSnackBar(content: Text('Could not add to queue')),
       );
     }
   }
@@ -573,7 +575,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final durationMs = match.durationMs;
     if (durationMs == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(
             'Could not add "${match.title}" to queue: its length is unknown.',
           ),
@@ -637,13 +639,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       );
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(content: Text(result.feedbackMessage(playlistName))),
+        AppSnackBar(content: Text(result.feedbackMessage(playlistName))),
       );
       await _loadPlaylist();
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
-        const SnackBar(
+        const AppSnackBar(
           content: Text('Could not add to this playlist. Try again.'),
         ),
       );
@@ -682,12 +684,12 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         _selection = const PlaylistSelection();
       });
       messenger.showSnackBar(
-        SnackBar(content: Text('Removed ${ids.length} tracks')),
+        AppSnackBar(content: Text('Removed ${ids.length} tracks')),
       );
     } catch (e) {
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(content: Text('Failed to $label: $e')),
+        AppSnackBar(content: Text('Failed to $label: $e')),
       );
     }
   }
@@ -734,7 +736,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         return;
       }
       messenger.showSnackBar(
-        SnackBar(content: Text(result.feedbackMessage())),
+        AppSnackBar(content: Text(result.feedbackMessage())),
       );
     } on ApiException catch (error) {
       // The server's rejections here are deliberate and actionable — an
@@ -786,7 +788,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         }
       });
     }
-    messenger.showSnackBar(SnackBar(content: Text(message)));
+    messenger.showSnackBar(AppSnackBar(content: Text(message)));
   }
 
   /// True when [tracks] no longer contains every clip track of [_mixPlan], i.e.
@@ -835,7 +837,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       _loadPlaylist();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to reorder: $e')),
+          AppSnackBar(content: Text('Failed to reorder: $e')),
         );
       }
     }
@@ -864,12 +866,12 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             setState(
                 () => _playlist = updated.copyWith(tracks: _playlist!.tracks));
             ScaffoldMessenger.of(this.context).showSnackBar(
-              const SnackBar(content: Text('Playlist updated')),
+              const AppSnackBar(content: Text('Playlist updated')),
             );
           } catch (e) {
             if (!mounted) return;
             ScaffoldMessenger.of(this.context).showSnackBar(
-              SnackBar(content: Text('Failed to update: $e')),
+              AppSnackBar(content: Text('Failed to update: $e')),
             );
           }
         },
@@ -903,12 +905,12 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 if (!mounted) return;
                 router.pop();
                 messenger.showSnackBar(
-                  SnackBar(content: Text('Deleted "${playlist.name}"')),
+                  AppSnackBar(content: Text('Deleted "${playlist.name}"')),
                 );
               } catch (e) {
                 if (!mounted) return;
                 messenger.showSnackBar(
-                  SnackBar(content: Text('Failed to delete: $e')),
+                  AppSnackBar(content: Text('Failed to delete: $e')),
                 );
               }
             },
@@ -1055,39 +1057,45 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
   Widget _buildAppBar() {
     if (_isSelectMode) return _buildSelectionAppBar();
+    final desktop = MediaQuery.sizeOf(context).width >= 960;
     return SliverAppBar(
-      expandedHeight: 200,
+      expandedHeight: desktop ? null : 200,
       pinned: true,
-      flexibleSpace: FlexibleSpaceBar(
-        title: Text(
-          _playlist!.name,
-          style: const TextStyle(
-            fontWeight: FontWeight.bold,
-            shadows: [Shadow(blurRadius: 4)],
-          ),
-        ),
-        background: Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Theme.of(context).colorScheme.primary.withValues(alpha: 0.6),
-                Theme.of(context).scaffoldBackgroundColor,
-              ],
+      flexibleSpace: desktop
+          ? null
+          : FlexibleSpaceBar(
+              title: Text(
+                _playlist!.name,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  shadows: [Shadow(blurRadius: 4)],
+                ),
+              ),
+              background: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Theme.of(context)
+                          .colorScheme
+                          .primary
+                          .withValues(alpha: 0.6),
+                      Theme.of(context).scaffoldBackgroundColor,
+                    ],
+                  ),
+                ),
+                child: Center(
+                  child: Icon(
+                    Icons.queue_music,
+                    size: 80,
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onSurface.withValues(alpha: 0.5),
+                  ),
+                ),
+              ),
             ),
-          ),
-          child: Center(
-            child: Icon(
-              Icons.queue_music,
-              size: 80,
-              color: Theme.of(
-                context,
-              ).colorScheme.onSurface.withValues(alpha: 0.5),
-            ),
-          ),
-        ),
-      ),
       actions: [
         IconButton(
           key: const ValueKey('playlist_add_tracks_action'),
@@ -1215,58 +1223,97 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
   Widget _buildHeader() {
     final theme = Theme.of(context);
-
-    return SliverToBoxAdapter(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_playlist!.description != null &&
-                _playlist!.description!.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Text(
-                  _playlist!.description!,
-                  style: theme.textTheme.bodyMedium,
-                ),
+    final desktop = MediaQuery.sizeOf(context).width >= 960;
+    final content = Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (desktop)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                _playlist!.name,
+                style: theme.textTheme.headlineSmall,
               ),
-            Text(
-              '${_playlist!.trackCountLabel} • ${_playlist!.formattedDuration}',
-              style: theme.textTheme.bodySmall,
             ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _hasPlayableTracks ? () => _playAll() : null,
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text('Play'),
-                  ),
-                ),
+          if (_playlist!.description != null &&
+              _playlist!.description!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                _playlist!.description!,
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+          Text(
+            '${_playlist!.trackCountLabel} • ${_playlist!.formattedDuration}',
+            style: theme.textTheme.bodySmall,
+          ),
+          const SizedBox(height: 16),
+          LayoutBuilder(builder: (context, constraints) {
+            final play = FilledButton.icon(
+              onPressed: _hasPlayableTracks ? () => _playAll() : null,
+              icon: const Icon(Icons.play_arrow),
+              label: const Text('Play'),
+            );
+            final shuffle = OutlinedButton.icon(
+              onPressed: _hasPlayableTracks && !_mixEnabled
+                  ? () => _playAll(shuffle: true)
+                  : null,
+              icon: const Icon(Icons.shuffle),
+              label: const Text('Shuffle'),
+            );
+            if (!desktop) {
+              return Row(children: [
+                Expanded(child: play),
                 const SizedBox(width: 12),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _hasPlayableTracks && !_mixEnabled
-                        ? () => _playAll(shuffle: true)
-                        : null,
-                    icon: const Icon(Icons.shuffle),
-                    label: const Text('Shuffle'),
-                  ),
-                ),
+                Expanded(child: shuffle),
+              ]);
+            }
+            // Let native labels keep their actual font/scaler. Reflow the
+            // action cells rather than constraining or shrinking their text.
+            final label = TextPainter(
+              text:
+                  TextSpan(text: 'Shuffle', style: theme.textTheme.labelLarge),
+              textDirection: Directionality.of(context),
+              textScaler: MediaQuery.textScalerOf(context),
+            )..layout();
+            final cellWidth = math.min(
+                constraints.maxWidth, math.max(160.0, label.width + 64));
+            label.dispose();
+            return Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                SizedBox(width: cellWidth, child: play),
+                SizedBox(width: cellWidth, child: shuffle),
               ],
+            );
+          }),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: DownloadAllButton.forPlaylist(
+              _playlist!,
+              buttonKey: const ValueKey('playlist_download_all'),
             ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: DownloadAllButton.forPlaylist(
-                _playlist!,
-                buttonKey: const ValueKey('playlist_download_all'),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
+    );
+    return SliverToBoxAdapter(
+      child: desktop
+          ? DecoratedBox(
+              key: const ValueKey('playlist_detail_header'),
+              position: DecorationPosition.foreground,
+              decoration: BoxDecoration(
+                border: Border(
+                    bottom: BorderSide(color: theme.colorScheme.outline)),
+              ),
+              child:
+                  ColoredBox(color: theme.colorScheme.surface, child: content),
+            )
+          : content,
     );
   }
 

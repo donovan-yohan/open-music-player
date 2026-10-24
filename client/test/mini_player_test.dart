@@ -30,6 +30,48 @@ void main() {
       fixture = _PendingFixture();
     });
 
+    testWidgets('canonical streams deliver events and close with the fixture',
+        (tester) async {
+      await fixture.mount(tester);
+      final positions = <int>[];
+      final playing = <bool>[];
+      final closed = <String>[];
+      final positionStream = fixture.engine.positionMsStream;
+      final playingStream = fixture.engine.isPlayingStream;
+      positionStream.listen(positions.add,
+          onDone: () => closed.add('position'));
+      playingStream.listen(playing.add, onDone: () => closed.add('playing'));
+      fixture.engine.completedStream
+          .listen((_) {}, onDone: () => closed.add('completed'));
+      fixture.engine.runtimeStateStream
+          .listen((_) {}, onDone: () => closed.add('runtime'));
+      fixture.engine.clipCompletionStream
+          .listen((_) {}, onDone: () => closed.add('clip'));
+      fixture.engine.playbackErrors
+          .listen((_) {}, onDone: () => closed.add('errors'));
+      final start = fixture.playback.playTrack(_pendingTrack(1));
+      await _pumpUntil(tester, () => fixture.requests.length == 1);
+      fixture.complete(0);
+      await _finish(tester, start);
+      await _finish(tester, fixture.engine.seek(1234));
+      await _finish(tester, fixture.playback.pause());
+      // Listeners attached before playback must retain their canonical events.
+      expect(positions, contains(1234));
+      expect(playing, containsAllInOrder([true, false]));
+      expect(closed, isEmpty);
+      await fixture.close(tester);
+      expect(
+          closed,
+          unorderedEquals([
+            'position',
+            'playing',
+            'completed',
+            'runtime',
+            'clip',
+            'errors'
+          ]));
+    });
+
     for (final width in [390.0, 1200.0]) {
       testWidgets('cold start is accessible at 3x text, width $width',
           (tester) async {
@@ -409,6 +451,25 @@ Future<void> _finish(WidgetTester tester, Future<dynamic> operation) async {
   if (failure != null) throw failure!;
 }
 
+Future<void> _finishDisposal(
+    WidgetTester tester, Future<dynamic> operation) async {
+  var done = false;
+  Object? failure;
+  final observed = operation.then<void>((_) {
+    done = true;
+  }, onError: (Object error) {
+    failure = error;
+    done = true;
+  });
+  for (var i = 0; i < 200 && !done; i++) {
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump(const Duration(milliseconds: 10));
+  }
+  expect(done, isTrue, reason: 'Disposal did not complete within 2s fake time');
+  await observed;
+  if (failure != null) throw failure!;
+}
+
 Map<String, dynamic> _pendingTrack(int id) => {
       'id': id,
       'title': 'Track $id',
@@ -463,16 +524,20 @@ class _PendingFixture {
 
   Future<void> close(WidgetTester tester) async {
     await tester.pumpWidget(const SizedBox.shrink());
-    // Stream cancellation futures need the real event loop to drain; only
-    // teardown uses runAsync. Behavior above advances bounded fake time.
-    // Stop the pool before closing its injected clock streams.
-    await tester
-        .runAsync(() => engine.pool.stop().timeout(const Duration(seconds: 2)));
+    // Cancellation futures can complete on the real event loop while queued
+    // voice mutations and stream done events still belong to fake async.
+    // Observe the owning controller's complete engine disposal, not just stop.
+    final disposed = Future.wait<void>([
+      engine.positionMsStream.drain<void>(),
+      engine.isPlayingStream.drain<void>(),
+      engine.completedStream.drain<void>(),
+      engine.runtimeStateStream.drain<void>(),
+      engine.clipCompletionStream.drain<void>(),
+      engine.playbackErrors.drain<void>(),
+    ]);
     playback.dispose();
-    await tester.pump();
-    await tester
-        .runAsync(() => clock.dispose().timeout(const Duration(seconds: 2)));
-    await tester.pump();
+    await _finishDisposal(tester, disposed);
+    await _finishDisposal(tester, clock.dispose());
   }
 }
 

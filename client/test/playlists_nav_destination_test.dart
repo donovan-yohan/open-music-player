@@ -94,8 +94,12 @@ void main() {
 
     expect(find.byKey(const ValueKey('page_playlists')), findsOneWidget);
     expect(
-      tester.widget<NavigationRail>(rail).selectedIndex,
-      3,
+      tester
+          .widget<Semantics>(
+              find.byKey(const ValueKey('soundq_desktop_nav_semantics_3')))
+          .properties
+          .selected,
+      isTrue,
     );
   });
 

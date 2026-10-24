@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -79,6 +82,147 @@ func contiguousPositions(t *testing.T, positions map[int64]int, want int) {
 			t.Fatalf("duplicate position %d in %v", pos, positions)
 		}
 		seen[pos] = true
+	}
+}
+
+func TestPlaylistGetByIDWithTracksEmpty(t *testing.T) {
+	database, ctx := newPlaylistTestDB(t)
+	repo := NewPlaylistRepository(database)
+	playlist := &Playlist{UserID: seedPlaylistUser(t, database, "empty-detail@example.test"), Name: "Empty"}
+	if err := repo.Create(ctx, playlist); err != nil {
+		t.Fatalf("create playlist: %v", err)
+	}
+
+	got, err := repo.GetByIDWithTracks(ctx, playlist.ID)
+	if err != nil {
+		t.Fatalf("get empty playlist with tracks: %v", err)
+	}
+	if got.Playlist != *playlist || got.Tracks == nil || len(got.Tracks) != 0 || got.TrackCount != 0 || got.DurationMs != 0 {
+		t.Fatalf("empty playlist = %+v, want original playlist, non-nil empty tracks and zero aggregates", got)
+	}
+}
+
+func TestPlaylistGetByIDWithTracksLifecycle(t *testing.T) {
+	database, ctx := newPlaylistTestDB(t)
+	repo := NewPlaylistRepository(database)
+	trackRepo := NewTrackRepository(database)
+	playlist := &Playlist{UserID: seedPlaylistUser(t, database, "lifecycle@example.test"), Name: "Lifecycle"}
+	if err := repo.Create(ctx, playlist); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.GetByIDWithTracks(ctx, playlist.ID+1); !errors.Is(err, ErrPlaylistNotFound) || got != nil {
+		t.Fatalf("missing playlist = %+v, %v; want nil, ErrPlaylistNotFound", got, err)
+	}
+	a := seedPlaylistTrack(t, trackRepo, ctx, "Artist", "Rich track")
+	b := seedPlaylistTrack(t, trackRepo, ctx, "Artist", "Sparse track")
+	if _, err := database.ExecContext(ctx, `UPDATE tracks SET
+		version='Live', mb_recording_id=$2, mb_release_id=$3, mb_artist_id=$4, mb_verified=true,
+		source_url='https://source.test/track', source_type='fixture', storage_key='fixture/track.opus',
+		file_size_bytes=12345, codec='opus', bitrate_kbps=192, sample_rate_hz=48000, channels=2,
+		content_type='audio/ogg', metadata_json='{"fixture":"rich"}'::jsonb WHERE id=$1`,
+		a, uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `UPDATE tracks SET artist=NULL, album=NULL, duration_ms=NULL, metadata_json=NULL WHERE id=$1`, b); err != nil {
+		t.Fatal(err)
+	}
+	expected := make(map[int64]Track)
+	for _, id := range []int64{a, b} {
+		track, err := trackRepo.GetByID(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// These enrichment-only fields are not selected by the playlist query.
+		track.MetadataStatus = sql.NullString{}
+		track.MetadataConfidence = sql.NullFloat64{}
+		track.MetadataProvenance = nil
+		track.AnalysisSummary = json.RawMessage(`{}`)
+		expected[id] = *track
+	}
+	assertTracks := func(ids []int64, duration int64) {
+		t.Helper()
+		got, err := repo.GetByIDWithTracks(ctx, playlist.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Tracks == nil || len(got.Tracks) != len(ids) || got.TrackCount != len(ids) || got.DurationMs != duration {
+			t.Fatalf("playlist = %+v, want order %v and duration %d", got, ids, duration)
+		}
+		for i, id := range ids {
+			if !reflect.DeepEqual(got.Tracks[i], expected[id]) {
+				t.Fatalf("track[%d] = %+v, want %+v", i, got.Tracks[i], expected[id])
+			}
+		}
+	}
+	assertTracks(nil, 0)
+	if _, err := repo.AddTracks(ctx, playlist.ID, []int64{b, a}); err != nil {
+		t.Fatal(err)
+	}
+	assertTracks([]int64{b, a}, 200000)
+	if err := repo.SetTrackOrder(ctx, playlist.ID, []int64{a, b}); err != nil {
+		t.Fatal(err)
+	}
+	assertTracks([]int64{a, b}, 200000)
+	if err := repo.RemoveTracks(ctx, playlist.ID, []int64{a, b}); err != nil {
+		t.Fatal(err)
+	}
+	assertTracks(nil, 0)
+	if _, err := repo.AddTracks(ctx, playlist.ID, []int64{a}); err != nil {
+		t.Fatal(err)
+	}
+	assertTracks([]int64{a}, 200000)
+	if err := repo.RemoveTrack(ctx, playlist.ID, a); err != nil {
+		t.Fatal(err)
+	}
+	assertTracks(nil, 0)
+}
+
+func TestPlaylistGetByIDWithTracksRejectsMalformedPresentTrack(t *testing.T) {
+	database, ctx := newPlaylistTestDB(t)
+	// Session-local views exercise real SQL NULLs/conversion errors without
+	// relaxing the migrated table's NOT NULL constraints or touching its data.
+	database.SetMaxOpenConns(1)
+	repo := NewPlaylistRepository(database)
+	playlist := &Playlist{UserID: seedPlaylistUser(t, database, "malformed@example.test"), Name: "Malformed"}
+	if err := repo.Create(ctx, playlist); err != nil {
+		t.Fatal(err)
+	}
+	id := seedPlaylistTrack(t, NewTrackRepository(database), ctx, "Artist", "Present")
+	if _, err := repo.AddTracks(ctx, playlist.ID, []int64{id}); err != nil {
+		t.Fatal(err)
+	}
+	columns := strings.Split("id identity_hash title artist album duration_ms version mb_recording_id mb_release_id mb_artist_id mb_verified source_url source_type storage_key file_size_bytes codec bitrate_kbps sample_rate_hz channels content_type metadata_json created_at updated_at", " ")
+	for _, column := range []string{"identity_hash", "title", "mb_verified", "created_at", "updated_at", "channels"} {
+		t.Run(column, func(t *testing.T) {
+			projection := append([]string(nil), columns...)
+			for i, name := range projection {
+				if name == column {
+					projection[i] = "NULL AS " + name
+					if name == "channels" {
+						projection[i] = "'invalid-integer'::text AS channels"
+					}
+				}
+			}
+			if _, err := database.ExecContext(ctx, "CREATE TEMP VIEW tracks AS SELECT "+strings.Join(projection, ", ")+" FROM public.tracks"); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if _, err := database.ExecContext(ctx, "DROP VIEW pg_temp.tracks"); err != nil {
+					t.Error(err)
+				}
+			})
+			got, err := repo.GetByIDWithTracks(ctx, playlist.ID)
+			if err == nil || got != nil {
+				t.Fatalf("malformed present track %s = %+v, %v; want nil and error", column, got, err)
+			}
+			wantError := "NULL required columns"
+			if column == "channels" {
+				wantError = "invalid-integer"
+			}
+			if !strings.Contains(err.Error(), wantError) {
+				t.Fatalf("malformed %s error = %v, want %q", column, err, wantError)
+			}
+		})
 	}
 }
 
@@ -315,7 +459,6 @@ func playlistNames(ps []PlaylistWithTracks) []string {
 // through Create/Update and are returned by GetByID/GetByIDWithTracks/GetByUserID.
 func TestPlaylistCoverAndPublicRoundTrip(t *testing.T) {
 	database, ctx := newPlaylistTestDB(t)
-	trackRepo := NewTrackRepository(database)
 	repo := NewPlaylistRepository(database)
 
 	userID := seedPlaylistUser(t, database, "cover@example.test")
@@ -328,13 +471,6 @@ func TestPlaylistCoverAndPublicRoundTrip(t *testing.T) {
 	if err := repo.Create(ctx, pl); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// GetByIDWithTracks requires at least one track row (its LEFT JOIN scan does
-	// not support wholly-empty playlists), so seed one.
-	trackID := seedPlaylistTrack(t, trackRepo, ctx, "Artist", "cover-track")
-	if _, err := repo.AddTracks(ctx, pl.ID, []int64{trackID}); err != nil {
-		t.Fatalf("add track: %v", err)
-	}
-
 	// GetByID round-trip.
 	got, err := repo.GetByID(ctx, pl.ID)
 	if err != nil {
@@ -354,6 +490,9 @@ func TestPlaylistCoverAndPublicRoundTrip(t *testing.T) {
 	}
 	if !withTracks.CoverURL.Valid || !withTracks.IsPublic {
 		t.Fatalf("with-tracks cover/public not round-tripped: %#v public=%v", withTracks.CoverURL, withTracks.IsPublic)
+	}
+	if withTracks.Tracks == nil || len(withTracks.Tracks) != 0 || withTracks.TrackCount != 0 || withTracks.DurationMs != 0 {
+		t.Fatalf("cover/public empty detail = %+v, want no phantom track", withTracks)
 	}
 
 	// GetByUserID round-trip.

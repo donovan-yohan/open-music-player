@@ -25,6 +25,53 @@ class DownloadButton extends StatelessWidget {
           builder: (context, snapshot) {
             final isDownloaded = snapshot.data ?? false;
 
+            if (MediaQuery.sizeOf(context).width >= 960) {
+              final glyph = size > 24 ? size : 20.0;
+              final cell = size > 24 ? size + 16 : 40.0;
+              final button = IconButton(
+                iconSize: glyph,
+                style: ButtonStyle(
+                  fixedSize: WidgetStatePropertyAll(Size.square(cell)),
+                  iconSize: WidgetStatePropertyAll(glyph),
+                ),
+                isSelected: isDownloaded,
+                selectedIcon: const Icon(Icons.check_circle),
+                icon:
+                    Icon(isDownloading ? Icons.close : Icons.download_outlined),
+                onPressed: isDownloaded
+                    ? () => _showDeleteDialog(context, downloadState)
+                    : isDownloading
+                        ? () => downloadState.cancelDownload(track.id)
+                        : () => downloadState.downloadTrack(track),
+                tooltip: isDownloaded
+                    ? 'Downloaded'
+                    : isDownloading
+                        ? 'Cancel download'
+                        : 'Download',
+              );
+              return Stack(
+                alignment: Alignment.center,
+                children: [
+                  button,
+                  if (isDownloading && !isDownloaded)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: Center(
+                          child: SizedBox.square(
+                            dimension: cell - 8,
+                            child: CircularProgressIndicator(
+                              value: progress.progress,
+                              strokeWidth: 2,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            }
+
             if (isDownloaded) {
               return _buildDownloadedButton(context, downloadState);
             }

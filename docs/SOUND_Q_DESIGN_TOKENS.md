@@ -3,6 +3,8 @@
 Issue #177 establishes a shared visual language before screen-level redesigns.
 `client/lib/app/theme.dart` is the Flutter source of truth.
 
+Desktop composition, typography and interaction follow [Desktop Visual System](DESKTOP_VISUAL_SYSTEM.md). Its aerospace-inspired strict grid, stronger feedback and shadow-free geometry replace prior desktop visual guidance. `client/lib/app/desktop_theme.dart` owns the desktop adaptation; shared semantic tokens remain in `theme.dart`.
+
 ## Color roles
 
 | Role | Token | Use |
@@ -12,20 +14,20 @@ Issue #177 establishes a shared visual language before screen-level redesigns.
 | Primary / secondary text | `AppTheme.textPrimary`, `AppTheme.textSecondary` and light equivalents | Content and supporting metadata. |
 | Outline | `AppTheme.outline`, `AppTheme.inputOutline` and light equivalents | Keep quiet dividers separate from stronger interactive boundaries. |
 | Safety orange | `AppTheme.orange`, `AppTheme.orangePressed` and light equivalents | Primary actions, selected state, playback progress, and pressed feedback. |
-| Accent | `AppTheme.accent` | Small secondary metadata or analysis signal; never a second primary theme. |
+| Accent | `AppTheme.accent` | Cyan secondary actions, metadata, instrumentation and clear hover/focus feedback; orange retains primary/selected identity. |
 | Status | `AppTheme.success`, `AppTheme.warning`, `AppTheme.error` | Outcome and validation meaning; do not substitute orange. |
 | Waveform | `AppTheme.waveformBase`, `AppTheme.waveformBeat`, `AppTheme.waveformPlayhead`, `AppTheme.waveformSelection` | Future waveform layers. |
 | Player state | `AppTheme.playerPlaying`, `AppTheme.playerPaused`, `AppTheme.playerBuffering`, `AppTheme.playerError` | Future player status indicators. |
 
 ## Type, Shape, And Space
 
-Use the supplied fixed type scale: 22-30px headlines, 14-20px titles, 11-14px labels, and 12-16px body text. Font weights define hierarchy, letter spacing remains zero, and compact navigation or control labels stay at 11-14px. Font fallbacks prioritize Japanese-capable system faces. Use `radiusMedium` (8) for cards and compact controls, `radiusSmall` for tight elements, and `radiusLarge` only for larger contained surfaces. Build gutters and component gaps from `space1` through `space6` rather than introducing arbitrary values.
+Keep readable semantic text roles and full accessibility scaling. Desktop UI/content uses a modern, clean, square/geometric, normal-width face; condensed typography is rejected. Space Grotesk is the next candidate, not a user-approved final selection. Retain locally bundled IBM Plex Mono for technical numeric readouts and script-capable fallbacks. Desktop controls and panels have zero corner radius, consistent painted dimensions and 1px rules on a 4px/8px grid. Shared mobile radius and text tokens remain available only for mobile presentation; they are not desktop design guidance. Measure actual text before sizing controls so labels such as Timeline remain complete; never compress type to force a fit.
 
 ## Usage Rules
 
-The dark direction is matte orange-on-black; the light theme carries the same hierarchy on neutral white surfaces without changing system/light/dark behavior. The orange token means the primary interactive or active state, with `orangePressed` used through Material state resolution and a distinct disabled treatment. The teal accent is reserved for a small secondary signal. Unfocused input boundaries maintain at least 3:1 contrast against their fill; focused and error borders use their semantic colors.
+The dark direction is matte orange/cyan on neutral black; the light theme carries semantic hierarchy on neutral white surfaces without changing system/light/dark behavior. Orange means primary/current/selected identity. Cyan is visibly present in secondary controls and hover/focus feedback. Disabled controls retain the same geometry with muted boundaries. Unfocused input boundaries maintain at least 3:1 contrast against their fill; normal text maintains at least 4.5:1 through combined interaction states.
 
-Do not introduce glow, gradients, large ivory panels, dense sci-fi microtext, or a competing teal theme. This slice defines tokens only: future screen work should adopt these tokens instead of hard-coded colors, without changing audio or playback behavior.
+Desktop uses no drop shadows, glow, blur, gradients, decorative telemetry or tiny sci-fi microtext. Use flat surface changes, crisp state boundaries and continuous dividers instead. Future screen work follows the current desktop visual authority and shared semantic tokens without changing audio or playback behavior.
 
 ## Logo Assets
 

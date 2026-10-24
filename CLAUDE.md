@@ -2,6 +2,8 @@
 
 This document provides context and guidelines for AI assistants working on the Open Music Player codebase.
 
+For desktop UI work, read `docs/DESKTOP_VISUAL_SYSTEM.md` first. It is the current visual authority; do not recover older spacing, rounding, font or hover guidance from historical delivery reports.
+
 ## Project Overview
 
 Open Music Player is a self-hosted music library management system with three main components:

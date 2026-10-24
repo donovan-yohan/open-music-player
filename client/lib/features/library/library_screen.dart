@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import '../../shared/widgets/now_playing_row.dart';
 import '../../shared/widgets/song_list_item.dart';
 import 'dart:async';
@@ -355,7 +357,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       playlistImportService: PlaylistImportService(api: _apiClient),
       onBlankCreated: (playlist) {
         messenger.showSnackBar(
-          SnackBar(content: Text('Created playlist "${playlist.name}"')),
+          AppSnackBar(content: Text('Created playlist "${playlist.name}"')),
         );
       },
     );
@@ -363,6 +365,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final desktop = MediaQuery.sizeOf(context).width >= 960;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Library'),
@@ -377,15 +380,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
             onPressed: _showCreatePlaylistDialog,
             tooltip: 'Create playlist',
           ),
-          _buildSortControl(context),
-          _buildVerificationFilter(context),
-          _buildFilterChip(context),
+          if (!desktop) ...[
+            _buildSortControl(context),
+            _buildVerificationFilter(context),
+            _buildFilterChip(context),
+          ],
         ],
       ),
       body: Column(
         children: [
           _buildOfflineBanner(context),
-          _buildSearchField(context),
+          if (desktop)
+            _buildDesktopToolbar(context)
+          else
+            _buildSearchField(context),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: RecentSearches(
@@ -401,7 +409,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               },
             ),
           ),
-          _buildFilterChips(context),
+          if (!desktop) _buildFilterChips(context),
           Expanded(child: _buildBody(context)),
         ],
       ),
@@ -409,8 +417,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Widget _buildSearchField(BuildContext context) {
+    final desktop = MediaQuery.sizeOf(context).width >= 960;
+    final colors = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      padding:
+          desktop ? EdgeInsets.zero : const EdgeInsets.fromLTRB(12, 12, 12, 0),
       child: TextField(
         controller: _searchController,
         focusNode: _searchFocusNode,
@@ -419,8 +430,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
         onSubmitted: _onSearchSubmitted,
         decoration: InputDecoration(
           isDense: true,
+          contentPadding: desktop
+              ? const EdgeInsets.symmetric(horizontal: 8, vertical: 10)
+              : null,
           hintText: 'Search your library',
-          prefixIcon: const Icon(Icons.search),
+          prefixIcon:
+              Icon(Icons.search, color: desktop ? colors.secondary : null),
+          prefixIconConstraints: desktop
+              ? const BoxConstraints(minWidth: 40, minHeight: 40)
+              : null,
           suffixIcon: _searchController.text.isEmpty
               ? null
               : IconButton(
@@ -432,7 +450,85 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   },
                 ),
           border: const OutlineInputBorder(),
+          enabledBorder: desktop
+              ? OutlineInputBorder(
+                  borderRadius: BorderRadius.zero,
+                  borderSide: BorderSide(color: colors.outline),
+                )
+              : null,
+          focusedBorder: desktop
+              ? OutlineInputBorder(
+                  borderRadius: BorderRadius.zero,
+                  borderSide: BorderSide(color: colors.secondary),
+                )
+              : null,
         ),
+      ),
+    );
+  }
+
+  Widget _buildDesktopToolbar(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      key: const ValueKey('library_desktop_toolbar'),
+      padding: const EdgeInsets.all(8),
+      child: LayoutBuilder(builder: (context, constraints) {
+        final scale = MediaQuery.textScalerOf(context).scale(1);
+        final searchWidth = (280 * scale).clamp(0.0, constraints.maxWidth);
+        return Wrap(
+          spacing: 6,
+          runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            SizedBox(width: searchWidth, child: _buildSearchField(context)),
+            IconTheme(
+              data: IconThemeData(color: colors.secondary),
+              child: _buildSortControl(context),
+            ),
+            IconTheme(
+              data: IconThemeData(color: colors.secondary),
+              child: _buildVerificationFilter(context),
+            ),
+            _desktopFilter(
+              context,
+              'Downloaded',
+              _downloadedOnly,
+              (selected) {
+                setState(() => _downloadedOnly = selected);
+                _loadTracks();
+              },
+              icon: Icons.download_done,
+            ),
+            _desktopFilter(
+                context, 'Liked', _filter.liked, (_) => _onLikedToggled(),
+                icon: Icons.favorite_border),
+            for (final genre in LibraryFilterState.genreChips)
+              _desktopFilter(context, genre, _filter.genre == genre,
+                  (_) => _onGenreSelected(genre)),
+          ],
+        );
+      }),
+    );
+  }
+
+  Widget _desktopFilter(BuildContext context, String label, bool selected,
+      ValueChanged<bool> onSelected,
+      {IconData? icon}) {
+    final colors = Theme.of(context).colorScheme;
+    final color = selected ? colors.primary : colors.secondary;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 40),
+      child: FilterChip(
+        label: Text(label),
+        selected: selected,
+        onSelected: onSelected,
+        avatar: icon == null ? null : Icon(icon, size: 18, color: color),
+        labelStyle: TextStyle(color: color),
+        selectedColor: colors.primary.withValues(alpha: 0.16),
+        checkmarkColor: colors.primary,
+        shape: const RoundedRectangleBorder(),
+        side: BorderSide(color: selected ? colors.primary : colors.outline),
+        visualDensity: VisualDensity.compact,
       ),
     );
   }
@@ -876,7 +972,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(playback.playbackError ?? 'Could not play this track.'),
           backgroundColor: Colors.red,
         ),
@@ -972,7 +1068,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
           );
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
+              AppSnackBar(
                 content: Text(
                     'Matched to "${suggestion.title}" by ${suggestion.artist}'),
                 backgroundColor: Colors.green,
@@ -983,7 +1079,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
         } catch (e) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
+              AppSnackBar(
                 content: Text('Failed to confirm match: $e'),
                 backgroundColor: Colors.red,
               ),
@@ -1004,7 +1100,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     } catch (_) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(playback.playbackError ?? 'Could not play this track.'),
           backgroundColor: Colors.red,
         ),
@@ -1024,6 +1120,8 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
         final compactActions =
             constraints.maxWidth < _compactActionBreakpoint ||
                 MediaQuery.textScalerOf(context).scale(1) > 1.3;
+        final desktop = MediaQuery.sizeOf(context).width >= 960;
+        final artworkSize = desktop || compactActions ? 40.0 : 48.0;
         final subtitle = track.displayArtist;
 
         return QueueSwipeAction(
@@ -1043,16 +1141,18 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
                 leading: Stack(
                   children: [
                     Container(
-                      width: compactActions ? 40 : 48,
-                      height: compactActions ? 40 : 48,
+                      width: artworkSize,
+                      height: artworkSize,
                       decoration: BoxDecoration(
                         color: theme.colorScheme.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(4),
+                        borderRadius: desktop
+                            ? BorderRadius.zero
+                            : BorderRadius.circular(4),
                       ),
                       child: TrackArtwork.fromTrack(
                         track,
-                        width: compactActions ? 40 : 48,
-                        height: compactActions ? 40 : 48,
+                        width: artworkSize,
+                        height: artworkSize,
                         borderRadius: BorderRadius.zero,
                       ),
                     ),
@@ -1126,9 +1226,14 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
                     if (!compactActions) ...[
                       IconButton(
                         visualDensity: VisualDensity.compact,
+                        isSelected: desktop ? liked : null,
+                        selectedIcon:
+                            desktop ? const Icon(Icons.favorite) : null,
                         icon: Icon(
                           liked ? Icons.favorite : Icons.favorite_border,
-                          color: liked ? theme.colorScheme.primary : null,
+                          color: !desktop && liked
+                              ? theme.colorScheme.primary
+                              : null,
                         ),
                         tooltip: liked ? 'Unlike' : 'Like',
                         onPressed: _likeInFlight ? null : _toggleLike,
@@ -1167,12 +1272,12 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
       );
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(content: Text(mode.confirmationFor(track.title))),
+        AppSnackBar(content: Text(mode.confirmationFor(track.title))),
       );
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
-        const SnackBar(content: Text('Could not add to queue')),
+        const AppSnackBar(content: Text('Could not add to queue')),
       );
     }
   }
@@ -1185,7 +1290,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
       await context.read<LikedTracksState>().toggle(track.id);
     } catch (_) {
       messenger.showSnackBar(
-        const SnackBar(content: Text('Could not update liked status')),
+        const AppSnackBar(content: Text('Could not update liked status')),
       );
     } finally {
       if (mounted) setState(() => _likeInFlight = false);
@@ -1295,7 +1400,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     if (result == null) return;
     onTrackUpdated?.call();
     messenger.showSnackBar(
-      SnackBar(
+      AppSnackBar(
         content: Text(
           result.action == TrackMetadataEditAction.reset
               ? 'Restored the original metadata'
@@ -1323,7 +1428,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
   void _goToArtist() {
     if (!canBrowseLocalName(track.artist)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No artist name for this track')),
+        const AppSnackBar(content: Text('No artist name for this track')),
       );
       return;
     }
@@ -1335,7 +1440,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
   void _goToAlbum() {
     if (!canBrowseLocalName(track.album)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No album name for this track')),
+        const AppSnackBar(content: Text('No album name for this track')),
       );
       return;
     }
@@ -1346,7 +1451,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     final mbid = track.mbArtistId;
     if (mbid == null || mbid.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No artist details for this track')),
+        const AppSnackBar(content: Text('No artist details for this track')),
       );
       return;
     }
@@ -1364,7 +1469,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     final mbid = track.mbReleaseId;
     if (mbid == null || mbid.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No album details for this track')),
+        const AppSnackBar(content: Text('No album details for this track')),
       );
       return;
     }
@@ -1383,12 +1488,12 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     try {
       await _libraryService.removeTrackFromLibrary(track.id.toString());
       messenger.showSnackBar(
-        const SnackBar(content: Text('Removed from library')),
+        const AppSnackBar(content: Text('Removed from library')),
       );
       onTrackUpdated?.call();
     } catch (_) {
       messenger.showSnackBar(
-        const SnackBar(content: Text('Failed to remove from library')),
+        const AppSnackBar(content: Text('Failed to remove from library')),
       );
     }
   }

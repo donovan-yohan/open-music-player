@@ -8,6 +8,7 @@ import 'package:just_audio/just_audio.dart' show ProcessingState;
 import 'package:provider/provider.dart';
 import 'package:open_music_player/app/theme.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/models/settings_model.dart';
 import 'package:open_music_player/core/services/home_service.dart';
 import 'package:open_music_player/features/home/home_screen.dart';
 import 'package:open_music_player/features/dj_session/dj_session_screen.dart';
@@ -20,6 +21,8 @@ import 'song_row_presentation_test.dart' show FakePlayback, makeSnapshot;
 
 class _Playback extends FakePlayback {
   final added = <int>[];
+  @override
+  QueueInsertMode get swipeQueueMode => QueueInsertMode.addToQueue;
   @override
   int? playbackQueueTailTrackId() => null;
   final _snapshots = BehaviorSubject<PlaybackSnapshot>();
@@ -183,7 +186,7 @@ void main() {
           home
               ? HomeScreen(homeService: _Home())
               : DjSessionScreen(service: _Dj()));
-      if (home) expect(find.text('Your rotation'), findsOneWidget);
+      if (home) expect(find.text('Recently played'), findsOneWidget);
       final normal = {
         for (final id in [1, 2]) id: _renderedStyle(tester, 'Song $id')
       };

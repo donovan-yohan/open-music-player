@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import '../audio/audio_file_extension.dart';
 import '../audio/local_audio_artifact_resolver.dart';
 import '../audio/signed_audio_url_service.dart';
 import '../storage/offline_download_store.dart';
@@ -88,12 +89,10 @@ class DownloadService implements LocalAudioArtifactResolver {
   }
 
   Future<void> _runDownload(Track track, CancelToken cancelToken) async {
-    // Path is a stable function of the track id only, so re-downloading the
-    // same track (including a metadata/title correction or a newer version)
-    // always overwrites the prior artifact instead of orphaning it.
     final dir = await _downloadDirectoryProvider();
-    final localPath = p.join(dir, '${track.id}.mp3');
-    final partPath = '$localPath.part';
+    // Keep pending paths neutral until the descriptor identifies the container.
+    var localPath = p.join(dir, '${track.id}.audio');
+    var partPath = '$localPath.part';
     var lastPersistedProgress = 0.0;
     var progressPersistence = Future<void>.value();
     void persistProgress(double progress) {
@@ -130,6 +129,16 @@ class DownloadService implements LocalAudioArtifactResolver {
         track.id,
         ttlSeconds: 15 * 60,
       );
+      localPath = p.join(dir, '${track.id}.${audioFileExtension(descriptor)}');
+      partPath = '$localPath.part';
+      await _db.insertDownloadedTrack(DownloadedTrack(
+        trackId: track.id,
+        localPath: localPath,
+        fileSizeBytes: 0,
+        status: DownloadStatus.downloading,
+        progress: 0,
+        downloadedAt: DateTime.now(),
+      ));
 
       // Stage into a `.part` file so a partial/aborted transfer never lands at
       // the final path where it could be mistaken for a complete artifact.
@@ -162,6 +171,8 @@ class DownloadService implements LocalAudioArtifactResolver {
       }
 
       await _promoteValidatedArtifact(track, descriptor, partPath, localPath);
+      // Retain distinct previous paths: a prior row cannot prove exclusive
+      // artifact ownership or that a transport has released its source.
     } on SignedAudioUrlException catch (e) {
       await progressPersistence;
       await _failDownload(track.id, partPath, _downloadErrorMessage(e));

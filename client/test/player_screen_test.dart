@@ -741,10 +741,10 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   }
 
   @override
-  void beginLocalScrub() => scrubEvents.add('begin');
+  Future<void> beginLocalScrub() async => scrubEvents.add('begin');
 
   @override
-  void updateLocalScrub(Duration position) {
+  Future<void> updateLocalScrub(Duration position) async {
     scrubEvents.add('update:${position.inMilliseconds}');
   }
 
@@ -754,10 +754,10 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   }
 
   @override
-  void beginTimelineScrub() => scrubEvents.add('timeline-begin');
+  Future<void> beginTimelineScrub() async => scrubEvents.add('timeline-begin');
 
   @override
-  void updateTimelineScrub(int globalMs) {
+  Future<void> updateTimelineScrub(int globalMs) async {
     scrubEvents.add('timeline-update:$globalMs');
   }
 

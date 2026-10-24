@@ -115,6 +115,13 @@ void main() {
     );
     await tester.tap(find.byKey(const ValueKey('dj_local_file_load')));
     await tester.pumpAndSettle();
+    // The injected session's serial chain was created in setUp's real zone.
+    await tester.runAsync(() async {
+      for (var i = 0; i < 100 && !deck.session.deckA.isLoaded; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+    });
+    await tester.pump();
 
     expect(deck.session.deckA.title, 'picked.mp3');
     expect(deck.session.deckA.trackRef, 'local:/tmp/picked.mp3');

@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/services/playlist_import_service.dart';
@@ -8,6 +10,7 @@ import '../../shared/models/playlist.dart';
 import '../../shared/widgets/playlist_card.dart';
 import 'playlist_creation_dialog.dart';
 import 'playlist_edit_dialog.dart';
+import 'mix/desktop_mix_editor_screen.dart';
 
 class PlaylistsScreen extends StatefulWidget {
   const PlaylistsScreen({super.key});
@@ -217,7 +220,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
         if (!mounted) return;
         setState(() => _playlists.insert(0, playlist));
         messenger.showSnackBar(
-          SnackBar(content: Text('Created playlist "${playlist.name}"')),
+          AppSnackBar(content: Text('Created playlist "${playlist.name}"')),
         );
       },
     );
@@ -277,12 +280,12 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               setState(() => _playlists[index] = updated);
             }
             messenger.showSnackBar(
-              const SnackBar(content: Text('Playlist updated')),
+              const AppSnackBar(content: Text('Playlist updated')),
             );
           } catch (e) {
             if (!mounted) return;
             messenger.showSnackBar(
-              SnackBar(content: Text('Failed to update playlist: $e')),
+              AppSnackBar(content: Text('Failed to update playlist: $e')),
             );
           }
         },
@@ -313,12 +316,12 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
                 setState(
                     () => _playlists.removeWhere((p) => p.id == playlist.id));
                 messenger.showSnackBar(
-                  SnackBar(content: Text('Deleted "${playlist.name}"')),
+                  AppSnackBar(content: Text('Deleted "${playlist.name}"')),
                 );
               } catch (e) {
                 if (!mounted) return;
                 messenger.showSnackBar(
-                  SnackBar(content: Text('Failed to delete playlist: $e')),
+                  AppSnackBar(content: Text('Failed to delete playlist: $e')),
                 );
               }
             },
@@ -332,35 +335,167 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     );
   }
 
+  Widget _buildDesktopToolbar() {
+    final theme = Theme.of(context);
+    final label = TextPainter(
+      text: TextSpan(text: 'New playlist', style: theme.textTheme.labelLarge),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+    )..layout();
+    final height = (label.height + 16).clamp(40.0, double.infinity);
+    final createWidth = label.width + 20 + 8 + 24;
+    label.dispose();
+    final iconStyle = const ButtonStyle().copyWith(
+      fixedSize: WidgetStatePropertyAll(Size(40, height)),
+      minimumSize: WidgetStatePropertyAll(Size(40, height)),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
+    // PopupMenuButton forwards ambient IconTheme.color to IconButton.color.
+    // An explicit stateful style wins over that synthesized fixed foreground.
+    final sharedIconStyle = theme.iconButtonTheme.style;
+    final sortStyle = iconStyle.copyWith(
+      foregroundColor: sharedIconStyle?.foregroundColor,
+      iconColor: sharedIconStyle?.foregroundColor,
+      overlayColor: sharedIconStyle?.overlayColor,
+    );
+    final controls = Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        FilledButton.icon(
+          onPressed: _showCreatePlaylistDialog,
+          style: ButtonStyle(
+            minimumSize: WidgetStatePropertyAll(Size(40, height)),
+            iconSize: const WidgetStatePropertyAll(20),
+          ),
+          icon: const Icon(Icons.add),
+          label: const Text('New playlist'),
+        ),
+        if (desktopMixEditorEligible(context))
+          IconButton(
+            style: iconStyle,
+            tooltip: 'Edit saved mixes',
+            icon: const Icon(Icons.view_timeline_outlined),
+            onPressed: () => context.push('/mixes'),
+          ),
+        IconButton(
+          style: iconStyle,
+          icon: Icon(_isGridView ? Icons.list : Icons.grid_view),
+          onPressed: () => setState(() => _isGridView = !_isGridView),
+          tooltip: _isGridView ? 'List view' : 'Grid view',
+        ),
+      ],
+    );
+    final search = Row(children: [
+      Expanded(
+        child: TextField(
+          controller: _searchController,
+          onChanged: _onSearchChanged,
+          textInputAction: TextInputAction.search,
+          decoration: InputDecoration(
+            isDense: true,
+            hintText: 'Search playlists',
+            prefixIcon: const Icon(Icons.search, size: 20),
+            prefixIconConstraints:
+                BoxConstraints(minWidth: 40, minHeight: height),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            suffixIcon: _query.isNotEmpty
+                ? IconButton(
+                    style: iconStyle,
+                    tooltip: 'Clear playlist search',
+                    icon: const Icon(Icons.clear),
+                    onPressed: () {
+                      _searchController.clear();
+                      _onSearchChanged('');
+                    },
+                  )
+                : null,
+            border: const OutlineInputBorder(borderRadius: BorderRadius.zero),
+          ),
+        ),
+      ),
+      const SizedBox(width: 8),
+      PopupMenuButton<String>(
+        style: sortStyle,
+        iconSize: 20,
+        icon: const Icon(Icons.sort),
+        tooltip: 'Sort playlists',
+        onSelected: _onSortSelected,
+        itemBuilder: (context) => [
+          _buildSortItem('name', 'Name'),
+          _buildSortItem('track_count', 'Track count'),
+        ],
+      ),
+    ]);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: theme.colorScheme.outline)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: LayoutBuilder(builder: (context, constraints) {
+          final controlsWidth =
+              createWidth + (desktopMixEditorEligible(context) ? 96 : 48);
+          if (constraints.maxWidth < controlsWidth + 288) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [controls, const SizedBox(height: 8), search],
+            );
+          }
+          return Row(children: [
+            SizedBox(width: controlsWidth, child: controls),
+            const SizedBox(width: 16),
+            Expanded(child: search),
+          ]);
+        }),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final desktop = MediaQuery.sizeOf(context).width >= 960;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Playlists'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.add),
-            onPressed: _showCreatePlaylistDialog,
-            tooltip: 'Create playlist',
-          ),
-          IconButton(
-            icon: Icon(_isGridView ? Icons.list : Icons.grid_view),
-            onPressed: () => setState(() => _isGridView = !_isGridView),
-            tooltip: _isGridView ? 'List view' : 'Grid view',
-          ),
-        ],
+        actions: desktop
+            ? null
+            : [
+                if (desktopMixEditorEligible(context))
+                  IconButton(
+                    tooltip: 'Edit saved mixes',
+                    icon: const Icon(Icons.view_timeline_outlined),
+                    onPressed: () => context.push('/mixes'),
+                  ),
+                IconButton(
+                  icon: const Icon(Icons.add),
+                  onPressed: _showCreatePlaylistDialog,
+                  tooltip: 'Create playlist',
+                ),
+                IconButton(
+                  icon: Icon(_isGridView ? Icons.list : Icons.grid_view),
+                  onPressed: () => setState(() => _isGridView = !_isGridView),
+                  tooltip: _isGridView ? 'List view' : 'Grid view',
+                ),
+              ],
       ),
       body: Column(
         children: [
-          if (_error == null && (_playlists.isNotEmpty || _query.isNotEmpty))
+          if (desktop) _buildDesktopToolbar(),
+          if (!desktop &&
+              _error == null &&
+              (_playlists.isNotEmpty || _query.isNotEmpty))
             _buildSearchAndSort(),
           Expanded(child: _buildBody()),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _showCreatePlaylistDialog,
-        child: const Icon(Icons.add),
-      ),
+      floatingActionButton: desktop
+          ? null
+          : FloatingActionButton(
+              onPressed: _showCreatePlaylistDialog,
+              child: const Icon(Icons.add),
+            ),
     );
   }
 
@@ -409,12 +544,14 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               'Create your first playlist to get started',
               style: TextStyle(color: Colors.grey),
             ),
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: _showCreatePlaylistDialog,
-              icon: const Icon(Icons.add),
-              label: const Text('Create Playlist'),
-            ),
+            if (MediaQuery.sizeOf(context).width < 960) ...[
+              const SizedBox(height: 24),
+              FilledButton.icon(
+                onPressed: _showCreatePlaylistDialog,
+                icon: const Icon(Icons.add),
+                label: const Text('Create Playlist'),
+              ),
+            ],
           ],
         ),
       );
@@ -428,15 +565,24 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
 
   Widget _buildGridView() {
     final playlists = _visiblePlaylists;
+    final desktop = MediaQuery.sizeOf(context).width >= 960;
+    final scale = MediaQuery.textScalerOf(context).scale(1);
     return GridView.builder(
       controller: _scrollController,
-      padding: const EdgeInsets.all(16),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        childAspectRatio: 0.85,
-        crossAxisSpacing: 16,
-        mainAxisSpacing: 16,
-      ),
+      padding: EdgeInsets.all(desktop ? 8 : 16),
+      gridDelegate: desktop
+          ? SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 220,
+              mainAxisExtent: 248 + 40 * (scale - 1),
+              crossAxisSpacing: 8,
+              mainAxisSpacing: 8,
+            )
+          : const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              childAspectRatio: 0.85,
+              crossAxisSpacing: 16,
+              mainAxisSpacing: 16,
+            ),
       itemCount: playlists.length + (_isLoading ? 1 : 0),
       itemBuilder: (context, index) {
         if (index == playlists.length) {

@@ -518,8 +518,10 @@ void main() {
     final quietVoice = pool.activeVoices['quiet'] as FakeVoice;
     resolver.permanentFailClipIds.add('enter');
 
-    await pool
-        .loadMix(TimelineModel(clips: [quiet, loud, mid, _clip('enter', 0)]));
+    await expectLater(
+      pool.loadMix(TimelineModel(clips: [quiet, loud, mid, _clip('enter', 0)])),
+      throwsA(isA<StateError>()),
+    );
     await Future<void>.delayed(const Duration(milliseconds: 80));
 
     expect(pool.activeVoices.keys, containsAll(['quiet', 'loud', 'mid']));
