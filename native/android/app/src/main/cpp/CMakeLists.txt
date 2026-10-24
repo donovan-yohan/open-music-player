@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.22)
+project(soundq_jni C)
+add_library(soundq_core SHARED IMPORTED)
+set_target_properties(soundq_core PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../jniLibs/${ANDROID_ABI}/libsoundq_core.so" IMPORTED_NO_SONAME TRUE)
+add_library(soundq_jni SHARED bridge.c)
+target_include_directories(soundq_jni PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../../../../core/include")
+target_link_libraries(soundq_jni soundq_core)

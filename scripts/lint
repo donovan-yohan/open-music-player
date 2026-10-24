@@ -76,6 +76,9 @@ run_extension() {
 }
 
 case "$TARGET" in
+  native)
+    python3 "$ROOT/scripts/native-client" test
+    ;;
   delivery|harness)
     run_delivery
     ;;
@@ -107,7 +110,7 @@ case "$TARGET" in
     run_extension
     ;;
   *)
-    echo "usage: scripts/lint [delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
+    echo "usage: scripts/lint [native|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
     exit 2
     ;;
 esac
