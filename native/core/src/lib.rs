@@ -183,7 +183,7 @@ impl Core {
                 delivered_paths: HashSet::new(),
             }),
             client,
-            endpoint: endpoint.trim_end_matches('/').into(),
+            endpoint: url.as_str().trim_end_matches('/').into(),
             root,
         })
     }
@@ -979,6 +979,26 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
+        }
+    }
+    #[test]
+    fn endpoint_normalization_keeps_one_canonical_prefix_without_network() {
+        for (raw, expected) in [
+            (
+                "HTTPS://EXAMPLE.INVALID:443/prefix/api/v1///",
+                "https://example.invalid/prefix/api/v1",
+            ),
+            ("HTTP://LOCALHOST:80/api/v1/", "http://localhost/api/v1"),
+            (
+                "https://Example.Invalid/music/é/",
+                "https://example.invalid/music/%C3%A9",
+            ),
+        ] {
+            let root =
+                std::env::temp_dir().join(format!("sq-endpoint-policy-{}", SystemTimeSeed::next()));
+            let core = Core::open(raw, root.clone()).unwrap();
+            assert_eq!(core.endpoint, expected);
+            fs::remove_dir_all(root).unwrap();
         }
     }
     #[test]

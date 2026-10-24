@@ -45,6 +45,8 @@ class PlaybackService : Service() {
     private var foreground = false
     private var notificationIdentity = ""
     private var wantsPlayback = false
+    // Transport admission can change without replacing the selection/account.
+    private var transportIntent = 0L
     private var pendingReports = false
     private var busy = 0
     // Account intent, not playback selection, owns delayed private storage.
@@ -112,6 +114,8 @@ class PlaybackService : Service() {
             "pause" -> command(JSONObject().put("command", "pause"))
             "play" -> command(JSONObject().put("command", "resume"))
         }
+        // A delayed no-action start cannot revive a paused/cancelled intent.
+        if (!wantsPlayback) stopPlaybackService()
         return START_NOT_STICKY
     }
     fun command(value: JSONObject, done: (() -> Unit)? = null) {
@@ -122,34 +126,55 @@ class PlaybackService : Service() {
             storedCredentialVersion = 0L
             if (kind != "restore") getSharedPreferences("native-session", MODE_PRIVATE).edit().clear().commit()
         }
-        if (kind in listOf("select","resume","retry")) wantsPlayback = true
-        if (kind in listOf("pause","logout","login")) {wantsPlayback = false;if (playerReady) {try {player?.pause()} catch (_: IllegalStateException) {}}}
+        if (kind in listOf("pause","logout","login","register","restore")) {transportIntent++;wantsPlayback = false;if (kind != "pause") nativeTerminalState=null;if (playerReady) {try {player?.pause()} catch (_: IllegalStateException) {}};abandonFocus();stopPlaybackService()}
         // Local pause is synchronous even under pressure; the next native
         // report reconciles paused state if core command admission is full.
         if (busy >= 32) {listener?.invoke(snapshot,"command_backpressure");return}
+        if (kind in listOf("select","resume","retry")) {
+            // This is the explicit UI/MediaSession/notification intent, before
+            // download or decoder preparation can outlive foreground eligibility.
+            transportIntent++
+            nativeTerminalState = null
+            wantsPlayback = true
+            try {
+                if (!foreground) startForegroundService(Intent(this, PlaybackService::class.java))
+                showNotification()
+            } catch (_: RuntimeException) {failPlayback();return}
+        }
         val admitted = epoch
         val admittedAccount = credentialEpoch
+        val admittedIntent = transportIntent
         val raw = value.put("account_scope_v1", admittedAccount).toString()
         busy++
         worker.execute {
             val result = try { JSONObject(bridge.execute(core, admitted, raw)) } catch (_: Exception) { JSONObject().put("ok", false).put("code", "binding_failure") }
             main.post {
                 busy--
-                if (admitted != epoch || admittedAccount != credentialEpoch) {pendingReports = false;return@post}
-                val next = result.optJSONObject("snapshot")
-                if (next != null && next.optLong("epoch") == epoch) {
-                    if (next.optBoolean("library_unchanged")) next.put("library",snapshot.optJSONArray("library") ?: org.json.JSONArray())
-                    snapshot = next
-                    listener?.invoke(snapshot, if (result.optBoolean("ok")) null else result.optString("code"))
-                } else if (!result.optBoolean("ok")) listener?.invoke(snapshot, result.optString("code"))
-                // Listener callbacks may synchronously change selection/account.
-                if (admitted != epoch || admittedAccount != credentialEpoch) return@post
-                result.optJSONObject("audio")?.let { if (it.optLong("epoch") == epoch) applyAudio(it) }
-                // A refresh may rotate successfully before a subsequent read
-                // fails. Selection does not revoke this admitted account effect.
-                result.optJSONObject("credentials")?.let {saveCredentials(it)}
-                updateSession()
-                done?.invoke()
+                try {
+                    if (admitted != epoch || admittedAccount != credentialEpoch) return@post
+                    val next = result.optJSONObject("snapshot")
+                    if (next != null && next.optLong("epoch") == epoch) {
+                        if (next.optBoolean("library_unchanged")) next.put("library",snapshot.optJSONArray("library") ?: org.json.JSONArray())
+                        snapshot = next
+                        listener?.invoke(snapshot, if (result.optBoolean("ok")) null else result.optString("code"))
+                    } else if (!result.optBoolean("ok")) listener?.invoke(snapshot, result.optString("code"))
+                    // Listener callbacks may synchronously change any intent.
+                    if (admitted != epoch || admittedAccount != credentialEpoch) return@post
+                    if (admittedIntent == transportIntent && !result.optBoolean("ok") && kind in listOf("select","resume","retry")) {wantsPlayback=false;try {player?.pause()} catch (_: IllegalStateException) {};abandonFocus();stopPlaybackService()}
+                    result.optJSONObject("audio")?.let {
+                        // Preparation still belongs to this selection after Pause.
+                        // Other effects cannot retire a newer foreground admission.
+                        if (it.optLong("epoch") == epoch && (admittedIntent == transportIntent || it.optString("action") == "load")) applyAudio(it)
+                    }
+                    // Transport cancellation never revokes account credential delivery.
+                    result.optJSONObject("credentials")?.let {saveCredentials(it)}
+                    updateSession()
+                    done?.invoke()
+                } finally {
+                    // Cleanup belongs to this request, even after selection/account
+                    // retirement. Only one audio report can be pending at a time.
+                    if (kind == "audio_report") pendingReports = false
+                }
             }
         }
     }
@@ -167,14 +192,14 @@ class PlaybackService : Service() {
         command(JSONObject().put("command", "library").put("offset", offset).put("query", query).put("sort", "added_at").put("order", "desc"))
     }
     fun select(id: Long) {
-        retireAudio(); epoch = bridge.revoke(core)
+        wantsPlayback=false;retireAudio(); epoch = bridge.revoke(core)
         command(JSONObject().put("command", "select").put("track_id", id))
     }
     private fun applyAudio(effect: JSONObject) {
         if (effect.optString("action") == "load") lastEffectCached = effect.optBoolean("cached")
         when (effect.getString("action")) {
             "load" -> {
-                retireAudio()
+                retireAudio(keepForeground = wantsPlayback, clearTerminal = false)
                 val scope = effect.getLong("epoch"); val incarnation = effect.getLong("session")
                 val next = MediaPlayer()
                 player = next
@@ -188,41 +213,59 @@ class PlaybackService : Service() {
                     }
                 }
                 next.setOnSeekCompleteListener {lastSeekCompleted = nativePositionMs();report()}
-                next.setOnErrorListener { _, _, _ -> nativeTerminalState="failed";report("failed"); true }
-                next.setOnCompletionListener { nativeTerminalState="ended";report("ended") }
+                next.setOnErrorListener { _, _, _ -> if (player === next && epoch == scope) failPlayback(); true }
+                next.setOnCompletionListener { if (player === next && epoch == scope && wantsPlayback && nativeTerminalState == null) {transportIntent++;wantsPlayback=false;abandonFocus();stopPlaybackService();nativeTerminalState="ended";report("ended")} }
                 try { next.setDataSource(effect.getString("path")); next.prepareAsync() }
-                catch (_: Exception) { report("failed") }
+                catch (_: Exception) { failPlayback() }
             }
-            "pause" -> { if (playerReady) {try { player?.pause() } catch (_: IllegalStateException) {}}; abandonFocus() }
+            "pause" -> { if (playerReady) {try { player?.pause() } catch (_: IllegalStateException) {}}; abandonFocus();stopPlaybackService() }
             "play" -> startPlayer()
-            "seek" -> try { nativeTerminalState=null;if (playerReady) player?.seekTo(effect.getLong("position_ms"), MediaPlayer.SEEK_CLOSEST) else pendingSeekMs = effect.getLong("position_ms") } catch (_: IllegalStateException) { report("failed") }
-            "stop" -> retireAudio()
+            "seek" -> if (nativeTerminalState != "failed") try { nativeTerminalState=null;if (playerReady) player?.seekTo(effect.getLong("position_ms"), MediaPlayer.SEEK_CLOSEST) else pendingSeekMs = effect.getLong("position_ms") } catch (_: IllegalStateException) { report("failed") }
+            "stop" -> retireAudio(clearTerminal = false)
         }
     }
     private fun startPlayer() {
         if (!wantsPlayback || !playerReady) return
-        nativeTerminalState=null
-        if (!focusHeld) focusHeld = audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        if (!focusHeld) { report("failed"); return }
-        try { player?.start(); showNotification(); report() } catch (_: IllegalStateException) { report("failed") }
+        try {
+            // Never acquire focus or start a decoder without admitted foreground
+            // ownership. A delayed callback cannot start/retry the service.
+            check(foreground)
+            showNotification()
+            if (!focusHeld) focusHeld = audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            if (!focusHeld) {failPlayback();return}
+            nativeTerminalState=null
+            player?.start();report()
+        } catch (_: RuntimeException) {failPlayback()}
+    }
+    private fun stopPlaybackService() {
+        if (foreground) {stopForeground(STOP_FOREGROUND_REMOVE);foreground=false}
+        stopSelf()
+    }
+    private fun failPlayback() {
+        transportIntent++
+        wantsPlayback=false
+        try {player?.pause()} catch (_: IllegalStateException) {}
+        abandonFocus();stopPlaybackService();report("failed")
     }
     private fun abandonFocus() { if (focusHeld) { audio.abandonAudioFocusRequest(focus); focusHeld = false } }
-    private fun retireAudio() {
+    private fun retireAudio(keepForeground: Boolean = false, clearTerminal: Boolean = true) {
         player?.setOnPreparedListener(null); player?.setOnErrorListener(null); player?.setOnCompletionListener(null)
-        player?.release(); player = null; playerReady = false;pendingSeekMs = null;nativeTerminalState=null; abandonFocus()
+        player?.release(); player = null; playerReady = false;pendingSeekMs = null;if (clearTerminal) nativeTerminalState=null; abandonFocus()
+        if (!keepForeground) stopPlaybackService()
         // MediaPlayer.release is the platform decoder retirement barrier. Cache
         // entries are not unlinked here and remain owned by the shared core.
     }
     private fun report(forced: String? = null) {
         if (forced=="failed" || forced=="ended") nativeTerminalState=forced
         if (pendingReports || busy > 0) return
-        val p = player ?: return
-        val terminal=forced ?: nativeTerminalState
+        val p = player
+        val terminal=nativeTerminalState ?: forced
+        if (p == null && terminal != "failed") return
         if (!playerReady && terminal != "failed") return
         try {
-            val state = terminal ?: if (p.isPlaying) "playing" else "paused"
-            val duration = if (state=="failed") snapshot.optLong("duration_ms") else p.duration.takeIf {it>0}?.toLong() ?: snapshot.optLong("duration_ms")
-            val position = if (state=="failed") snapshot.optLong("position_ms") else p.currentPosition.coerceAtLeast(0).toLong()
+            val state = terminal ?: if (p?.isPlaying == true) "playing" else "paused"
+            val duration = if (state=="failed") snapshot.optLong("duration_ms") else p?.duration?.takeIf {it>0}?.toLong() ?: snapshot.optLong("duration_ms")
+            val position = if (state=="failed") snapshot.optLong("position_ms") else p?.currentPosition?.coerceAtLeast(0)?.toLong() ?: 0L
             pendingReports = true
             command(JSONObject().put("command", "audio_report").put("epoch", epoch).put("session", snapshot.optLong("session"))
                 .put("state", state).put("position_ms", position).put("duration_ms", duration)) { pendingReports = false }
@@ -236,13 +279,13 @@ class PlaybackService : Service() {
         session.setMetadata(MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_TITLE, track?.optString("title") ?: "SoundQ")
             .putString(MediaMetadata.METADATA_KEY_ARTIST, track?.optString("artist") ?: "").putLong(MediaMetadata.METADATA_KEY_DURATION, snapshot.optLong("duration_ms")).build())
         val identity = "${track?.optLong("id")}:${snapshot.optString("transport")}"
-        if (foreground && identity != notificationIdentity) showNotification()
+        if (foreground && identity != notificationIdentity) try {showNotification()} catch (_: RuntimeException) {failPlayback()}
     }
     private fun showNotification() {
-        if (!foreground) startService(Intent(this, PlaybackService::class.java))
         val playing = snapshot.optString("transport") == "playing"
         val action = if (playing) "pause" else "play"
-        val pending = PendingIntent.getService(this, 1, Intent(this, PlaybackService::class.java).setAction(action), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val pending = if (playing) PendingIntent.getService(this, 1, Intent(this, PlaybackService::class.java).setAction(action), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            else PendingIntent.getForegroundService(this, 1, Intent(this, PlaybackService::class.java).setAction(action), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val track = snapshot.optJSONArray("queue")?.optJSONObject(0)?.optJSONObject("track")
         notificationIdentity = "${track?.optLong("id")}:${snapshot.optString("transport")}"

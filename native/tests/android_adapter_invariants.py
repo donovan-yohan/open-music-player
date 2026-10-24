@@ -43,7 +43,7 @@ assert constants['AUDIOFOCUS_LOSS'] == -1 and constants['AUDIOFOCUS_LOSS_TRANSIE
 start = source.index('.setOnAudioFocusChangeListener({ change ->')
 end = source.index('}, main).build()', start)
 focus = source[start:end].split('change ->', 1)[1]
-methods = '\n'.join(block(x) for x in ['fun command(', 'fun login(', 'fun logout(', 'fun select(', 'private fun saveCredentials(', 'private fun loadCredentials(', 'private fun startPlayer(', 'private fun abandonFocus('])
+methods = '\n'.join(block(x) for x in ['fun command(', 'fun login(', 'fun logout(', 'fun select(', 'private fun saveCredentials(', 'private fun loadCredentials(', 'private fun startPlayer(', 'private fun abandonFocus(', 'private fun stopPlaybackService(', 'private fun failPlayback(', 'private fun showNotification('])
 # JSONObject is a typed transport stub: strings are registered in-memory rather
 # than parsed; identical credential bytes pass through real encryption/readback.
 harness = r'''import java.util.ArrayDeque
@@ -98,6 +98,16 @@ class Audio {
     fun abandonAudioFocusRequest(focus:Int) {}
 }
 class Player {var isPlaying=false;fun pause(){isPlaying=false};fun start(){isPlaying=true}}
+// Only Android platform boundaries are facades. Foreground ownership, failure
+// retirement and notification policy below are extracted production methods.
+fun JSONArray.optJSONObject(i:Int):JSONObject?=null
+class PlaybackService
+class MainActivity
+class Intent(a:Any,b:Class<*>) {fun setAction(s:String)=this}
+class PendingIntent {companion object {const val FLAG_UPDATE_CURRENT=1;const val FLAG_IMMUTABLE=2;fun getService(a:Any,b:Int,c:Intent,d:Int)=PendingIntent();fun getForegroundService(a:Any,b:Int,c:Intent,d:Int)=PendingIntent();fun getActivity(a:Any,b:Int,c:Intent,d:Int)=PendingIntent()}}
+object android {object R {object drawable {const val ic_media_play=1;const val ic_media_pause=2}}}
+class Notification {class Builder(a:Any,b:String){fun setSmallIcon(v:Int)=this;fun setContentTitle(v:String)=this;fun setContentText(v:String)=this;fun setContentIntent(v:PendingIntent)=this;fun setOngoing(v:Boolean)=this;fun addAction(v:Action)=this;fun setStyle(v:MediaStyle)=this;fun build()=Notification()};class Action{class Builder(a:Int,b:String,c:PendingIntent){fun build()=Action()}};class MediaStyle{fun setMediaSession(v:Int)=this;fun setShowActionsInCompactView(v:Int)=this}}
+class Session {val sessionToken=1}
 class Bridge {
     var current=1L
     val calls=mutableListOf<JSONObject>()
@@ -111,10 +121,17 @@ class Bridge {
 }
 class Adapter(val prefs:Preferences=Preferences()) {
     val worker=ManualQueue();val main=ManualQueue();val bridge=Bridge();val core=1L
-    var epoch=1L;var credentialEpoch=1L;var storedCredentialVersion=0L
+    var epoch=1L;var credentialEpoch=1L;var storedCredentialVersion=0L;var transportIntent=0L
     var busy=0;var wantsPlayback=false;var playerReady=true;var player:Player?=Player()
     var pendingReports=false;var snapshot=JSONObject();var listener:((JSONObject,String?)->Unit)?=null
     var focusHeld=true;var nativeTerminalState:String?=null;val audio=Audio();val focus=1
+    var foreground=false;var notificationIdentity="";val session=Session()
+    val STOP_FOREGROUND_REMOVE=1;var admissions=0;var notifications=0;var stops=0
+    var denyAdmission=false;var denyNotification=false;val reports=mutableListOf<String?>()
+    fun startForegroundService(i:Intent){admissions++;if(denyAdmission)throw IllegalStateException("synthetic refusal")}
+    fun startForeground(id:Int,n:Notification){notifications++;if(denyNotification)throw SecurityException("synthetic refusal")}
+    fun stopForeground(mode:Int){}
+    fun stopSelf(){stops++}
     val endpoint="synthetic-endpoint";val MODE_PRIVATE=0;var errors=0
     fun getSharedPreferences(n:String,m:Int)=prefs
     fun key()=SecretKeySpec(ByteArray(16){7},"AES")
@@ -122,8 +139,7 @@ class Adapter(val prefs:Preferences=Preferences()) {
     fun library(){}
     fun applyAudio(e:JSONObject){}
     fun updateSession(){}
-    fun showNotification(){}
-    fun report(s:String?=null){}
+    fun report(s:String?=null){reports.add(s)}
     fun deliver(version:Long=1,account:String="A") {
         val credentials=JSONObject().put("version",version).put("account_id",account).put("access_token","synthetic-access-$version").put("refresh_token","synthetic-refresh-$version")
         bridge.replies.add(JSONObject().put("ok",true).put("snapshot",JSONObject().put("epoch",epoch)).put("credentials",credentials))
@@ -196,6 +212,30 @@ fun main() {
             a.command(JSONObject().put("command","resume"));a.startForTest()
             check(a.audio.requests==1 && a.player!!.isPlaying)
         }
+    }
+    test("production-lifecycle-admits-notification-and-retires-on-pause") {
+        val a=Adapter();a.command(JSONObject().put("command","resume"));a.startForTest()
+        check(a.admissions==1 && a.notifications==2 && a.foreground && a.player!!.isPlaying)
+        a.command(JSONObject().put("command","pause"))
+        check(!a.foreground && !a.focusHeld && !a.player!!.isPlaying && a.stops>0)
+    }
+    for(denial in listOf("admission","notification")) test("platform-refusal-$denial-reaches-production-failure-retirement") {
+        val a=Adapter();a.denyAdmission=denial=="admission";a.denyNotification=denial=="notification"
+        a.command(JSONObject().put("command","resume"));a.startForTest();a.runAll()
+        check(a.admissions==1 && a.notifications==(if(denial=="notification")1 else 0))
+        check(!a.foreground && !a.focusHeld && !a.wantsPlayback && !a.player!!.isPlaying)
+        check(a.audio.requests==0 && a.stops==1 && a.reports==listOf("failed") && a.bridge.calls.isEmpty())
+    }
+    for(after in listOf(false,true)) test("transport-cancellation-keeps-account-rotation-$after") {
+        val a=Adapter();a.deliver();if(after)a.worker.drain()
+        a.command(JSONObject().put("command","pause"));a.command(JSONObject().put("command","resume"));a.runAll()
+        check(Adapter(a.prefs).readSaved()?.optString("refresh_token")=="synthetic-refresh-1")
+        check(a.bridge.calls.any{it.optString("command")=="acknowledge_credentials"})
+    }
+    test("transport-refusal-keeps-account-rotation") {
+        val a=Adapter();a.deliver();a.denyNotification=true;a.command(JSONObject().put("command","resume"));a.runAll()
+        check(Adapter(a.prefs).readSaved()?.optString("refresh_token")=="synthetic-refresh-1")
+        check(a.bridge.calls.any{it.optString("command")=="acknowledge_credentials"})
     }
     check(failed==0){"$failed invariant cases failed"}
 }

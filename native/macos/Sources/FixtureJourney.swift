@@ -69,9 +69,17 @@ extension App {
             self.player?.pause();self.observation = nil;self.player?.replaceCurrentItem(with:nil);self.player = nil
             var report:[String:Any] = ["status":outcome,"checks":checks,"samples":samples,"elapsedSeconds":ProcessInfo.processInfo.systemUptime-started,"pid":ProcessInfo.processInfo.processIdentifier,"sourceRef":ProcessInfo.processInfo.environment["OMP_SOURCE_REF"] ?? "unknown","limits":"Scripted production AppKit actions and actual AVPlayer cursor/rate. Not loopback capture, human audibility, display FPS, physical controls, underrun measurement or independent review."]
             if let failure {report["failure"] = failure}
-            if let path = ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_JOURNEY_REPORT"],let bytes = try? JSONSerialization.data(withJSONObject:report,options:[.prettyPrinted,.sortedKeys]) {try? bytes.write(to:URL(fileURLWithPath:path),options:.atomic)}
+            if let path = ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_JOURNEY_REPORT"] {
+                do {
+                    let bytes = try JSONSerialization.data(withJSONObject:report,options:[.prettyPrinted,.sortedKeys])
+                    try bytes.write(to:URL(fileURLWithPath:path),options:.atomic)
+                } catch {outcome = "failed"}
+            }
             print("MACOS_NATIVE_JOURNEY_\(outcome.uppercased()) checks=\(checks.count)")
-            NSApp.terminate(nil)
+            // exit() does not dispatch AppKit's termination delegate. Retire the
+            // decoder, timer and core explicitly before returning process status.
+            self.timer?.invalidate();_ = self.bridge?.revoke();self.bridge = nil
+            exit(outcome == "passed" ? EXIT_SUCCESS : EXIT_FAILURE)
         }
     }
 }

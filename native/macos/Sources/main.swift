@@ -253,10 +253,14 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     func report(state: String? = nil) {
         guard !reportPending,busy == 0,let player,let snapshot,!snapshot.queue.isEmpty else{return}
         let time = player.currentTime().seconds;let duration = player.currentItem?.duration.seconds ?? 0
-        guard time.isFinite else{return}
-        let nativeState = state ?? (player.error != nil ? "failed" : player.rate > 0 ? "playing" : (duration.isFinite && time >= duration-0.05 ? "ended" : "paused"))
+        let failed = player.error != nil || player.currentItem?.status == .failed
+        guard time.isFinite || failed || state == "failed" else{return}
+        let nativeState = state ?? (failed ? "failed" : player.rate > 0 ? "playing" : (duration.isFinite && time >= duration-0.05 ? "ended" : "paused"))
+        let positionMs = max(time,0)*1000;let durationMs = max(duration,0)*1000
+        let position = positionMs.isFinite && positionMs < Double(UInt64.max) ? UInt64(positionMs) : snapshot.position_ms
+        let length = durationMs.isFinite && durationMs < Double(UInt64.max) ? UInt64(durationMs) : snapshot.duration_ms
         reportPending = true
-        command(["command":"audio_report","epoch":epoch,"session":snapshot.session,"state":nativeState,"position_ms":UInt64(max(time,0)*1000),"duration_ms":duration.isFinite ? UInt64(max(duration,0)*1000) : snapshot.duration_ms]) { [weak self] in self?.reportPending = false }
+        command(["command":"audio_report","epoch":epoch,"session":snapshot.session,"state":nativeState,"position_ms":position,"duration_ms":length]) { [weak self] in self?.reportPending = false }
         MPNowPlayingInfoCenter.default().playbackState = player.rate > 0 ? .playing : .paused
     }
     func loadLibrary(offset: Int = 0) {command(["command":"library","offset":offset,"query":search.stringValue,"sort":"added_at","order":"desc"])}
