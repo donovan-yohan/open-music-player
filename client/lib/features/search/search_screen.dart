@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import 'dart:async';
 import '../../shared/widgets/now_playing_row.dart';
 
@@ -2203,7 +2205,7 @@ class _SearchScreenState extends State<SearchScreen> {
       return;
     } catch (_) {
       messenger.showSnackBar(
-        SnackBar(
+        AppSnackBar(
           key: const ValueKey('discover_playlist_import_failed'),
           content: Text('Could not import "${candidate.title}".'),
         ),
@@ -2213,7 +2215,7 @@ class _SearchScreenState extends State<SearchScreen> {
     if (!mounted) return;
 
     messenger.showSnackBar(
-      SnackBar(
+      AppSnackBar(
         key: const ValueKey('discover_playlist_deferred_notice'),
         content: Text(
           'Downloading "${candidate.title}". It will be added to '
@@ -2239,7 +2241,7 @@ class _SearchScreenState extends State<SearchScreen> {
       _ => 'Could not add this to "$playlistName".',
     };
     messenger.showSnackBar(
-      SnackBar(
+      AppSnackBar(
         key: const ValueKey('discover_playlist_import_failed'),
         content: Text(message),
       ),
@@ -2254,7 +2256,8 @@ class _SearchScreenState extends State<SearchScreen> {
     if (!opened && mounted) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Could not preview source')));
+      ).showSnackBar(
+          const AppSnackBar(content: Text('Could not preview source')));
     }
   }
 

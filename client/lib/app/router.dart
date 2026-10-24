@@ -1,9 +1,13 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../features/desktop/desktop_listening_shell.dart';
+import '../features/desktop/desktop_transport.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/auth/auth_state.dart';
+import '../features/connect/connected_devices_screen.dart';
+import '../features/jam/jam_route_screen.dart';
 import '../core/commands/search_focus_controller.dart';
 import '../core/providers/settings_provider.dart';
 import '../features/auth/screens/biometric_unlock_screen.dart';
@@ -22,6 +26,7 @@ import '../features/player/widgets/mini_player.dart';
 import '../features/share/share_import_screen.dart';
 import '../features/downloads/downloads_screen.dart';
 import '../features/playlists/playlists_screen.dart';
+import '../features/playlists/mix/desktop_mix_editor_screen.dart';
 import '../features/playlists/playlist_detail_screen.dart';
 import '../features/playlists/playlist_import_progress_screen.dart';
 import '../core/models/playlist_import.dart';
@@ -35,8 +40,11 @@ GoRouter createRouter(
   AuthState authState, {
   SearchFocusController? searchFocusController,
 }) {
+  final mixEditorKey = GlobalKey<DesktopMixEditorScreenState>();
+  final rootRouteObserver = RouteObserver<ModalRoute<dynamic>>();
   return GoRouter(
     navigatorKey: _rootNavigatorKey,
+    observers: [rootRouteObserver],
     initialLocation: _initialRoute,
     refreshListenable: authState,
     redirect: (context, state) => _authRedirect(authState, state),
@@ -53,23 +61,31 @@ GoRouter createRouter(
       ),
       GoRoute(
         path: '/player',
-        pageBuilder: (context, state) => CustomTransitionPage(
-          child: const PlayerScreen(),
-          transitionsBuilder: (context, animation, secondaryAnimation, child) {
-            return SlideTransition(
-              position: Tween<Offset>(
-                begin: const Offset(0, 1),
-                end: Offset.zero,
-              ).animate(
-                CurvedAnimation(
-                  parent: animation,
-                  curve: Curves.easeOutCubic,
-                ),
-              ),
-              child: child,
-            );
-          },
-        ),
+        pageBuilder: (context, state) =>
+            MediaQuery.disableAnimationsOf(context) ||
+                    MediaQuery.accessibleNavigationOf(context)
+                ? const NoTransitionPage<void>(child: PlayerScreen())
+                : CustomTransitionPage<void>(
+                    transitionDuration: const Duration(milliseconds: 240),
+                    reverseTransitionDuration:
+                        const Duration(milliseconds: 180),
+                    child: const PlayerScreen(),
+                    transitionsBuilder:
+                        (context, animation, secondaryAnimation, child) {
+                      return SlideTransition(
+                        position: Tween<Offset>(
+                          begin: const Offset(0, 1),
+                          end: Offset.zero,
+                        ).animate(
+                          CurvedAnimation(
+                            parent: animation,
+                            curve: Curves.easeOutCubic,
+                          ),
+                        ),
+                        child: child,
+                      );
+                    },
+                  ),
       ),
       GoRoute(
         path: '/dj',
@@ -95,10 +111,33 @@ GoRouter createRouter(
         builder: (context, state) => const DownloadsScreen(),
       ),
       GoRoute(
+        path: '/devices',
+        builder: (context, state) =>
+            ConnectedDevicesScreen(routeObserver: rootRouteObserver),
+      ),
+      GoRoute(
+        path: '/jam',
+        builder: (context, state) =>
+            JamRouteScreen(routeObserver: rootRouteObserver),
+      ),
+      GoRoute(
         path: '/share',
         builder: (context, state) => ShareImportScreen(
           sharedText: state.uri.queryParameters['text'] ?? '',
           autoSubmit: state.uri.queryParameters['auto'] == '1',
+        ),
+      ),
+      GoRoute(
+        path: '/mixes',
+        builder: (context, state) => const DesktopMixEditorPicker(),
+      ),
+      GoRoute(
+        path: '/mixes/:id',
+        onExit: (_) async =>
+            await mixEditorKey.currentState?.confirmExit() ?? true,
+        builder: (context, state) => DesktopMixEditorScreen(
+          key: mixEditorKey,
+          planId: state.pathParameters['id']!,
         ),
       ),
       ShellRoute(
@@ -209,6 +248,9 @@ String? safeLoginRedirectNext(String? next) {
 }
 
 String get _initialRoute {
+  // Native Uri.base is the working directory, not an app route. GoRouter still
+  // gives platform deep links precedence over this fallback initial location.
+  if (!kIsWeb) return '/';
   final path = Uri.base.path;
   return path.isEmpty ? '/' : path;
 }
@@ -217,11 +259,14 @@ class ScaffoldWithNavBar extends StatelessWidget {
   const ScaffoldWithNavBar({
     super.key,
     required this.child,
-    this.miniPlayer = const MiniPlayer(),
+    this.miniPlayer,
   });
 
   final Widget child;
-  final Widget miniPlayer;
+
+  /// Optional chrome override for embedded/test shells. Production selects the
+  /// mobile mini-player or desktop transport without changing playback owners.
+  final Widget? miniPlayer;
 
   @override
   Widget build(BuildContext context) {
@@ -229,7 +274,7 @@ class ScaffoldWithNavBar extends StatelessWidget {
       builder: (context, constraints) {
         if (constraints.maxWidth < 960) {
           return _MobileShell(
-            miniPlayer: miniPlayer,
+            miniPlayer: miniPlayer ?? const MiniPlayer(),
             selectedIndex: _calculateSelectedIndex(context),
             onDestinationSelected: (index) => _onItemTapped(index, context),
             child: child,
@@ -237,10 +282,13 @@ class ScaffoldWithNavBar extends StatelessWidget {
         }
         return Theme(
           data: AppTheme.darkTheme,
-          child: _DesktopShell(
-            miniPlayer: miniPlayer,
+          child: DesktopListeningShell(
+            miniPlayer: miniPlayer ?? const DesktopTransport(),
             compact: constraints.maxWidth < 1200,
-            selectedIndex: _calculateSelectedIndex(context),
+            selectedIndex:
+                GoRouterState.of(context).uri.path.startsWith('/queue/imports')
+                    ? 7
+                    : _calculateSelectedIndex(context),
             onDestinationSelected: (index) => _onItemTapped(index, context),
             child: child,
           ),
@@ -279,6 +327,21 @@ class ScaffoldWithNavBar extends StatelessWidget {
         break;
       case 5:
         context.go('/settings');
+        break;
+      case 6:
+        context.push('/mixes');
+        break;
+      case 7:
+        context.go('/queue/imports');
+        break;
+      case 8:
+        context.push('/downloads');
+        break;
+      case 9:
+        context.push('/devices');
+        break;
+      case 10:
+        context.push('/jam');
         break;
     }
   }
@@ -337,277 +400,6 @@ class _MobileShell extends StatelessWidget {
             label: 'Settings',
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _DesktopShell extends StatefulWidget {
-  const _DesktopShell({
-    required this.child,
-    required this.miniPlayer,
-    required this.compact,
-    required this.selectedIndex,
-    required this.onDestinationSelected,
-  });
-
-  final Widget child;
-  final Widget miniPlayer;
-  final bool compact;
-  final int selectedIndex;
-  final ValueChanged<int> onDestinationSelected;
-
-  @override
-  State<_DesktopShell> createState() => _DesktopShellState();
-}
-
-class _DesktopShellState extends State<_DesktopShell> {
-  final FocusNode _shellFocusNode = FocusNode(
-    debugLabel: 'Sound Q desktop shell',
-    skipTraversal: true,
-  );
-  late final List<FocusNode> _destinationFocusNodes = List.generate(
-    6,
-    (index) => FocusNode(debugLabel: 'Sound Q destination $index'),
-  );
-
-  @override
-  void dispose() {
-    _shellFocusNode.dispose();
-    for (final node in _destinationFocusNodes) {
-      node.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final railWidth = widget.compact ? 80.0 : 224.0;
-    return Shortcuts(
-      shortcuts: const <ShortcutActivator, Intent>{
-        SingleActivator(LogicalKeyboardKey.tab):
-            _FocusDesktopNavigationIntent(),
-      },
-      child: Actions(
-        actions: <Type, Action<Intent>>{
-          _FocusDesktopNavigationIntent:
-              CallbackAction<_FocusDesktopNavigationIntent>(
-            onInvoke: (_) {
-              final focusedIndex = _destinationFocusNodes.indexWhere(
-                (node) => node.hasFocus,
-              );
-              if (focusedIndex < 0) {
-                _destinationFocusNodes.first.requestFocus();
-              } else {
-                _destinationFocusNodes[focusedIndex].nextFocus();
-              }
-              return null;
-            },
-          ),
-        },
-        child: Focus(
-          autofocus: true,
-          focusNode: _shellFocusNode,
-          child: Scaffold(
-            key: const ValueKey('soundq_desktop_shell'),
-            body: Row(
-              children: [
-                SizedBox(
-                  key: const ValueKey('soundq_desktop_rail_container'),
-                  width: railWidth,
-                  child: FocusTraversalGroup(
-                    policy: OrderedTraversalPolicy(),
-                    child: NavigationRail(
-                      key: const ValueKey('soundq_desktop_navigation_rail'),
-                      extended: !widget.compact,
-                      selectedIndex: widget.selectedIndex,
-                      labelType: NavigationRailLabelType.none,
-                      leading: Padding(
-                        padding: const EdgeInsets.only(top: 20, bottom: 20),
-                        child: Image.asset(
-                          'assets/brand/soundq-logo.png',
-                          width: widget.compact ? 36 : 44,
-                          height: widget.compact ? 36 : 44,
-                          semanticLabel: 'Sound Q',
-                        ),
-                      ),
-                      trailing: widget.compact
-                          ? null
-                          : const Padding(
-                              padding: EdgeInsets.all(16),
-                              child: Text('SOUND Q', maxLines: 1),
-                            ),
-                      onDestinationSelected: widget.onDestinationSelected,
-                      destinations: [
-                        NavigationRailDestination(
-                          icon: _DesktopRailIcon(
-                            index: 0,
-                            icon: Icons.home_outlined,
-                            focusNode: _destinationFocusNodes[0],
-                            onActivate: widget.onDestinationSelected,
-                          ),
-                          selectedIcon: _DesktopRailIcon(
-                            index: 0,
-                            icon: Icons.home,
-                            focusNode: _destinationFocusNodes[0],
-                            onActivate: widget.onDestinationSelected,
-                          ),
-                          label: const Text('Home'),
-                        ),
-                        NavigationRailDestination(
-                          icon: _DesktopRailIcon(
-                            index: 1,
-                            icon: Icons.search_outlined,
-                            focusNode: _destinationFocusNodes[1],
-                            onActivate: widget.onDestinationSelected,
-                          ),
-                          selectedIcon: _DesktopRailIcon(
-                            index: 1,
-                            icon: Icons.search,
-                            focusNode: _destinationFocusNodes[1],
-                            onActivate: widget.onDestinationSelected,
-                          ),
-                          label: const Text('Discover'),
-                        ),
-                        NavigationRailDestination(
-                          icon: _DesktopRailIcon(
-                            index: 2,
-                            icon: Icons.library_music_outlined,
-                            focusNode: _destinationFocusNodes[2],
-                            onActivate: widget.onDestinationSelected,
-                          ),
-                          selectedIcon: _DesktopRailIcon(
-                            index: 2,
-                            icon: Icons.library_music,
-                            focusNode: _destinationFocusNodes[2],
-                            onActivate: widget.onDestinationSelected,
-                          ),
-                          label: const Text('Library'),
-                        ),
-                        NavigationRailDestination(
-                          icon: _DesktopRailIcon(
-                            index: 3,
-                            icon: Icons.playlist_play_outlined,
-                            focusNode: _destinationFocusNodes[3],
-                            onActivate: widget.onDestinationSelected,
-                          ),
-                          selectedIcon: _DesktopRailIcon(
-                            index: 3,
-                            icon: Icons.playlist_play,
-                            focusNode: _destinationFocusNodes[3],
-                            onActivate: widget.onDestinationSelected,
-                          ),
-                          label: const Text('Playlists'),
-                        ),
-                        NavigationRailDestination(
-                          icon: _DesktopRailIcon(
-                            index: 4,
-                            icon: Icons.queue_music_outlined,
-                            focusNode: _destinationFocusNodes[4],
-                            onActivate: widget.onDestinationSelected,
-                          ),
-                          selectedIcon: _DesktopRailIcon(
-                            index: 4,
-                            icon: Icons.queue_music,
-                            focusNode: _destinationFocusNodes[4],
-                            onActivate: widget.onDestinationSelected,
-                          ),
-                          label: const Text('Queue'),
-                        ),
-                        NavigationRailDestination(
-                          icon: _DesktopRailIcon(
-                            index: 5,
-                            icon: Icons.settings_outlined,
-                            focusNode: _destinationFocusNodes[5],
-                            onActivate: widget.onDestinationSelected,
-                          ),
-                          selectedIcon: _DesktopRailIcon(
-                            index: 5,
-                            icon: Icons.settings,
-                            focusNode: _destinationFocusNodes[5],
-                            onActivate: widget.onDestinationSelected,
-                          ),
-                          label: const Text('Settings'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const VerticalDivider(width: 1),
-                Expanded(
-                  child: Column(
-                    children: [
-                      Expanded(child: widget.child),
-                      widget.miniPlayer,
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _FocusDesktopNavigationIntent extends Intent {
-  const _FocusDesktopNavigationIntent();
-}
-
-class _DesktopRailIcon extends StatefulWidget {
-  const _DesktopRailIcon({
-    required this.index,
-    required this.icon,
-    required this.focusNode,
-    required this.onActivate,
-  });
-
-  final int index;
-  final IconData icon;
-  final FocusNode focusNode;
-  final ValueChanged<int> onActivate;
-
-  @override
-  State<_DesktopRailIcon> createState() => _DesktopRailIconState();
-}
-
-class _DesktopRailIconState extends State<_DesktopRailIcon> {
-  bool _focused = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return FocusTraversalOrder(
-      order: NumericFocusOrder(widget.index.toDouble()),
-      child: FocusableActionDetector(
-        focusNode: widget.focusNode,
-        shortcuts: const <ShortcutActivator, Intent>{
-          SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
-          SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
-        },
-        actions: <Type, Action<Intent>>{
-          ActivateIntent: CallbackAction<ActivateIntent>(
-            onInvoke: (_) {
-              widget.onActivate(widget.index);
-              return null;
-            },
-          ),
-        },
-        onShowFocusHighlight: (focused) => setState(() => _focused = focused),
-        child: AnimatedContainer(
-          key: ValueKey('soundq_desktop_nav_focus_${widget.index}'),
-          duration: const Duration(milliseconds: 120),
-          padding: const EdgeInsets.all(6),
-          decoration: BoxDecoration(
-            border: Border.all(
-              color: _focused ? colors.primary : Colors.transparent,
-              width: 2,
-            ),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Icon(widget.icon),
-        ),
       ),
     );
   }

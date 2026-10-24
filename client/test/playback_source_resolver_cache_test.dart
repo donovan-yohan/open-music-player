@@ -136,6 +136,36 @@ void main() {
     expect(store.entries.containsKey(2), isTrue);
   });
 
+  test('prefetch prioritizes the selected queue position and following tracks',
+      () async {
+    final downloads = <String>[];
+    final mgr = PlaybackCacheManager(
+      store: store,
+      cacheDirectoryProvider: () async => cacheDir.path,
+      downloader: (url, path, {cancelToken, onProgress}) async {
+        downloads.add(url);
+        await File(path).writeAsBytes(List.filled(100, 0x41));
+      },
+    );
+    final resolver = PlaybackSourceResolver(
+      signedAudioUrlService: signedService(),
+      cacheManager: mgr,
+      cachePrefetchLimit: 2,
+    );
+    final items = await resolver.resolveQueue(
+      [for (var id = 1; id <= 6; id++) trackMap(id)],
+      startIndex: 4,
+    );
+    for (var spin = 0; spin < 100 && downloads.length < 2; spin++) {
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+    }
+    expect(items.map((item) => item.id), ['1', '2', '3', '4', '5', '6']);
+    expect(downloads.map((url) => Uri.parse(url).path),
+        unorderedEquals(['/track-5', '/track-6']));
+    await mgr.warm(5, matchingDescriptor(5));
+    await mgr.warm(6, matchingDescriptor(6));
+  });
+
   test('falls back to the signed URL and invalidates on a metadata mismatch',
       () async {
     final mgr = manager();

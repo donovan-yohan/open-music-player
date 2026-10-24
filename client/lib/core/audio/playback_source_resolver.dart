@@ -35,7 +35,7 @@ class PlaybackSourceResolver {
 
   /// Upper bound on how many remote misses a single resolve speculatively warms
   /// into the cache, so a large queue does not trigger a download per track.
-  /// The actually-played track is among the first resolved, so it is covered.
+  /// Selected and upcoming tracks take priority over the playlist prefix.
   final int cachePrefetchLimit;
 
   PlaybackSourceResolver({
@@ -52,8 +52,9 @@ class PlaybackSourceResolver {
   /// Resolves [tracks] (in order) into playable media items. Signed descriptors
   /// are requested only for tracks lacking a valid local artifact.
   Future<List<MediaItem>> resolveQueue(
-    List<Map<String, dynamic>> tracks,
-  ) async {
+    List<Map<String, dynamic>> tracks, {
+    int startIndex = 0,
+  }) async {
     final likedAccountId = await _accountIdProvider?.call();
     final trackIds = tracks.map(readTrackId).toList();
 
@@ -142,7 +143,14 @@ class PlaybackSourceResolver {
       }
     }
 
-    if (cache != null) _scheduleWarm(cache, remoteIds, cachePaths, descriptors);
+    if (cache != null && trackIds.isNotEmpty) {
+      final startAt = startIndex.clamp(0, trackIds.length - 1);
+      final prioritizedIds = {
+        ...trackIds.skip(startAt),
+        ...trackIds.take(startAt),
+      }.where(descriptors.containsKey).toList();
+      _scheduleWarm(cache, prioritizedIds, cachePaths, descriptors);
+    }
 
     return items;
   }
@@ -258,6 +266,23 @@ class PlaybackSourceResolver {
       extras: playbackExtras,
     );
   }
+
+  /// Metadata-only queue item for a verified prepared-audio backend. No URL,
+  /// local-file marker, cache warm or original-audio readiness is manufactured.
+  /// Reuses the same track/artwork/analysis mapping as ordinary source resolution.
+  static MediaItem buildPreparedMediaItem(Map<String, dynamic> track,
+          {String? likedAccountId}) =>
+      _mediaItem(
+          track,
+          readTrackId(track),
+          {
+            'preparedAudio': true,
+            if (track['sourceFileHash'] case final String hash)
+              'sourceFileHash': hash,
+            if (track['source_file_hash'] case final String hash)
+              'source_file_hash': hash,
+          },
+          likedAccountId);
 
   static MediaItem buildLocalMediaItem(
     Map<String, dynamic> track,

@@ -39,6 +39,156 @@ abstract class TimelineClock {
   Future<void> dispose();
 }
 
+/// Frame-authoritative projection of the existing engine's native consumer.
+/// The timer publishes snapshots only: it never advances time or schedules audio.
+class NativeTimelineClock implements TimelineClock {
+  NativeTimelineClock(
+      {required int Function() readFrames,
+      required void Function() startDevice,
+      required void Function() pauseDevice,
+      required Future<void> Function(int) seekTransport,
+      Duration uiTickInterval = const Duration(milliseconds: 100)})
+      : _readFrames = readFrames,
+        _startDevice = startDevice,
+        _pauseDevice = pauseDevice,
+        _seekTransport = seekTransport {
+    _timer = Timer.periodic(uiTickInterval, (_) => publish());
+  }
+  final int Function() _readFrames;
+  final void Function() _startDevice, _pauseDevice;
+  final Future<void> Function(int) _seekTransport;
+  final _positions = StreamController<int>.broadcast();
+  final _playing = StreamController<bool>.broadcast();
+  final _completed = StreamController<void>.broadcast();
+  final _scrubbed = StreamController<int>.broadcast();
+  final _buffering = StreamController<bool>.broadcast();
+  late final Timer _timer;
+  int _duration = 0, _anchorFrame = 0, _anchorMs = 0, _pausedMs = 0;
+  bool _running = false,
+      _scrubbing = false,
+      _resumeScrub = false,
+      _done = false;
+  int get frameOffset => _anchorFrame - _anchorMs * 48;
+  void reanchor(int globalMs) {
+    _anchorFrame = _readFrames();
+    _anchorMs = _pausedMs = _clamp(globalMs);
+    _done = false;
+    publish();
+  }
+
+  int _clamp(int value) =>
+      _duration > 0 ? value.clamp(0, _duration) : math.max(0, value);
+  @override
+  int get positionMs => _running && !_scrubbing
+      ? _clamp(_anchorMs + (_readFrames() - _anchorFrame) ~/ 48)
+      : _pausedMs;
+  @override
+  int get durationMs => _duration;
+  @override
+  set durationMs(int value) {
+    _duration = math.max(0, value);
+  }
+
+  @override
+  bool get isPlaying => _running;
+  @override
+  bool get isScrubbing => _scrubbing;
+  @override
+  double get rate => 1;
+  @override
+  bool get isBufferingHeld => false;
+  @override
+  Stream<int> get positionMsStream => _positions.stream;
+  @override
+  Stream<int> get voiceSyncPositionMsStream => const Stream.empty();
+  @override
+  Stream<bool> get isPlayingStream => _playing.stream;
+  @override
+  Stream<bool> get isBufferingHeldStream => _buffering.stream;
+  @override
+  Stream<void> get completedStream => _completed.stream;
+  @override
+  Stream<int> get scrubCommittedStream => _scrubbed.stream;
+  @override
+  void holdForBuffering() =>
+      throw UnsupportedError('Native gaps do not pause healthy clips.');
+  @override
+  void releaseHold({bool syncVoices = true}) {}
+  @override
+  Future<void> play() async {
+    if (_running) return;
+    _startDevice();
+    _running = true;
+    _playing.add(true);
+    publish();
+  }
+
+  @override
+  Future<void> pause() async {
+    if (!_running) return;
+    // Gate/drain first; then capture the exact last completed native frame.
+    try {
+      _pauseDevice();
+    } finally {
+      _pausedMs = positionMs;
+      _running = false;
+      _playing.add(false);
+      publish();
+    }
+  }
+
+  @override
+  void beginScrub() {
+    _resumeScrub = _running;
+    if (_running) {
+      _pauseDevice();
+      _pausedMs = positionMs;
+      _running = false;
+      _playing.add(false);
+    }
+    _scrubbing = true;
+  }
+
+  @override
+  void updateScrub(int globalMs) {
+    _pausedMs = _clamp(globalMs);
+    publish();
+  }
+
+  @override
+  Future<void> endScrub(int globalMs) async {
+    final resume = _resumeScrub;
+    _scrubbing = false;
+    _resumeScrub = false;
+    await seek(globalMs);
+    _scrubbed.add(positionMs);
+    if (resume) await play();
+  }
+
+  @override
+  Future<void> seek(int globalMs) => _seekTransport(_clamp(globalMs));
+  void publish() {
+    if (_positions.isClosed) return;
+    final position = positionMs;
+    _positions.add(position);
+    if (_running && _duration > 0 && position >= _duration && !_done) {
+      _done = true;
+      unawaited(pause());
+      _completed.add(null);
+    }
+  }
+
+  @override
+  Future<void> dispose() async {
+    _timer.cancel();
+    await _positions.close();
+    await _playing.close();
+    await _completed.close();
+    await _scrubbed.close();
+    await _buffering.close();
+  }
+}
+
 class DefaultTimelineClock implements TimelineClock {
   DefaultTimelineClock({
     DateTime Function() now = DateTime.now,

@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Build and execute the native profile fixture, without shared Flutter CLI use.
+
+Run from any directory. Default: fresh source + APFS-cloned SDK under TMPDIR.
+Use --wide to add 2560x1440. No app main, auth, network or audio is initialized.
+"""
+import argparse
+import base64
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import platform
+import shutil
+import struct
+import subprocess
+import sys
+import time
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, required=True,
+                        help='New/empty local evidence directory under TMPDIR')
+    parser.add_argument('--wide', action='store_true')
+    parser.add_argument('--prepared-workspace', type=Path,
+                        help='Reuse an already isolated full source copy; never the source repo')
+    parser.add_argument('--prepared-sdk', type=Path,
+                        help='Reuse already cloned Flutter SDK; never shared installation')
+    args = parser.parse_args()
+    source = Path(__file__).resolve().parent.parent
+    scratch = Path(os.environ.get('TMPDIR', '/tmp')).resolve()
+    out = args.output.resolve()
+    if not out.is_relative_to(scratch) or (out.exists() and any(out.iterdir())):
+        parser.error('--output must be a new/empty directory within TMPDIR')
+    out.mkdir(parents=True, exist_ok=True)
+    receipt = {'schema': 1, 'source': str(source), 'commands': [], 'results': []}
+
+    def save():
+        (out / 'execution.json').write_text(json.dumps(receipt, indent=2))
+
+    def run(argv, cwd=None, timeout=180, env=None, label=None):
+        start = time.time()
+        entry = {'argv': list(map(str, argv)), 'cwd': str(cwd or source),
+                 'timeoutSeconds': timeout, 'startedUnix': start}
+        receipt['commands'].append(entry)
+        save()
+        try:
+            proc = subprocess.run(entry['argv'], cwd=entry['cwd'], env=env,
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, timeout=timeout)
+            stdout, stderr, code = proc.stdout, proc.stderr, proc.returncode
+        except subprocess.TimeoutExpired as exc:
+            stdout, stderr, code = exc.stdout or b'', exc.stderr or b'', 'timeout'
+        entry.update({'elapsedSeconds': time.time() - start, 'exitCode': code,
+                      'stdoutBase64': base64.b64encode(stdout).decode(),
+                      'stderrBase64': base64.b64encode(stderr).decode(),
+                      'stdout': stdout.decode(errors='replace'),
+                      'stderr': stderr.decode(errors='replace')})
+        save()
+        if label:
+            (out / (label + '.stdout.log')).write_bytes(stdout)
+            (out / (label + '.stderr.log')).write_bytes(stderr)
+        print(f'{label or argv[0]}: exit={code} elapsed={entry["elapsedSeconds"]:.2f}s', flush=True)
+        if code != 0:
+            raise RuntimeError(f'Command failed: {argv}; see {out}/execution.json')
+        return entry['stdout']
+
+    try:
+        receipt['gitHead'] = run(['git', 'rev-parse', 'HEAD']).strip() if (source / '.git').exists() else None
+        if receipt['gitHead']:
+            receipt['gitStatus'] = run(['git', 'status', '--short'])
+            receipt['gitBranch'] = run(['git', 'branch', '--show-current']).strip()
+        receipt['hardware'] = run(['sysctl', '-n', 'hw.model', 'hw.memsize', 'machdep.cpu.brand_string'])
+        receipt['os'] = run(['sw_vers'])
+        receipt['arch'] = platform.machine()
+        receipt['xcode'] = run(['xcodebuild', '-version'])
+        workspace = args.prepared_workspace.resolve() if args.prepared_workspace else out / 'source'
+        if workspace == source:
+            parser.error('Build workspace cannot be the source repository')
+        if not workspace.is_relative_to(scratch):
+            parser.error('Workspace must stay under TMPDIR')
+        if not args.prepared_workspace:
+            shutil.copytree(source, workspace, ignore=shutil.ignore_patterns(
+                '.git', 'build', '.dart_tool', 'Pods', 'ephemeral', '.symlinks',
+                'node_modules', '__pycache__', '.venv'))
+        elif not (workspace / 'client/pubspec.yaml').exists():
+            parser.error('Prepared workspace must contain full source')
+        shared_sdk = Path(shutil.which('flutter')).resolve().parent.parent
+        sdk = args.prepared_sdk.resolve() if args.prepared_sdk else out / 'flutter'
+        if sdk == shared_sdk or not sdk.is_relative_to(scratch):
+            parser.error('Flutter SDK must be an isolated copy under TMPDIR')
+        if not args.prepared_sdk:
+            run(['/bin/cp', '-cR', str(shared_sdk), str(sdk)], timeout=180, label='clone-sdk')
+        flutter = sdk / 'bin/flutter'
+        client = workspace / 'client'
+        env = dict(os.environ, TMPDIR=str(scratch))
+        for key in ['SOUNDQ_NATIVE_DEVICE_LIBRARY', 'SQ_OPUS_ARCHIVE_DIR']:
+            env.pop(key, None)
+        receipt.update({'workspace': str(workspace), 'flutterSdk': str(sdk),
+                        'flutterVersion': json.loads((sdk / 'bin/cache/flutter.version.json').read_text()),
+                        'harnessSha256': sha(client / 'integration_test/desktop_scroll_profile_test.dart'),
+                        'sourceLibHashes': {str(p.relative_to(client)): sha(p) for p in sorted((client / 'lib').rglob('*.dart'))}})
+        save()
+        run([str(flutter), 'pub', 'get'], cwd=client, env=env, label='pub-get')
+        run([str(flutter), 'analyze', 'integration_test/desktop_scroll_profile_test.dart'],
+            cwd=client, env=env, label='analyze')
+        for width, height in [(1440, 900)] + ([(2560, 1440)] if args.wide else []):
+            tag = f'{width}x{height}'
+            run([str(flutter), 'build', 'macos', '--profile',
+                 '-t', 'integration_test/desktop_scroll_profile_test.dart',
+                 f'--dart-define=SOUNDQ_PROFILE_WIDTH={width}',
+                 f'--dart-define=SOUNDQ_PROFILE_HEIGHT={height}'],
+                cwd=client, env=env, timeout=1200, label=f'build-{tag}')
+            executable = client / 'build/macos/Build/Products/Profile/SoundQ.app/Contents/MacOS/SoundQ'
+            executable_hash = sha(executable)
+            frozen_app = out / f'SoundQ-{tag}.app'
+            run(['/bin/cp', '-cR', str(executable.parent.parent.parent), str(frozen_app)],
+                cwd=client, timeout=180, label=f'freeze-{tag}')
+            executable = frozen_app / 'Contents/MacOS/SoundQ'
+            app_framework = executable.parent.parent / 'Frameworks/App.framework/Versions/A/App'
+            app_hash = sha(app_framework) if app_framework.exists() else None
+            launch_env = dict(env, SOUNDQ_PROFILE_RUN_ID=f'{out.name}-{tag}')
+            text = run([str(executable)], cwd=client, env=launch_env, timeout=100,
+                       label=f'run-{tag}')
+            marker = 'SOUNDQ_PROFILE_COMPLETE='
+            matches = [line.split(marker, 1)[1].strip() for line in text.splitlines() if marker in line]
+            if len(matches) != 1:
+                raise RuntimeError(f'Missing unambiguous completion receipt: {tag}')
+            raw_path = Path(matches[0])
+            if not raw_path.is_file():
+                raise RuntimeError('Native result path inaccessible')
+            dest = out / tag
+            shutil.copytree(raw_path.parent, dest)
+            data = json.loads((dest / 'timings.json').read_text())
+            validate(data, width, height)
+            png = (dest / 'fixture.png').read_bytes()
+            if png[:8] != b'\x89PNG\r\n\x1a\n' or struct.unpack('>II', png[16:24]) != (width, height):
+                raise RuntimeError('Screenshot dimensions mismatch')
+            receipt['results'].append({'viewport': tag, 'nativeExecutableSha256': executable_hash,
+                                       'aotAppSha256': app_hash, 'timingsSha256': sha(dest / 'timings.json'),
+                                       'screenshotSha256': sha(dest / 'fixture.png'),
+                                       'aggregate': data['aggregate']})
+            save()
+        receipt['status'] = 'passed'
+        save()
+        print(f'PROFILE_VERIFIED={out}', flush=True)
+        return 0
+    except Exception as exc:
+        receipt['status'] = 'failed'
+        receipt['error'] = str(exc)
+        save()
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+def stats(values):
+    values = sorted(values)
+    return {**{k: values[max(0, math.ceil(len(values) * q) - 1)]
+               for k, q in [('p50', .5), ('p95', .95), ('p99', .99)]},
+            'max': max(values), 'over8333Us': sum(x > 8333 for x in values),
+            'over16667Us': sum(x > 16667 for x in values)}
+
+
+def distribution(frames):
+    return {'frames': len(frames),
+            **{metric: stats([f[metric] for f in frames])
+               for metric in ['uiUs', 'rasterUs', 'totalSpanUs', 'vsyncOverheadUs']},
+            **{f'eitherUiOrRasterOver{limit}Us': sum(f['uiUs'] > limit or f['rasterUs'] > limit for f in frames)
+               for limit in [8333, 16667]}}
+
+
+def validate(data, width, height):
+    assert data['buildMode'] == 'profile'
+    assert data['viewportLogical'] == [width, height]
+    assert data['workload']['rows'] == 10000
+    assert data['errors'] == []
+    assert len(data['runs']) == 5
+    assert len(data['windows']) == 6
+    assert data['stationaryPositionControl']['ticks'] >= 10
+    assert data['stationaryPositionControl']['rowBuilderCalls'] == 0
+    assert data['stationaryPositionControl']['downloadChecks'] == 0
+    for key in ['apiAttempts', 'httpClientAttempts', 'actionAttempts', 'audioPlayersCreated']:
+        assert data['counters'][key] == 0
+    raw = data['rawFrames']
+    assert len({f['frameNumber'] for f in raw}) == len(raw)
+    combined = []
+    for run in data['runs']:
+        frames = [f for f in raw if run['startVsyncUs'] <= f['vsyncStart'] <= run['endVsyncUs']]
+        assert len(frames) > 100
+        assert run['positionNotifications'] >= 40
+        assert run['rowBuilderCalls'] < 1000
+        assert run['mountedRowsAtEnd'] < 100
+        assert run['downloadChecks'] == run['rowBuilderCalls']
+        assert run['reachedOffsetPx'] == 6000 and run['finalOffsetPx'] == 0
+        for key, value in distribution(frames).items():
+            assert run[key] == value, (run['name'], key)
+        combined.extend(frames)
+    assert len({f['frameNumber'] for f in combined}) == len(combined)
+    assert data['aggregate'] == distribution(combined)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

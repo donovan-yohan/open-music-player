@@ -77,6 +77,17 @@ class VoicePool {
   final Map<String, Voice> _activeVoices = {};
   final Map<String, MixClip> _activeClips = {};
   final Map<String, _LoadedSourceIdentity> _activeSourceIdentities = {};
+  final Map<Voice, _VoiceSourceOwner> _sourceOwners = {};
+  final Map<Voice, Future<void>> _nativeTails = {};
+
+  Future<void> _nativeMutation(Voice voice, Future<void> Function() action) {
+    final next =
+        (_nativeTails[voice] ?? Future<void>.value()).then((_) => action());
+    _nativeTails[voice] =
+        next.then((_) {}, onError: (Object _, StackTrace __) {});
+    return next;
+  }
+
   final List<Voice> _idleVoices = [];
   final List<Voice> _allVoices = [];
   final List<StreamSubscription> _subscriptions = [];
@@ -102,6 +113,8 @@ class VoicePool {
   Future<void>? _levelUpdateDrain;
   int? _pendingLevelUpdateMs;
   Future<void> _syncChain = Future<void>.value();
+  Future<void>? _stopFuture;
+  Future<void>? _disposeFuture;
   int _generation = 0;
   bool _started = false;
   bool _coordinatedResumeInProgress = false;
@@ -124,6 +137,8 @@ class VoicePool {
       _pitchFallbackController.stream;
 
   Future<void> start() async {
+    if (_disposeFuture != null) return;
+    await _stopFuture;
     if (_started) return;
     _started = true;
     if (_allVoices.isEmpty) {
@@ -272,7 +287,17 @@ class VoicePool {
     }
   }
 
-  Future<void> stop() async {
+  Future<void> stop() {
+    final pending = _stopFuture;
+    if (pending != null) return pending;
+    late final Future<void> stopping;
+    stopping = _stop().whenComplete(() {
+      if (identical(_stopFuture, stopping)) _stopFuture = null;
+    });
+    return _stopFuture = stopping;
+  }
+
+  Future<void> _stop() async {
     _generation += 1;
     _started = false;
     _coordinatedResumeInProgress = false;
@@ -319,14 +344,23 @@ class VoicePool {
 
   Future<void> pauseActive() => _setActivePlayback(false);
 
-  Future<void> dispose() async {
-    await stop();
+  Future<void> dispose() => _disposeFuture ??= _dispose();
+
+  Future<void> _dispose() async {
+    try {
+      await stop();
+    } catch (_) {
+      // Failed unload retains its owner; successful native disposal below is
+      // the final barrier that permits releasing those bytes.
+    }
+    await Future.wait(_nativeTails.values.toList());
     for (final sub in _voiceSubscriptions.values) {
       await sub.cancel();
     }
     _voiceSubscriptions.clear();
     for (final voice in _allVoices) {
       await voice.dispose();
+      await _sourceOwners.remove(voice)?.source?.release();
     }
     _allVoices.clear();
     _idleVoices.clear();
@@ -364,9 +398,12 @@ class VoicePool {
     if (!validateResolvedIdentity) return false;
 
     try {
-      final currentIdentity =
-          _LoadedSourceIdentity.from(clip, await _resolver.resolve(clip));
-      return currentIdentity != loadedIdentity;
+      final source = await _resolver.resolve(clip);
+      try {
+        return _LoadedSourceIdentity.from(clip, source) != loadedIdentity;
+      } finally {
+        await source.release();
+      }
     } catch (_) {
       // Keep the already-playing source when re-resolution of an otherwise
       // unchanged source fails. A transient resolver failure should not evict a
@@ -376,15 +413,21 @@ class VoicePool {
   }
 
   Future<void> _releaseClip(String clipId, Voice voice) async {
+    if (_activeVoices[clipId] != voice) return;
+    final owner = _sourceOwners[voice];
     _activeVoices.remove(clipId);
     _activeClips.remove(clipId);
     _activeSourceIdentities.remove(clipId);
     _voiceStatus.remove(clipId);
     _lastDriftCorrectionMs.remove(clipId);
     _clearPitchFallbackFor(clipId);
-    await _setVoiceVolume(voice, 0);
-    await _applyNeutralPlaybackTuning(voice);
-    await voice.release();
+    await _nativeMutation(voice, () async {
+      await _setVoiceVolume(voice, 0);
+      await _applyNeutralPlaybackTuning(voice);
+      await voice.release();
+      await owner?.source?.release();
+      if (identical(_sourceOwners[voice], owner)) _sourceOwners.remove(voice);
+    });
     if (!_idleVoices.contains(voice)) _idleVoices.add(voice);
     _publishStatus();
   }
@@ -412,6 +455,8 @@ class VoicePool {
     int generation,
     Voice voice,
   ) async {
+    final owner = _VoiceSourceOwner();
+    _sourceOwners[voice] = owner;
     _activeVoices[clip.id] = voice;
     _activeClips[clip.id] = clip;
     _voiceStatus[clip.id] = VoiceEventKind.buffering;
@@ -419,15 +464,32 @@ class VoicePool {
 
     try {
       await _setVoiceVolume(voice, 0);
+      if (!_isCurrentVoice(clip.id, voice, generation)) {
+        await _retirePreparedVoice(clip.id, voice, owner);
+        return const _PrepareResult();
+      }
       await _applyNeutralPlaybackTuning(voice);
+      if (!_isCurrentVoice(clip.id, voice, generation)) {
+        await _retirePreparedVoice(clip.id, voice, owner);
+        return const _PrepareResult();
+      }
       final source = await _resolver.resolve(clip);
+      if (!_isCurrentVoice(clip.id, voice, generation) ||
+          !identical(_sourceOwners[voice], owner)) {
+        await source.release();
+        await _retirePreparedVoice(clip.id, voice, owner);
+        return const _PrepareResult();
+      }
+      owner.source = source;
       // A reload can reset player-side state, so the cached gain no longer
       // describes the player.
       _voiceGain.remove(voice);
-      await voice.load(source.uri,
-          initialLocalPositionMs: _localPosition(clip, globalMs));
+      await _nativeMutation(
+          voice,
+          () => voice.load(source.uri,
+              initialLocalPositionMs: _localPosition(clip, globalMs)));
       if (generation != _generation || _activeVoices[clip.id] != voice) {
-        await _retirePreparedVoice(clip.id, voice);
+        await _retirePreparedVoice(clip.id, voice, owner);
         return const _PrepareResult();
       }
       _activeSourceIdentities[clip.id] =
@@ -438,35 +500,22 @@ class VoicePool {
       return _PrepareResult(prepared: _PreparedVoice(clip, voice));
     } catch (error) {
       if (generation != _generation) {
-        await _retirePreparedVoice(clip.id, voice);
+        await _retirePreparedVoice(clip.id, voice, owner);
         return const _PrepareResult();
       }
       _voiceStatus[clip.id] = VoiceEventKind.error;
       _publishStatus();
-      await _retirePreparedVoice(clip.id, voice);
+      await _retirePreparedVoice(clip.id, voice, owner);
       return _PrepareResult(
         shouldRetryAfterFreeingActive: error is VoiceCapacityException,
       );
     }
   }
 
-  Future<void> _retirePreparedVoice(String clipId, Voice voice) async {
-    if (_activeVoices[clipId] == voice) {
-      _activeVoices.remove(clipId);
-      _activeClips.remove(clipId);
-      _activeSourceIdentities.remove(clipId);
-      _voiceStatus.remove(clipId);
-      _clearPitchFallbackFor(clipId);
-    }
-    if (_activeVoices.containsValue(voice) || _idleVoices.contains(voice)) {
-      _publishStatus();
-      return;
-    }
-    await _setVoiceVolume(voice, 0);
-    await _applyNeutralPlaybackTuning(voice);
-    await voice.release();
-    _idleVoices.add(voice);
-    _publishStatus();
+  Future<void> _retirePreparedVoice(String clipId, Voice voice,
+      [_VoiceSourceOwner? owner]) async {
+    if (!identical(_sourceOwners[voice], owner)) return;
+    await _releaseClip(clipId, voice);
   }
 
   Voice? _acquireIdleVoice() {
@@ -943,6 +992,10 @@ class _PlaybackTuningState {
   final double speed;
   final double pitchFactor;
   final bool pitchSupported;
+}
+
+class _VoiceSourceOwner {
+  ResolvedAudioSource? source;
 }
 
 class _PreparedVoice {

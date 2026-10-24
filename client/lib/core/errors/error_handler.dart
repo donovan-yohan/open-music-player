@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'app_error.dart';
@@ -61,7 +63,7 @@ class ErrorHandler {
     VoidCallback? onRetry,
   }) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
+      AppSnackBar(
         content: Text(error.displayMessage),
         behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 4),

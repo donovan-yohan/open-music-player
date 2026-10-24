@@ -330,73 +330,39 @@ void main() {
       expect(model.dominantClipAt(500)?.id, 'loud');
     });
 
-    test('overlap BPM automation keeps clips on a shared transition tempo', () {
-      final model = TimelineModel(
-        clips: [
-          _tempoClip('outgoing', 0, nativeBpm: 100),
-          _tempoClip('incoming', 5000, nativeBpm: 125),
-        ],
-      );
-
-      final outgoing = model.clips.firstWhere((clip) => clip.id == 'outgoing');
-      final incoming = model.clips.firstWhere((clip) => clip.id == 'incoming');
-      final outgoingSegment = outgoing.rateAutomation.segments.single;
-      final incomingSegment = incoming.rateAutomation.segments.single;
-      final midpoint =
-          outgoingSegment.startMs + outgoingSegment.durationMs ~/ 2;
-
-      expect(outgoing.playbackRateAt(5000), closeTo(1.0, 0.0001));
-      expect(incoming.playbackRateAt(5000), closeTo(0.8, 0.0001));
-      expect(outgoing.playbackRateAt(midpoint), closeTo(1.125, 0.0002));
-      expect(incoming.playbackRateAt(midpoint), closeTo(0.9, 0.0002));
-      expect(
-        outgoing.playbackRateAt(outgoingSegment.endMs),
-        closeTo(1.25, 0.0001),
-      );
-      expect(
-        incoming.playbackRateAt(incomingSegment.endMs),
-        closeTo(1.0, 0.0001),
-      );
-      expect(incomingSegment.endMs, outgoingSegment.endMs);
-      expect(outgoing.timelineEndMs, closeTo(outgoingSegment.endMs, 1));
-
-      final incomingMidpointSource = incoming.sourcePositionAt(midpoint);
-      expect(
-        incoming.timelineMsForSourcePosition(incomingMidpointSource),
-        closeTo(midpoint, 2),
-      );
+    test('constant lock leaves outgoing rate untouched and holds incoming', () {
+      final model = TimelineModel(clips: [
+        _tempoClip('outgoing', 0, nativeBpm: 120),
+        _tempoClip('incoming', 5000, nativeBpm: 128),
+      ]);
+      final outgoing = model.clips.first;
+      final incoming = model.clips.last;
+      expect(outgoing.rateAutomation.segments, isEmpty);
+      expect(incoming.rateAutomation.segments, hasLength(1));
+      for (final ms in [5000, 7500, 9999, 10000, 12000]) {
+        expect(outgoing.playbackRateAt(ms), 1);
+        expect(incoming.playbackRateAt(ms), closeTo(120 / 128, 0.000001));
+      }
+      final source = incoming.sourcePositionAt(7500);
+      expect(incoming.timelineMsForSourcePosition(source), closeTo(7500, 1));
     });
 
-    test('auto crossfade spans the solved shared-BPM transition window', () {
-      final model = TimelineModel(
-        clips: [
-          _tempoClip(
-            'outgoing',
-            0,
-            nativeBpm: 100,
-            envelope: const GainEnvelope(fadeOutMs: 5000),
-          ),
-          _tempoClip(
-            'incoming',
-            5000,
-            nativeBpm: 125,
-            envelope: const GainEnvelope(fadeInMs: 5000),
-          ),
-        ],
-      );
-
-      final outgoing = model.clips.firstWhere((clip) => clip.id == 'outgoing');
-      final incoming = model.clips.firstWhere((clip) => clip.id == 'incoming');
-      final transitionEndMs = outgoing.rateAutomation.segments.single.endMs;
-      final transitionMs = transitionEndMs - incoming.timelineStartMs;
-
-      expect(outgoing.timelineEndMs, closeTo(transitionEndMs, 1));
-      expect(outgoing.envelope.fadeOutMs, transitionMs);
-      expect(incoming.envelope.fadeInMs, transitionMs);
-      expect(outgoing.gainAt(incoming.timelineStartMs), closeTo(1, 0.0001));
-      expect(incoming.gainAt(incoming.timelineStartMs), 0);
-      expect(outgoing.gainAt(transitionEndMs - 1), lessThan(0.01));
-      expect(incoming.gainAt(transitionEndMs - 1), greaterThan(0.99));
+    test('constant master keeps authored crossfade geometry', () {
+      final model = TimelineModel(clips: [
+        _tempoClip('outgoing', 0,
+            nativeBpm: 120, envelope: const GainEnvelope(fadeOutMs: 5000)),
+        _tempoClip('incoming', 5000,
+            nativeBpm: 128, envelope: const GainEnvelope(fadeInMs: 5000)),
+      ]);
+      final outgoing = model.clips.first;
+      final incoming = model.clips.last;
+      expect(outgoing.timelineEndMs, 10000);
+      expect(outgoing.envelope.fadeOutMs, 5000);
+      expect(incoming.envelope.fadeInMs, 5000);
+      expect(outgoing.gainAt(5000), 1);
+      expect(incoming.gainAt(5000), 0);
+      expect(outgoing.gainAt(9999), lessThan(0.01));
+      expect(incoming.gainAt(9999), greaterThan(0.99));
     });
 
     test('does not apply BPM automation that would break shared tempo lock',
@@ -417,45 +383,19 @@ void main() {
       expect(incoming.playbackRateAt(7500), 1);
     });
 
-    test('overlap BPM automation preserves existing base rates', () {
-      final model = TimelineModel(
-        clips: [
-          _tempoClip(
-            'outgoing',
-            0,
+    test('incompatible preexisting rates abstain without rewriting either', () {
+      final model = TimelineModel(clips: [
+        _tempoClip('outgoing', 0,
             nativeBpm: 120,
-            rateAutomation: const PlaybackRateAutomation(baseRate: 0.9),
-          ),
-          _tempoClip(
-            'incoming',
-            5000,
+            rateAutomation: const PlaybackRateAutomation(baseRate: 0.9)),
+        _tempoClip('incoming', 5000,
             nativeBpm: 90,
-            rateAutomation: const PlaybackRateAutomation(baseRate: 1.1),
-          ),
-        ],
-      );
-
-      final outgoing = model.clips.firstWhere((clip) => clip.id == 'outgoing');
-      final incoming = model.clips.firstWhere((clip) => clip.id == 'incoming');
-      final outgoingSegment = outgoing.rateAutomation.segments.single;
-      final incomingSegment = incoming.rateAutomation.segments.single;
-
-      expect(outgoing.playbackRateAt(5000), closeTo(0.9, 0.0001));
-      expect(
-        outgoing.playbackRateAt(outgoingSegment.endMs),
-        closeTo(0.825, 0.0001),
-      );
-      expect(incoming.playbackRateAt(5000), closeTo(1.2, 0.0001));
-      expect(
-        incoming.playbackRateAt(incomingSegment.endMs),
-        closeTo(1.1, 0.0001),
-      );
-      for (final ms in [5000, 6250, 7500, 8750, outgoingSegment.endMs]) {
-        expect(
-          120 * outgoing.playbackRateAt(ms),
-          closeTo(90 * incoming.playbackRateAt(ms), 0.0001),
-        );
-      }
+            rateAutomation: const PlaybackRateAutomation(baseRate: 1.1)),
+      ]);
+      expect(model.clips.first.rateAutomation.segments, isEmpty);
+      expect(model.clips.last.rateAutomation.segments, isEmpty);
+      expect(model.clips.first.playbackRateAt(7500), 0.9);
+      expect(model.clips.last.playbackRateAt(7500), 1.1);
     });
 
     test(
@@ -463,8 +403,8 @@ void main() {
       () {
         final model = TimelineModel(
           clips: [
-            _tempoClip('outgoing', 0, nativeBpm: 100),
-            _tempoClip('incoming', 5000, nativeBpm: 125),
+            _tempoClip('outgoing', 0, nativeBpm: 120),
+            _tempoClip('incoming', 5000, nativeBpm: 128),
           ],
         );
 
@@ -477,7 +417,7 @@ void main() {
 
         expect(
           outgoing.timelineEndMs,
-          lessThan(outgoing.placement.timelineEndMs),
+          outgoing.placement.timelineEndMs,
         );
         expect(
           outgoing.sourcePositionAt(outgoing.timelineEndMs),
@@ -526,6 +466,38 @@ void main() {
       expect(() => model.addClip(candidate), throwsStateError);
     });
 
+    test('tempo expansion cannot turn a valid butt joint into fifth overlap',
+        () {
+      final outgoing = _tempoClip('outgoing', 0, nativeBpm: 125);
+      final incoming = _tempoClip('incoming', 5000, nativeBpm: 100);
+      final model = TimelineModel(clips: [
+        outgoing,
+        incoming,
+        for (var i = 0; i < 3; i++)
+          MixClip(placement: placement(id: 'tail-$i', timelineStartMs: 10000)),
+      ]);
+      expect(model.clips, hasLength(5));
+      expect(model.clips.first.rateAutomation.segments, isEmpty);
+      expect(model.clips[1].rateAutomation.segments, isEmpty);
+      expect(model.overlapDepthAt(9999), 2);
+      expect(model.overlapDepthAt(10000), 4);
+    });
+
+    test('constructor validates rate-automated rather than placement ends', () {
+      final slow = MixClip(
+          placement: placement(id: 'slow'),
+          rateAutomation: const PlaybackRateAutomation(baseRate: 0.5));
+      expect(
+          () => TimelineModel(clips: [
+                slow,
+                for (var i = 0; i < 4; i++)
+                  MixClip(
+                      placement:
+                          placement(id: 'tail-$i', timelineStartMs: 1000)),
+              ]),
+          throwsStateError);
+    });
+
     test('overlap BPM automation falls back to 1.0 without reliable BPM', () {
       final model = TimelineModel(
         clips: [
@@ -540,6 +512,104 @@ void main() {
   });
 
   group('TimelineModel constructors', () {
+    test('rejects the entire fifth-overlap candidate instead of dropping clips',
+        () {
+      final clips = [
+        for (var i = 0; i < 5; i++)
+          MixClip(placement: placement(id: 'instance-$i', trackId: 'same')),
+      ];
+      for (final autoTempoTransitions in [false, true]) {
+        expect(
+          () => TimelineModel(
+              clips: clips, autoTempoTransitions: autoTempoTransitions),
+          throwsStateError,
+        );
+      }
+    });
+
+    test('clip IDs must identify distinct instances, not collide', () {
+      final first = MixClip(placement: placement(id: 'duplicate'));
+      final second =
+          MixClip(placement: placement(id: 'duplicate', timelineStartMs: 1000));
+      expect(() => TimelineModel(clips: [first, second]), throwsStateError);
+      final model = TimelineModel(clips: [first]);
+      expect(model.canPlaceClip(second), isFalse);
+      expect(model.canPlaceClip(second, ignoringClipId: first.id), isTrue);
+      expect(() => model.addClip(second), throwsStateError);
+    });
+
+    test('empty clips do not consume voices at shared end/start boundaries',
+        () {
+      final clips = [
+        for (var i = 0; i < 4; i++)
+          MixClip(placement: placement(id: 'before-$i')),
+        for (var i = 0; i < 4; i++)
+          MixClip(placement: placement(id: 'after-$i', timelineStartMs: 1000)),
+        for (var i = 0; i < 10; i++)
+          MixClip(
+              placement: placement(
+                  id: 'empty-$i',
+                  sourceDurationMs: 0,
+                  sourceEndMs: 0,
+                  timelineStartMs: 1000)),
+      ];
+      final model = TimelineModel(clips: clips);
+      expect(model.clips, hasLength(clips.length));
+      expect(model.overlapDepthAt(999), 4);
+      expect(model.overlapDepthAt(1000), 4);
+      expect(model.overlapDepthAt(2000), 0);
+      expect(() => model.clips.clear(), throwsUnsupportedError);
+    });
+
+    test('many repeated recordings remain distinct across a long arrangement',
+        () {
+      final clips = [
+        for (var i = 0; i < 1000; i++)
+          MixClip(
+              placement: placement(
+                  id: 'instance-$i',
+                  trackId: 'same',
+                  timelineStartMs: (i ~/ 4) * 1000)),
+      ];
+      final model = TimelineModel(clips: clips.reversed);
+      expect(model.clips.map((clip) => clip.id).toSet(), hasLength(1000));
+      expect(model.overlapDepthAt(10000), 4);
+      expect(model.durationMs, 250000);
+    });
+
+    test('sweep admission matches a brute-force half-open interval oracle', () {
+      final random = math.Random(623);
+      for (var attempt = 0; attempt < 250; attempt++) {
+        final clips = [
+          for (var i = 0; i < 25; i++)
+            MixClip(
+                placement: placement(
+                    id: 'c$i',
+                    sourceDurationMs: i % 6 == 0 ? 0 : 1000,
+                    timelineStartMs: random.nextInt(100) * 100),
+                rateAutomation:
+                    PlaybackRateAutomation(baseRate: i.isEven ? 0.5 : 2)),
+        ];
+        final exceeds = clips.any((probe) =>
+            clips
+                .where((clip) => clip.isActiveAt(probe.timelineStartMs))
+                .length >
+            4);
+        if (exceeds) {
+          expect(() => TimelineModel(clips: clips, autoTempoTransitions: false),
+              throwsStateError);
+        } else {
+          final model =
+              TimelineModel(clips: clips, autoTempoTransitions: false);
+          expect(model.clips, hasLength(clips.length));
+          for (final probe in clips) {
+            expect(model.overlapDepthAt(probe.timelineStartMs),
+                lessThanOrEqualTo(4));
+          }
+        }
+      }
+    });
+
     test('sequential creates zero-overlap clips in track order', () {
       final model = TimelineModel.sequential([
         '1',
@@ -609,30 +679,36 @@ void main() {
       expect(model.toMixPlanClips().single.pitchMode, pitchModeFollowTempo);
     });
 
-    test('fromMixPlan clamps positive gain and drops depth overflow', () {
+    test('fromMixPlan rejects depth overflow without truncating the plan', () {
       final sourcePlan = plan(
         clips: [
           for (var i = 0; i < 5; i++)
-            planClip(
+            planClip(clipId: 'clip-$i', queueItemId: 'queue-$i'),
+        ],
+      );
+      expect(() => TimelineModel.fromMixPlan(sourcePlan), throwsStateError);
+    });
+
+    test('fromQueuePlan rejects explicit depth overflow without truncation',
+        () {
+      final sourcePlan = plan(clips: [
+        for (var i = 0; i < 5; i++)
+          planClip(
               clipId: 'clip-$i',
               queueItemId: 'queue-$i',
               trackId: '${i + 1}',
-              timelineStartMs: 0,
-              gainDb: 6,
-              fadeInMs: null,
-              fadeOutMs: null,
-            ),
-        ],
-      );
+              timelineStartMs: 1),
+      ]);
+      expect(
+          () => TimelineModel.fromQueuePlan(sourcePlan,
+              trackOrder: ['1', '2', '3', '4', '5']),
+          throwsStateError);
+    });
 
-      final model = TimelineModel.fromMixPlan(
-        sourcePlan,
-        sourceDurationMsFor: (_) => 1000,
-      );
-
-      expect(model.clips, hasLength(TimelineModel.maxConcurrentVoices));
-      expect(model.clips.first.envelope.baseGainDb, 0);
-      expect(model.overlapDepthAt(0), TimelineModel.maxConcurrentVoices);
+    test('fromMixPlan still clamps positive gain for valid plans', () {
+      final model =
+          TimelineModel.fromMixPlan(plan(clips: [planClip(gainDb: 6)]));
+      expect(model.clips.single.envelope.baseGainDb, 0);
     });
 
     test(
@@ -779,6 +855,12 @@ MixClip _tempoClip(
     tempo: ClipTempoMetadata(
       nativeBpm: nativeBpm,
       bpmConfidence: nativeBpm == null ? null : bpmConfidence,
+      beatsMs: nativeBpm == null
+          ? const []
+          : [for (var i = 0; i < 80; i++) (i * 60000 / nativeBpm).round()],
+      downbeatsMs: nativeBpm == null
+          ? const []
+          : [for (var i = 0; i < 80; i += 4) (i * 60000 / nativeBpm).round()],
     ),
     envelope: envelope,
     rateAutomation: rateAutomation,

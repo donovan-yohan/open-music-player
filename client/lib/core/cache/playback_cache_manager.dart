@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -30,7 +32,8 @@ const int defaultPlaybackCacheMaxBytes = 512 * 1024 * 1024;
 /// signed URLs for the same object; different after a backend object
 /// replacement.
 ///
-/// Entries are physically keyed by track id (one cached artifact per track);
+/// The store indexes the current version by track id; leased older versions
+/// retain their distinct paths in the manager's retirement registry. Legacy
 /// staleness at play time is decided field-by-field via
 /// [PlaybackCacheEntry.isStaleAgainstDescriptor] (so an omitted field is no
 /// signal, not a key mismatch). This composite is the canonical human/equality
@@ -55,6 +58,38 @@ String? audioObjectIdentity(String url) {
   if (uri.authority.isEmpty && uri.path.isEmpty) return null;
   final scheme = uri.scheme.isEmpty ? '' : '${uri.scheme}://';
   return '$scheme${uri.authority}${uri.path}';
+}
+
+/// One independent pin on verified cache-owned bytes. Release only after the
+/// decoder/transport has stopped using the path. Release is idempotent.
+class PlaybackCacheLease {
+  final String localPath;
+  final int sizeBytes;
+  final Future<void> Function() _onRelease;
+  Future<void>? _released;
+
+  PlaybackCacheLease._(this.localPath, this.sizeBytes, this._onRelease);
+
+  Future<void> release() => _released ??= _onRelease();
+}
+
+/// Snapshot of clear completion. Pinned files are retired, not deleted, until
+/// their last owner releases. Failed deletions are reported, never called done.
+class PlaybackCacheClearResult {
+  final int deferredFiles;
+  final int deferredBytes;
+  final int failedFiles;
+  final int pendingTransfers;
+
+  const PlaybackCacheClearResult({
+    required this.deferredFiles,
+    required this.deferredBytes,
+    this.failedFiles = 0,
+    this.pendingTransfers = 0,
+  });
+
+  bool get isComplete =>
+      deferredFiles == 0 && failedFiles == 0 && pendingTransfers == 0;
 }
 
 /// Bounded, evictable cache of recently/near-future playback artifacts.
@@ -82,12 +117,124 @@ class PlaybackCacheManager {
 
   final DateTime Function() _clock;
 
-  /// In-flight warms, keyed by track id, so concurrent plays of the same track
-  /// share one download instead of racing to write the same file.
-  final Map<int, Future<void>> _warming = {};
+  /// Transfers share only an identical immutable identity, never just a track.
+  final Map<String, Future<void>> _warming = {};
+  final Map<int, Future<void>> _trackTails = {};
+  final Map<String, CancelToken> _transfers = {};
+  int _epoch = 0;
+  final Map<int, int> _incoming = {};
+
+  /// Reserves incoming bytes across warm -> verification -> pin acquisition.
+  /// Null means unavailable (including insufficient room beside active leases).
+  Future<PlaybackCacheLease?> warmAndAcquire(
+    int trackId,
+    SignedAudioDescriptor descriptor, {
+    CancelToken? cancelToken,
+  }) async {
+    if (trackId != descriptor.trackId || cancelToken?.isCancelled == true) {
+      return null;
+    }
+    final epoch = _epoch;
+    _incoming[trackId] = (_incoming[trackId] ?? 0) + 1;
+    try {
+      final warming = warm(trackId, descriptor);
+      if (cancelToken == null) {
+        await warming;
+      } else {
+        await Future.any<void>([
+          warming,
+          cancelToken.whenCancel.then<void>((_) {}),
+        ]);
+      }
+      return await _commit(() async {
+        if (epoch != _epoch || cancelToken?.isCancelled == true) return null;
+        return _acquire(trackId, descriptor);
+      });
+    } finally {
+      final remaining = (_incoming[trackId] ?? 1) - 1;
+      if (remaining == 0) {
+        _incoming.remove(trackId);
+      } else {
+        _incoming[trackId] = remaining;
+      }
+    }
+  }
+
+  /// Waits for transfers already scheduled for this track; starts no download.
+  /// Useful to keep bounded worker slots occupied after subscriber cancellation.
+  Future<void> waitForPendingWarm(int trackId) =>
+      _trackTails[trackId] ?? Future<void>.value();
 
   /// Serializes commit/eviction critical sections (see [_commit]).
   Future<void> _commitChain = Future<void>.value();
+
+  final Map<String, int> _pins = {};
+  // The SQLite surface intentionally retains one current row per track. Older
+  // leased versions live here until release; process death also ends all leases.
+  final Map<String, PlaybackCacheEntry> _retired = {};
+  int _nextFileId = DateTime.now().microsecondsSinceEpoch;
+
+  Future<PlaybackCacheLease?> acquire(
+    int trackId,
+    SignedAudioDescriptor descriptor,
+  ) =>
+      _commit(() => _acquire(trackId, descriptor));
+
+  Future<PlaybackCacheLease?> _acquire(
+    int trackId,
+    SignedAudioDescriptor descriptor,
+  ) async {
+    if (trackId != descriptor.trackId) return null;
+    final path = await _get(trackId, descriptor);
+    if (path == null) return null;
+    final entry = (await _store.getEntry(trackId))!;
+    return _pin(entry);
+  }
+
+  /// Pins an already-resolved path only if it exactly names a verified current
+  /// cache row. No basename/track-id inference and no external-file ownership.
+  /// Failed verification leaves both the row and bytes untouched.
+  Future<PlaybackCacheLease?> acquirePath(String path) => _commit(() async {
+        try {
+          final entries = await _store.getAllEntries();
+          for (final entry in entries) {
+            if (entry.localPath != path) continue;
+            final file = File(path);
+            if (!await file.exists()) return null;
+            final size = await file.length();
+            if (size <= 0 ||
+                size != entry.fileSizeBytes ||
+                (entry.expectedSizeBytes != null &&
+                    entry.expectedSizeBytes! > 0 &&
+                    size != entry.expectedSizeBytes)) {
+              return null;
+            }
+            await _store.touchEntry(entry.trackId, _clock().toUtc());
+            return _pin(entry);
+          }
+        } catch (_) {
+          // Like descriptor acquisition, store/IO failure cannot claim a pin.
+        }
+        return null;
+      });
+
+  PlaybackCacheLease _pin(PlaybackCacheEntry entry) {
+    final path = entry.localPath;
+    _pins[path] = (_pins[path] ?? 0) + 1;
+    return PlaybackCacheLease._(
+        path,
+        entry.fileSizeBytes,
+        () => _commit(() async {
+              final remaining = (_pins[path] ?? 1) - 1;
+              if (remaining > 0) {
+                _pins[path] = remaining;
+              } else {
+                _pins.remove(path);
+                final retired = _retired[path];
+                if (retired != null) await _deleteRetired(retired);
+              }
+            }));
+  }
 
   PlaybackCacheManager({
     required PlaybackCacheStore store,
@@ -116,9 +263,14 @@ class PlaybackCacheManager {
   /// [descriptor], else null. A metadata mismatch, a missing file, or a
   /// size mismatch invalidates (removes) the entry so the caller falls back to
   /// the signed URL instead of playing stale bytes. A hit bumps the entry's
-  /// recency so it survives eviction longer.
-  Future<String?> get(int trackId, SignedAudioDescriptor descriptor) async {
+  /// recency so it survives eviction longer. This legacy lookup does NOT pin
+  /// the file; transports must use [acquire] or [warmAndAcquire] instead.
+  Future<String?> get(int trackId, SignedAudioDescriptor descriptor) =>
+      _commit(() => _get(trackId, descriptor));
+
+  Future<String?> _get(int trackId, SignedAudioDescriptor descriptor) async {
     try {
+      if (trackId != descriptor.trackId) return null;
       final entry = await _store.getEntry(trackId);
       if (entry == null) return null;
 
@@ -137,12 +289,14 @@ class PlaybackCacheManager {
         await _invalidate(entry);
         return null;
       }
-      if (entry.fileSizeBytes > 0) {
-        final actualSize = await file.length();
-        if (actualSize != entry.fileSizeBytes) {
-          await _invalidate(entry);
-          return null;
-        }
+      final actualSize = await file.length();
+      if (actualSize <= 0 ||
+          actualSize != entry.fileSizeBytes ||
+          (descriptor.sizeBytes != null &&
+              descriptor.sizeBytes! > 0 &&
+              actualSize != descriptor.sizeBytes)) {
+        await _invalidate(entry);
+        return null;
       }
 
       await _store.touchEntry(trackId, _clock().toUtc());
@@ -171,20 +325,40 @@ class PlaybackCacheManager {
     SignedAudioDescriptor descriptor, {
     Set<int> protect = const {},
   }) {
-    final existing = _warming[trackId];
+    if (trackId != descriptor.trackId) return Future<void>.value();
+    final epoch = _epoch;
+    final key =
+        '$epoch:${playbackCacheKey(descriptor)}:${descriptor.sizeBytes}';
+    final existing = _warming[key];
     if (existing != null) return existing;
-    final future = _warm(trackId, descriptor, protect);
-    _warming[trackId] = future;
-    return future.whenComplete(() => _warming.remove(trackId));
+    final token = CancelToken();
+    _transfers[key] = token;
+    // Order replacements of the same track while other tracks transfer in
+    // parallel. A later version cannot finish before and be replaced by an old one.
+    final prior = _trackTails[trackId] ?? Future<void>.value();
+    late final Future<void> future;
+    future = prior
+        .then((_) => _warm(trackId, descriptor, protect, epoch, token))
+        .whenComplete(() {
+      _warming.remove(key);
+      _transfers.remove(key);
+      if (identical(_trackTails[trackId], future)) _trackTails.remove(trackId);
+    });
+    _warming[key] = future;
+    _trackTails[trackId] = future;
+    return future;
   }
 
   Future<void> _warm(
     int trackId,
     SignedAudioDescriptor descriptor,
     Set<int> protect,
+    int epoch,
+    CancelToken token,
   ) async {
     String? partPath;
     try {
+      if (epoch != _epoch || token.isCancelled) return;
       // Explicit download wins: never duplicate user-owned bytes into the cache.
       if (await _explicitDownloads?.localAudioPath(trackId) != null) return;
       // Already cached and still valid? `get` revalidates and, if stale, evicts
@@ -194,12 +368,16 @@ class PlaybackCacheManager {
       final dir = await _cacheDirectoryProvider();
       await Directory(dir).create(recursive: true);
       final localPath = p.join(dir, '$trackId.audio');
-      partPath = '$localPath.part';
+      partPath = '$localPath-${_nextFileId++}.part';
 
       // Stage into `.part` so an aborted transfer never lands at the final path
       // where `get` could mistake it for a complete artifact.
       await deleteFileQuietly(partPath);
-      await _downloader(descriptor.url, partPath);
+      await _downloader(descriptor.url, partPath, cancelToken: token);
+      if (epoch != _epoch || token.isCancelled) {
+        await deleteFileQuietly(partPath);
+        return;
+      }
 
       final partFile = File(partPath);
       final actualSize = await partFile.exists() ? await partFile.length() : 0;
@@ -221,12 +399,16 @@ class PlaybackCacheManager {
         return;
       }
 
-      await deleteFileQuietly(localPath);
-      await partFile.rename(localPath);
+      // A retired/leased version must never be overwritten by replacement.
+      // Keep the historical initial filename when safe for existing consumers.
+      final finalPath =
+          _pins.containsKey(localPath) || _retired.containsKey(localPath)
+              ? p.join(dir, '$trackId-${_nextFileId++}.audio')
+              : localPath;
 
       final entry = PlaybackCacheEntry(
         trackId: trackId,
-        localPath: localPath,
+        localPath: finalPath,
         fileSizeBytes: actualSize,
         etag: descriptor.etag,
         storageKeyVersion: descriptor.storageKeyVersion,
@@ -240,6 +422,28 @@ class PlaybackCacheManager {
       // over-evict. The just-warmed entry is MRU, so it survives unless it
       // genuinely cannot fit alongside the in-use [protect] set.
       await _commit(() async {
+        if (epoch != _epoch || token.isCancelled) {
+          await deleteFileQuietly(partPath!);
+          return;
+        }
+        // Reject admission rather than evicting active/incoming bytes or
+        // silently exceeding the cap. Retired leased versions count too.
+        final entries = await _store.getAllEntries();
+        var fixedBytes =
+            _retired.values.fold<int>(0, (sum, e) => sum + e.fileSizeBytes);
+        for (final e in entries) {
+          if (_pins.containsKey(e.localPath) ||
+              _incoming.containsKey(e.trackId) ||
+              protect.contains(e.trackId)) {
+            fixedBytes += e.fileSizeBytes;
+          }
+        }
+        if (fixedBytes + actualSize > maxBytes) {
+          await deleteFileQuietly(partPath!);
+          return;
+        }
+        await deleteFileQuietly(finalPath);
+        await partFile.rename(finalPath);
         await _store.upsertEntry(entry);
         await _enforceCap(protect: protect);
       });
@@ -259,7 +463,8 @@ class PlaybackCacheManager {
   /// Only ever touches cache-owned rows/files; explicit downloads live in a
   /// different store/directory and are structurally unreachable here.
   Future<void> _enforceCap({Set<int> protect = const {}}) async {
-    var total = await _store.totalSizeBytes();
+    var total = await _store.totalSizeBytes() +
+        _retired.values.fold<int>(0, (sum, e) => sum + e.fileSizeBytes);
     if (total <= maxBytes) return;
 
     final entries = await _store.getAllEntries()
@@ -267,41 +472,86 @@ class PlaybackCacheManager {
 
     for (final entry in entries) {
       if (total <= maxBytes) break;
-      if (protect.contains(entry.trackId)) continue;
+      if (protect.contains(entry.trackId) ||
+          _pins.containsKey(entry.localPath) ||
+          _incoming.containsKey(entry.trackId)) {
+        continue;
+      }
       await _invalidate(entry);
-      total -= entry.fileSizeBytes;
+      if (!_retired.containsKey(entry.localPath)) total -= entry.fileSizeBytes;
     }
   }
 
-  /// Removes every cache artifact and row. The cache owns its directory
-  /// outright, so sweeping it clears every artifact (including an orphan `.part`
-  /// from an interrupted warm). Touches only the cache directory and store, so
-  /// explicit offline downloads are untouched by design. Runs in the same
-  /// serialized section as warms (so it can't race a half-applied commit) and
-  /// clears the table even if directory resolution fails.
-  Future<void> clear() {
+  /// Retires current rows, fences/cancels pending warms, and sweeps unpinned
+  /// cache files including orphan parts. Pinned versions survive until final
+  /// release. Reports deferred bytes, pending transfers and deletion failures;
+  /// callers must inspect [PlaybackCacheClearResult.isComplete]. Explicit
+  /// downloads live outside this cache and are never deleted here.
+  Future<PlaybackCacheClearResult> clear() {
+    _epoch++;
+    for (final token in _transfers.values) {
+      token.cancel('cache cleared');
+    }
     return _commit(() async {
-      try {
-        await sweepDirectoryFiles(await _cacheDirectoryProvider());
-      } catch (_) {
-        // Best-effort sweep; still clear the table below.
+      for (final entry in await _store.getAllEntries()) {
+        await _invalidate(entry);
       }
-      await _store.deleteAll();
+      for (final entry in _retired.values.toList()) {
+        if (!_pins.containsKey(entry.localPath)) await _deleteRetired(entry);
+      }
+      var failedFiles =
+          _retired.keys.where((path) => !_pins.containsKey(path)).length;
+      try {
+        final directory = Directory(await _cacheDirectoryProvider());
+        if (await directory.exists()) {
+          await for (final entity in directory.list(followLinks: false)) {
+            if (entity is File &&
+                !_pins.containsKey(entity.path) &&
+                !_retired.containsKey(entity.path)) {
+              try {
+                await entity.delete();
+              } catch (_) {
+                failedFiles++;
+              }
+            }
+          }
+        }
+      } catch (_) {
+        failedFiles++;
+      }
+      final deferred =
+          _retired.values.where((e) => _pins.containsKey(e.localPath));
+      return PlaybackCacheClearResult(
+        deferredFiles: deferred.length,
+        deferredBytes: deferred.fold(0, (sum, e) => sum + e.fileSizeBytes),
+        failedFiles: failedFiles,
+        pendingTransfers: _transfers.length,
+      );
     });
   }
 
-  Future<int> currentSizeBytes() => _store.totalSizeBytes();
+  Future<int> currentSizeBytes() => _commit(() async =>
+      await _store.totalSizeBytes() +
+      _retired.values.fold<int>(0, (sum, e) => sum + e.fileSizeBytes));
 
   Future<void> _invalidate(PlaybackCacheEntry entry) async {
-    await deleteFileQuietly(entry.localPath);
-    await deleteFileQuietly('${entry.localPath}.part');
     await _store.deleteEntry(entry.trackId);
+    _retired[entry.localPath] = entry;
+    if (!_pins.containsKey(entry.localPath)) await _deleteRetired(entry);
+  }
+
+  Future<void> _deleteRetired(PlaybackCacheEntry entry) async {
+    try {
+      final file = File(entry.localPath);
+      if (await file.exists()) await file.delete();
+      _retired.remove(entry.localPath);
+    } catch (_) {/* Retain the bytes in accounting; clear can retry. */}
   }
 
   /// Serializes store-mutating critical sections (warm commit, clear) so their
   /// read-modify-write cycles never interleave. Errors are isolated so one
   /// failed action does not wedge the chain.
-  Future<void> _commit(Future<void> Function() action) {
+  Future<T> _commit<T>(Future<T> Function() action) {
     final next = _commitChain.then((_) => action());
     _commitChain = next.then((_) {}, onError: (_) {});
     return next;

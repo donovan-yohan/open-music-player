@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import 'package:flutter/material.dart';
 import '../network/connectivity_service.dart';
 
@@ -134,7 +136,7 @@ mixin OfflineAwareMixin<T extends StatefulWidget> on State<T> {
     if (connectivity.isOffline) {
       if (showError && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
+          const AppSnackBar(
             content: Text('You\'re offline. Please check your connection.'),
             behavior: SnackBarBehavior.floating,
           ),

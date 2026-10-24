@@ -10,6 +10,7 @@ import 'package:audio_service/audio_service.dart' as audio_service;
 import 'app/app.dart';
 import 'core/api/api_client.dart';
 import 'core/audio/audio_focus_coordinator.dart';
+import 'core/audio/audio_preparation_service.dart';
 import 'core/audio/library_shuffle_continuation.dart';
 import 'core/audio/mix_audio_handler.dart';
 import 'core/audio/playback_state.dart';
@@ -17,6 +18,8 @@ import 'core/audio/play_recorder_service.dart';
 import 'core/audio/queue_persistence.dart';
 import 'core/audio/signed_audio_url_service.dart';
 import 'core/engine/playback_engine.dart';
+import 'core/engine/native_playback_backend.dart';
+import 'core/engine/engine_audio_source_resolver.dart';
 import 'core/cache/playback_cache_manager.dart';
 import 'core/auth/auth_service.dart';
 import 'core/auth/auth_state.dart';
@@ -24,17 +27,45 @@ import 'core/providers/settings_provider.dart';
 import 'core/storage/secure_storage.dart';
 import 'core/storage/offline_database.dart';
 import 'core/network/connectivity_service.dart';
+import 'core/platform/desktop_initialization.dart';
+import 'core/platform/application_startup.dart';
 import 'core/download/download_service.dart';
 import 'core/download/download_state.dart';
 import 'core/services/library_service.dart';
 import 'core/services/liked_tracks_state.dart';
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await runApplicationStartup(_initializeApplication);
+}
 
+/// Bind before account consumers. Auth intent revokes work synchronously;
+/// Connect waits on the canonical owner barrier. Short-lived embedders unbind.
+VoidCallback bindPlaybackAccountRetirement({
+  required AuthState authState,
+  required PlaybackState playbackState,
+  VoidCallback? onRetirement,
+}) {
+  var revision = authState.sessionRevision;
+  void changed() {
+    if (revision == authState.sessionRevision) return;
+    revision = authState.sessionRevision;
+    final retirement = playbackState.retireAccount();
+    onRetirement?.call();
+    // The owner retains failures on its admission barrier, failing closed.
+    unawaited(retirement.catchError((Object error, StackTrace stack) {
+      debugPrint('Playback account retirement failed: $error');
+    }));
+  }
+
+  authState.addListener(changed);
+  return () => authState.removeListener(changed);
+}
+
+Future<void> _initializeApplication() async {
   final sharedPreferences = await SharedPreferences.getInstance();
 
-  final storage = SecureStorage();
+  final storage = SecureStorage(storage: applicationSecureStorage());
   final apiClient = ApiClient(storage: storage);
   final authService = AuthService(api: apiClient, storage: storage);
   final authState = AuthState(authService: authService);
@@ -49,7 +80,6 @@ void main() async {
   );
 
   final signedAudioUrlService = SignedAudioUrlService(apiClient);
-  final playbackEngine = PlaybackEngine();
 
   final offlineDb = OfflineDatabase();
   final connectivityService = ConnectivityService();
@@ -63,7 +93,7 @@ void main() async {
   );
 
   // Bounded, evictable playback cache: bandwidth-saving copies of recent/near
-  // playback artifacts, separate from explicit downloads. Mobile-only — it
+  // playback artifacts, separate from explicit downloads. Native platforms only — it
   // needs a real filesystem, so (like explicit downloads) it stays disabled on
   // web, where playback falls back to signed URLs.
   final playbackCacheManager = kIsWeb
@@ -72,6 +102,24 @@ void main() async {
           store: offlineDb,
           explicitDownloads: downloadService,
         );
+
+  final audioPreparationService = playbackCacheManager == null
+      ? null
+      : AudioPreparationService(
+          cache: playbackCacheManager,
+          explicitDownloads: downloadService,
+          maxConcurrent: 2,
+          maxQueued: 16,
+        );
+  // Listening media items already contain the selected URI. Pin exact cache
+  // paths here instead of interpreting their filenames as API track IDs.
+  final playbackEngine = PlaybackEngine(
+    nativeBackendFactory: applicationNativePlaybackFactory(apiClient,
+        accountIdProvider: currentAccountId),
+    resolver: DirectEngineAudioSourceResolver(
+      acquireLocal: playbackCacheManager?.acquirePath,
+    ),
+  );
 
   // Resolution prefers a validated explicit download (offline / after restart),
   // then a matching cache artifact, then a freshly signed remote URL.
@@ -130,14 +178,15 @@ void main() async {
   )..start();
   var accountSyncGeneration = 0;
   var persistenceAuthStatus = authState.status;
-  var playbackAuthRevision = authState.sessionRevision;
-  authState.addListener(() {
-    if (playbackAuthRevision != authState.sessionRevision) {
-      playbackAuthRevision = authState.sessionRevision;
+  bindPlaybackAccountRetirement(
+    authState: authState,
+    playbackState: playbackState,
+    onRetirement: () {
       queuePersistence.invalidateAccountId();
       playRecorder.reset();
-      unawaited(playbackState.stop());
-    }
+    },
+  );
+  authState.addListener(() {
     if (authState.status != persistenceAuthStatus) {
       persistenceAuthStatus = authState.status;
       queuePersistence.invalidateAccountId();
@@ -172,6 +221,9 @@ void main() async {
           provider.Provider.value(value: downloadService),
           provider.ChangeNotifierProvider.value(value: downloadState),
           provider.ChangeNotifierProvider.value(value: likedTracksState),
+          provider.Provider<AudioPreparationService?>.value(
+            value: audioPreparationService,
+          ),
           provider.Provider<PlaybackCacheManager?>.value(
             value: playbackCacheManager,
           ),
@@ -180,6 +232,7 @@ void main() async {
           apiClient: apiClient,
           authState: authState,
           playbackState: playbackState,
+          playbackAccountRetirement: () => playbackState.accountRetirement,
         ),
       ),
     ),

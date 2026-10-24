@@ -1,3 +1,5 @@
+import '../../../shared/widgets/app_snack_bar.dart';
+
 import '../../../shared/widgets/now_playing_row.dart';
 import 'dart:math';
 
@@ -126,13 +128,13 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
       }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Added all tracks to library')),
+          const AppSnackBar(content: Text('Added all tracks to library')),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to add tracks to library')),
+          const AppSnackBar(content: Text('Failed to add tracks to library')),
         );
       }
     } finally {
@@ -157,7 +159,8 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
     if (queue.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No playable tracks in this album yet')),
+          const AppSnackBar(
+              content: Text('No playable tracks in this album yet')),
         );
       }
       return;

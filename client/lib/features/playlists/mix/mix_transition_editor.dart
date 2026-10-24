@@ -1,3 +1,5 @@
+import '../../../shared/widgets/app_snack_bar.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -265,7 +267,7 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
       await widget.onStopPreview?.call();
       if (!mounted) return;
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        const SnackBar(content: Text('Could not preview this transition.')),
+        const AppSnackBar(content: Text('Could not preview this transition.')),
       );
     }
   }
@@ -340,13 +342,13 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        SnackBar(content: Text(error.message)),
+        AppSnackBar(content: Text(error.message)),
       );
     } catch (_) {
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        const SnackBar(
+        const AppSnackBar(
           content: Text('Could not save this transition. Try again.'),
         ),
       );
