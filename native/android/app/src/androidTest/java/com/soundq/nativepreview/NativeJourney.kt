@@ -103,8 +103,8 @@ class NativeJourney : Instrumentation() {
             checks.put("paused native cursor stable")
             start = SystemClock.elapsedRealtimeNanos()
             onMain {service!!.command(JSONObject().put("command","seek").put("position_ms",6000))}
-            waitFor("seek native cursor") {kotlin.math.abs(it.snapshot.optLong("position_ms")-6000)<150}
-            sample("seek_to_actual_reported_cursor",start)
+            waitFor("seek native cursor") {kotlin.math.abs(it.nativePositionMs()-6000)<150}
+            sample("seek_to_actual_native_cursor",start)
             onMain {service!!.command(JSONObject().put("command","resume"))}
             waitFor("resume actual cursor") {it.snapshot.optString("transport")=="playing" && it.snapshot.optLong("position_ms")>6200}
             // Re-select same occurrence via one canonical owner, warm bytes.
@@ -114,7 +114,7 @@ class NativeJourney : Instrumentation() {
             onMain {service!!.select(id)}
             waitFor("warm cache native decoder advances") {it.snapshot.optLong("session")>precedingSession && it.nativePlaying() && it.nativePositionMs() in 201..5000}
             onMain {check(service!!.lastEffectCached) {"warm not cached"}}
-            sample("warm_selection_to_first_reported_200ms_cursor",start)
+            sample("warm_selection_to_actual_200ms_cursor",start)
             onMain {precedingSession=service!!.snapshot.optLong("session");service!!.command(JSONObject().put("command","retry"))}
             waitFor("retry advances") {it.snapshot.optLong("session")>precedingSession && it.nativePlaying() && it.nativePositionMs()>200}
             val controller = MediaController(context,service!!.sessionToken)
