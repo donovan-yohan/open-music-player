@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Approved-input, local artifact builds only. No install, publish or deployment.
+const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { prepare, writeEvidence } = require('./private-vm-preflight');
@@ -19,7 +20,27 @@ try {
   for (const key of ['OMP_API_BASE_URL', 'OMP_HEALTH_URL', 'OMP_WEB_LOGIN_URL', 'OMP_WS_URL', 'OMP_SOURCE_REF', 'OMP_BUILD_ID']) {
     if (inputs[key] !== undefined) env[key] = inputs[key];
   }
-  const root = path.resolve(__dirname, '..');
+  const root = fs.realpathSync(path.resolve(__dirname, '..'));
+  // Resolve only this output's ancestors; missing nested directories are not an
+  // escape from containment, and an outside symlink may point into the source.
+  let ancestor = prepared.target;
+  const missing = [];
+  while (true) {
+    try {
+      ancestor = fs.realpathSync(ancestor);
+      break;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      missing.unshift(path.basename(ancestor));
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) throw error;
+      ancestor = parent;
+    }
+  }
+  const relative = path.relative(root, path.resolve(ancestor, ...missing));
+  if (relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep))) {
+    throw new Error('Evidence must be outside the source checkout (including symlink aliases)');
+  }
   const git = (...gitArgs) => {
     const result = spawnSync('git', gitArgs, { cwd: root, encoding: 'utf8' });
     if (result.error || result.status !== 0) throw new Error('Cannot verify source checkout; cutover and distribution HELD');
