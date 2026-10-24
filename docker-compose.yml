@@ -10,10 +10,12 @@ services:
     container_name: omp-backend
     restart: unless-stopped
     ports:
-      - "${SERVER_PORT:-8080}:8080"
+      - "${OMP_BIND_ADDRESS:-127.0.0.1}:${SERVER_PORT:-8080}:8080"
     environment:
       # Server
       SERVER_ADDR: ":8080"
+      # Empty means deny browser origins; supply exact frontend origins.
+      OMP_CORS_ALLOWED_ORIGINS: ${OMP_CORS_ALLOWED_ORIGINS:-}
       ENABLE_PLAYLIST_MIX: ${ENABLE_PLAYLIST_MIX:-false}
       ENABLE_LISTENBRAINZ_MIX: ${ENABLE_LISTENBRAINZ_MIX:-false}
       ENABLE_HARMONIC_LINEUP: ${ENABLE_HARMONIC_LINEUP:-false}
@@ -39,6 +41,8 @@ services:
 
       # MinIO/S3 Storage
       MINIO_ENDPOINT: minio:9000
+      # Absolute presigned media URL origin; no path prefixes supported.
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-audio-files}
@@ -203,7 +207,7 @@ services:
     container_name: omp-postgres
     restart: unless-stopped
     ports:
-      - "${POSTGRES_PORT:-5434}:5432"
+      - "${OMP_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5434}:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-omp}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-omp_dev_password}
@@ -227,7 +231,7 @@ services:
     container_name: omp-redis
     restart: unless-stopped
     ports:
-      - "${REDIS_PORT:-6380}:6379"
+      - "${OMP_BIND_ADDRESS:-127.0.0.1}:${REDIS_PORT:-6380}:6379"
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
@@ -251,8 +255,8 @@ services:
     container_name: omp-minio
     restart: unless-stopped
     ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "${OMP_BIND_ADDRESS:-127.0.0.1}:${MINIO_PORT:-9000}:9000"
+      - "${OMP_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
@@ -281,11 +285,10 @@ services:
       minio:
         condition: service_healthy
     entrypoint: >
-      /bin/sh -c "
+      /bin/sh -ec "
       mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin};
       mc mb local/$${MINIO_BUCKET:-audio-files} --ignore-existing;
-      mc anonymous set download local/$${MINIO_BUCKET:-audio-files};
-      exit 0;
+      mc anonymous set none local/$${MINIO_BUCKET:-audio-files};
       "
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
@@ -302,8 +305,8 @@ services:
     container_name: omp-nginx
     restart: unless-stopped
     ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
+      - "${OMP_BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-80}:80"
+      - "${OMP_BIND_ADDRESS:-127.0.0.1}:${HTTPS_PORT:-443}:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro

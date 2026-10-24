@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Local/dev/dogfood only, not production-approved migration artifacts.
+# Approved artifact-only migration builds must use scripts/private-vm-build.
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${1:-build}"
 
-DEFAULT_API_BASE_URL="http://dev.fish-rattlesnake.ts.net:8080/api/v1"
+# Fail before creating evidence or invoking Flutter/ADB. Never silently target
+# the retired devbox when a migration/dogfood caller omits its compile input.
+API_BASE_URL="$(node -e '
+  try {
+    const {validateUrl} = require(process.argv[1]);
+    process.stdout.write(validateUrl(process.env.OMP_API_BASE_URL).replace(/\/$/, ""));
+  } catch (_) {
+    console.error("Explicit valid OMP_API_BASE_URL required (http(s), no credentials/query/fragment)");
+    process.exit(2);
+  }
+' "$ROOT/extension/config/endpoints.cjs")"
 SOURCE_REF="${OMP_SOURCE_REF:-$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)@$(git -C "$ROOT" rev-parse --short HEAD)}"
 BUILD_ID="${OMP_BUILD_ID:-dogfood-$(date -u +%Y%m%dT%H%M%SZ)}"
-API_BASE_URL="${OMP_API_BASE_URL:-$DEFAULT_API_BASE_URL}"
+
 EVIDENCE_DIR="${OMP_DOGFOOD_EVIDENCE_DIR:-/tmp/open-music-player-dogfood-$BUILD_ID}"
 
 # Dogfood builds are profile, not debug. A Flutter debug build runs Dart under
@@ -147,7 +160,8 @@ usage() {
 usage: scripts/dogfood-android [build|install|logs|all]
 
 Environment:
-  OMP_API_BASE_URL             Phone-reachable API URL.
+  OMP_API_BASE_URL             Required explicit phone-reachable HTTP(S) API base.
+                               Node validates it before Flutter/ADB are invoked.
   OMP_BUILD_MODE               profile (default), debug, or release. Debug is
                                JIT and janks in ways the shipped app does not;
                                use it only for hot reload or a debugger.
