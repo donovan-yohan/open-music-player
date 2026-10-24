@@ -37,7 +37,9 @@ class NativeJourney : Instrumentation() {
                 var passed = false
                 onMain {service?.let {passed = predicate(it)}}
                 if (passed) {checks.put(name);return}
-                check(SystemClock.elapsedRealtime()<deadline) {name}
+                var diagnostics = ""
+                onMain {service?.let {diagnostics = " native=${it.nativePositionMs()} playing=${it.nativePlaying()} state=${it.snapshot.optString("transport")} session=${it.snapshot.optLong("session")} error=${it.snapshot.optString("error")} seekRequested=${it.lastSeekRequested} seekCompleted=${it.lastSeekCompleted}"}}
+                check(SystemClock.elapsedRealtime()<deadline) {name+diagnostics}
                 Thread.sleep(50)
             }
         }
@@ -120,6 +122,12 @@ class NativeJourney : Instrumentation() {
             waitFor("OS media session seek dispatch") {kotlin.math.abs(it.nativePositionMs()-12000)<200}
             controller.transportControls.play()
             waitFor("OS media session play dispatch") {it.snapshot.optString("transport")=="playing" && it.snapshot.optLong("position_ms")>12200}
+            controller.transportControls.seekTo(29500)
+            waitFor("native EOF is retained as terminal") {it.snapshot.optString("transport")=="ended"}
+            Thread.sleep(650)
+            onMain {check(service!!.snapshot.optString("transport")=="ended") {"EOF overwritten by paused tick"}}
+            controller.transportControls.seekTo(12000);controller.transportControls.play()
+            waitFor("explicit seek resume after EOF") {it.snapshot.optString("transport")=="playing" && it.nativePositionMs()>12200}
             Thread.sleep(1500)
             waitFor("bound UI absent background playback") {it.snapshot.optString("transport")=="playing" && it.snapshot.optLong("position_ms")>13500}
             controller.transportControls.pause()

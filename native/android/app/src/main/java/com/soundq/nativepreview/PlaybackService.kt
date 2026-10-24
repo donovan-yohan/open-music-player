@@ -37,6 +37,7 @@ class PlaybackService : Service() {
     private var player: MediaPlayer? = null
     private var playerReady = false
     private var pendingSeekMs: Long? = null
+    private var nativeTerminalState: String? = null
     private lateinit var session: MediaSession
     private lateinit var audio: AudioManager
     private lateinit var focus: AudioFocusRequest
@@ -56,6 +57,10 @@ class PlaybackService : Service() {
         private set
     internal fun nativePositionMs(): Long = try {player?.currentPosition?.toLong() ?: 0} catch (_:IllegalStateException) {0}
     internal fun nativePlaying(): Boolean = try {player?.isPlaying == true} catch (_:IllegalStateException) {false}
+    internal var lastSeekRequested = -1L
+        private set
+    internal var lastSeekCompleted = -1L
+        private set
     private val endpoint get() = BuildConfig.API_BASE
     private val tick = object : Runnable {
         override fun run() { report(); main.postDelayed(this, 500) }
@@ -79,7 +84,7 @@ class PlaybackService : Service() {
         session.setCallback(object : MediaSession.Callback() {
             override fun onPlay() { command(JSONObject().put("command", "resume")) }
             override fun onPause() { command(JSONObject().put("command", "pause")) }
-            override fun onSeekTo(pos: Long) { command(JSONObject().put("command", "seek").put("position_ms", pos)) }
+            override fun onSeekTo(pos: Long) { lastSeekRequested = pos;command(JSONObject().put("command", "seek").put("position_ms", pos)) }
             override fun onStop() { command(JSONObject().put("command", "pause")) }
         }, main)
         session.isActive = true
@@ -160,20 +165,21 @@ class PlaybackService : Service() {
                         if (wantsPlayback) startPlayer() else report("paused")
                     }
                 }
-                next.setOnSeekCompleteListener {report()}
-                next.setOnErrorListener { _, _, _ -> report("failed"); true }
-                next.setOnCompletionListener { report("ended") }
+                next.setOnSeekCompleteListener {lastSeekCompleted = nativePositionMs();report()}
+                next.setOnErrorListener { _, _, _ -> nativeTerminalState="failed";report("failed"); true }
+                next.setOnCompletionListener { nativeTerminalState="ended";report("ended") }
                 try { next.setDataSource(effect.getString("path")); next.prepareAsync() }
                 catch (_: Exception) { report("failed") }
             }
             "pause" -> { try { player?.pause() } catch (_: IllegalStateException) {}; abandonFocus() }
             "play" -> startPlayer()
-            "seek" -> try { if (playerReady) player?.seekTo(effect.getLong("position_ms"), MediaPlayer.SEEK_CLOSEST) else pendingSeekMs = effect.getLong("position_ms") } catch (_: IllegalStateException) { report("failed") }
+            "seek" -> try { nativeTerminalState=null;if (playerReady) player?.seekTo(effect.getLong("position_ms"), MediaPlayer.SEEK_CLOSEST) else pendingSeekMs = effect.getLong("position_ms") } catch (_: IllegalStateException) { report("failed") }
             "stop" -> retireAudio()
         }
     }
     private fun startPlayer() {
         if (!wantsPlayback || !playerReady) return
+        nativeTerminalState=null
         if (!focusHeld) focusHeld = audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         if (!focusHeld) { report("failed"); return }
         try { player?.start(); showNotification(); report() } catch (_: IllegalStateException) { report("failed") }
@@ -181,18 +187,20 @@ class PlaybackService : Service() {
     private fun abandonFocus() { if (focusHeld) { audio.abandonAudioFocusRequest(focus); focusHeld = false } }
     private fun retireAudio() {
         player?.setOnPreparedListener(null); player?.setOnErrorListener(null); player?.setOnCompletionListener(null)
-        player?.release(); player = null; playerReady = false;pendingSeekMs = null; abandonFocus()
+        player?.release(); player = null; playerReady = false;pendingSeekMs = null;nativeTerminalState=null; abandonFocus()
         // MediaPlayer.release is the platform decoder retirement barrier. Cache
         // entries are not unlinked here and remain owned by the shared core.
     }
     private fun report(forced: String? = null) {
+        if (forced=="failed" || forced=="ended") nativeTerminalState=forced
         if (pendingReports || busy > 0) return
         val p = player ?: return
-        if (!playerReady && forced != "failed") return
+        val terminal=forced ?: nativeTerminalState
+        if (!playerReady && terminal != "failed") return
         try {
-            val state = forced ?: if (p.isPlaying) "playing" else "paused"
-            val duration = p.duration.coerceAtLeast(0)
-            val position = p.currentPosition.coerceAtLeast(0)
+            val state = terminal ?: if (p.isPlaying) "playing" else "paused"
+            val duration = if (state=="failed") snapshot.optLong("duration_ms") else p.duration.takeIf {it>0}?.toLong() ?: snapshot.optLong("duration_ms")
+            val position = if (state=="failed") snapshot.optLong("position_ms") else p.currentPosition.coerceAtLeast(0).toLong()
             pendingReports = true
             command(JSONObject().put("command", "audio_report").put("epoch", epoch).put("session", snapshot.optLong("session"))
                 .put("state", state).put("position_ms", position).put("duration_ms", duration)) { pendingReports = false }

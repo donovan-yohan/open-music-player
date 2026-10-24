@@ -419,7 +419,12 @@ impl Core {
                 }
                 s.snapshot.transport = state;
                 s.snapshot.position_ms = position_ms;
-                s.snapshot.duration_ms = duration_ms;
+                // Android may transiently report zero while a freshly prepared
+                // decoder settles. Zero is unknown, not evidence of an empty
+                // source. Do not erase authoritative selected-track bounds.
+                if duration_ms > 0 {
+                    s.snapshot.duration_ms = duration_ms;
+                }
                 if state == AudioState::Failed {
                     s.snapshot.error = Some("native_playback_failed".into());
                 }
