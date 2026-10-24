@@ -139,6 +139,30 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
   final _sourceBounds = <String, int>{};
   MixPlanClip? _dragOrigin;
   double _dragDx = 0;
+  int? _dragPointer;
+  String? _dragPointerClipId;
+
+  void _trackClipPointer(String clipId, int pointer) {
+    if (_dragPointer != null || _dragOrigin != null) return;
+    _dragPointer = pointer;
+    _dragPointerClipId = clipId;
+  }
+
+  void _releaseClipPointer(String clipId, int pointer, {bool cancel = false}) {
+    if (_dragPointer != pointer || _dragPointerClipId != clipId) return;
+    _dragPointer = null;
+    _dragPointerClipId = null;
+    if (cancel) _endClipDrag(clipId, cancel: true);
+  }
+
+  void _endClipDrag(String clipId, {bool cancel = false}) {
+    if (_dragOrigin?.clipId != clipId) return;
+    _dragOrigin = null;
+    _dragPointer = null;
+    _dragPointerClipId = null;
+    _draft?.endGesture(cancel: cancel);
+  }
+
   final Map<String, double> _stemPreview = {};
   PlaybackState? _playback;
   String? _sessionId;
@@ -193,6 +217,10 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
   }
 
   void _resetBinding() {
+    final drag = _dragOrigin;
+    if (drag != null) _endClipDrag(drag.clipId, cancel: true);
+    _dragPointer = null;
+    _dragPointerClipId = null;
     _cancelPreparation();
     _closePerformance(invalidate: true);
     _sessionId = null;
@@ -1305,61 +1333,79 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                                                       button: true,
                                                       selected: clip.clipId ==
                                                           _selected,
-                                                      child: GestureDetector(
-                                                          onHorizontalDragStart:
-                                                              (_) {
-                                                            _closePerformance(
-                                                                invalidate:
-                                                                    true);
-                                                            _select(_draft!
-                                                                .clips
-                                                                .firstWhere((c) =>
-                                                                    c.clipId ==
-                                                                    clip.clipId));
-                                                            _dragOrigin = clip;
-                                                            _dragDx = 0;
-                                                            _draft!
-                                                                .beginGesture();
-                                                          },
-                                                          onHorizontalDragUpdate:
-                                                              (event) {
-                                                            _dragDx +=
-                                                                event.delta.dx;
-                                                            _draft!.previewClip(_dragOrigin!
-                                                                .withTimelineStartMs(math.max(
+                                                      child: Listener(
+                                                          // Accepted native drags report both Up and Cancel
+                                                          // through onEnd. Preserve only this clip's raw cancel
+                                                          // before pointer routing reaches the recognizer.
+                                                          onPointerDown: (event) => _trackClipPointer(
+                                                              clip.clipId,
+                                                              event.pointer),
+                                                          onPointerUp: (event) =>
+                                                              _releaseClipPointer(
+                                                                  clip.clipId,
+                                                                  event
+                                                                      .pointer),
+                                                          onPointerCancel: (event) =>
+                                                              _releaseClipPointer(
+                                                                  clip.clipId,
+                                                                  event.pointer,
+                                                                  cancel: true),
+                                                          child: GestureDetector(
+                                                              key: ValueKey((widget.planId, clip.clipId)),
+                                                              onHorizontalDragStart: (_) {
+                                                                if (_dragOrigin !=
+                                                                        null ||
+                                                                    (_dragPointerClipId !=
+                                                                            null &&
+                                                                        _dragPointerClipId !=
+                                                                            clip.clipId)) {
+                                                                  return;
+                                                                }
+                                                                _closePerformance(
+                                                                    invalidate:
+                                                                        true);
+                                                                _select(_draft!
+                                                                    .clips
+                                                                    .firstWhere((c) =>
+                                                                        c.clipId ==
+                                                                        clip.clipId));
+                                                                _dragOrigin =
+                                                                    clip;
+                                                                _dragDx = 0;
+                                                                _draft!
+                                                                    .beginGesture();
+                                                              },
+                                                              onHorizontalDragUpdate: (event) {
+                                                                if (_dragOrigin
+                                                                        ?.clipId !=
+                                                                    clip.clipId) {
+                                                                  return;
+                                                                }
+                                                                _dragDx += event
+                                                                    .delta.dx;
+                                                                _draft!.previewClip(_dragOrigin!.withTimelineStartMs(math.max(
                                                                     0,
                                                                     _dragOrigin!
                                                                             .timelineStartMs +
                                                                         (_dragDx /
                                                                                 _scale)
                                                                             .round())));
-                                                          },
-                                                          onHorizontalDragEnd:
-                                                              (_) {
-                                                            _draft!
-                                                                .endGesture();
-                                                            _dragOrigin = null;
-                                                          },
-                                                          onHorizontalDragCancel:
-                                                              () {
-                                                            _draft!.endGesture(
-                                                                cancel: true);
-                                                            _dragOrigin = null;
-                                                          },
-                                                          child: Material(
-                                                              color: _laneColors[lanes[clip.clipId] ?? 0]
-                                                                  .withValues(
-                                                                      alpha: clip.clipId == _selected
-                                                                          ? .35
-                                                                          : .16),
-                                                              shape: RoundedRectangleBorder(
-                                                                  side: BorderSide(
-                                                                      color: clip.clipId == _selected
-                                                                          ? Colors.white
-                                                                          : _laneColors[lanes[clip.clipId] ?? 0]),
-                                                                  borderRadius: desktop ? BorderRadius.zero : BorderRadius.circular(6)),
-                                                              clipBehavior: Clip.antiAlias,
-                                                              child: InkWell(key: ValueKey('mix-clip-${clip.clipId}'), onTap: () => _select(clip), child: Padding(padding: const EdgeInsets.all(8), child: labels(clip))))))),
+                                                              },
+                                                              onHorizontalDragEnd: (_) => _endClipDrag(clip.clipId),
+                                                              onHorizontalDragCancel: () {
+                                                                _endClipDrag(
+                                                                    clip.clipId,
+                                                                    cancel:
+                                                                        true);
+                                                                if (_dragPointerClipId ==
+                                                                    clip.clipId) {
+                                                                  _dragPointer =
+                                                                      null;
+                                                                  _dragPointerClipId =
+                                                                      null;
+                                                                }
+                                                              },
+                                                              child: Material(color: _laneColors[lanes[clip.clipId] ?? 0].withValues(alpha: clip.clipId == _selected ? .35 : .16), shape: RoundedRectangleBorder(side: BorderSide(color: clip.clipId == _selected ? Colors.white : _laneColors[lanes[clip.clipId] ?? 0]), borderRadius: desktop ? BorderRadius.zero : BorderRadius.circular(6)), clipBehavior: Clip.antiAlias, child: InkWell(key: ValueKey('mix-clip-${clip.clipId}'), onTap: () => _select(clip), child: Padding(padding: const EdgeInsets.all(8), child: labels(clip)))))))),
                                           ]))))),
                         ])))),
       ]);

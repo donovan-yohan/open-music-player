@@ -63,6 +63,338 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  testWidgets('E2 accepted mouse drag PointerCancel rolls back without history',
+      (tester) async {
+    final server =
+        planJson(clips: [clipJson(), clipJson(id: 'b', start: 2000)]);
+    final baseline = jsonEncode(server);
+    final calls = <String>[];
+    tester.view.physicalSize = const Size(1440, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final api = mockQueueApiClient((request) async {
+      calls.add(request.method);
+      return http.Response(jsonEncode(server), 200);
+    });
+    await tester.pumpWidget(Provider<ApiClient>.value(
+        value: api,
+        child:
+            const MaterialApp(home: DesktopMixEditorScreen(planId: 'plan-1'))));
+    await tester.pumpAndSettle();
+    final clip = find.byKey(const ValueKey('mix-clip-a'));
+    await tester.tap(clip);
+    await tester.pumpAndSettle();
+    final original = tester.getRect(clip);
+    final mountedClip = tester.element(clip);
+    String field(String name) => tester
+        .widget<TextField>(find.byKey(ValueKey('mix-field-$name')))
+        .controller!
+        .text;
+    expect(field('placement'), '0');
+    final pointer = await tester.startGesture(
+        Offset(original.left + 90, original.center.dy),
+        kind: ui.PointerDeviceKind.mouse);
+    // Match the actual accepted native witness: four positive samples, 55px.
+    for (var i = 0; i < 4; i++) {
+      await pointer.moveBy(const Offset(13.75, 0));
+      await tester.pump(const Duration(milliseconds: 80));
+    }
+    expect(tester.getRect(clip).left, greaterThan(original.left));
+    expect(tester.element(clip), same(mountedClip));
+    expect(field('placement'), '0', reason: 'preview is not an admitted edit');
+    await pointer.cancel();
+    await tester.pumpAndSettle();
+    expect(tester.getRect(clip), original,
+        reason: 'accepted PointerCancel must discard the positive preview');
+    expect(field('placement'), '0');
+    expect(field('in'), '1000');
+    expect(field('out'), '11000');
+    expect(find.text('Saved'), findsOneWidget);
+    expect(
+        tester
+            .widget<IconButton>(find.byWidgetPredicate(
+                (widget) => widget is IconButton && widget.tooltip == 'Undo'))
+            .onPressed,
+        isNull);
+    expect(
+        tester
+            .widget<IconButton>(find.byWidgetPredicate(
+                (widget) => widget is IconButton && widget.tooltip == 'Redo'))
+            .onPressed,
+        isNull);
+    expect(
+        tester
+            .widget<FilledButton>(find.byKey(const ValueKey('mix-save')))
+            .onPressed,
+        isNull);
+    expect(
+        find.byWidgetPredicate((widget) =>
+            widget is Semantics &&
+            widget.properties.label == 'Clip a, track 42, 0 milliseconds'),
+        findsOneWidget);
+    expect(
+        find.byWidgetPredicate((widget) =>
+            widget is Semantics &&
+            widget.properties.label == 'Clip b, track 42, 2000 milliseconds'),
+        findsOneWidget);
+    expect(jsonEncode(server), baseline);
+    expect(calls, ['GET']);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  IconButton historyButton(WidgetTester tester, String tooltip) =>
+      tester.widget<IconButton>(find.byWidgetPredicate(
+          (widget) => widget is IconButton && widget.tooltip == tooltip));
+
+  Future<TestGesture> acceptedClipDrag(WidgetTester tester,
+      {String id = 'a', int? pointer}) async {
+    final clip = find.byKey(ValueKey('mix-clip-$id'));
+    final origin = tester.getRect(clip);
+    final gesture = await tester.startGesture(
+        Offset(origin.left + 90, origin.center.dy),
+        pointer: pointer,
+        kind: ui.PointerDeviceKind.mouse);
+    for (var i = 0; i < 4; i++) {
+      await gesture.moveBy(const Offset(13.75, 0));
+      await tester.pump(const Duration(milliseconds: 80));
+    }
+    expect(tester.getRect(clip).left, greaterThan(origin.left));
+    return gesture;
+  }
+
+  testWidgets(
+      'E2 pointer up commits one undoable move and exact saved identity',
+      (tester) async {
+    final originalClips = [clipJson(), clipJson(id: 'b', start: 2000)];
+    var server = planJson(clips: originalClips);
+    final calls = <String>[];
+    tester.view.physicalSize = const Size(1440, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final api = mockQueueApiClient((request) async {
+      calls.add(request.method);
+      if (request.method == 'PUT') {
+        final payload = jsonDecode(request.body);
+        server = {...server, 'version': 4, 'clips': payload['clips']};
+      }
+      return http.Response(jsonEncode(server), 200);
+    });
+    await tester.pumpWidget(Provider<ApiClient>.value(
+        value: api,
+        child:
+            const MaterialApp(home: DesktopMixEditorScreen(planId: 'plan-1'))));
+    await tester.pumpAndSettle();
+    final gesture = await acceptedClipDrag(tester);
+    expect(calls, ['GET']);
+    await gesture.up();
+    await tester.pumpAndSettle();
+    String placement() => tester
+        .widget<TextField>(find.byKey(const ValueKey('mix-field-placement')))
+        .controller!
+        .text;
+    final moved = placement();
+    expect(int.parse(moved), greaterThan(0));
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    await tester.tap(find.byTooltip('Undo'));
+    await tester.pump();
+    expect(placement(), '0');
+    expect(find.text('Saved'), findsOneWidget);
+    expect(historyButton(tester, 'Undo').onPressed, isNull,
+        reason: 'all accepted samples are a single history entry');
+    await tester.tap(find.byTooltip('Redo'));
+    await tester.pump();
+    expect(placement(), moved);
+    expect(historyButton(tester, 'Redo').onPressed, isNull);
+    await tester.tap(find.byKey(const ValueKey('mix-save')));
+    await tester.pumpAndSettle();
+    expect(server['clips'], [
+      {
+        ...originalClips.first,
+        'timelineStartMs': int.parse(moved),
+        'tempoPolicy': 'volumeOnly'
+      },
+      {...originalClips.last, 'tempoPolicy': 'volumeOnly'},
+    ]);
+    expect(calls, ['GET', 'PUT', 'GET']);
+    expect(find.text('Version 4'), findsOneWidget);
+    expect(find.text('Saved'), findsOneWidget);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets(
+      'E2 rejected prethreshold cancel leaves next accepted move usable',
+      (tester) async {
+    await mount(tester);
+    final clip = find.byKey(const ValueKey('mix-clip-a'));
+    final original = tester.getRect(clip);
+    final rejected = await tester.startGesture(original.center);
+    await rejected.moveBy(const Offset(2, 0));
+    await rejected.cancel();
+    await tester.pumpAndSettle();
+    expect(tester.getRect(clip), original);
+    expect(find.text('Saved'), findsOneWidget);
+    expect(historyButton(tester, 'Undo').onPressed, isNull);
+    final accepted = await acceptedClipDrag(tester);
+    await accepted.up();
+    await tester.pumpAndSettle();
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    await tester.tap(find.byTooltip('Undo'));
+    await tester.pump();
+    expect(tester.getRect(clip), original);
+    expect(historyButton(tester, 'Undo').onPressed, isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  for (final otherClip in ['a', 'b']) {
+    testWidgets(
+        'E2 other $otherClip pointer cancellation does not cancel owned preview',
+        (tester) async {
+      await mount(tester, clips: [clipJson(), clipJson(id: 'b', start: 2000)]);
+      final clip = find.byKey(const ValueKey('mix-clip-a'));
+      final original = tester.getRect(clip);
+      final owned = await acceptedClipDrag(tester, pointer: 41);
+      final preview = tester.getRect(clip);
+      final other = await tester.startGesture(
+          tester.getCenter(find.byKey(ValueKey('mix-clip-$otherClip'))),
+          pointer: 42);
+      await other.cancel();
+      await tester.pumpAndSettle();
+      expect(tester.getRect(clip), preview);
+      await owned.up();
+      await tester.pumpAndSettle();
+      expect(tester.getRect(clip), preview);
+      expect(find.text('Unsaved changes'), findsOneWidget);
+      await tester.tap(find.byTooltip('Undo'));
+      await tester.pump();
+      expect(tester.getRect(clip), original);
+      expect(historyButton(tester, 'Undo').onPressed, isNull);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+  }
+
+  for (final terminal in ['up', 'cancel']) {
+    testWidgets(
+        'E2 owning cancel with same clip peer $terminal cannot admit preview',
+        (tester) async {
+      await mount(tester);
+      final clip = find.byKey(const ValueKey('mix-clip-a'));
+      final original = tester.getRect(clip);
+      final owned = await acceptedClipDrag(tester, pointer: 71);
+      final peer =
+          await tester.startGesture(tester.getCenter(clip), pointer: 72);
+      await owned.cancel();
+      await tester.pumpAndSettle();
+      expect(tester.getRect(clip), original);
+      if (terminal == 'up') {
+        await peer.up();
+      } else {
+        await peer.cancel();
+      }
+      await tester.pumpAndSettle();
+      expect(tester.getRect(clip), original);
+      expect(find.text('Saved'), findsOneWidget);
+      expect(historyButton(tester, 'Undo').onPressed, isNull);
+      final next = await acceptedClipDrag(tester);
+      await next.up();
+      await tester.pumpAndSettle();
+      expect(find.text('Unsaved changes'), findsOneWidget);
+      await tester.tap(find.byTooltip('Undo'));
+      await tester.pump();
+      expect(tester.getRect(clip), original);
+      expect(historyButton(tester, 'Undo').onPressed, isNull);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+  }
+
+  testWidgets('E2 queued cancel survives resize and cannot affect next drag',
+      (tester) async {
+    await mount(tester);
+    final clip = find.byKey(const ValueKey('mix-clip-a'));
+    final original = tester.getRect(clip);
+    await acceptedClipDrag(tester, pointer: 51);
+    tester.view.physicalSize = const Size(959, 1000);
+    await tester.pumpAndSettle();
+    tester.binding.cancelPointer(51);
+    await tester.pumpAndSettle();
+    expect(find.text('Saved'), findsOneWidget);
+    expect(historyButton(tester, 'Undo').onPressed, isNull);
+    tester.view.physicalSize = const Size(1440, 1000);
+    await tester.pumpAndSettle();
+    expect(tester.getRect(clip), original);
+    final next = await acceptedClipDrag(tester);
+    await next.up();
+    await tester.pumpAndSettle();
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    await tester.tap(find.byTooltip('Undo'));
+    await tester.pump();
+    expect(tester.getRect(clip), original);
+    expect(historyButton(tester, 'Undo').onPressed, isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('E2 queued cancel after editor unmount has no stale callbacks',
+      (tester) async {
+    await mount(tester);
+    await acceptedClipDrag(tester, pointer: 52);
+    tester.binding.cancelPointer(52);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await mount(tester);
+    final next = await acceptedClipDrag(tester);
+    await next.up();
+    await tester.pumpAndSettle();
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    await tester.tap(find.byTooltip('Undo'));
+    await tester.pump();
+    expect(find.text('Saved'), findsOneWidget);
+    expect(historyButton(tester, 'Undo').onPressed, isNull);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('E2 document replacement retires old accepted drag ownership',
+      (tester) async {
+    tester.view.physicalSize = const Size(1440, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final document = ValueNotifier('plan-1');
+    addTearDown(document.dispose);
+    final calls = <String>[];
+    final api = mockQueueApiClient((request) async {
+      calls.add(request.method);
+      return http.Response(
+          jsonEncode({
+            ...planJson(),
+            'id': request.url.path.split('/').last,
+          }),
+          200);
+    });
+    await tester.pumpWidget(Provider<ApiClient>.value(
+        value: api,
+        child: MaterialApp(
+            home: ValueListenableBuilder<String>(
+                valueListenable: document,
+                builder: (context, id, _) =>
+                    DesktopMixEditorScreen(planId: id)))));
+    await tester.pumpAndSettle();
+    final old = await acceptedClipDrag(tester, pointer: 61);
+    document.value = 'plan-2';
+    await tester.pumpAndSettle();
+    expect(find.text('Saved'), findsOneWidget);
+    final next = await acceptedClipDrag(tester, pointer: 62);
+    final preview = tester.getRect(find.byKey(const ValueKey('mix-clip-a')));
+    await old.cancel();
+    await tester.pumpAndSettle();
+    expect(tester.getRect(find.byKey(const ValueKey('mix-clip-a'))), preview);
+    await next.up();
+    await tester.pumpAndSettle();
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    await tester.tap(find.byTooltip('Undo'));
+    await tester.pump();
+    expect(find.text('Saved'), findsOneWidget);
+    expect(historyButton(tester, 'Undo').onPressed, isNull);
+    expect(calls, ['GET', 'GET']);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   testWidgets('short desktop at large text scale remains scrollable',
       (tester) async {
     await mount(tester, size: const Size(960, 500));
