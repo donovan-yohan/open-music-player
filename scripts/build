@@ -52,6 +52,12 @@ run_extension() {
 }
 
 case "$TARGET" in
+  native-macos)
+    python3 "$ROOT/scripts/native-client" macos
+    ;;
+  native-android)
+    python3 "$ROOT/scripts/native-client" android
+    ;;
   backend)
     run_backend
     ;;
@@ -74,7 +80,7 @@ case "$TARGET" in
     run_extension
     ;;
   *)
-    echo "usage: scripts/build [backend|analyzer|client|client-web|extension|all]" >&2
+    echo "usage: scripts/build [native-macos|native-android|backend|analyzer|client|client-web|extension|all]" >&2
     exit 2
     ;;
 esac

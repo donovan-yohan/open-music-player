@@ -84,6 +84,9 @@ case "$TARGET" in
   private-vm)
     node --test "$ROOT/scripts/test-private-vm.cjs"
     ;;
+  native)
+    python3 "$ROOT/scripts/native-client" test
+    ;;
   delivery|harness)
     run_delivery
     ;;
@@ -116,7 +119,7 @@ case "$TARGET" in
     run_extension
     ;;
   *)
-    echo "usage: scripts/test [private-vm|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
+    echo "usage: scripts/test [native|private-vm|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
     exit 2
     ;;
 esac

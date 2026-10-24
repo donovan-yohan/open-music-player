@@ -1,0 +1,62 @@
+name: Native Clients
+on:
+  pull_request:
+    paths: ['native/**', 'scripts/native-client', '.github/workflows/native-clients.yml']
+  push:
+    branches: [main]
+    paths: ['native/**', 'scripts/native-client', '.github/workflows/native-clients.yml']
+permissions:
+  contents: read
+jobs:
+  core:
+    name: Native Rust core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: scripts/test native
+  macos:
+    name: Native macOS build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: scripts/build native-macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: soundq-native-macos-preview
+          path: native/artifacts/SoundQ Native Preview.app
+          if-no-files-found: error
+  android:
+    name: Native Android build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - run: sdkmanager 'ndk;28.2.13676358' 'cmake;3.22.1' 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.1.0'
+      - run: scripts/build native-android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: soundq-native-android-preview
+          path: native/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
