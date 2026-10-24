@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,7 +100,8 @@ func minioEndpointOptions(endpoint string, defaultSecure bool) (string, bool, er
 	if strings.Contains(endpoint, "://") {
 		parsed, err := url.Parse(endpoint)
 		if err != nil {
-			return "", defaultSecure, err
+			// url.Error includes the original URL, potentially including credentials.
+			return "", defaultSecure, fmt.Errorf("malformed endpoint URL")
 		}
 		if parsed.Scheme != "http" && parsed.Scheme != "https" {
 			return "", defaultSecure, fmt.Errorf("unsupported scheme %q", parsed.Scheme)
@@ -107,11 +109,17 @@ func minioEndpointOptions(endpoint string, defaultSecure bool) (string, bool, er
 		if parsed.Host == "" {
 			return "", defaultSecure, fmt.Errorf("host must not be empty")
 		}
-		if parsed.Path != "" && parsed.Path != "/" {
-			return "", defaultSecure, fmt.Errorf("path is not supported in endpoint %q", endpoint)
+		if parsed.User != nil || strings.ContainsAny(endpoint, "?#") {
+			return "", defaultSecure, fmt.Errorf("userinfo, query and fragment are not supported in endpoint")
 		}
-		if parsed.RawQuery != "" || parsed.Fragment != "" {
-			return "", defaultSecure, fmt.Errorf("query and fragment are not supported in endpoint %q", endpoint)
+		if parsed.Path != "" && parsed.Path != "/" {
+			return "", defaultSecure, fmt.Errorf("path prefixes are not supported in endpoint")
+		}
+		if port := parsed.Port(); port != "" {
+			n, err := strconv.Atoi(port)
+			if err != nil || n < 1 || n > 65535 {
+				return "", defaultSecure, fmt.Errorf("invalid endpoint port")
+			}
 		}
 		return parsed.Host, parsed.Scheme == "https", nil
 	}

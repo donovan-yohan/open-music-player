@@ -6,7 +6,7 @@ import {
   clearAuthTokens,
 } from '../storage';
 
-const API_BASE_URL = 'https://soundq.fish-rattlesnake.ts.net';
+import { apiUrl } from '../endpoints';
 const DEFAULT_TIMEOUT = 30000; // 30 seconds
 const MAX_RETRIES = 3;
 const INITIAL_BACKOFF = 1000; // 1 second
@@ -160,7 +160,7 @@ export async function fetchApi<T>(
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       const response = await fetchWithTimeout(
-        `${API_BASE_URL}${endpoint}`,
+        apiUrl(endpoint),
         {
           ...fetchOptions,
           headers: {
@@ -246,7 +246,7 @@ export function sendMessage<T>(message: unknown): Promise<T> {
   });
 }
 
-/** Refresh endpoint (relative to {@link API_BASE_URL}). */
+/** Refresh endpoint using the existing API-relative caller contract. */
 const AUTH_REFRESH_ENDPOINT = '/api/v1/auth/refresh';
 /** Default access-token lifetime (seconds) when the backend omits expiresIn. */
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
@@ -300,7 +300,7 @@ export class ApiClient {
 
     try {
       const response = await fetchWithTimeout(
-        `${API_BASE_URL}${AUTH_REFRESH_ENDPOINT}`,
+        apiUrl(AUTH_REFRESH_ENDPOINT),
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -352,7 +352,7 @@ export class ApiClient {
     endpoint: string,
     options: RequestInit = {}
   ): Promise<Response> {
-    const url = `${API_BASE_URL}${endpoint}`;
+    const url = apiUrl(endpoint);
     const accessToken = await this.getAccessToken();
     let response = await fetchWithRetry(url, this.buildInit(options, accessToken));
 

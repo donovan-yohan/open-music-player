@@ -13,6 +13,7 @@ physical mobile dogfood path continue to work together.
 - Audio playback truth -> `client/lib/core/audio/`, `client/lib/core/engine/`, `client/lib/models/timeline_*`, `client/lib/widgets/*timeline*`.
 - Analysis/waveforms/DJ metadata -> `backend/internal/analyzer/`, `backend/cmd/audio-analyzer/`, `backend/internal/db/audio_analysis_repository.go`, `client/lib/models/track_analysis.dart`, `client/lib/models/waveform.dart`, `evals/audio_mir/`, `docs/AUDIO_MIR_EVALS.md`.
 - Local/tailnet dogfood -> `scripts/local-low-memory.sh`, `scripts/local-e2e-smoke.py`, `scripts/tailnet-staging.sh`, `docs/LOW_MEMORY_LOCAL_DEV.md`, `docs/TAILNET_STAGING.md`.
+- Private VM preparation -> `docs/PRIVATE_VM_MIGRATION.md`, `scripts/private-vm-preflight`, `scripts/private-vm-build`, `scripts/test private-vm`. Approved migration artifact builds must use the gated entrypoint; ordinary builds/dogfood are local/dev only. Cutover/distribution held; never select production endpoints from legacy examples.
 - Android/audio dogfood -> `scripts/dogfood-android`, `docs/ANDROID_PR_ARTIFACTS.md`.
 - Agentic delivery gates -> `docs/agentic-delivery.md`,
   `.github/pull_request_template.md`, `scripts/agentic-harness`,
@@ -73,6 +74,13 @@ See `docs/context-map.md` for the fuller map and harness table.
 Use RTK wrappers for noisy output when running these through Codex.
 
 ## Local Testing / Deploy
+
+**Legacy local/tailnet recipes, not private VM production instructions.** The
+`dev.fish-rattlesnake.ts.net` addresses and ports below are historical dogfood
+targets, not the migration destination. See `docs/PRIVATE_VM_MIGRATION.md` for
+explicit endpoint contracts and Anko's enrollment/restore/routes/media/CORS/reboot
+gates. Do not run these recipes, change nightly repository variables, or deploy
+as part of migration preparation. Dogfood now requires an explicit valid API URL.
 
 Use when user says "deploy backend", "deploy frontend", "phone dogfood", or
 "local testing". Backend deploy means tailnet staging on `dev`; frontend deploy

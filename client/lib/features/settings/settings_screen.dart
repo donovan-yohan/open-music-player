@@ -8,6 +8,7 @@ import 'package:provider/provider.dart' as legacy_provider;
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/auth/auth_state.dart' as session_auth;
+import '../../core/api/api_client.dart';
 import '../../core/cache/playback_cache_manager.dart';
 import '../../core/download/download_state.dart';
 import '../../core/commands/app_command.dart';
@@ -653,10 +654,6 @@ class _AboutSection extends StatelessWidget {
     'OMP_BUILD_ID',
     defaultValue: 'dev',
   );
-  static const _apiBaseUrl = String.fromEnvironment(
-    'OMP_API_BASE_URL',
-    defaultValue: 'http://localhost:8080/api/v1',
-  );
 
   @override
   Widget build(BuildContext context) {
@@ -683,10 +680,10 @@ class _AboutSection extends StatelessWidget {
           title: Text('Build'),
           subtitle: Text('$_sourceRef · $_buildId'),
         ),
-        const ListTile(
-          leading: Icon(Icons.cloud_outlined),
-          title: Text('API endpoint'),
-          subtitle: Text(_apiBaseUrl),
+        ListTile(
+          leading: const Icon(Icons.cloud_outlined),
+          title: const Text('API endpoint'),
+          subtitle: Text(ApiClient.baseUrl),
         ),
         ListTile(
           leading: const Icon(Icons.keyboard_outlined),
