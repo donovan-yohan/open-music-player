@@ -1,4 +1,5 @@
 import '../../shared/widgets/app_snack_bar.dart';
+import '../../shared/widgets/adaptive_desktop_app_bar.dart';
 
 import '../../shared/widgets/now_playing_row.dart';
 import '../../shared/widgets/song_list_item.dart';
@@ -367,8 +368,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Widget build(BuildContext context) {
     final desktop = MediaQuery.sizeOf(context).width >= 960;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Library'),
+      appBar: adaptiveDesktopAppBar(
+        context,
+        title: 'Library',
         actions: [
           IconButton(
             icon: const Icon(Icons.favorite_outline),
@@ -972,9 +974,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
-        AppSnackBar(
+        AppSnackBar.error(
           content: Text(playback.playbackError ?? 'Could not play this track.'),
-          backgroundColor: Colors.red,
         ),
       );
     }
@@ -1079,9 +1080,8 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
         } catch (e) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              AppSnackBar(
+              AppSnackBar.error(
                 content: Text('Failed to confirm match: $e'),
-                backgroundColor: Colors.red,
               ),
             );
           }
@@ -1100,9 +1100,8 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     } catch (_) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        AppSnackBar(
+        AppSnackBar.error(
           content: Text(playback.playbackError ?? 'Could not play this track.'),
-          backgroundColor: Colors.red,
         ),
       );
     }

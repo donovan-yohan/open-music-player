@@ -15,6 +15,7 @@ import '../../../core/services/mix_exchange_service.dart';
 import '../../../core/stems/stem_channel_source.dart' show StemsStatus;
 import '../../../models/mix_plan.dart';
 import '../../../models/stem_edits.dart';
+import '../../../shared/widgets/adaptive_desktop_app_bar.dart';
 import 'desktop_mix_editor_draft.dart';
 import 'stem_performance_recording.dart';
 import 'mix_exchange_actions.dart';
@@ -70,9 +71,9 @@ class _DesktopMixEditorPickerState extends State<DesktopMixEditorPicker> {
       });
     }
     return Scaffold(
-        appBar: AppBar(
+        appBar: adaptiveDesktopAppBar(context,
             leading: BackButton(onPressed: () => context.go('/playlists')),
-            title: const Text('Saved mixes'),
+            title: 'Saved mixes',
             actions: [
               MixExchangeMenu(
                   service: MixExchangeService(context.read<ApiClient>()),
@@ -931,9 +932,9 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
             child: RepaintBoundary(
                 key: _captureKey,
                 child: Scaffold(
-                  appBar: AppBar(
+                  appBar: adaptiveDesktopAppBar(context,
                       leading: BackButton(onPressed: _leave),
-                      title: Text(draft.base?.name ?? 'Saved mix'),
+                      title: draft.base?.name ?? 'Saved mix',
                       actions: [
                         MixExchangeMenu(
                             service:
@@ -1158,6 +1159,47 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
   }
 
   Widget _arrangement() {
+    final desktop = MediaQuery.sizeOf(context).width >= 960;
+    double textHeight(TextStyle style) {
+      final painter = TextPainter(
+          text: TextSpan(text: 'Mg', style: style),
+          textScaler: MediaQuery.textScalerOf(context),
+          textDirection: Directionality.of(context))
+        ..layout();
+      final height = painter.height;
+      painter.dispose();
+      return height;
+    }
+
+    final textStyle = Theme.of(context).textTheme.bodyMedium!;
+    final rangeStyle = textStyle.copyWith(fontSize: 11);
+    final clipHeight = desktop
+        ? (math.max(72, textHeight(textStyle) + textHeight(rangeStyle) + 16) /
+                    4)
+                .ceil() *
+            4.0
+        : 72.0;
+    final laneHeight = clipHeight + 16;
+    final rulerHeight =
+        desktop ? math.max(32.0, textHeight(rangeStyle) + 12) : 32.0;
+    final workspaceHeight = rulerHeight + 4 * laneHeight + 24;
+    Widget labels(MixPlanClip clip) {
+      final lines = [
+        Text('Track ${clip.trackId}',
+            maxLines: 1,
+            overflow: TextOverflow.clip,
+            style: desktop ? textStyle : null),
+        Text('${clip.sourceStartMs}–${clip.sourceEndMs} ms',
+            maxLines: 1,
+            overflow: TextOverflow.clip,
+            style: desktop ? rangeStyle : const TextStyle(fontSize: 11)),
+      ];
+      return desktop
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start, children: lines)
+          : ListView(padding: EdgeInsets.zero, children: lines);
+    }
+
     final lanes = _lanes();
     final clips = _draft!.displayClips;
     final duration =
@@ -1186,17 +1228,17 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
         Expanded(
             child: SingleChildScrollView(
                 child: SizedBox(
-                    height: 408,
+                    height: workspaceHeight,
                     child: Row(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           SizedBox(
                               width: 40,
                               child: Column(children: [
-                                const SizedBox(height: 32),
+                                SizedBox(height: rulerHeight),
                                 for (var lane = 0; lane < 4; lane++)
                                   SizedBox(
-                                      height: 88,
+                                      height: laneHeight,
                                       child: Center(
                                           child: Text('L${lane + 1}',
                                               style: TextStyle(
@@ -1211,14 +1253,15 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                                       scrollDirection: Axis.horizontal,
                                       child: SizedBox(
                                           width: width,
-                                          height: 390,
+                                          height: workspaceHeight,
                                           child: Stack(children: [
                                             for (var lane = 0; lane < 4; lane++)
                                               Positioned(
                                                   left: 0,
                                                   right: 0,
-                                                  top: 32 + lane * 88,
-                                                  height: 88,
+                                                  top: rulerHeight +
+                                                      lane * laneHeight,
+                                                  height: laneHeight,
                                                   child: DecoratedBox(
                                                       decoration: BoxDecoration(
                                                           color:
@@ -1247,14 +1290,15 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                                               Positioned(
                                                   left: clip.timelineStartMs *
                                                       _scale,
-                                                  top: 38 +
+                                                  top: rulerHeight +
+                                                      6 +
                                                       (lanes[clip.clipId] ?? 0) *
-                                                          88,
+                                                          laneHeight,
                                                   width: math.max(
                                                       6,
                                                       clip.selectedDurationMs *
                                                           _scale),
-                                                  height: 72,
+                                                  height: clipHeight,
                                                   child: Semantics(
                                                       label:
                                                           'Clip ${clip.clipId}, track ${clip.trackId}, ${clip.timelineStartMs} milliseconds',
@@ -1305,38 +1349,17 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                                                           child: Material(
                                                               color: _laneColors[lanes[clip.clipId] ?? 0]
                                                                   .withValues(
-                                                                      alpha: clip.clipId ==
-                                                                              _selected
+                                                                      alpha: clip.clipId == _selected
                                                                           ? .35
                                                                           : .16),
                                                               shape: RoundedRectangleBorder(
                                                                   side: BorderSide(
-                                                                      color: clip.clipId ==
-                                                                              _selected
+                                                                      color: clip.clipId == _selected
                                                                           ? Colors.white
                                                                           : _laneColors[lanes[clip.clipId] ?? 0]),
-                                                                  borderRadius: BorderRadius.circular(6)),
+                                                                  borderRadius: desktop ? BorderRadius.zero : BorderRadius.circular(6)),
                                                               clipBehavior: Clip.antiAlias,
-                                                              child: InkWell(
-                                                                  key: ValueKey('mix-clip-${clip.clipId}'),
-                                                                  onTap: () => _select(clip),
-                                                                  child: Padding(
-                                                                      padding: const EdgeInsets.all(8),
-                                                                      child: ListView(padding: EdgeInsets.zero, children: [
-                                                                        Text(
-                                                                            'Track ${clip.trackId}',
-                                                                            maxLines:
-                                                                                1,
-                                                                            overflow:
-                                                                                TextOverflow.clip),
-                                                                        Text(
-                                                                            '${clip.sourceStartMs}–${clip.sourceEndMs} ms',
-                                                                            maxLines:
-                                                                                1,
-                                                                            overflow:
-                                                                                TextOverflow.clip,
-                                                                            style: const TextStyle(fontSize: 11)),
-                                                                      ]))))))),
+                                                              child: InkWell(key: ValueKey('mix-clip-${clip.clipId}'), onTap: () => _select(clip), child: Padding(padding: const EdgeInsets.all(8), child: labels(clip))))))),
                                           ]))))),
                         ])))),
       ]);

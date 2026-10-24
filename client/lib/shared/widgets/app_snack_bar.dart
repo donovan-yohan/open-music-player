@@ -26,12 +26,26 @@ class AppSnackBar extends SnackBar {
     super.onVisible,
     super.dismissDirection,
     super.clipBehavior,
-  });
+  }) : _isError = false;
+
+  /// Semantic desktop error pair; preserve the existing red mobile feedback.
+  const AppSnackBar.error(
+      {super.key,
+      required super.content,
+      super.action,
+      super.duration,
+      super.persist,
+      super.onVisible})
+      : _isError = true,
+        super(backgroundColor: Colors.red);
+
+  final bool _isError;
 
   @override
   SnackBar withAnimation(Animation<double> newAnimation, {Key? fallbackKey}) =>
       _ResponsiveSnackBar(
         super.withAnimation(newAnimation, fallbackKey: fallbackKey),
+        isError: _isError || backgroundColor == Colors.red,
       );
 }
 
@@ -68,7 +82,7 @@ EdgeInsets _cornerMargin(double width) =>
 // withAnimation is Flutter's public adaptation seam. Keep the native controller
 // intact; its constructor is private and must not be recreated by application UI.
 class _ResponsiveSnackBar extends SnackBar {
-  _ResponsiveSnackBar(this.source)
+  _ResponsiveSnackBar(this.source, {required this.isError})
       : super(
           content: source.content,
           behavior: source.behavior,
@@ -80,6 +94,7 @@ class _ResponsiveSnackBar extends SnackBar {
         );
 
   final SnackBar source;
+  final bool isError;
 
   @override
   State<SnackBar> createState() => _ResponsiveSnackBarState();
@@ -108,13 +123,19 @@ class _ResponsiveSnackBarState extends State<_ResponsiveSnackBar> {
           final source = widget.source;
           final size = MediaQuery.sizeOf(context);
           if (size.width < 960) return source;
-          return SnackBar(
+          final theme = Theme.of(context);
+          final colors = theme.colorScheme;
+          // Legacy red callers denote the same error family. Pair all of them
+          // here until they adopt the named constructor, without mobile churn.
+          final error = widget.isError;
+          final bar = SnackBar(
             key: source.key,
             content: _ScrollableSnackBarContent(
               source.content,
               maxHeight: math.min(200, size.height / 4),
             ),
-            backgroundColor: source.backgroundColor,
+            backgroundColor:
+                error ? colors.errorContainer : source.backgroundColor,
             elevation: source.elevation,
             // Explicit width keeps Flutter's native centered-width layout;
             // corner margins apply only to the default desktop presentation.
@@ -129,7 +150,8 @@ class _ResponsiveSnackBarState extends State<_ResponsiveSnackBar> {
             action: source.action,
             actionOverflowThreshold: source.actionOverflowThreshold,
             showCloseIcon: true,
-            closeIconColor: source.closeIconColor,
+            closeIconColor:
+                error ? colors.onErrorContainer : source.closeIconColor,
             duration: source.duration,
             persist: source.persist,
             animation: source.animation,
@@ -137,6 +159,38 @@ class _ResponsiveSnackBarState extends State<_ResponsiveSnackBar> {
             dismissDirection: source.dismissDirection,
             clipBehavior: source.clipBehavior,
           );
+          if (!error) return bar;
+          return Theme(
+              data: theme.copyWith(
+                iconButtonTheme: IconButtonThemeData(
+                  style: (theme.iconButtonTheme.style ?? const ButtonStyle())
+                      .copyWith(
+                    foregroundColor:
+                        WidgetStatePropertyAll(colors.onErrorContainer),
+                    iconColor: WidgetStatePropertyAll(colors.onErrorContainer),
+                    backgroundColor: WidgetStateProperty.resolveWith((states) =>
+                        Color.lerp(
+                            colors.errorContainer,
+                            Colors.white,
+                            states.contains(WidgetState.pressed)
+                                ? .3
+                                : states.contains(WidgetState.hovered) ||
+                                        states.contains(WidgetState.focused)
+                                    ? .15
+                                    : 0)),
+                    overlayColor:
+                        const WidgetStatePropertyAll(Colors.transparent),
+                  ),
+                ),
+                snackBarTheme: theme.snackBarTheme.copyWith(
+                  contentTextStyle: (theme.snackBarTheme.contentTextStyle ??
+                          theme.textTheme.bodyMedium!)
+                      .copyWith(color: colors.onErrorContainer),
+                  actionTextColor: colors.onErrorContainer,
+                  actionBackgroundColor: colors.errorContainer,
+                ),
+              ),
+              child: bar);
         },
       );
 }
