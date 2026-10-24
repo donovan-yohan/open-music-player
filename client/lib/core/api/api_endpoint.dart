@@ -6,6 +6,10 @@ class ApiEndpoint {
   ));
 
   static String validate(String value) {
+    // Reject literal controls before Uri can normalize them into encoded paths.
+    if (RegExp(r'[\x00-\x1f\x7f]').hasMatch(value)) {
+      throw const FormatException('Invalid OMP_API_BASE_URL');
+    }
     final rawPath = value.replaceFirst(RegExp(r'^[a-z]+://[^/]+'), '');
     final uri = Uri.tryParse(value);
     if (value.isEmpty ||
@@ -18,6 +22,7 @@ class ApiEndpoint {
         RegExp(r'[@]|:$').hasMatch(value.split('/')[2]) ||
         uri.port < 1 ||
         uri.port > 65535 ||
+        !RegExp(r'/api/v1/?$').hasMatch(rawPath) ||
         rawPath.contains('//') ||
         RegExp(r'%(?![0-9a-fA-F]{2})').hasMatch(rawPath) ||
         RegExp(r'%(2f|5c|2e|0[0-9a-f]|1[0-9a-f]|7f)', caseSensitive: false)

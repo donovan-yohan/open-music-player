@@ -30,6 +30,9 @@ function prepare(args, extraFlags = []) {
   for (const key of ['OMP_API_BASE_URL', 'OMP_HEALTH_URL', 'OMP_WEB_LOGIN_URL', 'MINIO_PUBLIC_ENDPOINT', 'OMP_SOURCE_REF', 'OMP_BUILD_ID']) {
     if (typeof inputs?.[key] !== 'string' || !inputs[key].trim()) throw new Error(`Explicit ${key} required`);
   }
+  if (!/^[0-9a-f]{40}$/.test(inputs.OMP_SOURCE_REF)) {
+    throw new Error('OMP_SOURCE_REF must be an exact full lowercase 40-character Git commit SHA');
+  }
   const endpoints = endpointBundle(inputs);
   const media = new URL(validateUrl(inputs.MINIO_PUBLIC_ENDPOINT));
   if (media.pathname !== '/') throw new Error('MINIO_PUBLIC_ENDPOINT must be an origin, not a path prefix');

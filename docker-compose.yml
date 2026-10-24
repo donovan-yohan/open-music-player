@@ -248,7 +248,10 @@ services:
   # MinIO Object Storage (S3-compatible)
   # =============================================================================
   minio:
-    image: quay.io/minio/minio:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: minio-runtime
     container_name: omp-minio
     restart: unless-stopped
     ports:
@@ -273,7 +276,10 @@ services:
   # MinIO Bucket Initialization
   # =============================================================================
   minio-init:
-    image: quay.io/minio/mc:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: minio-client
     container_name: omp-minio-init
     depends_on:
       minio:

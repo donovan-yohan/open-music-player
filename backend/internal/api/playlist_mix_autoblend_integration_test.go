@@ -63,7 +63,7 @@ func TestPlaylistAutoMixIntegrationGeneratesTransitions(t *testing.T) {
 		}
 	}
 
-	// Pair 1 (t1 -> t2): same tempo, same key, usable grids => Blend.
+	// Pair 1 becomes Blend only after an explicit manual phase correction.
 	// Pair 2 (t2 -> t3): >15% tempo difference => bounded simple Fade.
 	seedAnalysis(t, t1, 120, "8A", []int64{0, 8000, 184000, 192000})
 	seedAnalysis(t, t2, 121, "8A", []int64{0, 8000, 134000, 142000})
@@ -78,6 +78,42 @@ func TestPlaylistAutoMixIntegrationGeneratesTransitions(t *testing.T) {
 	}
 
 	h := NewPlaylistAutoBlendHandlers(playlistRepo, mixPlanRepo, true)
+	// Analyzer markers alone cannot authorize bar-aligned geometry.
+	generated := httptest.NewRecorder()
+	h.CreateAutoMixFromPlaylist(generated, playlistMixRequest(userID, pl.ID))
+	if generated.Code != http.StatusOK {
+		t.Fatalf("generated-only status = %d, body = %s", generated.Code, generated.Body.String())
+	}
+	var uncorrected AutoMixResponse
+	if err := json.Unmarshal(generated.Body.Bytes(), &uncorrected); err != nil {
+		t.Fatal(err)
+	}
+	if len(uncorrected.Transitions) != 2 {
+		t.Fatalf("generated transition count = %d", len(uncorrected.Transitions))
+	}
+	for _, transition := range uncorrected.Transitions {
+		if transition.Preset != PresetFade || transition.Bars != 0 || !transition.Confidence.SimpleFade {
+			t.Fatalf("generated markers claimed bar authority: %+v", transition)
+		}
+	}
+	for _, correction := range []struct {
+		trackID int64
+		markers []int64
+	}{
+		{t1, []int64{0, 8000, 184000, 192000}},
+		{t2, []int64{0, 8000, 134000, 142000}},
+		{t3, []int64{0, 8000}},
+	} {
+		overrides, err := json.Marshal(map[string]any{
+			"downbeats": map[string]any{"positions_ms": correction.markers},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := analysisRepo.SetOverrides(ctx, correction.trackID, overrides, 0); err != nil {
+			t.Fatalf("set manual phase correction: %v", err)
+		}
+	}
 
 	req := authedRequest(userID, http.MethodPost,
 		"/api/v1/playlists/"+strconv.FormatInt(pl.ID, 10)+"/auto-mix", nil)
@@ -169,6 +205,7 @@ func TestPlaylistAutoMixIntegrationSingleTrackRejected(t *testing.T) {
 	}
 
 	h := NewPlaylistAutoBlendHandlers(playlistRepo, mixPlanRepo, true)
+
 	req := authedRequest(userID, http.MethodPost,
 		"/api/v1/playlists/"+strconv.FormatInt(pl.ID, 10)+"/auto-mix", nil)
 	req.SetPathValue("id", strconv.FormatInt(pl.ID, 10))

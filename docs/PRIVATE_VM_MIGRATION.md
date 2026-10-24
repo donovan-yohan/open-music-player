@@ -27,7 +27,9 @@ No secrets, restored records or live VM services are needed for code gates.
 
 HTTP config rejects credentials, queries, fragments, unsupported schemes and
 ambiguous paths (including doubled separators, dot traversal and encoded
-separators). API trailing slash is removed once; prefixes and nondefault ports
+separators). The API base must end in `/api/v1`, optionally preceded by a proxy
+prefix; an origin alone, another version or a resource path is rejected. API
+trailing slash is removed once; prefixes and nondefault ports
 are retained. Health/login paths retain trailing slash semantics. Extension
 callers still pass `/api/v1/...`; the adapter maps that contract onto the
 configured API base once, including refresh/retry.
@@ -161,7 +163,7 @@ inputs:
   OMP_WS_URL: optional complete verified WS(S) URL (omit if unused)
   MINIO_PUBLIC_ENDPOINT: verified media signing origin, no prefix
   OMP_CORS_ALLOWED_ORIGINS: JSON array of exact verified frontend origins
-  OMP_SOURCE_REF: explicit source identity
+  OMP_SOURCE_REF: exact full lowercase 40-character Git commit SHA
   OMP_BUILD_ID: explicit build identity
 checks:
   vmEnrollment, restore, apiRoutes, jwtAuth, media, cors, reboot, rollback: true
@@ -191,8 +193,22 @@ scripts/private-vm-build --opt-in \
 ```
 
 Targets are `client` (arm64 debug APK), `client-web`, `extension`, or `all`.
+The existing record and receipt are unversioned JSON objects (no `schemaVersion`
+field). `OMP_SOURCE_REF` accepts only the literal full lowercase SHA-1 commit
+identifier: no branch/tag names, abbreviated SHAs, `branch@sha`, uppercase,
+surrounding whitespace or SHA-256 identifiers. Tokens are rejected, not repaired.
+Standalone preflight validates this format but does not verify a checkout.
+
 The entrypoint runs the same offline preflight validator, reads one reviewed
-record snapshot, exclusively writes a **preflight-only** receipt, then invokes
+record snapshot, verifies that the literal source SHA equals its own checkout's
+`HEAD` and rejects staged, unstaged or untracked source before creating a receipt
+or invoking build tools. Ignored build outputs/dependencies do not constitute
+source approval; the extension always runs `npm ci`, even if `node_modules`
+already exists, before `npm run build`. Keep the checkout unchanged throughout
+the build, and place approval/receipt files outside its source tree. The build
+adds `source: {commit, tree, clean: true}` to the existing receipt; this records
+the local Git check, not operator authentication or live route verification.
+It then exclusively writes a **preflight-only** receipt and invokes
 Flutter/npm. It passes the reviewed API/source/build identities as Flutter
 `--dart-define` arguments and the exact reviewed HTTP/optional WS bundle to
 webpack. Shell endpoint/identity values cannot replace the record; additional

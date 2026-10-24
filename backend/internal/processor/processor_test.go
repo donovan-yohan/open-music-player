@@ -112,6 +112,10 @@ type legacyAnalysisStore struct {
 	requestCount int
 }
 
+func (s *fakeAnalysisStore) RequestAnalysisIfNeeded(ctx context.Context, trackID int64, provenance json.RawMessage) (bool, error) {
+	return true, s.RequestAnalysis(ctx, trackID, provenance)
+}
+
 func (s *fakeAnalysisStore) RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -194,6 +198,10 @@ func (s *delayedRecoveryAnalysisStore) MarkFailed(ctx context.Context, trackID i
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func (s *legacyAnalysisStore) RequestAnalysisIfNeeded(ctx context.Context, trackID int64, provenance json.RawMessage) (bool, error) {
+	return true, s.RequestAnalysis(ctx, trackID, provenance)
 }
 
 func (s *legacyAnalysisStore) RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error {
@@ -381,7 +389,7 @@ func TestEnqueueAnalysisSkipsPendingRowWhenAnalyzerClientMissing(t *testing.T) {
 	store := &fakeAnalysisStore{}
 	processor := &Processor{analysisRepo: store}
 
-	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42}, &TrackMetadata{
+	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42, StorageKey: sqlNullString("tracks/fixture/job-fixture.wav")}, &TrackMetadata{
 		StorageKey: "tracks/fixture/job-fixture.wav",
 		SourceURL:  "fixture://silence",
 		SourceType: "fixture",
@@ -401,7 +409,7 @@ func TestEnqueueAnalysisDefersRequiredIdentityWithoutCallingAnalyzer(t *testing.
 		RequireAnalyzerIdentity: true,
 	})
 
-	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42}, &TrackMetadata{
+	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42, StorageKey: sqlNullString("tracks/fixture/job-fixture.wav")}, &TrackMetadata{
 		StorageKey: "tracks/fixture/job-fixture.wav",
 	})
 
@@ -943,7 +951,7 @@ func TestEnqueueAnalysisRunsConfiguredAnalyzerAndStoresResult(t *testing.T) {
 	processor := New(&ProcessorConfig{AnalysisRepo: store, AnalyzerClient: client})
 	processor.SetAnalyzerIdentity("omp-mir-analyzer", "2026-07-11-3")
 
-	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42}, &TrackMetadata{
+	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42, StorageKey: sqlNullString("tracks/fixture/job-fixture.wav")}, &TrackMetadata{
 		StorageKey: "tracks/fixture/job-fixture.wav",
 		SourceURL:  "fixture://silence",
 		SourceType: "fixture",

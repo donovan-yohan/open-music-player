@@ -37,6 +37,7 @@ export interface AddToLibraryResponse {
   success: boolean;
   jobId?: string;
   error?: string;
+  errorCode?: string;
 }
 
 // Download API types

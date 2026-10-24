@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
+
 	"strings"
 	"testing"
 	"time"
@@ -143,36 +142,13 @@ func TestQueueResponseProjectsFailedJobErrorAndRetryMetadata(t *testing.T) {
 	}
 }
 
-func redisURLWithDB(rawURL, db string) string {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return rawURL
-	}
-	parsed.Path = "/" + db
-	return parsed.String()
-}
-
 func TestGetQueueHandlerProjectsLiveDownloadJobState(t *testing.T) {
-	redisURL := os.Getenv("REDIS_URL")
-	if redisURL == "" {
-		redisURL = "redis://localhost:6380"
-	}
-	redisURL = redisURLWithDB(redisURL, "14")
-	ctx := context.Background()
+	redisURL := isolatedQueueRedis(t)
 
-	queueService, err := NewService(redisURL)
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queueService.Close()
-	if err := queueService.client.FlushDB(ctx).Err(); err != nil {
-		t.Fatalf("flush isolated redis db: %v", err)
-	}
-	defer queueService.client.FlushDB(context.Background())
-
+	queueService := queueTestService(t, redisURL)
 	downloadService, err := download.NewService(&download.ServiceConfig{RedisURL: redisURL, WorkerCount: 0}, nil)
 	if err != nil {
-		t.Skipf("Redis not available for downloads: %v", err)
+		t.Fatalf("isolated Redis not available for downloads: %v", err)
 	}
 	defer downloadService.Stop(context.Background())
 
@@ -260,20 +236,13 @@ func TestAddQueueItemRejectsLegacySourceCandidateBeforeEnqueue(t *testing.T) {
 }
 
 func TestAddQueueItemRejectsLegacySourceCandidateBeforePositionValidation(t *testing.T) {
-	redisURL := os.Getenv("REDIS_URL")
-	if redisURL == "" {
-		redisURL = "redis://localhost:6380"
-	}
-	queueService, err := NewService(redisURL)
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queueService.Close()
+	redisURL := isolatedQueueRedis(t)
+	queueService := queueTestService(t, redisURL)
 	downloadService, err := download.NewService(&download.ServiceConfig{RedisURL: redisURL, WorkerCount: 0, MaxRetries: 0, JobTimeout: time.Second}, func(context.Context, *download.DownloadJob, func(int)) error {
 		return nil
 	})
 	if err != nil {
-		t.Skipf("download service Redis not available: %v", err)
+		t.Fatalf("isolated download service Redis not available: %v", err)
 	}
 	defer downloadService.Stop(context.Background())
 

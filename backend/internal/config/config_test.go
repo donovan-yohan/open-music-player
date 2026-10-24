@@ -2,9 +2,60 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
+
+func TestLoadMaintenanceAuthorization(t *testing.T) {
+	id := uuid.MustParse("53b676c8-7b11-4705-89a6-08dcebcbe674")
+	for _, tc := range []struct {
+		name, value string
+		want        []uuid.UUID
+		invalid     bool
+	}{
+		{"empty", "", nil, false},
+		{"whitespace", "  \t", nil, false},
+		{"one", id.String(), []uuid.UUID{id}, false},
+		{"trim_and_dedupe", "  " + id.String() + ", " + strings.ToUpper(id.String()) + "  ", []uuid.UUID{id}, false},
+		{"multiple", id.String() + ",32bf6be2-e5a5-490b-9364-32a119d3a85a", []uuid.UUID{id, uuid.MustParse("32bf6be2-e5a5-490b-9364-32a119d3a85a")}, false},
+		{"malformed", "admin@example.test", nil, true},
+		{"partial_valid", id.String() + ",not-a-uuid", nil, true},
+		{"empty_entry", id.String() + ",," + id.String(), nil, true},
+		{"trailing_comma", id.String() + ",", nil, true},
+		{"nil_uuid", uuid.Nil.String(), nil, true},
+		{"compact", strings.ReplaceAll(id.String(), "-", ""), nil, true},
+		{"urn", "urn:uuid:" + id.String(), nil, true},
+		{"braced", "{" + id.String() + "}", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("MAINTENANCE_ADMIN_USER_IDS", tc.value)
+			cfg := Load()
+			err := cfg.ValidateMaintenance()
+			if (err != nil) != tc.invalid {
+				t.Fatalf("ValidateMaintenance error=%v, invalid=%v", err, tc.invalid)
+			}
+			if err != nil && !strings.Contains(err.Error(), "MAINTENANCE_ADMIN_USER_IDS") {
+				t.Fatalf("configuration error does not name setting: %v", err)
+			}
+			if len(cfg.MaintenanceAdminUserIDs) != len(tc.want) {
+				t.Fatalf("allowlist=%v, want %v", cfg.MaintenanceAdminUserIDs, tc.want)
+			}
+			for i := range tc.want {
+				if cfg.MaintenanceAdminUserIDs[i] != tc.want[i] {
+					t.Fatalf("allowlist=%v, want %v", cfg.MaintenanceAdminUserIDs, tc.want)
+				}
+			}
+			// Validation must describe the loaded snapshot, not re-read the host.
+			t.Setenv("MAINTENANCE_ADMIN_USER_IDS", "")
+			if (cfg.ValidateMaintenance() != nil) != tc.invalid {
+				t.Fatal("configuration validation changed after environment mutation")
+			}
+		})
+	}
+}
 
 func TestLoadPreservesWorkerCountDefaults(t *testing.T) {
 	t.Setenv("WORKER_COUNT", "")

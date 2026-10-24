@@ -80,12 +80,14 @@ type Info struct {
 
 // Request is the POST /separate body.
 type Request struct {
-	SchemaVersion         int    `json:"schema_version"`
-	TrackID               int64  `json:"track_id"`
-	StorageKey            string `json:"storage_key"`
-	ChannelSet            string `json:"channel_set"`
-	ExpectedWorker        string `json:"expected_worker,omitempty"`
-	ExpectedWorkerVersion string `json:"expected_worker_version,omitempty"`
+	Generation             int64  `json:"generation"`
+	ExpectedSourceFileHash string `json:"expected_source_file_hash,omitempty"`
+	SchemaVersion          int    `json:"schema_version"`
+	TrackID                int64  `json:"track_id"`
+	StorageKey             string `json:"storage_key"`
+	ChannelSet             string `json:"channel_set"`
+	ExpectedWorker         string `json:"expected_worker,omitempty"`
+	ExpectedWorkerVersion  string `json:"expected_worker_version,omitempty"`
 }
 
 // Manifest is the worker's 200 response: the artifact manifest that gets
@@ -93,6 +95,8 @@ type Request struct {
 // are delivered by GET /api/v1/tracks/{id}/stems — the stems service never
 // writes track_analysis, which stays single-writer (the analyzer).
 type Manifest struct {
+	SampleRateHz     int             `json:"sample_rate_hz,omitempty"`
+	Generation       int64           `json:"generation"`
 	SchemaVersion    int             `json:"schema_version"`
 	TrackID          int64           `json:"track_id"`
 	ChannelSet       string          `json:"channel_set"`
@@ -275,12 +279,14 @@ func (c *ServiceClient) Separate(ctx context.Context, req Request) (*Manifest, e
 		schemaVersion = SchemaVersion
 	}
 	payload, err := json.Marshal(Request{
-		SchemaVersion:         schemaVersion,
-		TrackID:               req.TrackID,
-		StorageKey:            strings.TrimSpace(req.StorageKey),
-		ChannelSet:            strings.TrimSpace(req.ChannelSet),
-		ExpectedWorker:        strings.TrimSpace(req.ExpectedWorker),
-		ExpectedWorkerVersion: strings.TrimSpace(req.ExpectedWorkerVersion),
+		SchemaVersion:          schemaVersion,
+		Generation:             req.Generation,
+		ExpectedSourceFileHash: req.ExpectedSourceFileHash,
+		TrackID:                req.TrackID,
+		StorageKey:             strings.TrimSpace(req.StorageKey),
+		ChannelSet:             strings.TrimSpace(req.ChannelSet),
+		ExpectedWorker:         strings.TrimSpace(req.ExpectedWorker),
+		ExpectedWorkerVersion:  strings.TrimSpace(req.ExpectedWorkerVersion),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode stems request: %w", err)
@@ -321,11 +327,12 @@ func (c *ServiceClient) Separate(ctx context.Context, req Request) (*Manifest, e
 
 	var manifest Manifest
 	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&manifest); err != nil {
 		return nil, fmt.Errorf("parse stems response: %w", err)
 	}
-	if manifest.SchemaVersion <= 0 {
-		manifest.SchemaVersion = SchemaVersion
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return nil, errors.New("stems response has trailing payload")
 	}
 	if len(bytes.TrimSpace(manifest.Artifacts)) == 0 {
 		return nil, errors.New("stems response missing artifacts")
@@ -345,6 +352,9 @@ func (c *ServiceClient) Separate(ctx context.Context, req Request) (*Manifest, e
 	}
 	if strings.TrimSpace(manifest.StemModelVersion) == "" {
 		return nil, errors.New("stems response missing stem model version")
+	}
+	if err := ValidateManifest(&manifest, req); err != nil {
+		return nil, err
 	}
 	return &manifest, nil
 }

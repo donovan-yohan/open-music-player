@@ -14,28 +14,52 @@ const record = {
     OMP_WEB_LOGIN_URL: 'https://ui.example.test/app/sign-in',
     MINIO_PUBLIC_ENDPOINT: 'https://media.example.test:9444',
     OMP_CORS_ALLOWED_ORIGINS: ['https://ui.example.test'],
-    OMP_SOURCE_REF: 'fixture-ref', OMP_BUILD_ID: 'fixture-build' },
+    OMP_SOURCE_REF: '1'.repeat(40), OMP_BUILD_ID: 'fixture-build' },
   checks: Object.fromEntries(['vmEnrollment', 'restore', 'apiRoutes', 'jwtAuth', 'media', 'cors', 'reboot', 'rollback'].map(k => [k, true])),
 };
 function run(args) {
   return spawnSync(process.execPath, [path.join(root, 'scripts/private-vm-preflight'), ...args], { encoding: 'utf8' });
 }
-test('migration build binds Flutter and webpack to one approved snapshot, artifact-only', () => {
+// Local, synthetic repositories only; no commit or source change in the real checkout.
+function buildFixture(dir) {
+  const checkout = path.join(dir, 'checkout');
+  fs.mkdirSync(path.join(checkout, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(checkout, 'extension/config'), { recursive: true });
+  fs.mkdirSync(path.join(checkout, 'client'));
+  for (const file of ['scripts/private-vm-build', 'scripts/private-vm-preflight', 'extension/config/endpoints.cjs']) {
+    fs.copyFileSync(path.join(root, file), path.join(checkout, file));
+  }
+  fs.writeFileSync(path.join(checkout, '.gitignore'), 'extension/node_modules/\n');
+  const git = (...args) => {
+    const result = spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git('init', '--quiet'); git('add', '.');
+  git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '--quiet', '-m', 'synthetic fixture');
+  // Even a populated dependency tree must not suppress the locked install.
+  fs.mkdirSync(path.join(checkout, 'extension/node_modules'), { recursive: true });
+  fs.writeFileSync(path.join(checkout, 'extension/node_modules/stale'), 'not trusted');
+  return { checkout, git, head: git('rev-parse', 'HEAD'), tree: git('rev-parse', 'HEAD^{tree}') };
+}
+test('migration build binds Flutter and webpack to one approved snapshot, artifact-only', t => {
   const dir = fs.mkdtempSync(path.join(scratch, 'build-'));
+  const fixture = buildFixture(dir);
   const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
   const log = path.join(dir, 'commands.jsonl');
   const keys = ['OMP_API_BASE_URL', 'OMP_HEALTH_URL', 'OMP_WEB_LOGIN_URL', 'OMP_WS_URL',
     'OMP_SOURCE_REF', 'OMP_BUILD_ID', 'MINIO_PUBLIC_ENDPOINT', 'OMP_CORS_ALLOWED_ORIGINS'];
   for (const name of ['flutter', 'npm', 'adb', 'docker', 'ssh', 'gh']) {
     fs.writeFileSync(path.join(bin, name), `#!${process.execPath}\n` +
-      `require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({name:${JSON.stringify(name)}, args:process.argv.slice(2), env:Object.fromEntries(${JSON.stringify(keys)}.filter(k=>process.env[k]!==undefined).map(k=>[k,process.env[k]]))})+'\\n');\n`, { mode: 0o755 });
+      `require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({name:${JSON.stringify(name)}, args:process.argv.slice(2), cwd:process.cwd(), env:Object.fromEntries(${JSON.stringify(keys)}.filter(k=>process.env[k]!==undefined).map(k=>[k,process.env[k]]))})+'\\n');\n`, { mode: 0o755 });
   }
   const approved = structuredClone(record);
+  approved.inputs.OMP_SOURCE_REF = fixture.head;
   approved.inputs.OMP_WS_URL = 'wss://events.example.test/progress';
   const verification = path.join(dir, 'anko.json');
   fs.writeFileSync(verification, JSON.stringify(approved));
   const evidence = path.join(dir, 'evidence.json');
-  const result = spawnSync(process.execPath, [path.join(root, 'scripts/private-vm-build'), '--opt-in',
+  const result = spawnSync(process.execPath, [path.join(fixture.checkout, 'scripts/private-vm-build'), '--opt-in',
     '--anko-verification', verification, '--evidence', evidence, '--target', 'all'], {
     encoding: 'utf8', env: { ...process.env, PATH: bin + ':' + process.env.PATH,
       ...Object.fromEntries(keys.map(k => [k, 'unreviewed-shell-override'])) },
@@ -47,9 +71,10 @@ test('migration build binds Flutter and webpack to one approved snapshot, artifa
     ['pub', 'get'], ['build', 'apk', '--debug', '--no-pub', '--target-platform', 'android-arm64', ...defines],
     ['pub', 'get'], ['build', 'web', '--release', '--no-pub', ...defines],
   ]);
-  assert(commands.some(c => c.name === 'npm' && JSON.stringify(c.args) === JSON.stringify(['run', 'build'])));
+  assert.deepEqual(commands.filter(c => c.name === 'npm').map(c => c.args), [['ci'], ['run', 'build']]);
   assert(commands.every(c => ['flutter', 'npm'].includes(c.name)), 'no deployment/install executable');
   for (const command of commands) {
+    assert.equal(command.cwd, path.join(fixture.checkout, command.name === 'flutter' ? 'client' : 'extension'));
     assert.deepEqual(command.env, Object.fromEntries(keys.filter(k => !['MINIO_PUBLIC_ENDPOINT', 'OMP_CORS_ALLOWED_ORIGINS'].includes(k)).map(k => [k, approved.inputs[k]])));
   }
   const receipt = JSON.parse(fs.readFileSync(evidence));
@@ -57,16 +82,64 @@ test('migration build binds Flutter and webpack to one approved snapshot, artifa
   assert.equal(receipt.deployment, 'HELD');
   assert.equal(receipt.distribution, 'HELD');
   assert.equal(receipt.mediaOrigin, approved.inputs.MINIO_PUBLIC_ENDPOINT);
+  assert.deepEqual(receipt.source, { commit: fixture.head, tree: fixture.tree, clean: true });
+  t.diagnostic(JSON.stringify({ stubCommands: commands, preflightReceipt: receipt }));
   // An omitted optional WS must not pick up a destination from the shell.
   delete approved.inputs.OMP_WS_URL;
   fs.writeFileSync(verification, JSON.stringify(approved));
-  const noWs = spawnSync(process.execPath, [path.join(root, 'scripts/private-vm-build'), '--opt-in',
+  const noWs = spawnSync(process.execPath, [path.join(fixture.checkout, 'scripts/private-vm-build'), '--opt-in',
     '--anko-verification', verification, '--evidence', path.join(dir, 'no-ws.json'), '--target', 'extension'], {
     encoding: 'utf8', env: { ...process.env, PATH: bin + ':' + process.env.PATH, OMP_WS_URL: 'wss://unreviewed.example.test/ws' },
   });
   assert.equal(noWs.status, 0, noWs.stderr);
   const last = JSON.parse(fs.readFileSync(log, 'utf8').trim().split('\n').at(-1));
   assert.equal(last.env.OMP_WS_URL, undefined);
+});
+test('migration build rejects mismatched or dirty source before tools and evidence', () => {
+  for (const kind of ['mismatch', 'tracked', 'staged', 'untracked']) {
+    const dir = fs.mkdtempSync(path.join(scratch, `source-${kind}-`));
+    const fixture = buildFixture(dir);
+    const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
+    const log = path.join(dir, 'launched');
+    for (const name of ['npm', 'flutter']) fs.writeFileSync(path.join(bin, name),
+      `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)}, 'launched');\n`, { mode: 0o755 });
+    const approval = structuredClone(record);
+    approval.inputs.OMP_SOURCE_REF = fixture.head;
+    if (kind === 'mismatch') {
+      fixture.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+        'commit', '--quiet', '--allow-empty', '-m', 'different clean checkout');
+    } else if (kind === 'untracked') {
+      fs.writeFileSync(path.join(fixture.checkout, 'unreviewed.txt'), 'unreviewed');
+    } else {
+      fs.appendFileSync(path.join(fixture.checkout, 'extension/config/endpoints.cjs'), '\n// unreviewed\n');
+      if (kind === 'staged') fixture.git('add', '.');
+    }
+    const verification = path.join(dir, 'approval.json');
+    const evidence = path.join(dir, 'receipt.json');
+    fs.writeFileSync(verification, JSON.stringify(approval));
+    const result = spawnSync(process.execPath, [path.join(fixture.checkout, 'scripts/private-vm-build'),
+      '--opt-in', '--anko-verification', verification, '--evidence', evidence, '--target', 'extension'], {
+      encoding: 'utf8', env: { ...process.env, PATH: bin + ':' + process.env.PATH },
+    });
+    assert.notEqual(result.status, 0, `${kind}: ${result.stdout}`);
+    assert.match(result.stderr, kind === 'mismatch' ? /OMP_SOURCE_REF.*HEAD/ : /clean.*checkout/i);
+    assert(!fs.existsSync(log), `${kind} launched build tools`);
+    assert(!fs.existsSync(evidence), `${kind} minted evidence`);
+  }
+});
+test('preflight requires an exact full lowercase commit SHA, without repairing source tokens', () => {
+  const dir = fs.mkdtempSync(path.join(scratch, 'source-format-'));
+  const verification = path.join(dir, 'approval.json');
+  for (const [index, source] of ['fixture-ref', 'main', 'a'.repeat(7), 'A'.repeat(40),
+    ' ' + 'a'.repeat(40), 'main@' + 'a'.repeat(40), 'a'.repeat(64)].entries()) {
+    const approval = structuredClone(record); approval.inputs.OMP_SOURCE_REF = source;
+    fs.writeFileSync(verification, JSON.stringify(approval));
+    const evidence = path.join(dir, `receipt-${index}.json`);
+    const result = run(['--opt-in', '--anko-verification', verification, '--evidence', evidence]);
+    assert.notEqual(result.status, 0, source);
+    assert.match(result.stderr, /OMP_SOURCE_REF/);
+    assert(!fs.existsSync(evidence));
+  }
 });
 test('ordinary local extension builds still accept custom fixtures without migration approval', () => {
   const dir = fs.mkdtempSync(path.join(scratch, 'local-build-'));

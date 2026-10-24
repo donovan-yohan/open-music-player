@@ -41,7 +41,6 @@ type queueHandlerService interface {
 	RetryQueueItem(context.Context, string, string) (*QueueState, string, error)
 	ReorderQueueItem(context.Context, string, string, int) (*QueueState, error)
 	ClearQueue(context.Context, string) error
-	saveQueue(context.Context, string, *QueueState) error
 }
 
 type queueDownloadService interface {
@@ -182,9 +181,7 @@ func (h *Handlers) GetQueue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to get queue")
 		return
 	}
-	jobs := h.resolveDownloadBackedItems(r, userCtx.UserID.String(), state)
-
-	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), state, jobs))
+	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), state, nil))
 }
 
 // AddQueueItem handles POST /api/v1/queue/items.
@@ -605,56 +602,38 @@ func (h *Handlers) ClearQueue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), &QueueState{Items: []QueueItem{}, CurrentPosition: 0, UpdatedAt: time.Now()}, nil))
 }
 
-func (h *Handlers) resolveDownloadBackedItems(r *http.Request, userID string, state *QueueState) map[string]*download.DownloadJob {
+// resolveDownloadBackedItems only loads readiness inputs for the response. A GET
+// must not persist this snapshot: it can outlive add/remove/retry/clear commits.
+func (h *Handlers) resolveDownloadBackedItems(ctx context.Context, userID string, state *QueueState) map[string]*download.DownloadJob {
 	jobs := map[string]*download.DownloadJob{}
 	if h.downloadService == nil || state == nil {
 		return jobs
 	}
-	changed := false
-	for i := range state.Items {
-		item := &state.Items[i]
+	for _, item := range state.Items {
 		if item.DownloadJobID == "" || item.PlaybackState == "playable" {
 			continue
 		}
-		job, err := h.downloadService.GetJob(r.Context(), item.DownloadJobID)
-		if err != nil || job.UserID != userID {
+		job, err := h.downloadService.GetJob(ctx, item.DownloadJobID)
+		if err != nil || job == nil || job.UserID != userID {
 			continue
 		}
 		jobs[item.DownloadJobID] = job
-		switch job.Status {
-		case download.StatusComplete:
-			if job.TrackID != nil {
-				item.TrackID = job.TrackID
-				if item.PlaybackState != "playable" {
-					item.PlaybackState = "playable"
-					changed = true
-				}
-			}
-		case download.StatusFailed:
-			if item.PlaybackState != "failed" {
-				item.PlaybackState = "failed"
-				changed = true
-			}
-		case download.StatusQueued, download.StatusDownloading, download.StatusProcessing, download.StatusUploading:
-			if item.PlaybackState != job.Status {
-				item.PlaybackState = job.Status
-				changed = true
-			}
-		default:
-			if item.PlaybackState != "pendingDownload" {
-				item.PlaybackState = "pendingDownload"
-				changed = true
-			}
-		}
-	}
-	if changed {
-		state.UpdatedAt = time.Now()
-		_ = h.service.saveQueue(r.Context(), userID, state)
 	}
 	return jobs
 }
 
 func (h *Handlers) buildQueueResponse(ctx context.Context, state *QueueState, jobs map[string]*download.DownloadJob) QueueResponse {
+	// Mutations used to rely on GET having persisted readiness. Project every
+	// response from live jobs now, without making that read a second writer.
+	if user := auth.GetUserFromContext(ctx); user != nil {
+		resolved := h.resolveDownloadBackedItems(ctx, user.UserID.String(), state)
+		for id, job := range jobs {
+			if job != nil && job.UserID == user.UserID.String() {
+				resolved[id] = job
+			}
+		}
+		jobs = resolved
+	}
 	return buildQueueResponseWithAnalysis(state, jobs, h.compactAnalysisForState(ctx, state, jobs))
 }
 

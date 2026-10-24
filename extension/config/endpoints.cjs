@@ -1,6 +1,7 @@
 // Build-time only. No runtime host switch can redirect an authenticated session.
 function validateUrl(value, schemes = ['http:', 'https:']) {
-  if (typeof value !== 'string' || !value || /[\s\\?#]/.test(value) ||
+  // Reject literal controls before URL can strip or percent-encode them.
+  if (typeof value !== 'string' || !value || /[\x00-\x1f\x7f\s\\?#]/.test(value) ||
       !/^[a-z]+:\/\//.test(value)) throw new Error('Invalid explicit endpoint URL');
   const rawPath = value.replace(/^[a-z]+:\/\/[^/]+/, '');
   if (/\/\//.test(rawPath) || /%(?![0-9a-f]{2})/i.test(rawPath) ||
@@ -20,8 +21,12 @@ function endpointBundle(env = {}) {
   if (custom && keys.slice(0, 3).some(key => !env[key])) {
     throw new Error('Custom endpoints require OMP_API_BASE_URL, OMP_HEALTH_URL and OMP_WEB_LOGIN_URL');
   }
+  const apiBaseUrl = validateUrl(custom ? env.OMP_API_BASE_URL : 'http://localhost:8080/api/v1').replace(/\/$/, '');
+  if (!new URL(apiBaseUrl).pathname.endsWith('/api/v1')) {
+    throw new Error('OMP_API_BASE_URL must end with /api/v1 (optional prefix and trailing slash supported)');
+  }
   return Object.freeze({
-    apiBaseUrl: validateUrl(custom ? env.OMP_API_BASE_URL : 'http://localhost:8080/api/v1').replace(/\/$/, ''),
+    apiBaseUrl,
     healthUrl: validateUrl(custom ? env.OMP_HEALTH_URL : 'http://localhost:8080/health'),
     webLoginUrl: validateUrl(custom ? env.OMP_WEB_LOGIN_URL : 'http://localhost:8080/login'),
     wsUrl: env.OMP_WS_URL === undefined || env.OMP_WS_URL === '' ? null : validateUrl(env.OMP_WS_URL, ['ws:', 'wss:']),

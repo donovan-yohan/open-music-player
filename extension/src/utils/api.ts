@@ -52,6 +52,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/** Only safe HTTP methods may be replayed after an ambiguous failure. */
+function canAutomaticallyRetry(options: RequestInit): boolean {
+  return ['GET', 'HEAD', 'OPTIONS'].includes((options.method ?? 'GET').toUpperCase());
+}
+
 /** Check if we're online */
 function isOnline(): boolean {
   return navigator.onLine;
@@ -79,7 +84,7 @@ async function fetchWithTimeout(
 
 /**
  * Raw fetch with the same exponential-backoff retry policy as {@link fetchApi}
- * (retries 5xx/429 and network failures) but returns the {@link Response}
+ * (retries 5xx/429 and network failures for safe methods only) but returns the {@link Response}
  * untouched instead of parsing/throwing. Lets callers inspect status codes and
  * response bodies for their own error handling (e.g. 401 refresh, 409 dedup).
  */
@@ -88,9 +93,10 @@ export async function fetchWithRetry(
   options: RequestInit,
   maxRetries: number = MAX_RETRIES
 ): Promise<Response> {
+  const retryLimit = canAutomaticallyRetry(options) ? maxRetries : 0;
   let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 0; attempt <= retryLimit; attempt++) {
     try {
       const response = await fetchWithTimeout(url, options, DEFAULT_TIMEOUT);
 
@@ -102,7 +108,7 @@ export async function fetchWithRetry(
       // Retry server errors (5xx) and rate limiting (429).
       if (response.status >= 500 || response.status === 429) {
         lastError = new Error(`Server error: ${response.status}`);
-        if (attempt < maxRetries) {
+        if (attempt < retryLimit) {
           await sleep(calculateBackoff(attempt, defaultRetryConfig));
           continue;
         }
@@ -116,7 +122,7 @@ export async function fetchWithRetry(
         lastError = err instanceof Error ? err : new Error(String(err));
       }
 
-      if (attempt < maxRetries) {
+      if (attempt < retryLimit) {
         await sleep(calculateBackoff(attempt, defaultRetryConfig));
         continue;
       }
@@ -148,7 +154,7 @@ export async function fetchApi<T>(
   } = options ?? {};
 
   const config = { ...defaultRetryConfig, ...customRetryConfig };
-  const maxAttempts = skipRetry ? 1 : config.maxRetries + 1;
+  const maxAttempts = skipRetry || !canAutomaticallyRetry(fetchOptions) ? 1 : config.maxRetries + 1;
   let lastError: unknown;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -188,6 +194,7 @@ export async function fetchApi<T>(
           await sleep(backoff);
           continue;
         }
+        throw error;
       }
 
       // Success - parse response
@@ -338,7 +345,8 @@ export class ApiClient {
   /**
    * Performs an authenticated request against `endpoint` (relative to the API
    * host) and returns the raw {@link Response}. Retries 5xx/429/network errors
-   * with backoff and transparently refreshes-then-retries once on a 401.
+   * only for safe methods. An explicit 401 refreshes-then-retries once, since
+   * authentication rejected the original request before its handler ran.
    */
   async authorizedFetch(
     endpoint: string,

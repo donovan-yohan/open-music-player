@@ -5,7 +5,12 @@
 package stems
 
 import (
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"math"
+	"strings"
 	"time"
 )
 
@@ -141,6 +146,7 @@ const (
 
 // Job is one unit of separation work.
 type Job struct {
+	Generation       int64     `json:"generation"`
 	ID               string    `json:"id"`
 	TrackID          int64     `json:"trackId"`
 	ChannelSet       string    `json:"channelSet"`
@@ -160,6 +166,171 @@ func (j *Job) IsTerminal() bool {
 		return true
 	}
 	return j.Status == JobStatusComplete || j.Status == JobStatusFailed
+}
+
+// GenerationJobID isolates deliveries from previous requests/recovery. Zero is
+// retained only for old callers; SQL never admits an unfenced zero generation.
+func GenerationJobID(trackID int64, channelSet, model string, generation int64) string {
+	id := JobID(trackID, channelSet, model)
+	if generation > 0 {
+		return fmt.Sprintf("%s:g%d", id, generation)
+	}
+	return id
+}
+
+// Member describes encoded bytes and their decoded, trimmed PCM timeline.
+// Energy.FrameCount is intentionally a separate, low-rate visual grid.
+type Member struct {
+	Channel            string `json:"channel"`
+	Key                string `json:"key"`
+	Path               string `json:"path,omitempty"`
+	SHA256             string `json:"sha256"`
+	Bytes              int64  `json:"bytes"`
+	DurationMs         int64  `json:"duration_ms"`
+	Derivation         string `json:"derivation"`
+	SampleFrames       int64  `json:"sample_frames"`
+	SampleRateHz       int    `json:"sample_rate_hz"`
+	Channels           int    `json:"channels"`
+	OriginFrame        *int64 `json:"origin_frame"`
+	DelayFrames        *int64 `json:"delay_frames"`
+	EncoderDelayFrames *int64 `json:"encoder_delay_frames"`
+	DelayProvenance    string `json:"delay_provenance"`
+}
+type Artifacts struct {
+	Objects []Member        `json:"objects"`
+	Codec   json.RawMessage `json:"codec"`
+	NullSum json.RawMessage `json:"null_sum,omitempty"`
+	Energy  json.RawMessage `json:"energy"`
+}
+
+const DelayProvenance = "ffmpeg-ogg-opus-preskip-end-trim-v1"
+
+func ValidSHA256(hash string) bool {
+	if len(hash) != 64 || hash != strings.ToLower(hash) {
+		return false
+	}
+	_, err := hex.DecodeString(hash)
+	return err == nil
+}
+func ValidSourceHash(hash string) bool {
+	return strings.HasPrefix(hash, "sha256:") && ValidSHA256(strings.TrimPrefix(hash, "sha256:"))
+}
+func MemberKey(trackID int64, model, source string, generation int64, channel, digest string) string {
+	return fmt.Sprintf("stems/%d/%s/%s/g%d/%s/%s.opus", trackID, model, strings.TrimPrefix(source, "sha256:"), generation, BaseObjectChannel(channel), digest)
+}
+
+// ValidateManifest is shared by the service client, queue worker and publisher.
+// No untyped artifact key is eligible for publication or subsequent signing.
+func ValidateManifest(m *Manifest, req Request) error {
+	if m == nil {
+		return fmt.Errorf("nil stems manifest")
+	}
+	model, ok := StemModelVersionFor(req.ChannelSet)
+	if !ok || m.SchemaVersion != SchemaVersion || m.TrackID != req.TrackID || m.ChannelSet != req.ChannelSet || m.StemModelVersion != model || m.Generation != req.Generation {
+		return fmt.Errorf("stems manifest identity mismatch")
+	}
+	if m.SourceStorageKey != req.StorageKey || !ValidSourceHash(m.SourceFileHash) || (req.ExpectedSourceFileHash != "" && m.SourceFileHash != req.ExpectedSourceFileHash) {
+		return fmt.Errorf("stems manifest source mismatch")
+	}
+	worker, version, err := m.ProvenanceIdentity()
+	if err != nil {
+		return err
+	}
+	if worker != WorkerName || version != WorkerVersion {
+		return fmt.Errorf("%w: manifest worker", ErrWorkerIdentityMismatch)
+	}
+	var a Artifacts
+	if err := json.Unmarshal(m.Artifacts, &a); err != nil {
+		return err
+	}
+	var codec struct {
+		Name     string `json:"name"`
+		Rate     int    `json:"sample_rate_hz"`
+		Channels int    `json:"channels"`
+	}
+	if err := json.Unmarshal(a.Codec, &codec); err != nil {
+		return fmt.Errorf("missing codec: %w", err)
+	}
+	if codec.Name != "libopus" || codec.Rate != 48000 || codec.Channels != 2 {
+		return fmt.Errorf("unsupported member codec")
+	}
+	if req.ChannelSet == ChannelSetStems5Hybrid {
+		var null struct {
+			Passed    bool     `json:"passed"`
+			Residual  *float64 `json:"residual_db"`
+			Threshold float64  `json:"threshold_db"`
+			Pair      []string `json:"pair"`
+			Against   string   `json:"against"`
+		}
+		if err := json.Unmarshal(a.NullSum, &null); err != nil {
+			return fmt.Errorf("missing crossover null sum: %w", err)
+		}
+		if !null.Passed || null.Residual == nil || *null.Residual > -80 || null.Threshold != -80 || len(null.Pair) != 2 || null.Pair[0] != "kick" || null.Pair[1] != "perc" || null.Against != "drums" {
+			return fmt.Errorf("invalid crossover null sum")
+		}
+	}
+	roles, _ := Channels(req.ChannelSet)
+	if req.ChannelSet == ChannelSetStems5Hybrid {
+		roles = append(roles, "drums")
+	}
+	if len(a.Objects) != len(roles) {
+		return fmt.Errorf("incomplete stem member set")
+	}
+	expected := map[string]bool{}
+	for _, r := range roles {
+		expected[r] = true
+	}
+	var frames int64
+	var encoderDelay *int64
+	for _, o := range a.Objects {
+		if !expected[o.Channel] {
+			return fmt.Errorf("unknown or duplicate stem member %q", o.Channel)
+		}
+		delete(expected, o.Channel)
+		derivation := DerivationSeparator
+		if o.Channel == "kick" || o.Channel == "perc" {
+			derivation = DerivationCrossover
+		}
+		if !ValidSHA256(o.SHA256) || o.Bytes <= 0 || o.Key != MemberKey(m.TrackID, model, m.SourceFileHash, m.Generation, o.Channel, o.SHA256) || o.Derivation != derivation || o.Path != "" {
+			return fmt.Errorf("invalid stem member identity %q", o.Channel)
+		}
+		if o.SampleFrames <= 0 || o.SampleRateHz != 48000 || o.Channels != 2 || o.OriginFrame == nil || *o.OriginFrame != 0 || o.DelayFrames == nil || *o.DelayFrames != 0 || o.EncoderDelayFrames == nil || *o.EncoderDelayFrames < 0 || o.DelayProvenance != DelayProvenance {
+			return fmt.Errorf("invalid PCM timeline %q", o.Channel)
+		}
+		if encoderDelay == nil {
+			encoderDelay = o.EncoderDelayFrames
+		} else if *encoderDelay != *o.EncoderDelayFrames {
+			return fmt.Errorf("mixed member encoder delays")
+		}
+		if frames == 0 {
+			frames = o.SampleFrames
+		}
+		if frames != o.SampleFrames || math.Abs(float64(o.DurationMs)-float64(o.SampleFrames)*1000/float64(o.SampleRateHz)) > 1 {
+			return fmt.Errorf("unaligned PCM member %q", o.Channel)
+		}
+	}
+	if math.Abs(float64(m.DurationMs)-float64(frames)*1000/48000) > 1 {
+		return fmt.Errorf("manifest duration mismatch")
+	}
+	var energy struct {
+		FrameHz    int               `json:"frame_hz"`
+		FrameCount int               `json:"frame_count"`
+		Encoding   string            `json:"encoding"`
+		Channels   map[string]string `json:"channels"`
+	}
+	if err := json.Unmarshal(a.Energy, &energy); err != nil {
+		return err
+	}
+	if energy.FrameHz != 80 || energy.Encoding != "uint8-linear" || energy.FrameCount != int(math.Round(float64(frames)*80/48000)) || len(energy.Channels) != len(roles) {
+		return fmt.Errorf("invalid energy grid")
+	}
+	for _, r := range roles {
+		data, err := base64.StdEncoding.DecodeString(energy.Channels[r])
+		if err != nil || len(data) != energy.FrameCount {
+			return fmt.Errorf("invalid energy member %q", r)
+		}
+	}
+	return nil
 }
 
 // JobID is the deterministic dedupe key for a separation request. It matches the

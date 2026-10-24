@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 // Approved-input, local artifact builds only. No install, publish or deployment.
-const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { prepare, writeEvidence } = require('./private-vm-preflight');
@@ -21,6 +20,18 @@ try {
     if (inputs[key] !== undefined) env[key] = inputs[key];
   }
   const root = path.resolve(__dirname, '..');
+  const git = (...gitArgs) => {
+    const result = spawnSync('git', gitArgs, { cwd: root, encoding: 'utf8' });
+    if (result.error || result.status !== 0) throw new Error('Cannot verify source checkout; cutover and distribution HELD');
+    return result.stdout.trim();
+  };
+  if (git('rev-parse', '--show-toplevel') !== root) throw new Error('Build requires its own source checkout');
+  const commit = git('rev-parse', '--verify', 'HEAD^{commit}');
+  if (inputs.OMP_SOURCE_REF !== commit) throw new Error('OMP_SOURCE_REF must match the built checkout HEAD exactly');
+  if (git('status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none')) {
+    throw new Error('Approved artifacts require a clean source checkout (including staged and untracked files)');
+  }
+  prepared.evidence.source = { commit, tree: git('rev-parse', 'HEAD^{tree}'), clean: true };
   const run = (command, commandArgs, component) => {
     const result = spawnSync(command, commandArgs, { cwd: path.join(root, component), env, stdio: 'inherit' });
     if (result.error || result.status !== 0) throw new Error(`${command} failed; cutover and distribution HELD`);
@@ -37,7 +48,7 @@ try {
     run('flutter', ['build', 'web', '--release', '--no-pub', ...defines], 'client');
   }
   if (target === 'extension' || target === 'all') {
-    if (!fs.existsSync(path.join(root, 'extension/node_modules'))) run('npm', ['ci'], 'extension');
+    run('npm', ['ci'], 'extension');
     run('npm', ['run', 'build'], 'extension');
   }
   console.log('Local artifacts built from reviewed inputs; cutover and distribution HELD. No install/deploy performed.');
