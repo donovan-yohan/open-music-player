@@ -1,5 +1,6 @@
 """Explicitly synthetic, offline tests; never a measured application cohort."""
 import importlib.util
+import csv
 import json
 import subprocess
 import tempfile
@@ -315,6 +316,28 @@ class CliTests(unittest.TestCase):
             self.assertEqual((self.root / variant / 'inputs' / digest(data)).read_bytes(), data)
             path.write_bytes(original)
             ref['sha256'] = digest(original)
+
+    def test_oversized_hwui_csv_field_keeps_unaffected_attempts(self):
+        first = self.receipts['attempts'][0]
+        ref = first['raw']
+        path = self.root / ref['path']
+        original = path.read_bytes()
+        data = original.replace(b'0,1,100,110,120,',
+                                b'0,1,' + b'9' * (csv.field_size_limit() + 1) + b',110,120,')
+        self.assertNotEqual(data, original)
+        path.write_bytes(data)
+        ref['sha256'] = digest(data)
+        self.save()
+        code, report = self.cli('reduce', 'oversized-hwui-csv')
+        self.assertEqual(code, 1)
+        self.assertEqual(report['status'], 'failed')
+        self.assertIsNone(report['comparison'])
+        self.assertFalse(report['full_app_accepted'])
+        self.assertEqual(len(report['attempts']), 10)
+        self.assertFalse(report['attempts'][0]['admitted'])
+        self.assertEqual(report['attempts'][0]['reasons'], ['invalid-hwui-row'])
+        self.assertTrue(all(a['admitted'] for a in report['attempts'][1:]))
+        self.assertEqual((self.root / 'oversized-hwui-csv' / 'inputs' / digest(data)).read_bytes(), data)
 
     def test_relabelled_replay_cannot_count_repetitions_or_duplicate_unions(self):
         original = deepcopy(self.receipts)

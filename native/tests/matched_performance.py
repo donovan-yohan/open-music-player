@@ -87,7 +87,10 @@ def parse_hwui(text, pid, application_id, surface):
     require(active is None, 'truncated-profiledata')
     chosen = [rows for name, rows in sections if name == surface]
     require(len(chosen) == 1, 'missing-or-ambiguous-surface')
-    rows = list(csv.reader(chosen[0]))
+    try:
+        rows = list(csv.reader(chosen[0]))
+    except csv.Error:
+        raise Invalid('invalid-hwui-row') from None
     require(len(rows) >= 2, 'missing-frames')
     header = rows[0]
     if header[-1] == '':
