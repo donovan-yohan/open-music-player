@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -171,6 +172,13 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     production = (args.source_file or args.source_root / SOURCE).read_bytes()
+    if 'func mountLibraryDock(' in production.decode():
+        # The production hierarchy changed: do not compile a duplicate old row.
+        # Delegate to the actual builder + all production dependencies, preserving
+        # original 900/1100, metadata/Unicode/height stress in that solver gate.
+        output.rmdir()
+        result = subprocess.run([sys.executable, '-B', str(Path(__file__).with_name('library_dock_presentation.py')), '--source-root', str(args.source_root), '--output', str(output)], check=False)
+        raise SystemExit(result.returncode)
     extracted = configuration(production.decode())
     prelude = 'import AppKit\n' if args.appkit else FACADE
     probe = prelude + COMMON.replace('__CONFIGURATION__', extracted) + (APPKIT_CHECKS if args.appkit else CONFIG_CHECKS)

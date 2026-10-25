@@ -15,6 +15,67 @@ the supported client. Server API/auth/schema authority stays in Go.
 - `python3 scripts/native-client all --evidence <new-receipt-directory>` retains
   exact build commands, exit codes and hash-bound logs. It never installs apps.
 
+### macOS supported Library/dock slice (#506)
+
+The AppKit presentation borrows App's existing table, search, slider and transport
+controls. It adds the SoundQ emblem/wordmark, Library-only rail, native lazy rows
+(title, neutral artist and duration with an honest music-note artwork fallback),
+working search/Refresh/Load more/Play selected and a physically centered
+Previous/Play/Next dock. Queue still opens the existing native menu; Retry and
+Sign out remain real actions. No placeholder destinations, filters, likes,
+shuffle or repeat are exposed. Playback, credentials, account and command
+ownership remain in App/the Rust core, not the presentation.
+
+The rail is 80 points below 1200, measured at least 224 above it. At 960+ and
+ordinary text, the full-width dock is 100 high with a 480–560 center; neighboring
+transport cells are 48 with 24-point glyphs, secondary cells 40 with 20-point
+roles. Native desktop reflows below 960 (including the existing 760×540 minimum)
+and at larger text; scrollable body/rail retain access without shrinking fonts.
+The one presentation scale input starts from the native preferred body font.
+Identity/play changes use short, retargetable, reduced-motion-aware transitions;
+scalar position publications update progress without list reload or identity
+animation. Actual screenshots, native keyboard/AX, motion and performance remain
+separate acceptance gates, not consequences of compilation.
+
+`SoundQTokens.swift` maps the frozen Flutter `theme.dart`/`desktop_theme.dart`
+semantic roles. Dark is the mounted Flutter reference; native light is a
+shared-token adaptation, not claimed mounted light parity. Six local Space
+Grotesk/IBM Plex Mono faces register with CoreText for this process only; normal
+script fallback remains. Resources include the original logo, both OFL licenses,
+upstream provenance and a portable hash manifest. SwiftPM copies the exact owned
+resource bundle into the app before ad-hoc signing, replacing stale resource
+files. A packaged app refuses missing/mismatched resources rather than silently
+using an absolute development bundle. `SoundQNative --resources-only` verifies
+local resources/fonts without creating NSApplication, bridge, account or audio.
+
+Device-free gates (installed macOS Swift/AppKit, no app/window launch):
+
+- `python3 -B native/tests/queue_transport_layout.py --appkit --output <new-dir>`
+  invokes the actual production builder/presentation dependencies, preserving
+  900/1100 multiline/Unicode/height stress and adding 760/960/1200/1440/wide,
+  short-height, 1×/2× fonts, painted geometry, projection counters and token paint.
+- `python3 -B native/tests/native_review_regressions.py` checks packaging facades,
+  effective Cargo outputs, resource absence/stale removal and JDK precedence.
+  Real SwiftCoreLink and SwiftReporting controls can be selected via unittest;
+  `--compiled` also runs Android and is not the bounded macOS-only selection.
+- `python3 -B native/tests/library_metadata_regressions.py --output <new-dir>`
+  compiles real Library detail actions/publication/account wrappers with boundary
+  facades. The selected-row Full details button exposes original title and artist
+  in a bounded selectable wrapping native scroll area without playback commands.
+  Issued capabilities retire on account/epoch/session/removal/exact metadata change;
+  old actions and delayed sheet completion cannot affect a newer disclosure.
+  The layout gate also executes the actual Swift resource reader on reordered,
+  invalid-schema, duplicate/missing/unexpected/alias and corrupt private inputs.
+
+This is a supported-workflow subset, not full Library/shell parity or Flutter
+replacement. Native artwork metadata, loading spinner (no reliable Library-only
+loading signal), broader destinations and unavailable commands remain pending.
+Library Full details and existing Queue Full name use read-only native text and
+Escape-only Done configuration; actual pointer/keyboard focus, scrolling to the
+complete title/artist suffix and Escape dispatch remain runtime gates. No source/solver
+check approves layout, fonts or appearance; matched runtime/design and measured
+performance remain required before product-complete claims.
+
 Pinned application dependencies are in `core/Cargo.lock`; Android uses AGP
 8.13.2, Kotlin 2.3.20, Gradle 9.1.0, NDK 28.2.13676358 and CMake 3.22.1.
 Overrides: SOUNDQ_RUST_BIN, SOUNDQ_GRADLE, SOUNDQ_JAVA_HOME, ANDROID_HOME.
