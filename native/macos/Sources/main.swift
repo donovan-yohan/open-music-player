@@ -19,7 +19,9 @@ struct Snapshot: Decodable {
     var library: [Track]
     let library_unchanged: Bool
     let total: UInt64
-    let queue: [Occurrence]
+    var queue: [Occurrence]
+    let queue_unchanged: Bool
+    let selected_occurrence: UInt64?
     let transport: String
     let position_ms: UInt64
     let duration_ms: UInt64
@@ -60,7 +62,7 @@ final class Bridge: @unchecked Sendable {
 }
 
 @MainActor
-final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSMenuItemValidation {
     var window: NSWindow!
     var bridge: Bridge!
     var snapshot: Snapshot?
@@ -90,6 +92,7 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     var wantsPlayback = false
     var accountScope: UInt64 = 1
     var storedCredentialVersion: UInt64 = 0
+    var queueNameAlert: (alert: NSAlert, id: UInt64)?
 
     func fixtureCacheRoot() -> URL? {
         guard endpoint.stringValue == "http://127.0.0.1:54761/api/v1",
@@ -101,7 +104,7 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     func applicationDidFinishLaunching(_ notification: Notification) {
         let environment = ProcessInfo.processInfo.environment
         endpoint.stringValue = environment["OMP_API_BASE_URL"] ?? "http://127.0.0.1:8080/api/v1"
-        let root = fixtureCacheRoot() ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("com.soundq.native.preview")
+        let root = fixtureCacheRoot() ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("com.soundq.native.preview")
         bridge = Bridge(endpoint: endpoint.stringValue, root: root)
         buildWindow()
         configureMediaControls()
@@ -126,7 +129,7 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
             }
         }
         if let saved = loadCredentials() {
-            command(["command":"restore", "access_token":saved.access_token, "refresh_token":saved.refresh_token, "account_id":saved.account_id]) { [weak self] in self?.loadLibrary() }
+            command(["command":"restore", "access_token":saved.access_token, "refresh_token":saved.refresh_token, "account_id":saved.account_id]) { [weak self] in self?.command(["command":"queue_restore"]) {self?.loadLibrary()} }
         } else { command(["command":"snapshot"]) }
     }
     func buildWindow() {
@@ -174,8 +177,16 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
         play.target = self;play.action = #selector(toggle)
         play.setAccessibilityIdentifier("toggle-playback")
         let retry = NSButton(title:"Retry",target:self,action:#selector(retry))
-        let transport = NSStackView(views:[select,play,retry,transportLabel]);transport.orientation = .horizontal
-        content.addArrangedSubview(transport)
+        let previous = NSButton(title:"Previous",target:self,action:#selector(previousTrack))
+        let next = NSButton(title:"Next",target:self,action:#selector(nextTrack))
+        let queue = NSButton(title:"Queue",target:self,action:#selector(showQueue))
+        // One native line yields before the window's width; Full name keeps exact metadata.
+        transportLabel.lineBreakMode = .byWordWrapping
+        transportLabel.maximumNumberOfLines = 1
+        transportLabel.cell?.truncatesLastVisibleLine = true
+        transportLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
+        let transport = NSStackView(views:[select,previous,play,next,retry,queue,transportLabel]);transport.orientation = .horizontal
+        content.addArrangedSubview(transport);transport.widthAnchor.constraint(equalTo:content.widthAnchor,constant:-48).isActive = true
         slider.target = self;slider.action = #selector(seek);slider.isContinuous = false
         slider.setAccessibilityLabel("Playback position")
         content.addArrangedSubview(slider);slider.widthAnchor.constraint(equalTo:content.widthAnchor,constant:-48).isActive = true
@@ -186,13 +197,14 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     }
     func command(_ value: [String:Any], completion: (@MainActor () -> Void)? = nil) {
         let kind = value["command"] as? String ?? ""
+        if ["login","register","restore","logout","select","queue_play","next","previous","queue_clear","queue_restore"].contains(kind) {closeQueueName()}
         if ["login","register","restore","logout"].contains(kind) {
             accountScope += 1;storedCredentialVersion = 0
             if kind != "restore", ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_FIXTURE_HOME"] == nil {deleteCredentials()}
         }
         guard busy < 32 else {status.stringValue = "Playback is busy. Try again.";return}
-        if ["select","resume","retry"].contains(kind) {wantsPlayback = true}
-        if ["pause","logout","login"].contains(kind) {wantsPlayback = false;player?.pause()}
+        if ["select","queue_play","next","previous","resume","retry"].contains(kind) || kind == "queue_remove" && (value["occurrence_id"] as? UInt64) == snapshot?.selected_occurrence {wantsPlayback = true}
+        if ["pause","queue_clear","queue_restore","logout","login"].contains(kind) {wantsPlayback = false;player?.pause()}
         var scopedValue = value;scopedValue["account_scope_v1"] = accountScope
         guard let data = try? JSONSerialization.data(withJSONObject:scopedValue) else {return}
         let admittedEpoch = epoch
@@ -214,12 +226,14 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     func apply(_ incoming: Snapshot) {
         var value = incoming
         if value.library_unchanged {value.library = snapshot?.library ?? []}
+        if value.queue_unchanged {value.queue = snapshot?.queue ?? []}
         let rowsChanged = !value.library_unchanged && (snapshot?.library.map(\.id) != value.library.map(\.id) || snapshot?.library.map(\.title) != value.library.map(\.title))
+        reconcileQueueName(value)
         snapshot = value
         loginArea.isHidden = value.authenticated;libraryArea.isHidden = !value.authenticated;logout.isHidden = !value.authenticated
         if rowsChanged {table.reloadData()}
         titleLabel.stringValue = value.authenticated ? "SoundQ / Library" : "SoundQ"
-        transportLabel.stringValue = (value.queue.first?.track.title ?? "No selection") + " · " + value.transport
+        transportLabel.stringValue = (value.queue.first(where:{$0.id==value.selected_occurrence})?.track.title ?? "No selection") + " · " + value.transport
         play.title = value.transport == "playing" ? "Pause" : "Play"
         play.isEnabled = !value.queue.isEmpty
         slider.maxValue = Double(max(value.duration_ms,1));slider.doubleValue = Double(value.position_ms)
@@ -241,8 +255,10 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
                     if failed {self.report(state:"failed")} else if item.status == .readyToPlay && self.wantsPlayback {self.player?.play()}
                 }
             }
+            if effect.position_ms>0 {player?.seek(to:CMTime(value:Int64(effect.position_ms),timescale:1000),toleranceBefore:.zero,toleranceAfter:.zero)}
             if wantsPlayback {player?.play()}
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = [MPMediaItemPropertyTitle:snapshot?.queue.first?.track.title ?? "SoundQ",MPMediaItemPropertyArtist:snapshot?.queue.first?.track.artist ?? ""]
+            let track=snapshot?.queue.first(where:{$0.id==snapshot?.selected_occurrence})?.track
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = [MPMediaItemPropertyTitle:track?.title ?? "SoundQ",MPMediaItemPropertyArtist:track?.artist ?? ""]
         case "pause": player?.pause()
         case "play": if wantsPlayback {player?.play()}
         case "seek": player?.seek(to:CMTime(value:Int64(effect.position_ms),timescale:1000),toleranceBefore:.zero,toleranceAfter:.zero)
@@ -256,6 +272,10 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
         let failed = player.error != nil || player.currentItem?.status == .failed
         guard time.isFinite || failed || state == "failed" else{return}
         let nativeState = state ?? (failed ? "failed" : player.rate > 0 ? "playing" : (duration.isFinite && time >= duration-0.05 ? "ended" : "paused"))
+        // Only a playing/preparing canonical owner can consume EOF. After its
+        // accepted final observation (even with a save fault), the timer must
+        // not submit it again. Failure and seek/resume observations still flow.
+        if nativeState == "ended", !["playing","preparing"].contains(snapshot.transport) {return}
         let positionMs = max(time,0)*1000;let durationMs = max(duration,0)*1000
         let position = positionMs.isFinite && positionMs < Double(UInt64.max) ? UInt64(positionMs) : snapshot.position_ms
         let length = durationMs.isFinite && durationMs < Double(UInt64.max) ? UInt64(durationMs) : snapshot.duration_ms
@@ -265,6 +285,7 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     }
     func loadLibrary(offset: Int = 0) {command(["command":"library","offset":offset,"query":search.stringValue,"sort":"added_at","order":"desc"])}
     @objc func signIn() {
+        closeQueueName()
         player?.pause();player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke()
 
         command(["command":"login","email":email.stringValue.trimmingCharacters(in:.whitespacesAndNewlines),"password":password.stringValue]) { [weak self] in
@@ -272,11 +293,108 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
             self.password.stringValue = "";self.loadLibrary()
         }
     }
-    @objc func signOut() {player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();deleteCredentials();command(["command":"logout"])}
+    @objc func signOut() {closeQueueName();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();deleteCredentials();command(["command":"logout"])}
     @objc func refresh() {loadLibrary()}
     @objc func loadMore() {loadLibrary(offset:snapshot?.library.count ?? 0)}
-    @objc func selectTrack() {let row = table.selectedRow;guard let s = snapshot,row >= 0,row < s.library.count else{return};player?.pause();player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();command(["command":"select","track_id":s.library[row].id])}
+    @objc func selectTrack() {let row = table.selectedRow;guard let s = snapshot,row >= 0,row < s.library.count else{return};closeQueueName();player?.pause();player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();command(["command":"select","track_id":s.library[row].id])}
     @objc func toggle() {command(["command":snapshot?.transport == "playing" ? "pause" : "resume"])}
+    func queueCommand(_ kind:String,id:UInt64?=nil,index:Int?=nil) {
+        guard let s=snapshot else{return}
+        let selected=s.queue.firstIndex(where:{$0.id==s.selected_occurrence})
+        if kind=="next" && (selected==nil || selected!+1>=s.queue.count) {return}
+        if kind=="previous" && (selected==nil || selected == 0) {return}
+        if ["queue_play","next","previous","queue_clear"].contains(kind) || kind=="queue_remove" && id==s.selected_occurrence {
+            closeQueueName()
+            player?.pause();observation=nil;player?.replaceCurrentItem(with:nil);player=nil;epoch=bridge.revoke()
+        }
+        var value:[String:Any]=["command":kind]
+        if let id {value[kind=="queue_append" ? "track_id":"occurrence_id"]=id}
+        if let index {value["to_index"]=index}
+        command(value)
+    }
+    @objc func nextTrack() {queueCommand("next")}
+    @objc func previousTrack() {queueCommand("previous")}
+    @objc func showQueue() {
+        closeQueueName()
+        let menu=NSMenu(title:"Listening queue")
+        for o in snapshot?.queue ?? [] {
+            let item=NSMenuItem(title:(o.id==snapshot?.selected_occurrence ? "Current · ":"")+o.track.title,action:#selector(playOccurrence(_:)),keyEquivalent:"")
+            item.target=self;item.representedObject=NSNumber(value:o.id)
+            let actions=NSMenu()
+            for (title,selector) in [("Play",#selector(playOccurrence(_:))),("Move up",#selector(moveOccurrenceUp(_:))),("Move down",#selector(moveOccurrenceDown(_:))),("Remove",#selector(removeOccurrence(_:))),("Full name",#selector(showOccurrenceName(_:)))] {
+                let action=NSMenuItem(title:title,action:selector,keyEquivalent:"");action.target=self;action.representedObject=NSNumber(value:o.id);actions.addItem(action)
+            }
+            item.submenu=actions;menu.addItem(item)
+        }
+        menu.addItem(.separator());let clear=NSMenuItem(title:"Clear queue",action:#selector(clearQueue),keyEquivalent:"");clear.target=self;menu.addItem(clear)
+        menu.popUp(positioning:nil,at:NSPoint(x:20,y:100),in:window.contentView)
+    }
+    // AppKit autoenables menu items by asking their target on every validation.
+    // Resolve occurrence identity against the latest snapshot, never opening order.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(clearQueue) {return snapshot?.queue.isEmpty == false}
+        if menuItem.action == #selector(showOccurrenceName(_:)) {return queueNameOccurrence(menuItem) != nil}
+        let action = menuItem.action
+        guard [#selector(playOccurrence(_:)),#selector(removeOccurrence(_:)),#selector(moveOccurrenceUp(_:)),#selector(moveOccurrenceDown(_:))].contains(where:{$0 == action}) else {return true}
+        guard let id = menuItem.representedObject as? NSNumber, let s = snapshot,
+              let index = s.queue.firstIndex(where:{$0.id == id.uint64Value}) else {return false}
+        if action == #selector(moveOccurrenceUp(_:)) {return index > 0}
+        if action == #selector(moveOccurrenceDown(_:)) {return index + 1 < s.queue.count}
+        return true
+    }
+    @objc func playOccurrence(_ sender:NSMenuItem) {if let id=sender.representedObject as? NSNumber,snapshot?.queue.contains(where:{$0.id==id.uint64Value}) == true {queueCommand("queue_play",id:id.uint64Value)}}
+    @objc func removeOccurrence(_ sender:NSMenuItem) {if let id=sender.representedObject as? NSNumber,snapshot?.queue.contains(where:{$0.id==id.uint64Value}) == true {queueCommand("queue_remove",id:id.uint64Value)}}
+    @objc func moveOccurrenceUp(_ sender:NSMenuItem) {moveOccurrence(sender,delta:-1)}
+    @objc func moveOccurrenceDown(_ sender:NSMenuItem) {moveOccurrence(sender,delta:1)}
+    func moveOccurrence(_ sender:NSMenuItem,delta:Int) {guard let id=sender.representedObject as? NSNumber,let s=snapshot,let index=s.queue.firstIndex(where:{$0.id==id.uint64Value}),s.queue.indices.contains(index+delta) else{return};queueCommand("queue_move",id:id.uint64Value,index:index+delta)}
+    @objc func clearQueue() {guard snapshot?.queue.isEmpty == false else{return};queueCommand("queue_clear")}
+    func queueNameOccurrence(_ sender: NSMenuItem) -> Occurrence? {
+        guard let id = sender.representedObject as? NSNumber,
+              CFGetTypeID(id) != CFBooleanGetTypeID(), id.uint64Value > 0,
+              id.stringValue == String(id.uint64Value), let s = snapshot,
+              s.authenticated, s.epoch == epoch else {return nil}
+        return s.queue.first(where:{$0.id == id.uint64Value})
+    }
+    @objc func showOccurrenceName(_ sender: NSMenuItem) {
+        guard let occurrence = queueNameOccurrence(sender) else {return}
+        closeQueueName()
+        let alert = NSAlert();alert.messageText = "Full name"
+        let done = alert.addButton(withTitle:"Done");done.keyEquivalent = "\u{1b}"
+        let area = NSTextView.scrollableTextView()
+        let screen = window.screen?.visibleFrame ?? window.frame
+        let available = NSSize(width:min(window.contentLayoutRect.width,screen.width),height:min(window.contentLayoutRect.height,screen.height))
+        area.frame = NSRect(x:0,y:0,width:min(560,available.width * 0.6),height:min(320,available.height * 0.45))
+        area.hasVerticalScroller = true;area.hasHorizontalScroller = false;area.autohidesScrollers = true
+        guard let text = area.documentView as? NSTextView else {return}
+        text.isEditable = false;text.isSelectable = true;text.isRichText = false
+        text.font = sender.menu?.font ?? NSFont.menuFont(ofSize:0)
+        text.isHorizontallyResizable = false;text.isVerticallyResizable = true
+        text.autoresizingMask = [.width]
+        text.minSize = NSSize(width:0,height:area.contentSize.height)
+        text.maxSize = NSSize(width:CGFloat.greatestFiniteMagnitude,height:CGFloat.greatestFiniteMagnitude)
+        text.textContainer?.size = NSSize(width:area.contentSize.width,height:CGFloat.greatestFiniteMagnitude)
+        text.textContainer?.widthTracksTextView = true;text.textContainer?.lineBreakMode = .byCharWrapping
+        text.string = occurrence.track.title
+        text.setAccessibilityLabel("Full track name");area.setAccessibilityLabel("Full name scroll area")
+        alert.accessoryView = area;alert.window.initialFirstResponder = text
+        queueNameAlert = (alert,occurrence.id)
+        alert.beginSheetModal(for:window) { [weak self, weak alert] _ in
+            if self?.queueNameAlert?.alert === alert {self?.queueNameAlert = nil}
+        }
+    }
+    func closeQueueName() {
+        guard let detail = queueNameAlert else {return}
+        queueNameAlert = nil
+        window.endSheet(detail.alert.window)
+    }
+    func reconcileQueueName(_ incoming: Snapshot) {
+        guard let detail = queueNameAlert else {return}
+        if !incoming.authenticated || incoming.epoch != snapshot?.epoch || incoming.session != snapshot?.session ||
+            incoming.selected_occurrence != snapshot?.selected_occurrence ||
+            incoming.queue.first(where:{$0.id == detail.id}).map({Array($0.track.title.utf8)}) != snapshot?.queue.first(where:{$0.id == detail.id}).map({Array($0.track.title.utf8)}) {
+            closeQueueName()
+        }
+    }
     @objc func retry() {command(["command":"retry"])}
     @objc func seek() {command(["command":"seek","position_ms":UInt64(slider.doubleValue)])}
     func controlTextDidEndEditing(_ obj: Notification) {if (obj.object as? NSSearchField) === search {loadLibrary()}}
@@ -294,6 +412,8 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
         center.playCommand.addTarget { [weak self] _ in Task { @MainActor in self?.command(["command":"resume"]) };return .success }
         center.pauseCommand.addTarget { [weak self] _ in Task { @MainActor in self?.command(["command":"pause"]) };return .success }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in Task { @MainActor in self?.toggle() };return .success }
+        center.nextTrackCommand.addTarget { [weak self] _ in Task { @MainActor in self?.nextTrack() };return .success }
+        center.previousTrackCommand.addTarget { [weak self] _ in Task { @MainActor in self?.previousTrack() };return .success }
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else{return .commandFailed}
             let ms = UInt64(max(event.positionTime,0)*1000)
@@ -317,7 +437,7 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
         command(["command":"acknowledge_credentials","version":version])
     }
     func deleteCredentials() {SecItemDelete(keychainQuery() as CFDictionary)}
-    func applicationWillTerminate(_ notification:Notification) {timer?.invalidate();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;_ = bridge.revoke()}
+    func applicationWillTerminate(_ notification:Notification) {closeQueueName();timer?.invalidate();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;_ = bridge.revoke()}
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {true}
 }
 

@@ -89,8 +89,15 @@ The development namespace `com.soundq.nativepreview` / macOS
 reinstalls, reads or migrates its account/offline data. A production data/session
 migration remains unimplemented. Preview sessions use native secure stores.
 
-The current slice supports one selected listening occurrence, not a full queue,
-prepared mix renderer, DJ, stems or collaboration. Existing C/C++ DSP remains in
+The sequential listening queue has stable independent occurrence IDs, visible-list
+selection, next/previous/EOF progression, append/reorder/remove/clear and native
+queue controls. Platform media actions use the same Rust owner. Account/endpoint-
+scoped queue state is atomically saved outside platform disposable caches and
+restored paused; explicit resume prepares the source at its saved cursor. No
+credentials, signed URLs or native handles enter the queue file. Corrupt state is
+reported without deleting it. This does not migrate the existing Flutter queue.
+Shuffle/loop, continuation, crossfades/timeline, prepared mix renderer, DJ, stems
+and collaboration remain gaps. Existing C/C++ DSP remains in
 `client/native` and is deliberately not relocated on a speculative build.
 Original audio is downloaded off UI/audio threads into a bounded container-named
 cache, verified by content digest and scoped by endpoint/account. Delivered paths

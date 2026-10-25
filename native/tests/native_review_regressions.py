@@ -239,7 +239,7 @@ struct Clock { var seconds: Double }
 enum Status {case failed, readyToPlay}
 class Item {var status:Status = .readyToPlay;var duration=Clock(seconds:30)}
 class Player {var currentItem:Item?=Item();var error:String?;var rate:Float=0;var time=Clock(seconds:1);func currentTime()->Clock {time}}
-struct Snapshot {var queue=[1];var session:UInt64=1;var position_ms:UInt64=800;var duration_ms:UInt64=30000}
+struct Snapshot {var queue=[1];var session:UInt64=1;var position_ms:UInt64=800;var duration_ms:UInt64=30000;var transport="playing"}
 class MPNowPlayingInfoCenter {enum State {case playing,paused};var playbackState:State = .paused;static let shared=MPNowPlayingInfoCenter();static func `default`()->MPNowPlayingInfoCenter{shared}}
 class App {
 var player:Player?=Player();var snapshot:Snapshot?=Snapshot();var reportPending=false;var busy=0;var epoch:UInt64=1
@@ -259,6 +259,31 @@ require(a.reports.last?["position_ms"] as? UInt64 == 800,"failure lost last vali
 a.player!.time.seconds = .infinity;a.player!.currentItem!.duration.seconds = .infinity;a.report();require(a.reports.last?["state"] as? String == "failed","infinite failure was dropped")
 print("PASS busy-item-failure next-tick stale-selection nonfinite-failure")
 '''.replace("__REPORT__", report)
+        self.compile_run(harness)
+
+    def test_queue_selection_intent_and_noncurrent_decoder_identity(self):
+        source = (ROOT / 'native/macos/Sources/main.swift').read_text()
+        queue = swift_block(source, 'func queueCommand(')
+        command = swift_block(source, 'func command(')
+        intent = command[command.index('        if ["select"'):command.index('        var scopedValue')]
+        harness = r'''import Foundation
+struct Occurrence {let id:UInt64}
+struct Snapshot {var queue=[Occurrence(id:11),Occurrence(id:12)];var selected_occurrence:UInt64?=11}
+class Player {var retired=false;func pause(){};func replaceCurrentItem(with:Any?){retired=true}}
+class Bridge {var epoch:UInt64=1;func revoke()->UInt64{epoch+=1;return epoch}}
+class App {var snapshot:Snapshot?=Snapshot();var player:Player?=Player();var observation:Int?;var epoch:UInt64=1;var bridge=Bridge();var wantsPlayback=false;var sent=[[String:Any]]()
+func closeQueueName(){}
+func command(_ value:[String:Any]) {let kind=value["command"] as? String ?? ""
+__INTENT__
+sent.append(value)}
+__QUEUE__
+}
+let a=App();let old=a.player!;a.queueCommand("queue_remove",id:11)
+precondition(a.wantsPlayback && old.retired && a.player==nil && a.epoch==2,"selected removal did not establish explicit playback intent")
+let b=App();let current=b.player!;b.queueCommand("queue_move",id:12,index:0);b.queueCommand("queue_remove",id:12)
+precondition(b.player===current && !current.retired && b.epoch==1,"noncurrent edit retired decoder")
+print("PASS Swift-selected-remove-intent noncurrent-decoder-identity")
+'''.replace('__INTENT__', intent).replace('__QUEUE__', queue)
         self.compile_run(harness)
 
     def test_fixture_completion_process_status_and_cleanup(self):
@@ -300,7 +325,7 @@ def android_probe(root, extract):
     methods = '\n'.join(extract(source, start) for start in [
         'fun command(', 'fun select(', 'private fun applyAudio(', 'private fun startPlayer(',
         'private fun abandonFocus(', 'private fun retireAudio(', 'private fun report(',
-        *[name for name in ('private fun stopPlaybackService(', 'private fun failPlayback(') if name in source],
+        *[name for name in ('fun selectedTrack(', 'fun queueAction(', 'private fun stopPlaybackService(', 'private fun failPlayback(') if name in source],
         'private fun showNotification(', 'override fun onStartCommand('])
     methods = methods.replace('org.json.JSONArray()', 'JSONArray()').replace('override fun onStartCommand', 'fun onStartCommand')
     harness = r'''import java.util.ArrayDeque
@@ -308,13 +333,13 @@ class JSONObject {
 val values=linkedMapOf<String,Any>();constructor();constructor(text:String){values.putAll(registry.getValue(text))}
 fun put(k:String,v:Any):JSONObject{values[k]=v;return this};fun remove(k:String)=values.remove(k)
 fun optString(k:String)=values[k] as? String ?: "";fun getString(k:String)=optString(k)
-fun optLong(k:String)=(values[k] as? Number)?.toLong() ?: 0L;fun getLong(k:String)=optLong(k)
+fun optLong(k:String,d:Long=0L)=(values[k] as? Number)?.toLong() ?: d;fun getLong(k:String)=optLong(k)
 fun optBoolean(k:String)=values[k] as? Boolean ?: false
 fun optJSONObject(k:String)=values[k] as? JSONObject;fun optJSONArray(k:String)=values[k] as? JSONArray
 fun optJSONObject(i:Int):JSONObject?=null
  override fun toString():String{val key=values.toString();registry[key]=LinkedHashMap(values);return key}
 companion object{val registry=mutableMapOf<String,Map<String,Any>>()}}
-class JSONArray {fun optJSONObject(i:Int):JSONObject?=null}
+class JSONArray(val rows:List<JSONObject> = emptyList()) {fun length()=rows.size;fun getJSONObject(i:Int)=rows[i];fun optJSONObject(i:Int):JSONObject?=rows.getOrNull(i)}
 class Queue {val tasks=ArrayDeque<()->Unit>();fun execute(f:()->Unit){tasks.add(f)};fun post(f:()->Unit){tasks.add(f)};fun one(){check(tasks.isNotEmpty());tasks.removeFirst()()};fun drain(){var n=0;while(tasks.isNotEmpty()){check(n++<100);one()}}}
 val events=mutableListOf<String>()
 object AudioManager {const val AUDIOFOCUS_REQUEST_GRANTED=1}
@@ -343,6 +368,7 @@ val worker=Queue();val main=Queue();val bridge=Bridge();val core=1L;var epoch=1L
 var snapshot=JSONObject().put("epoch",1L).put("session",1L).put("position_ms",40L).put("duration_ms",30000L)
 var listener:((JSONObject,String?)->Unit)?=null;var wantsPlayback=false;var busy=0;var pendingReports=false
 var player:MediaPlayer?=MediaPlayer();var playerReady=true;var pendingSeekMs:Long?=null;var nativeTerminalState:String?=null
+__TERMINAL_FIELDS__
 val session=Session();val audio=Audio();val focus=1;var focusHeld=false;var foreground=false;var notificationIdentity="";var lastEffectCached=false;var lastSeekCompleted=0L
 var denyAdmission=false;var denyNotification=false;val MODE_PRIVATE=0;val START_NOT_STICKY=2;val STOP_FOREGROUND_REMOVE=1
 fun startService(i:Intent){events.add("service-start");if(denyAdmission)throw IllegalStateException("denied")}
@@ -432,8 +458,45 @@ test("reentrant-selection-does-not-strand-pending-report") {
 val a=PlaybackService();a.command(JSONObject().put("command","resume"));a.drain();var once=true
 a.listener={_,_->if(once){once=false;a.select(2)}};a.tick();a.drain();check(!a.pendingReports && a.busy==0)
 val p=a.player!!;p.prepared!!(p);a.drain();check(!a.pendingReports && a.bridge.calls.last().optString("command")=="audio_report")}
+test("queue-selected-remove-admits-new-foreground-before-worker") {
+val a=PlaybackService();a.snapshot.put("selected_occurrence",11L).put("queue",JSONArray(listOf(JSONObject().put("id",11L),JSONObject().put("id",12L))))
+a.queueAction("queue_remove",11L);check(a.foreground && a.wantsPlayback && a.bridge.calls.isEmpty())}
+for(kind in listOf("queue_play","next","previous")) test("queue-early-admission-$kind") {
+val a=PlaybackService();a.command(JSONObject().put("command",kind));check(a.foreground && a.wantsPlayback && a.bridge.calls.isEmpty())}
+test("queue-noncurrent-edit-retains-decoder-and-intent") {
+val a=PlaybackService();a.command(JSONObject().put("command","resume"));a.drain();val p=a.player;val e=a.epoch;val intent=a.transportIntent
+a.snapshot.put("selected_occurrence",11L);a.queueAction("queue_remove",12L);a.queueAction("queue_move",12L,0);a.queueAction("queue_append",3L);a.drain()
+check(a.player===p && a.epoch==e && a.transportIntent==intent && a.foreground && a.player!!.isPlaying)}
+test("queue-eof-continues-admitted-foreground-without-new-service-start") {
+val a=PlaybackService();a.select(1);a.drain();val p=a.player!!;p.prepared!!(p);a.drain();p.isPlaying=false
+val starts=events.count{it=="foreground-admission"}
+a.bridge.replies.add(JSONObject().put("ok",true).put("snapshot",JSONObject().put("epoch",a.epoch).put("session",2L)).put("audio",JSONObject().put("action","load").put("epoch",a.epoch).put("session",2L).put("path","synthetic")))
+p.completion!!(p);a.drain();val next=a.player!!;check(p!==next && p.released);next.prepared!!(next);a.drain()
+check(next.isPlaying && a.foreground && a.wantsPlayback && a.nativeTerminalState==null && events.count{it=="foreground-admission"}==starts)}
+test("queue-held-eof-load-cannot-revive-later-pause") {
+val a=PlaybackService();a.select(1);a.drain();val p=a.player!!;p.prepared!!(p);a.drain();p.isPlaying=false
+a.bridge.replies.add(JSONObject().put("ok",true).put("snapshot",JSONObject().put("epoch",a.epoch).put("session",2L)).put("audio",JSONObject().put("action","load").put("epoch",a.epoch).put("session",2L).put("path","synthetic")))
+p.completion!!(p);a.worker.one();a.command(JSONObject().put("command","pause"));a.drain();val next=a.player!!;next.prepared!!(next);a.drain()
+check(!next.isPlaying && !a.foreground && !a.wantsPlayback && !a.focusHeld)}
+for(code in listOf("invalid_saved_queue","queue_storage_failed","cache_io")) test("queue-storage-current-load-retains-admitted-playback-$code") {
+val a=PlaybackService();var visible=false;var done=false
+a.listener={_,error->if(error==code)visible=true}
+a.bridge.replies.add(JSONObject().put("ok",false).put("code",code).put("snapshot",JSONObject().put("epoch",a.epoch).put("session",2L).put("selected_occurrence",11L).put("transport","preparing")).put("audio",JSONObject().put("action","load").put("epoch",a.epoch).put("session",2L).put("path","synthetic")))
+a.command(JSONObject().put("command","retry")){done=true};a.drain();val next=a.player!!;next.prepared!!(next);a.drain()
+check(visible && done && a.busy==0 && a.wantsPlayback && a.foreground && a.focusHeld && next.isPlaying)}
+for(defect in listOf("no-effect","wrong-session","wrong-epoch","wrong-snapshot","binding","core-refusal","missing-path","failed-state")) test("queue-storage-invalid-effect-retires-$defect") {
+val a=PlaybackService();val old=a.player;val snap=JSONObject().put("epoch",if(defect=="wrong-snapshot")99L else a.epoch).put("session",2L).put("selected_occurrence",11L).put("transport",if(defect=="failed-state")"failed" else "preparing")
+val result=JSONObject().put("ok",false).put("code",when(defect){"binding"->"binding_failure";"core-refusal"->"api_refused";else->"invalid_saved_queue"}).put("snapshot",snap).put("credentials",JSONObject().put("version",9L))
+if(defect!="no-effect")result.put("audio",JSONObject().put("action","load").put("epoch",if(defect=="wrong-epoch")99L else a.epoch).put("session",if(defect=="wrong-session")99L else 2L).put("path",if(defect=="missing-path")"" else "synthetic"))
+a.bridge.replies.add(result);var done=false;a.command(JSONObject().put("command","retry")){done=true};a.drain()
+check(!a.foreground && !a.wantsPlayback && !a.focusHeld && a.player===old && a.player?.isPlaying!=true && done && a.busy==0 && a.saved.single().optLong("version")==9L)}
+test("queue-selected-metadata-is-not-first-recording") {
+val a=PlaybackService();a.snapshot.put("selected_occurrence",12L).put("queue",JSONArray(listOf(JSONObject().put("id",11L).put("track",JSONObject().put("id",1L)),JSONObject().put("id",12L).put("track",JSONObject().put("id",2L)))))
+check(a.selectedTrack()?.optLong("id")==2L)}
 check(failed==0){"$failed Android service regressions"}}
-'''.replace('__METHODS__', methods)
+'''.replace('__METHODS__', methods).replace('__TERMINAL_FIELDS__', '\n'.join(
+        line.strip().removeprefix('private ') for line in source.splitlines()
+        if line.strip().startswith('private var endedReportAcknowledged =')))
     return harness
 
 

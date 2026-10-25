@@ -43,7 +43,7 @@ assert constants['AUDIOFOCUS_LOSS'] == -1 and constants['AUDIOFOCUS_LOSS_TRANSIE
 start = source.index('.setOnAudioFocusChangeListener({ change ->')
 end = source.index('}, main).build()', start)
 focus = source[start:end].split('change ->', 1)[1]
-methods = '\n'.join(block(x) for x in ['fun command(', 'fun login(', 'fun logout(', 'fun select(', 'private fun saveCredentials(', 'private fun loadCredentials(', 'private fun startPlayer(', 'private fun abandonFocus(', 'private fun stopPlaybackService(', 'private fun failPlayback(', 'private fun showNotification('])
+methods = '\n'.join(block(x) for x in ['fun command(', 'fun login(', 'fun logout(', 'fun select(', 'private fun saveCredentials(', 'private fun loadCredentials(', 'private fun startPlayer(', 'private fun abandonFocus(', 'private fun stopPlaybackService(', 'private fun failPlayback(', 'private fun showNotification(', *(['fun selectedTrack('] if 'fun selectedTrack(' in source else [])])
 # JSONObject is a typed transport stub: strings are registered in-memory rather
 # than parsed; identical credential bytes pass through real encryption/readback.
 harness = r'''import java.util.ArrayDeque
@@ -57,7 +57,7 @@ class JSONObject {
     constructor(text:String) { values.putAll(registry.getValue(text)) }
     fun put(k:String,v:Any):JSONObject {values[k]=v;return this}
     fun optString(k:String):String = values[k] as? String ?: ""
-    fun optLong(k:String):Long = (values[k] as? Number)?.toLong() ?: 0L
+    fun optLong(k:String,d:Long=0L):Long = (values[k] as? Number)?.toLong() ?: d
     fun optBoolean(k:String):Boolean = values[k] as? Boolean ?: false
     fun optJSONObject(k:String):JSONObject? = values[k] as? JSONObject
     fun optJSONArray(k:String):JSONArray? = values[k] as? JSONArray
@@ -65,7 +65,7 @@ class JSONObject {
     override fun toString():String {val text=values.toString();registry[text]=LinkedHashMap(values);return text}
     companion object {val registry=mutableMapOf<String,Map<String,Any>>()}
 }
-class JSONArray
+class JSONArray {fun length()=0;fun getJSONObject(i:Int)=JSONObject()}
 object Base64 {
     const val NO_WRAP=2
     fun encodeToString(b:ByteArray,f:Int):String=JBase64.getEncoder().encodeToString(b)

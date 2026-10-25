@@ -27,14 +27,14 @@ text=text[:a]+'''class JSONObject {
     constructor(raw:String){data=com.google.gson.JsonParser.parseString(raw).asJsonObject}
     fun put(k:String,v:Any):JSONObject {data.add(k,when(v){is JSONObject->v.data;is JSONArray->v.data;else->com.google.gson.Gson().toJsonTree(v)});return this}
     fun optString(k:String):String=if(data[k]?.isJsonNull!=false) "" else data[k].asString
-    fun optLong(k:String):Long=if(data[k]?.isJsonNull!=false) 0L else data[k].asLong
+    fun optLong(k:String,d:Long=0L):Long=if(data[k]?.isJsonNull!=false) d else data[k].asLong
     fun optBoolean(k:String):Boolean=if(data[k]?.isJsonNull!=false) false else data[k].asBoolean
     fun optJSONObject(k:String):JSONObject?=if(data[k]?.isJsonObject==true) JSONObject(data[k].toString()) else null
     fun optJSONArray(k:String):JSONArray?=if(data[k]?.isJsonArray==true) JSONArray(data[k].asJsonArray) else null
     fun remove(k:String)=data.remove(k)
     override fun toString()=data.toString()
 }
-class JSONArray(val data:com.google.gson.JsonArray=com.google.gson.JsonArray())
+class JSONArray(val data:com.google.gson.JsonArray=com.google.gson.JsonArray()) {fun length()=data.size();fun getJSONObject(i:Int)=JSONObject(data[i].toString())}
 '''+text[b:]
 a=text.index('class Bridge {');b=text.index('class Adapter(',a)
 text=text[:a]+'''fun wire(route:String,body:String="{}"):String {

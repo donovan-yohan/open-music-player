@@ -65,6 +65,33 @@ extension App {
                 try await wait("retry reloads and advances") {self.busy == 0 && self.player?.rate ?? 0 > 0 && self.player?.currentTime().seconds ?? 0 > 0.2}
                 self.command(["command":"pause"])
                 try await wait("final pause settled") {self.busy == 0 && self.player?.rate == 0}
+                let original=self.snapshot!.selected_occurrence
+                self.nextTrack()
+                try await wait("native next selects different occurrence") {self.snapshot?.selected_occurrence != original && self.player?.rate ?? 0 > 0 && self.player?.currentTime().seconds ?? 0 > 0.2}
+                self.previousTrack()
+                try await wait("native previous selects original occurrence") {self.snapshot?.selected_occurrence == original && self.player?.rate ?? 0 > 0 && self.player?.currentTime().seconds ?? 0 > 0.2}
+                let oldSession=self.snapshot!.session
+                self.slider.doubleValue=29500;self.seek()
+                try await wait("native EOF advances Rust queue exactly once") {self.snapshot?.session ?? 0 > oldSession && self.snapshot?.selected_occurrence != original && self.player?.rate ?? 0 > 0 && self.player?.currentTime().seconds ?? 0 > 0.2}
+                let current=self.snapshot!.selected_occurrence
+                let session=self.snapshot!.session
+                self.queueCommand("queue_append",id:UInt64(self.snapshot!.library[0].id))
+                try await wait("duplicate occurrence appended") {self.snapshot?.queue.count==501 && self.busy==0}
+                let duplicate=self.snapshot!.queue.last!.id
+                self.queueCommand("queue_move",id:duplicate,index:0)
+                try await wait("move keeps current native decoder") {self.snapshot?.queue.first?.id==duplicate && self.snapshot?.session==session && self.snapshot?.selected_occurrence==current && self.busy==0}
+                self.queueCommand("queue_remove",id:duplicate)
+                try await wait("remove noncurrent keeps playback") {self.snapshot?.queue.count==500 && self.snapshot?.session==session && self.player?.rate ?? 0 > 0 && self.busy==0}
+                self.command(["command":"pause"])
+                try await wait("queue resting cursor settled") {self.busy==0 && self.player?.rate==0}
+                self.slider.doubleValue=6000;self.seek()
+                try await wait("resting cursor persisted") {self.busy==0 && abs((self.player?.currentTime().seconds ?? 0)-6)<0.1}
+                self.command(["command":"queue_restore"])
+                try await wait("restore queue is paused without decoder") {self.busy==0 && self.snapshot?.queue.count==500 && self.snapshot?.transport=="paused" && self.player==nil && self.snapshot?.position_ms==6000}
+                self.command(["command":"resume"])
+                try await wait("explicit resume uses restored native cursor") {self.player?.rate ?? 0 > 0 && self.player?.currentTime().seconds ?? 0 > 6.1}
+                self.clearQueue()
+                try await wait("clear queue retires decoder") {self.snapshot?.queue.isEmpty==true && self.player==nil && self.busy==0}
             } catch {outcome = "failed";failure = String(describing:error)}
             self.player?.pause();self.observation = nil;self.player?.replaceCurrentItem(with:nil);self.player = nil
             var report:[String:Any] = ["status":outcome,"checks":checks,"samples":samples,"elapsedSeconds":ProcessInfo.processInfo.systemUptime-started,"pid":ProcessInfo.processInfo.processIdentifier,"sourceRef":ProcessInfo.processInfo.environment["OMP_SOURCE_REF"] ?? "unknown","limits":"Scripted production AppKit actions and actual AVPlayer cursor/rate. Not loopback capture, human audibility, display FPS, physical controls, underrun measurement or independent review."]
