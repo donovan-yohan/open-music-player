@@ -433,7 +433,11 @@ void main() {
     test('a re-tap while in progress does not duplicate jobs', () async {
       var transfers = 0;
       final gate = Completer<void>();
-      final svc = service(
+      final started = Completer<void>();
+      final svc = _ObservedDownloadService(
+        db: store,
+        signedAudioUrlService: signedService(),
+        downloadDirectoryProvider: () async => tempDir.path,
         downloader: (
           String url,
           String destinationPath, {
@@ -441,6 +445,7 @@ void main() {
           void Function(int received, int total)? onProgress,
         }) async {
           transfers++;
+          if (!started.isCompleted) started.complete();
           await gate.future;
           await File(destinationPath).writeAsBytes(List.filled(100, 0x41));
           onProgress?.call(100, 100);
@@ -450,18 +455,27 @@ void main() {
       final tracks = [makeTrack(1), makeTrack(2)];
       // First tap: track 1 parks on the gate, so the run is mid-collection.
       final first = svc.downloadTracks(tracks);
-      await pumpEventQueue();
-      expect(transfers, 1);
-      expect(svc.isDownloading(1), isTrue);
+      Future<void>? second;
+      try {
+        // Real filesystem preparation can outlast any fixed event-queue drain.
+        await started.future.timeout(const Duration(seconds: 5));
+        expect(transfers, 1);
+        expect(svc.isDownloading(1), isTrue);
 
-      // Second tap while that transfer is still in flight.
-      final second = svc.downloadTracks(tracks);
-      await pumpEventQueue();
-      expect(transfers, 1, reason: 'in-flight transfer must be shared');
-
-      gate.complete();
-      await first;
-      await second;
+        // Track 1 is active, so downloadTracks reaches downloadTrack without
+        // awaiting a disk check. Observe both real admissions before release.
+        second = svc.downloadTracks(tracks);
+        expect(svc.firstTrackDownloads, hasLength(2));
+        expect(svc.firstTrackDownloads[1], same(svc.firstTrackDownloads[0]));
+        expect(transfers, 1, reason: 'in-flight transfer must be shared');
+      } finally {
+        gate.complete();
+        try {
+          await Future.wait([first, if (second != null) second]);
+        } finally {
+          svc.dispose();
+        }
+      }
 
       // Two tracks, two transfers total: neither tap queued a second job.
       expect(transfers, 2);
@@ -553,4 +567,23 @@ void main() {
       expect(store.downloads[1]!.status, DownloadStatus.failed);
     });
   });
+}
+
+/// Observes real admission without replacing the in-flight sharing behavior.
+class _ObservedDownloadService extends DownloadService {
+  final firstTrackDownloads = <Future<void>>[];
+
+  _ObservedDownloadService({
+    required super.db,
+    required super.signedAudioUrlService,
+    required super.downloader,
+    required super.downloadDirectoryProvider,
+  });
+
+  @override
+  Future<void> downloadTrack(Track track) {
+    final download = super.downloadTrack(track);
+    if (track.id == 1) firstTrackDownloads.add(download);
+    return download;
+  }
 }
