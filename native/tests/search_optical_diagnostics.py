@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Collect window-free native search controls; never approve product alignment.
 
-Both baseline and a private, image-metadata-derived geometry experiment execute
-against identical native optical predicates. The experiment only changes a copy
-of SoundQControls.swift below the fresh output directory, never repository source.
-A collected failing baseline is diagnostic data, not a successful product gate.
+The current production controls execute the unchanged native optical predicates.
+The falsified image-metadata experiment is retired. Controls are copied below the
+fresh output directory without adding or replacing production methods.
+A collected optical failure is diagnostic data, not a successful product gate.
 """
 import argparse
 import hashlib
@@ -16,15 +16,7 @@ from typing import TypedDict
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPENDENCIES = ['LibraryDockView.swift', 'SoundQControls.swift', 'SoundQTokens.swift', 'NativeAssets.swift']
-ANCHOR = '    override func drawingRect(forBounds rect: NSRect) -> NSRect {searchTextRect(forBounds:rect)}'
-EXPERIMENT = """    // Diagnostic experiment only; not a production repair.
-    private func diagnosticButtonRect(_ rect: NSRect, _ button: NSButtonCell?) -> NSRect {
-        guard let image = button?.image else {return rect}
-        return rect.offsetBy(dx:0,dy:image.size.height/2-image.alignmentRect.midY)
-    }
-    override func searchButtonRect(forBounds rect: NSRect) -> NSRect {diagnosticButtonRect(super.searchButtonRect(forBounds:rect),searchButtonCell)}
-    override func cancelButtonRect(forBounds rect: NSRect) -> NSRect {diagnosticButtonRect(super.cancelButtonRect(forBounds:rect),cancelButtonCell)}
-"""
+
 PROBE = r'''
 import AppKit
 import CoreText
@@ -129,9 +121,7 @@ def main():
     root, output = args.source_root.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     sources = root / 'native/macos/Sources'
-    baseline = (sources / 'SoundQControls.swift').read_text()
-    if baseline.count(ANCHOR) != 1:
-        raise RuntimeError('Ambiguous native control experiment boundary')
+    production = (sources / 'SoundQControls.swift').read_text()
     inputs = {name: digest(sources / name) for name in DEPENDENCIES}
     resources = {str(p.relative_to(sources / 'Resources')): digest(p)
                  for p in (sources / 'Resources').rglob('*') if p.is_file()}
@@ -143,7 +133,7 @@ def main():
                    host=command(['/usr/bin/sw_vers'], root, 20))
     (output / 'context.json').write_text(json.dumps(context, indent=2) + '\n')
     results = []
-    for label, controls in [('baseline', baseline), ('image-metadata-experiment', baseline.replace(ANCHOR, EXPERIMENT + ANCHOR, 1))]:
+    for label, controls in [('production', production)]:
         stage = output / label
         stage.mkdir()
         control = stage / 'SoundQControls.swift'
@@ -172,7 +162,7 @@ def main():
         failures = [line[5:] for line in ran['stdout'].splitlines() if line.startswith('FAIL ')]
         terminal = 'MINIMAL_PASS ' + str(len(passes)) + ' failures=' + str(len(failures))
         images = list(stage.glob('control-*.png'))
-        # Expected baseline/experiment optical failure is retained as data. Missing
+        # Expected production optical failure is retained as data. Missing
         # cases, crash, compile failure or an incomplete artifact is a collector failure.
         if len(passes) + len(failures) != 48 or terminal not in ran['stdout'].splitlines() or len(images) != 24 or ran['exit'] != int(bool(failures)):
             receipt['run'] = ran
@@ -184,7 +174,7 @@ def main():
     if any(digest(sources / name) != value for name, value in inputs.items()):
         raise RuntimeError('Production source changed during diagnostic')
     summary = dict(collectionComplete=True, diagnosticOnly=True, productGatePassed=False,
-                   baselineAndExperiment=results, productionInputsUnchanged=True)
+                   productionControls=results, productionInputsUnchanged=True)
     (output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     print(json.dumps(summary, indent=2))
     return 0

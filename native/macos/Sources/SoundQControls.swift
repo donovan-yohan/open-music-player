@@ -96,6 +96,18 @@ final class SoundQSearchFieldCell: NSSearchFieldCell {
         text.origin.y = rect.midY-text.height/2
         return text
     }
+    // Align native search/cancel buttons with the capital band of the same
+    // font-based line used by the text/editor. Keep the native integral-point
+    // geometry, snapping the band center toward its baseline rather than above
+    // it; the native image, button size, drawing and hit testing stay in AppKit.
+    private func alignedButtonRect(_ rect: NSRect, bounds: NSRect) -> NSRect {
+        let font = font ?? NSFont.systemFont(ofSize:NSFont.systemFontSize)
+        let track = searchTextRect(forBounds:bounds)
+        let center = ceil(track.minY+ceil(font.ascender)-font.capHeight/2)
+        return rect.offsetBy(dx:0,dy:center-rect.midY)
+    }
+    override func searchButtonRect(forBounds rect: NSRect) -> NSRect {alignedButtonRect(super.searchButtonRect(forBounds:rect),bounds:rect)}
+    override func cancelButtonRect(forBounds rect: NSRect) -> NSRect {alignedButtonRect(super.cancelButtonRect(forBounds:rect),bounds:rect)}
     override func drawingRect(forBounds rect: NSRect) -> NSRect {searchTextRect(forBounds:rect)}
     override func titleRect(forBounds rect: NSRect) -> NSRect {searchTextRect(forBounds:rect)}
     override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
