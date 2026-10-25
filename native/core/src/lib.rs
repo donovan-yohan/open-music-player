@@ -348,15 +348,7 @@ impl Core {
         // Validate the complete durable candidate before queue/decoder admission.
         // Local IO faults remain independent of an otherwise valid audio effect.
         let result = admission.and_then(|()| self.apply(&mut state, command, epoch));
-        if self.check(epoch).is_err() {
-            if let Some(ref previous) = checkpoint {
-                state.snapshot = previous.snapshot.clone();
-                state.current_path = previous.current_path.clone();
-                state.next_occurrence = previous.next_occurrence;
-                state.retry_target = previous.retry_target;
-                state.persisted_position = previous.persisted_position
-            }
-        }
+        let cancelled_before_persistence = self.check(epoch).is_err();
         if matches!(&result, Ok((Some(effect), _)) if effect.action == "load") {
             transport_only = false;
         }
@@ -374,8 +366,22 @@ impl Core {
             && state.credentials.is_some()
         {
             if let Err(code) = self.persist_queue(&mut state, epoch) {
-                state.snapshot.error = Some(code.into());
+                if code != "cancelled" {
+                    state.snapshot.error = Some(code.into());
+                }
                 persistence_error = Some(code)
+            }
+        }
+        // A replacement whose write was cancelled is still provisional. Restore
+        // its selection/cursor owners, but never roll back a committed write or
+        // account credential rotation merely because reply delivery was revoked.
+        if cancelled_before_persistence || persistence_error == Some("cancelled") {
+            if let Some(ref previous) = checkpoint {
+                state.snapshot = previous.snapshot.clone();
+                state.current_path = previous.current_path.clone();
+                state.next_occurrence = previous.next_occurrence;
+                state.retry_target = previous.retry_target;
+                state.persisted_position = previous.persisted_position
             }
         }
         state.snapshot.revision = state.snapshot.revision.saturating_add(1);

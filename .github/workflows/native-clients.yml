@@ -43,6 +43,24 @@ jobs:
           env = dict(os.environ, SOUNDQ_CORE_LIBRARY=str(library), SOUNDQ_REPAIR_EVIDENCE=str(evidence))
           subprocess.run([sys.executable, '-B', 'native/tests/listening_queue.py'], env=env, check=True)
           PY
+      - name: Test cancelled persistence feedback (Rust8)
+        run: |
+          python3 -B <<'PY'
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+
+          cargo = shutil.which('cargo')
+          if cargo is None:
+              raise SystemExit('Cargo is required')
+          output = Path(tempfile.mkdtemp(prefix='queue-feedback-', dir=os.environ['RUNNER_TEMP']))
+          # Instrumented private sources must never share the production cdylib target.
+          env = dict(os.environ, SOUNDQ_RUST_BIN=str(Path(cargo).parent), CARGO_TARGET_DIR=str(output / 'target'))
+          subprocess.run([sys.executable, '-B', 'native/tests/queue_feedback_regressions.py', '--source-root', str(Path.cwd()), '--rust', '--output', str(output / 'rust')], env=env, check=True)
+          PY
       - name: Test offline performance evidence
         run: python3 -B -m unittest discover -s native/tests -p test_matched_performance.py -v
   macos:
@@ -73,6 +91,29 @@ jobs:
               raise SystemExit(result)
           subprocess.run([sys.executable, '-B', 'native/tests/queue_transport_layout.py', '--appkit', '--output', str(output / 'transport-layout')], check=True)
           PY
+      - name: Test terminal EOF feedback through the fresh core ABI (Mac9)
+        run: |
+          python3 -B <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+
+          cargo = shutil.which('cargo')
+          if cargo is None:
+              raise SystemExit('Cargo is required')
+          manifest = str(Path('native/core/Cargo.toml').resolve())
+          # Rebuild production explicitly; cargo test only refreshes test executables.
+          subprocess.run([cargo, 'build', '--release', '--locked', '--jobs', '2', '--manifest-path', manifest], check=True)
+          metadata = subprocess.check_output([cargo, 'metadata', '--format-version', '1', '--no-deps', '--locked', '--manifest-path', manifest])
+          library = Path(json.loads(metadata)['target_directory']) / 'release/libsoundq_core.dylib'
+          output = Path(tempfile.mkdtemp(prefix='queue-feedback-', dir=os.environ['RUNNER_TEMP']))
+          env = dict(os.environ, SOUNDQ_CORE_LIBRARY=str(library))
+          subprocess.run([sys.executable, '-B', 'native/tests/queue_feedback_regressions.py', '--source-root', str(Path.cwd()), '--macos', '--output', str(output / 'macos')], env=env, check=True)
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: soundq-native-macos-preview
@@ -100,6 +141,37 @@ jobs:
         with:
           gradle-version: '9.1.0'
       - run: scripts/build native-android
+      - name: Test exact settled restore cursor (Cursor6)
+        run: |
+          python3 -B <<'PY'
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+
+          output = Path(tempfile.mkdtemp(prefix='queue-cursor-', dir=os.environ['RUNNER_TEMP']))
+          gradle = shutil.which('gradle')
+          if gradle is None:
+              raise SystemExit('The existing Gradle installation is required')
+          lib = Path(gradle).resolve().parents[1] / 'lib'
+          # Reuse Gradle's installed Kotlin compiler and runtime, without resolving dependencies.
+          home = output / 'kotlin-home'
+          (home / 'lib').mkdir(parents=True)
+          for artifact in ('kotlin-compiler-embeddable', 'kotlin-stdlib', 'kotlin-script-runtime', 'kotlin-reflect'):
+              jars = list(lib.glob(artifact + '-[0-9]*.jar'))
+              if len(jars) != 1:
+                  raise SystemExit('Expected one installed Gradle Kotlin dependency: ' + artifact)
+              name = 'kotlin-compiler' if artifact == 'kotlin-compiler-embeddable' else artifact
+              shutil.copyfile(jars[0], home / 'lib' / (name + '.jar'))
+          java = Path(os.environ['JAVA_HOME']) / 'bin/java'
+          launcher = output / 'kotlinc'
+          launcher.write_text('#!' + sys.executable + '\nimport os, sys\nos.execv(' + repr(str(java)) + ', ' + repr([str(java), '-Dkotlin.home=' + str(home), '-cp', str(home / 'lib/kotlin-compiler.jar') + os.pathsep + str(lib / '*'), 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-kotlin-home', str(home), '-classpath', str(home / 'lib/kotlin-stdlib.jar'), '-Xbackend-threads=2']) + ' + sys.argv[1:])\n')
+          launcher.chmod(0o755)
+          env = dict(os.environ, SOUNDQ_KOTLINC=str(launcher))
+          subprocess.run([sys.executable, '-B', 'native/tests/queue_restore_cursor_regressions.py', '--source-root', str(Path.cwd()), '--output', str(output / 'cursor')], env=env, check=True)
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: soundq-native-android-preview

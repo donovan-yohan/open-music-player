@@ -256,6 +256,104 @@ fun Fixture.names(vararg names:String) {
  names.forEachIndexed {i,name->queue.getJSONObject(i).getJSONObject("track").put("title",name)}
 }
 fun main() {
+ for(boundary in listOf("dismiss","disconnect","destroy","new-list","new-action","new-detail","service-replacement")) {
+  test("outer-list-$boundary-retires-window-and-retained-clear") {
+   val f=Fixture(11,12,13);val old=f.queueDialog()
+   val replacement=PlaybackService().also {it.snapshot=f.service.snapshot}
+   when(boundary) {
+    "dismiss"->old.dismiss()
+    "disconnect"->f.connection().onServiceDisconnected(android.content.ComponentName())
+    "destroy"->f.activity.onDestroy()
+    "new-list"->f.queueDialog()
+    "new-action"->f.actions(0)
+    "new-detail"->fullName(f.actions(1))
+    else->f.connection().onServiceConnected(android.content.ComponentName(),replacement.LocalBinder())
+   }
+   // Deliberately bypass native input suppression, before the posted cleanup.
+   old.rawNeutral()
+   requireThat(f.service.calls.isEmpty() && replacement.calls.isEmpty(),"$boundary retained Clear dispatched")
+   requireThat(old.dismissed && !old.isShowing,"$boundary stranded outer window")
+   AlertDialog.drainDismissals();old.rawNeutral()
+   requireThat(f.service.calls.isEmpty() && replacement.calls.isEmpty(),"$boundary cleanup revived Clear")
+  }
+  test("outer-list-$boundary-retained-row-refused") {
+   val f=Fixture(11,12,13);val old=f.queueDialog()
+   when(boundary) {
+    "dismiss"->old.dismiss()
+    "disconnect"->f.connection().onServiceDisconnected(android.content.ComponentName())
+    "destroy"->f.activity.onDestroy()
+    "new-list"->f.queueDialog()
+    "new-action"->f.actions(0)
+    "new-detail"->fullName(f.actions(1))
+    else->f.connection().onServiceConnected(android.content.ComponentName(),PlaybackService().also {it.snapshot=f.service.snapshot}.LocalBinder())
+   }
+   val count=AlertDialog.shown.size;old.raw(1);AlertDialog.drainDismissals();old.raw(1)
+   requireThat(AlertDialog.shown.size==count && f.service.calls.isEmpty(),"$boundary retained row opened a new action")
+  }
+ }
+ for(next in listOf("list","action","detail")) test("outer-list-delayed-cleanup-preserves-new-$next") {
+  val f=Fixture(11,12,13);val old=f.queueDialog();old.dismiss()
+  val fresh=when(next) {"list"->f.queueDialog();"action"->f.actions(0);else->fullName(f.actions(1))}
+  AlertDialog.drainDismissals();old.rawNeutral();old.raw(2)
+  requireThat(fresh.isShowing && f.service.calls.isEmpty(),"old list cleanup retired or replaced new $next")
+  when(next) {
+   "list"->{fresh.pressNeutral();AlertDialog.drainButtons();f.sent("queue_clear")}
+   "action"->{f.publish(13,11,12);states(fresh,listOf(true,true,true,true));fresh.choose(1);f.sent("queue_move",11,0)}
+   else->{f.activity.onDestroy();requireThat(fresh.dismissed,"old list cleanup stranded new detail")}
+  }
+ }
+ test("outer-list-row-retires-list-before-native-auto-dismiss-preserves-action") {
+  val f=Fixture(11,12,13);val old=f.queueDialog();old.raw(1);val fresh=AlertDialog.shown.last()
+  requireThat(old.dismissed && fresh!==old && fresh.isShowing,"row did not retire outer authority before opening action")
+  old.rawNeutral();old.raw(0);old.dismiss();AlertDialog.drainDismissals()
+  requireThat(f.service.calls.isEmpty() && fresh.isShowing,"retired outer callback superseded current action")
+  states(fresh,listOf(true,true,true,true));fresh.choose(0);f.sent("queue_play",12)
+ }
+ test("outer-list-clear-listener-retires-before-native-auto-dismiss") {
+  val f=Fixture(11,12,13);val old=f.queueDialog();old.pressNeutral();AlertDialog.nextButtonMessage()
+  f.sent("queue_clear");requireThat(old.dismissed,"Clear listener left outer authority alive")
+  old.rawNeutral();old.raw(1);f.sent("queue_clear")
+  val fresh=f.actions(0);AlertDialog.drainButtons();AlertDialog.drainDismissals()
+  requireThat(fresh.isShowing,"old Clear dismiss message closed new action")
+  f.service.calls.clear();fresh.choose(2);f.sent("queue_move",11,1)
+ }
+ for(next in listOf("list","action","detail")) test("outer-list-queued-clear-after-new-$next-refused") {
+  val f=Fixture(11,12,13);val old=f.queueDialog();old.pressNeutral()
+  val fresh=when(next) {"list"->f.queueDialog();"action"->f.actions(0);else->fullName(f.actions(1))}
+  AlertDialog.drainButtons();AlertDialog.drainDismissals()
+  requireThat(f.service.calls.isEmpty() && fresh.isShowing,"queued stale Clear dispatched or retired new $next")
+  f.activity.onDestroy();requireThat(fresh.dismissed,"new $next lost teardown owner")
+ }
+ for(boundary in listOf("disconnect","destroy","new-list","service-replacement")) test("outer-list-$boundary-closes-window-before-cleanup-message") {
+  val f=Fixture(11,12,13);val old=f.queueDialog()
+  when(boundary) {
+   "disconnect"->f.connection().onServiceDisconnected(android.content.ComponentName())
+   "destroy"->f.activity.onDestroy()
+   "new-list"->f.queueDialog()
+   else->f.connection().onServiceConnected(android.content.ComponentName(),PlaybackService().also {it.snapshot=f.service.snapshot}.LocalBinder())
+  }
+  requireThat(old.dismissed && !old.isShowing,"$boundary left outer window showing before posted cleanup")
+ }
+ for(boundary in listOf("disconnect","destroy","service-replacement")) test("outer-list-queued-clear-after-$boundary-refused") {
+  val f=Fixture(11,12,13);val old=f.queueDialog();old.pressNeutral()
+  val replacement=PlaybackService().also {it.snapshot=f.service.snapshot}
+  when(boundary) {
+   "disconnect"->f.connection().onServiceDisconnected(android.content.ComponentName())
+   "destroy"->f.activity.onDestroy()
+   else->f.connection().onServiceConnected(android.content.ComponentName(),replacement.LocalBinder())
+  }
+  AlertDialog.drainButtons();AlertDialog.drainDismissals()
+  requireThat(f.service.calls.isEmpty() && replacement.calls.isEmpty(),"queued Clear survived $boundary")
+ }
+ test("outer-list-service-replacement-retires-action-and-detail") {
+  val f=Fixture(11,12,13);val action=f.actions(1);val detail=fullName(action)
+  val replacement=PlaybackService().also {it.snapshot=f.service.snapshot}
+  f.connection().onServiceConnected(android.content.ComponentName(),replacement.LocalBinder())
+  requireThat(detail.dismissed,"service replacement stranded detail")
+  action.rawNeutral();for(i in 0..3)action.raw(i)
+  val fresh=f.queueDialog();AlertDialog.drainDismissals();fresh.choose(1);AlertDialog.shown.last().choose(0)
+  requireThat(f.service.calls.isEmpty() && replacement.calls==listOf(PlaybackService.Call("queue_play",12,null)),"replacement did not retain valid new row dispatch")
+ }
  test("full-name-reachable-complete-long-unicode") {
   val name="SYNTHETIC QA — 長い夜 / e\u0301 · 🎶 " + "بدون اختصار — alternate recording ".repeat(1024)
   val f=Fixture(11,12,13);f.names(name,"QA Short",name);val d=f.actions(2)

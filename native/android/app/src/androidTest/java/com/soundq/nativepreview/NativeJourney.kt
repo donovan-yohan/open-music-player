@@ -160,10 +160,38 @@ class NativeJourney : Instrumentation() {
             waitFor("explicit play after preparation pause") {it.nativePlaying() && it.nativePositionMs()>200}
             controller.transportControls.pause()
             waitFor("final native pause") {!it.nativePlaying()}
-            onMain {service!!.command(JSONObject().put("command","seek").put("position_ms",6000))}
-            waitFor("saved paused cursor acknowledged") {kotlin.math.abs(it.nativePositionMs()-6000)<150}
-            onMain {service!!.command(JSONObject().put("command","queue_restore"))}
-            waitFor("restored queue paused without native decoder") {it.snapshot.optString("transport")=="paused" && it.snapshot.optLong("position_ms")==6000L && !it.nativePlaying() && it.snapshot.getJSONArray("queue").length()==500}
+            var previousSeekCompleted = -1L
+            onMain {previousSeekCompleted = service!!.lastSeekCompleted;service!!.command(JSONObject().put("command","seek").put("position_ms",6000))}
+            // SEEK_CLOSEST completion reports the decoder's observed cursor, not
+            // necessarily the requested scalar. Keep restoration exact to that
+            // settled canonical/native/durable value, including later ticks.
+            val accountKey=java.security.MessageDigest.getInstance("SHA-256")
+                .digest((BuildConfig.API_BASE.trimEnd('/')+"\u0000"+credentials.getString("account_id")).toByteArray(Charsets.UTF_8))
+                .joinToString("") {"%02x".format(it)}
+            val savedQueueFile=File(context.filesDir,"client-data-v1/$accountKey/listening-queue-v1.json")
+            fun savedQueue(): JSONObject? = savedQueueFile.takeIf {it.isFile}?.let {JSONObject(it.readText())}
+            fun field(s: PlaybackService,name: String) = PlaybackService::class.java.getDeclaredField(name).apply {isAccessible=true}.get(s)
+            fun idle(s: PlaybackService) = field(s,"busy")==0 && field(s,"pendingReports")==false
+            fun settled(s: PlaybackService): Boolean {
+                val cursor=s.nativePositionMs()
+                val saved=savedQueue() ?: return false
+                return s.lastSeekCompleted!=previousSeekCompleted && s.lastSeekCompleted==cursor &&
+                    kotlin.math.abs(cursor-6000)<150 && !s.nativePlaying() && idle(s) &&
+                    s.snapshot.optString("transport")=="paused" && s.snapshot.optLong("position_ms")==cursor &&
+                    saved.optLong("position_ms")==cursor && saved.optLong("selected")==s.snapshot.optLong("selected_occurrence")
+            }
+            waitFor("saved paused cursor acknowledged",::settled)
+            var savedCursor=0L
+            var settledRevision=0L
+            onMain {savedCursor=service!!.snapshot.optLong("position_ms");settledRevision=service!!.snapshot.optLong("revision")}
+            repeat(2) {
+                waitFor("scheduled paused cursor publication $it") {s -> settled(s) && s.snapshot.optLong("position_ms")==savedCursor && s.snapshot.optLong("revision")>settledRevision}
+                onMain {settledRevision=service!!.snapshot.optLong("revision")}
+            }
+            result.put("restoreBaselineCursorMs",savedCursor)
+            var restoreAcknowledged=false
+            onMain {service!!.command(JSONObject().put("command","queue_restore")) {restoreAcknowledged=true}}
+            waitFor("restored queue paused without native decoder") {restoreAcknowledged && idle(it) && field(it,"player")==null && it.snapshot.optString("transport")=="paused" && it.snapshot.optLong("position_ms")==savedCursor && !it.nativePlaying() && it.snapshot.getJSONArray("queue").length()==500}
             controller.transportControls.play()
             waitFor("restored explicit play resumes native saved cursor") {it.nativePlaying() && it.nativePositionMs()>6100}
             controller.transportControls.pause()

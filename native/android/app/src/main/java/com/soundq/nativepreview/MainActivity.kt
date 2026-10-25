@@ -28,6 +28,7 @@ class MainActivity : Activity() {
     private lateinit var seek: SeekBar
     private lateinit var logout: Button
     private var dragging = false
+    private var queueListDialog: AlertDialog? = null
     private var queueActionDialog: AlertDialog? = null
     private var queueNameDialog: AlertDialog? = null
     private var queueActions: ArrayAdapter<String>? = null
@@ -36,6 +37,7 @@ class MainActivity : Activity() {
         private set
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+            dismissQueueActions()
             service = (binder as PlaybackService.LocalBinder).service
             service?.listener = { snapshot, error -> render(snapshot, error) }
             service?.let { render(it.snapshot, null) }
@@ -119,20 +121,25 @@ class MainActivity : Activity() {
         if (!dragging) { val duration = snapshot.optLong("duration_ms"); seek.progress = if (duration > 0) (snapshot.optLong("position_ms") * 10000 / duration).toInt() else 0 }
     }
     private fun dismissQueueActions() {
+        val listDialog = queueListDialog
         val dialog = queueActionDialog
         val nameDialog = queueNameDialog
+        queueListDialog = null
         queueActionDialog = null
         queueNameDialog = null
         queueActions = null
+        listDialog?.dismiss()
         dialog?.dismiss()
         nameDialog?.dismiss()
     }
     private fun showQueue() {
         val s=service ?: return
+        dismissQueueActions()
         val values=s.snapshot.optJSONArray("queue") ?: org.json.JSONArray()
         val ids=(0 until values.length()).map {values.getJSONObject(it).getLong("id")}
         val titles=(0 until values.length()).map { i -> val o=values.getJSONObject(i);(if(o.optLong("id")==s.snapshot.optLong("selected_occurrence")) "Current · " else "")+o.getJSONObject("track").getString("title")}
-        AlertDialog.Builder(this).setTitle("Listening queue · ${ids.size}").setItems(titles.toTypedArray()) {_,index ->
+        val list = AlertDialog.Builder(this).setTitle("Listening queue · ${ids.size}").setItems(titles.toTypedArray()) {issued,index ->
+            if (service !== s || queueListDialog !== issued || queueListDialog?.isShowing != true) return@setItems
             val id=ids[index]
             val name=values.getJSONObject(index).getJSONObject("track").getString("title")
             fun currentIndex(): Int {
@@ -187,7 +194,14 @@ class MainActivity : Activity() {
                 active = false
                 if (queueActionDialog === dialog) { queueActionDialog = null; queueActions = null }
             }
-        }.setPositiveButton("Done",null).setNeutralButton("Clear") {_,_->s.queueAction("queue_clear")}.show()
+        }.setPositiveButton("Done",null).setNeutralButton("Clear") {issued,_ ->
+            if (service === s && queueListDialog === issued && queueListDialog?.isShowing == true) {
+                dismissQueueActions()
+                s.queueAction("queue_clear")
+            }
+        }.show()
+        queueListDialog = list
+        list.setOnDismissListener { if (queueListDialog === list) queueListDialog = null }
     }
     override fun onDestroy() { dismissQueueActions(); service?.listener = null; unbindService(connection); super.onDestroy() }
     data class Row(val id: Long, val title: String, val artist: String)

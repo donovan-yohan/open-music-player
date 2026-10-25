@@ -239,7 +239,7 @@ struct Clock { var seconds: Double }
 enum Status {case failed, readyToPlay}
 class Item {var status:Status = .readyToPlay;var duration=Clock(seconds:30)}
 class Player {var currentItem:Item?=Item();var error:String?;var rate:Float=0;var time=Clock(seconds:1);func currentTime()->Clock {time}}
-struct Snapshot {var queue=[1];var session:UInt64=1;var position_ms:UInt64=800;var duration_ms:UInt64=30000}
+struct Snapshot {var queue=[1];var session:UInt64=1;var position_ms:UInt64=800;var duration_ms:UInt64=30000;var transport="playing"}
 class MPNowPlayingInfoCenter {enum State {case playing,paused};var playbackState:State = .paused;static let shared=MPNowPlayingInfoCenter();static func `default`()->MPNowPlayingInfoCenter{shared}}
 class App {
 var player:Player?=Player();var snapshot:Snapshot?=Snapshot();var reportPending=false;var busy=0;var epoch:UInt64=1
@@ -272,6 +272,7 @@ struct Snapshot {var queue=[Occurrence(id:11),Occurrence(id:12)];var selected_oc
 class Player {var retired=false;func pause(){};func replaceCurrentItem(with:Any?){retired=true}}
 class Bridge {var epoch:UInt64=1;func revoke()->UInt64{epoch+=1;return epoch}}
 class App {var snapshot:Snapshot?=Snapshot();var player:Player?=Player();var observation:Int?;var epoch:UInt64=1;var bridge=Bridge();var wantsPlayback=false;var sent=[[String:Any]]()
+func closeQueueName(){}
 func command(_ value:[String:Any]) {let kind=value["command"] as? String ?? ""
 __INTENT__
 sent.append(value)}

@@ -272,6 +272,10 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
         let failed = player.error != nil || player.currentItem?.status == .failed
         guard time.isFinite || failed || state == "failed" else{return}
         let nativeState = state ?? (failed ? "failed" : player.rate > 0 ? "playing" : (duration.isFinite && time >= duration-0.05 ? "ended" : "paused"))
+        // Only a playing/preparing canonical owner can consume EOF. After its
+        // accepted final observation (even with a save fault), the timer must
+        // not submit it again. Failure and seek/resume observations still flow.
+        if nativeState == "ended", !["playing","preparing"].contains(snapshot.transport) {return}
         let positionMs = max(time,0)*1000;let durationMs = max(duration,0)*1000
         let position = positionMs.isFinite && positionMs < Double(UInt64.max) ? UInt64(positionMs) : snapshot.position_ms
         let length = durationMs.isFinite && durationMs < Double(UInt64.max) ? UInt64(durationMs) : snapshot.duration_ms
