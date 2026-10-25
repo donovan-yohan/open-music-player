@@ -124,6 +124,24 @@ class NativeJourney : Instrumentation() {
             waitFor("OS media session seek dispatch") {kotlin.math.abs(it.nativePositionMs()-12000)<200}
             controller.transportControls.play()
             waitFor("OS media session play dispatch") {it.snapshot.optString("transport")=="playing" && it.snapshot.optLong("position_ms")>12200}
+            var firstOccurrence=0L
+            onMain {firstOccurrence=service!!.snapshot.optLong("selected_occurrence")}
+            controller.transportControls.skipToNext()
+            waitFor("OS next selects second occurrence and native decoder advances") {it.snapshot.optLong("selected_occurrence")!=firstOccurrence && it.nativePlaying() && it.nativePositionMs()>200}
+            controller.transportControls.skipToPrevious()
+            waitFor("OS previous returns original occurrence") {it.snapshot.optLong("selected_occurrence")==firstOccurrence && it.nativePlaying() && it.nativePositionMs()>200}
+            onMain {precedingSession=service!!.snapshot.optLong("session")}
+            controller.transportControls.seekTo(29500)
+            waitFor("EOF automatically advances canonical queue") {it.snapshot.optLong("session")>precedingSession && it.snapshot.optLong("selected_occurrence")!=firstOccurrence && it.nativePlaying() && it.nativePositionMs()>200}
+            var duplicate=0L
+            onMain {service!!.queueAction("queue_append",id)}
+            waitFor("duplicate recording appends independent occurrence") {it.snapshot.optJSONArray("queue")?.length()==501}
+            onMain {duplicate=service!!.snapshot.getJSONArray("queue").getJSONObject(500).getLong("id");precedingSession=service!!.snapshot.optLong("session");service!!.queueAction("queue_move",duplicate,0)}
+            waitFor("move preserves playing occurrence decoder") {it.snapshot.getJSONArray("queue").getJSONObject(0).getLong("id")==duplicate && it.snapshot.optLong("session")==precedingSession && it.nativePlaying()}
+            onMain {service!!.queueAction("queue_remove",duplicate)}
+            waitFor("remove noncurrent occurrence preserves decoder") {it.snapshot.getJSONArray("queue").length()==500 && it.snapshot.optLong("session")==precedingSession && it.nativePlaying()}
+            onMain {val values=service!!.snapshot.getJSONArray("queue");service!!.queueAction("queue_play",values.getJSONObject(values.length()-1).getLong("id"))}
+            waitFor("last queued occurrence plays") {it.snapshot.optLong("selected_occurrence")==it.snapshot.getJSONArray("queue").getJSONObject(499).getLong("id") && it.nativePlaying()}
             controller.transportControls.seekTo(29500)
             waitFor("native EOF is retained as terminal") {it.snapshot.optString("transport")=="ended"}
             Thread.sleep(650)
@@ -142,6 +160,13 @@ class NativeJourney : Instrumentation() {
             waitFor("explicit play after preparation pause") {it.nativePlaying() && it.nativePositionMs()>200}
             controller.transportControls.pause()
             waitFor("final native pause") {!it.nativePlaying()}
+            onMain {service!!.command(JSONObject().put("command","seek").put("position_ms",6000))}
+            waitFor("saved paused cursor acknowledged") {kotlin.math.abs(it.nativePositionMs()-6000)<150}
+            onMain {service!!.command(JSONObject().put("command","queue_restore"))}
+            waitFor("restored queue paused without native decoder") {it.snapshot.optString("transport")=="paused" && it.snapshot.optLong("position_ms")==6000L && !it.nativePlaying() && it.snapshot.getJSONArray("queue").length()==500}
+            controller.transportControls.play()
+            waitFor("restored explicit play resumes native saved cursor") {it.nativePlaying() && it.nativePositionMs()>6100}
+            controller.transportControls.pause()
             result.put("status","passed")
         } catch (error: Throwable) {code = 1; result.put("status","failed").put("failure",error.javaClass.simpleName+": "+error.message)}
         finally {

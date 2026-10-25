@@ -85,6 +85,23 @@ def main():
             check("actual_go_search",search["ok"] and len(search["snapshot"]["library"])==1)
             empty = execute({"command":"library","offset":0,"query":"nativenevermatches","sort":"title","order":"asc"})
             check("actual_go_empty_list",empty["ok"] and empty["snapshot"]["library"]==[] and empty["snapshot"]["total"]==0)
+            queue=execute({"command":"snapshot"})["snapshot"]["queue"]
+            check("visible_list_selection_retains_whole_list",len(queue)==500)
+            occurrence=newest["snapshot"]["selected_occurrence"]
+            original_session=newest["snapshot"]["session"]
+            duplicate=execute({"command":"queue_append","track_id":target})
+            check("queue_append_uses_loaded_track_validation",duplicate["code"]=="track_not_loaded")
+            moved=execute({"command":"queue_move","occurrence_id":occurrence,"to_index":0})
+            check("occurrence_move_preserves_decoder_session",moved["ok"] and moved["snapshot"]["session"]==original_session and moved["snapshot"]["queue"][0]["id"]==occurrence)
+            execute({"command":"seek","position_ms":6000})
+            core.sq_core_close(handle)
+            handle=core.sq_core_open(b"http://127.0.0.1:54761/api/v1",os.fsencode(cache));epoch=1
+            check("core_restart_requires_explicit_account",execute({"command":"queue_restore"})["code"]=="unauthenticated")
+            check("restart_real_go_login",execute({"command":"login","email":private["email"],"password":private["password"]})["ok"])
+            restored=execute({"command":"queue_restore"})
+            check("restart_restores_paused_occurrence_and_cursor",restored["ok"] and restored["snapshot"]["selected_occurrence"]==occurrence and restored["snapshot"]["position_ms"]==6000 and restored["snapshot"]["transport"]=="paused" and len(restored["snapshot"]["queue"])==500)
+            resumed=execute({"command":"resume"})
+            check("restart_explicit_resume_reuses_verified_bytes",resumed["ok"] and resumed["audio"]["cached"] and resumed["audio"]["position_ms"]==6000)
             epoch=core.sq_core_revoke(handle)
             logout=execute({"command":"logout"})
             check("retirement_clears_truth",logout["ok"] and not logout["snapshot"]["authenticated"] and logout["snapshot"]["queue"]==[] and logout["snapshot"]["library"]==[])

@@ -19,6 +19,30 @@ jobs:
         with:
           components: rustfmt
       - run: scripts/test native
+      - name: Test listening queue through the host core ABI
+        run: |
+          python3 -B <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+
+          cargo = shutil.which('cargo')
+          if cargo is None:
+              raise SystemExit('Cargo is required')
+          manifest = str(Path('native/core/Cargo.toml').resolve())
+          subprocess.run([cargo, 'build', '--locked', '--jobs', '2', '--manifest-path', manifest], check=True)
+          metadata = subprocess.check_output([cargo, 'metadata', '--format-version', '1', '--no-deps', '--locked', '--manifest-path', manifest])
+          suffix = 'dylib' if sys.platform == 'darwin' else 'so'
+          library = Path(json.loads(metadata)['target_directory']) / 'debug' / ('libsoundq_core.' + suffix)
+          evidence = Path(tempfile.mkdtemp(prefix='listening-queue-', dir=os.environ['RUNNER_TEMP']))
+          (evidence / 'tmp').mkdir()
+          env = dict(os.environ, SOUNDQ_CORE_LIBRARY=str(library), SOUNDQ_REPAIR_EVIDENCE=str(evidence))
+          subprocess.run([sys.executable, '-B', 'native/tests/listening_queue.py'], env=env, check=True)
+          PY
       - name: Test offline performance evidence
         run: python3 -B -m unittest discover -s native/tests -p test_matched_performance.py -v
   macos:
@@ -30,6 +54,25 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - run: scripts/build native-macos
+      - name: Test macOS queue disclosure and unattached AppKit layout
+        run: |
+          python3 -B <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+
+          root = Path.cwd()
+          sys.path.insert(0, str(root / 'native/tests'))
+          import queue_current_marker_regressions
+
+          output = Path(tempfile.mkdtemp(prefix='macos-queue-', dir=os.environ['RUNNER_TEMP']))
+          result = queue_current_marker_regressions.run_platform('macos', root, output / 'current-marker')
+          if result:
+              raise SystemExit(result)
+          subprocess.run([sys.executable, '-B', 'native/tests/queue_transport_layout.py', '--appkit', '--output', str(output / 'transport-layout')], check=True)
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: soundq-native-macos-preview

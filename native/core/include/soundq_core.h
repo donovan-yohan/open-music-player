@@ -14,7 +14,9 @@ extern "C" {
  * No panic unwinds across this boundary. Version mismatch must refuse startup.
  */
 uint32_t sq_core_abi_version(void);
-uint64_t sq_core_open(const char *endpoint, const char *cache_root);
+/* client_root holds endpoint/account-scoped durable queue data plus bounded
+ * immutable audio files. Supply application support/files, not purgeable cache. */
+uint64_t sq_core_open(const char *endpoint, const char *client_root);
 /* expected_epoch is captured when enqueueing, never when the worker dequeues. */
 char *sq_core_execute(uint64_t core, uint64_t expected_epoch, const char *command_json);
 uint64_t sq_core_revoke(uint64_t core);

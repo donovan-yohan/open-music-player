@@ -27,6 +27,23 @@ pub enum Command {
     Select {
         track_id: i64,
     },
+    QueueAppend {
+        track_id: i64,
+    },
+    QueuePlay {
+        occurrence_id: u64,
+    },
+    QueueRemove {
+        occurrence_id: u64,
+    },
+    QueueMove {
+        occurrence_id: u64,
+        to_index: u32,
+    },
+    QueueClear {},
+    QueueRestore {},
+    Next {},
+    Previous {},
     Pause {},
     Resume {},
     Seek {
@@ -73,7 +90,7 @@ pub struct Track {
     pub duration_ms: Option<u64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Occurrence {
     pub id: u64,
     pub track: Track,
@@ -91,6 +108,7 @@ pub struct Snapshot {
     pub total: u64,
     pub offset: u32,
     pub queue: Vec<Occurrence>,
+    pub queue_unchanged: bool,
     pub selected_occurrence: Option<u64>,
     pub transport: AudioState,
     pub position_ms: u64,

@@ -2,6 +2,7 @@ package com.soundq.nativepreview
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.*
 import android.os.*
 import android.graphics.Color
@@ -27,6 +28,9 @@ class MainActivity : Activity() {
     private lateinit var seek: SeekBar
     private lateinit var logout: Button
     private var dragging = false
+    private var queueActionDialog: AlertDialog? = null
+    private var queueNameDialog: AlertDialog? = null
+    private var queueActions: ArrayAdapter<String>? = null
     private val rows = Rows { id -> service?.select(id) }
     internal var fixtureList: RecyclerView? = null
         private set
@@ -36,7 +40,7 @@ class MainActivity : Activity() {
             service?.listener = { snapshot, error -> render(snapshot, error) }
             service?.let { render(it.snapshot, null) }
         }
-        override fun onServiceDisconnected(name: ComponentName) { service = null }
+        override fun onServiceDisconnected(name: ComponentName) { dismissQueueActions(); service = null }
     }
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
@@ -71,6 +75,11 @@ class MainActivity : Activity() {
         play = button("Play") { service?.let { it.command(JSONObject().put("command", if (it.snapshot.optString("transport") == "playing") "pause" else "resume")) } }
         controls.addView(play); controls.addView(button("Retry") { service?.command(JSONObject().put("command", "retry")) })
         root.addView(controls)
+        val queueControls=LinearLayout(this)
+        queueControls.addView(button("Previous") {service?.queueAction("previous")})
+        queueControls.addView(button("Next") {service?.queueAction("next")})
+        queueControls.addView(button("Queue") {showQueue()})
+        root.addView(queueControls)
         seek = SeekBar(this).apply { max = 10000; contentDescription = "Playback position"
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onStartTrackingTouch(bar: SeekBar) { dragging = true }
@@ -90,6 +99,7 @@ class MainActivity : Activity() {
     private fun label(value: String, size: Float) = TextView(this).apply { text = value; textSize = size; setTextColor(Color.rgb(225, 235, 243)); setPadding(4, 8, 4, 8) }
     private fun button(value: String, action: () -> Unit) = Button(this).apply { text = value; setOnClickListener { action() } }
     private fun render(snapshot: JSONObject, error: String?) {
+        queueActions?.notifyDataSetChanged()
         val authenticated = snapshot.optBoolean("authenticated")
         login.visibility = if (authenticated) View.GONE else View.VISIBLE
         library.visibility = if (authenticated) View.VISIBLE else View.GONE
@@ -99,7 +109,7 @@ class MainActivity : Activity() {
             Row(row.getLong("id"), row.getString("title"), if (row.isNull("artist")) "Unknown artist" else row.optString("artist"))
         }
         if (next != rows.currentList) rows.submitList(next)
-        val current = snapshot.optJSONArray("queue")?.optJSONObject(0)?.optJSONObject("track")?.optString("title")
+        val current = service?.selectedTrack()?.optString("title")
         title.text = current ?: "SoundQ / Library"
         status.text = (error ?: snapshot.optString("error").takeUnless { it == "null" || it.isBlank() })?.replace('_', ' ')
             ?: "${next.size} of ${snapshot.optLong("total")} tracks · ${snapshot.optString("transport")}"
@@ -108,7 +118,78 @@ class MainActivity : Activity() {
         seek.isEnabled = current != null
         if (!dragging) { val duration = snapshot.optLong("duration_ms"); seek.progress = if (duration > 0) (snapshot.optLong("position_ms") * 10000 / duration).toInt() else 0 }
     }
-    override fun onDestroy() { service?.listener = null; unbindService(connection); super.onDestroy() }
+    private fun dismissQueueActions() {
+        val dialog = queueActionDialog
+        val nameDialog = queueNameDialog
+        queueActionDialog = null
+        queueNameDialog = null
+        queueActions = null
+        dialog?.dismiss()
+        nameDialog?.dismiss()
+    }
+    private fun showQueue() {
+        val s=service ?: return
+        val values=s.snapshot.optJSONArray("queue") ?: org.json.JSONArray()
+        val ids=(0 until values.length()).map {values.getJSONObject(it).getLong("id")}
+        val titles=(0 until values.length()).map { i -> val o=values.getJSONObject(i);(if(o.optLong("id")==s.snapshot.optLong("selected_occurrence")) "Current · " else "")+o.getJSONObject("track").getString("title")}
+        AlertDialog.Builder(this).setTitle("Listening queue · ${ids.size}").setItems(titles.toTypedArray()) {_,index ->
+            val id=ids[index]
+            val name=values.getJSONObject(index).getJSONObject("track").getString("title")
+            fun currentIndex(): Int {
+                if (service !== s) return -1
+                val queue = s.snapshot.optJSONArray("queue") ?: return -1
+                return (0 until queue.length()).firstOrNull { queue.getJSONObject(it).getLong("id") == id } ?: -1
+            }
+            if (currentIndex() < 0) return@setItems
+            dismissQueueActions()
+            var active = true
+            val actions = object : ArrayAdapter<String>(this, android.R.layout.select_dialog_item, arrayOf("Play", "Move up", "Move down", "Remove")) {
+                override fun areAllItemsEnabled() = false
+                override fun isEnabled(position: Int): Boolean {
+                    val current = currentIndex()
+                    if (!active || current < 0) return false
+                    return when (position) {
+                        1 -> current > 0
+                        2 -> current + 1 < (s.snapshot.optJSONArray("queue")?.length() ?: 0)
+                        else -> true
+                    }
+                }
+                override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                    val enabled = isEnabled(position)
+                    return super.getView(position, convertView, parent).apply { isEnabled = enabled }
+                }
+            }
+            val dialog = AlertDialog.Builder(this).setTitle(titles[index]).setAdapter(actions) {issued,action ->
+                // A retained callback must not use the disclosure's opening index.
+                // Dismiss listeners are posted; authority ends before their delivery.
+                if (queueActionDialog === issued && queueActionDialog?.isShowing == true && actions.isEnabled(action)) {
+                    val current = currentIndex()
+                    when(action) {
+                        0->s.queueAction("queue_play",id)
+                        1->s.queueAction("queue_move",id,current-1)
+                        2->s.queueAction("queue_move",id,current+1)
+                        3->s.queueAction("queue_remove",id)
+                    }
+                }
+            }.setNeutralButton("Full name") {issued,_ ->
+                if (queueActionDialog === issued && queueActionDialog?.isShowing == true && currentIndex() >= 0) {
+                    // Retire actions synchronously; closing read-only details never restores them.
+                    dismissQueueActions()
+                    // Native message content scrolls within the dialog, without a line cap.
+                    val detail = AlertDialog.Builder(this).setTitle("Track name").setMessage(name).setPositiveButton("Done",null).show()
+                    queueNameDialog = detail
+                    detail.setOnDismissListener { if (queueNameDialog === detail) queueNameDialog = null }
+                }
+            }.show()
+            queueActionDialog = dialog
+            queueActions = actions
+            dialog.setOnDismissListener {
+                active = false
+                if (queueActionDialog === dialog) { queueActionDialog = null; queueActions = null }
+            }
+        }.setPositiveButton("Done",null).setNeutralButton("Clear") {_,_->s.queueAction("queue_clear")}.show()
+    }
+    override fun onDestroy() { dismissQueueActions(); service?.listener = null; unbindService(connection); super.onDestroy() }
     data class Row(val id: Long, val title: String, val artist: String)
     class Rows(private val select: (Long) -> Unit) : ListAdapter<Row, Rows.Holder>(object : DiffUtil.ItemCallback<Row>() {
         override fun areItemsTheSame(a: Row, b: Row) = a.id == b.id
