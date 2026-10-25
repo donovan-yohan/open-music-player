@@ -28,6 +28,7 @@ class MixPlanClip {
   final int? fadeInMs;
   final int? fadeOutMs;
   final String pitchMode;
+  final TempoPolicy tempoPolicy;
 
   /// Optional ADR 0006 `stemEdits` v1 document. Authoring/persistence only —
   /// playback of stem cuts is not wired up on this path.
@@ -45,6 +46,7 @@ class MixPlanClip {
     this.fadeInMs,
     this.fadeOutMs,
     String pitchMode = pitchModePreserve,
+    this.tempoPolicy = TempoPolicy.volumeOnly,
     this.stemEdits,
   })  : assert(_isNonBlank(clipId)),
         assert(_isNonBlank(queueItemId)),
@@ -72,6 +74,7 @@ class MixPlanClip {
         fadeInMs: fadeInMs,
         fadeOutMs: fadeOutMs,
         pitchMode: pitchMode,
+        tempoPolicy: tempoPolicy,
         stemEdits: stemEdits,
       );
 
@@ -91,6 +94,7 @@ class MixPlanClip {
         fadeInMs: fadeInMs,
         fadeOutMs: fadeOutMs,
         pitchMode: pitchMode,
+        tempoPolicy: tempoPolicy,
         stemEdits: stemEdits,
       );
 
@@ -106,6 +110,7 @@ class MixPlanClip {
         fadeInMs: fadeInMs,
         fadeOutMs: fadeOutMs,
         pitchMode: mode,
+        tempoPolicy: tempoPolicy,
         stemEdits: stemEdits,
       );
 
@@ -122,6 +127,7 @@ class MixPlanClip {
         fadeInMs: fadeInMs,
         fadeOutMs: fadeOutMs,
         pitchMode: pitchMode,
+        tempoPolicy: tempoPolicy,
         stemEdits: edits,
       );
 
@@ -148,6 +154,7 @@ class MixPlanClip {
         fadeInMs: fadeInMs ?? this.fadeInMs,
         fadeOutMs: fadeOutMs ?? this.fadeOutMs,
         pitchMode: pitchMode,
+        tempoPolicy: tempoPolicy,
         stemEdits: stemEdits,
       );
 
@@ -160,6 +167,7 @@ class MixPlanClip {
       'sourceEndMs': sourceEndMs,
       'timelineStartMs': timelineStartMs,
       'gainDb': gainDb,
+      'tempoPolicy': tempoPolicy.name,
     };
     if (fadeInMs != null) {
       json['fadeInMs'] = fadeInMs;
@@ -193,6 +201,7 @@ class MixPlanClip {
       fadeInMs: (json['fadeInMs'] as num?)?.toInt(),
       fadeOutMs: (json['fadeOutMs'] as num?)?.toInt(),
       pitchMode: (json['pitchMode'] as String?) ?? pitchModePreserve,
+      tempoPolicy: tempoPolicyFromJson(json),
       stemEdits: rawStemEdits is Map
           ? StemEdits.fromJson(Map<String, dynamic>.from(rawStemEdits))
           : null,
@@ -241,6 +250,25 @@ class MixPlan {
     required this.updatedAt,
   });
 
+  /// Reject authoring values that a permissive display DTO would normalize.
+  factory MixPlan.fromAuthoringJson(Map<String, dynamic> json) {
+    final plan = MixPlan.fromJson(json);
+    final rawClips = json['clips'];
+    if (rawClips is! List || rawClips.length != plan.clips.length) {
+      throw const FormatException('Saved mix has invalid clips.');
+    }
+    for (var i = 0; i < rawClips.length; i++) {
+      final canonical = plan.clips[i].toJson();
+      canonical['pitchMode'] = plan.clips[i].pitchMode;
+      canonical['timelineEndMs'] = plan.clips[i].timelineEndMs;
+      if (!_preservesAuthoringJson(rawClips[i], canonical)) {
+        throw const FormatException(
+            'Saved mix contains unsupported or changed authoring data.');
+      }
+    }
+    return plan;
+  }
+
   factory MixPlan.fromJson(Map<String, dynamic> json) => MixPlan(
         id: json['id'] as String,
         schemaVersion: (json['schemaVersion'] as num).toInt(),
@@ -254,4 +282,18 @@ class MixPlan {
         createdAt: DateTime.parse(json['createdAt'] as String),
         updatedAt: DateTime.parse(json['updatedAt'] as String),
       );
+}
+
+bool _preservesAuthoringJson(Object? raw, Object? canonical) {
+  if (raw is Map && canonical is Map) {
+    return raw.keys.every((key) =>
+        canonical.containsKey(key) &&
+        _preservesAuthoringJson(raw[key], canonical[key]));
+  }
+  if (raw is List && canonical is List) {
+    return raw.length == canonical.length &&
+        Iterable<int>.generate(raw.length)
+            .every((i) => _preservesAuthoringJson(raw[i], canonical[i]));
+  }
+  return raw == canonical;
 }

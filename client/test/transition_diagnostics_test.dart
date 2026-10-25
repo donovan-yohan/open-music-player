@@ -170,8 +170,9 @@ void main() {
     expect(diagnostics.hasWarnings, isTrue);
   });
 
-  test('validates downbeat lock through tempo automation timing', () {
+  test('validates downbeat lock through explicitly authored rate timing', () {
     final model = TimelineModel(
+      autoTempoTransitions: false,
       clips: [
         _clip(
           'outgoing',
@@ -192,7 +193,7 @@ void main() {
             bpmConfidence: 0.9,
             downbeatsMs: [2000, 3600, 5200, 6800],
           ),
-        ),
+        ).withRateAutomation(const PlaybackRateAutomation(baseRate: 0.8)),
       ],
     );
     final diagnostics = diagnoseTransition(model.clips[0], model.clips[1]);

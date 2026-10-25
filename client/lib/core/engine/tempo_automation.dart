@@ -20,6 +20,18 @@ const String pitchModeFollowTempo = 'followTempo';
 
 enum BeatSnapMode { free, downbeat, beat1, beat4, beat16 }
 
+/// Missing saved intent means volume-only, never an inferred overlap sweep.
+enum TempoPolicy { volumeOnly, constantTempoLock }
+
+TempoPolicy tempoPolicyFromJson(Map<String, dynamic> json) {
+  if (!json.containsKey('tempoPolicy')) return TempoPolicy.volumeOnly;
+  return switch (json['tempoPolicy']) {
+    'volumeOnly' => TempoPolicy.volumeOnly,
+    'constantTempoLock' => TempoPolicy.constantTempoLock,
+    _ => throw const FormatException('Unsupported tempoPolicy'),
+  };
+}
+
 BeatSnapMode parseBeatSnapMode(Object? value) {
   final normalized = value?.toString().trim().toLowerCase();
   return switch (normalized) {
@@ -383,8 +395,10 @@ class PlaybackRateSegment {
 
   int get durationMs => endMs - startMs;
 
+  /// Active on [startMs, endMs); endpoint interpolation remains available via
+  /// [rateAt] for integrating this segment's one-sided limit.
   bool contains(int timelineMs) =>
-      timelineMs >= startMs && timelineMs <= endMs && durationMs > 0;
+      timelineMs >= startMs && timelineMs < endMs && durationMs > 0;
 
   double rateAt(int timelineMs) {
     if (durationMs <= 0) return endRate;
@@ -394,6 +408,33 @@ class PlaybackRateSegment {
       endRate,
       t,
     ).clamp(minTempoAutomationRate, maxTempoAutomationRate).toDouble();
+  }
+
+  // The rate is affine only between clamp crossings. Integrate each such
+  // portion using this segment's own endpoint limits, even at an active edge.
+  double _sourceElapsedBetween(int start, int end) {
+    final duration = (end - start).toDouble();
+    final first = _lerp(startRate, endRate, (start - startMs) / durationMs);
+    final last = _lerp(startRate, endRate, (end - startMs) / durationMs);
+    final cuts = <double>[0, 1];
+    if (first.isFinite && last.isFinite && first != last) {
+      for (final limit in [minTempoAutomationRate, maxTempoAutomationRate]) {
+        final crossing = (limit - first) / (last - first);
+        if (crossing > 0 && crossing < 1) cuts.add(crossing);
+      }
+    }
+    cuts.sort();
+    var elapsed = 0.0;
+    for (var i = 0; i + 1 < cuts.length; i++) {
+      final left = cuts[i];
+      final right = cuts[i + 1];
+      final leftRate = _lerp(first, last, left)
+          .clamp(minTempoAutomationRate, maxTempoAutomationRate);
+      final rightRate = _lerp(first, last, right)
+          .clamp(minTempoAutomationRate, maxTempoAutomationRate);
+      elapsed += duration * (right - left) * ((leftRate + rightRate) / 2);
+    }
+    return elapsed;
   }
 
   @override
@@ -495,9 +536,21 @@ class PlaybackRateAutomation {
       final start = points[i];
       final end = points[i + 1];
       if (end <= start) continue;
-      final startRate = rateAt(start);
-      final endRate = rateAt(end);
-      elapsed += (end - start) * ((startRate + endRate) / 2);
+      // All segment boundaries are split above. Pick the last segment whose
+      // interior covers this piece, never a neighboring segment at its edge.
+      PlaybackRateSegment? winner;
+      for (final segment in segments.reversed) {
+        if (segment.startMs <= start && segment.endMs >= end) {
+          winner = segment;
+          break;
+        }
+      }
+      if (winner == null) {
+        elapsed += (end - start) *
+            baseRate.clamp(minTempoAutomationRate, maxTempoAutomationRate);
+      } else {
+        elapsed += winner._sourceElapsedBetween(start, end);
+      }
     }
     return elapsed.round();
   }
@@ -531,13 +584,9 @@ class PlaybackRateAutomation {
   }) {
     if (sourceDurationMs <= 0) return timelineStartMs;
 
-    if (segments.isEmpty) {
-      final rate = baseRate
-          .clamp(minTempoAutomationRate, maxTempoAutomationRate)
-          .toDouble();
-      return timelineStartMs + (sourceDurationMs / rate).ceil();
-    }
-
+    // Both selected duration and marker projection use the first integer
+    // timeline millisecond whose rounded source integral reaches the target.
+    // An unrounded duration/rate ceil can disagree by one millisecond.
     var high = timelineStartMs + sourceDurationMs;
     final maxHigh = timelineStartMs +
         (sourceDurationMs / minTempoAutomationRate).ceil() +
@@ -954,26 +1003,84 @@ int? snapIncomingStartToNearestDownbeat({
   return math.max(0, snapped);
 }
 
+/// Selects source-time landmarks. Literal groups are not bars or detected
+/// phrases: phraseLengthBars supplies no origin. Never anchor at array index 0.
 List<int> beatMarkersForSnapMode(ClipTempoMetadata tempo, BeatSnapMode snapMode,
     {double tempoScale = 1}) {
-  final beats = tempo.hasReliableBeatGrid
-      ? normalizedBeatMarkersForTempo(tempo, tempoScale: tempoScale)
-      : const <int>[];
+  final raw = tempo.hasReliableBeatGrid ? tempo.beatsMs : const <int>[];
   final downbeats = tempo.hasDownbeats
       ? _sortedUniqueNonNegative(tempo.downbeatsMs)
       : const <int>[];
-
-  return switch (snapMode) {
-    BeatSnapMode.free => const [],
-    BeatSnapMode.downbeat => downbeats,
-    BeatSnapMode.beat1 => beats.isNotEmpty ? beats : downbeats,
-    BeatSnapMode.beat4 =>
-      downbeats.isNotEmpty ? downbeats : _strideMarkers(beats, 4),
-    BeatSnapMode.beat16 => downbeats.isNotEmpty
-        ? _strideMarkers(downbeats, 4)
-        : _strideMarkers(beats, 16),
-  };
+  if (snapMode == BeatSnapMode.free) return const [];
+  if (snapMode == BeatSnapMode.downbeat) return downbeats;
+  final anchor =
+      tempo.beatAnchorMs ?? (downbeats.isEmpty ? null : downbeats.first);
+  final beats = _anchoredNormalizedBeats(raw, anchor, tempoScale);
+  if (snapMode == BeatSnapMode.beat1) {
+    return beats.isNotEmpty ? beats : downbeats;
+  }
+  if (anchor == null || beats.isEmpty) return const [];
+  final stride = snapMode == BeatSnapMode.beat4 ? 4 : 16;
+  final anchorIndex = beats.indexOf(anchor);
+  if (anchorIndex >= 0) {
+    return [
+      for (var i = 0; i < beats.length; i++)
+        if ((i - anchorIndex) % stride == 0) beats[i]
+    ];
+  }
+  final interval = _uniformBeatInterval(beats);
+  if (interval == null) return const [];
+  return [
+    for (final beat in beats)
+      if (_beatOrdinal(beat, anchor, interval) case final ordinal?)
+        if (ordinal % stride == 0) beat
+  ];
 }
+
+/// Rounding of a uniform fractional-ms grid can alternate adjacent intervals.
+/// Every event must agree with one affine grid within a millisecond.
+double? _uniformBeatInterval(List<int> beats) {
+  if (beats.length < 2) return null;
+  final interval = (beats.last - beats.first) / (beats.length - 1);
+  if (interval <= 0) return null;
+  for (var i = 1; i < beats.length; i++) {
+    if ((beats[i] - beats.first - i * interval).abs() > 1) return null;
+  }
+  return interval;
+}
+
+int? _beatOrdinal(int beat, int anchor, double interval) {
+  final ordinal = ((beat - anchor) / interval).round();
+  return (beat - anchor - ordinal * interval).abs() <= 1 ? ordinal : null;
+}
+
+List<int> _anchoredNormalizedBeats(List<int> raw, int? anchor, double scale) {
+  if (scale > 0.75) {
+    return normalizeBeatMarkerTimestamps(raw, tempoScale: scale);
+  }
+  if (anchor == null) return const [];
+  final anchorIndex = raw.indexOf(anchor);
+  if (anchorIndex >= 0) {
+    return [
+      for (var i = 0; i < raw.length; i++)
+        if ((i - anchorIndex).isEven) raw[i]
+    ];
+  }
+  final interval = _uniformBeatInterval(raw);
+  if (interval == null) return const [];
+  return [
+    for (final beat in raw)
+      if (_beatOrdinal(beat, anchor, interval) case final ordinal?)
+        if (ordinal.isEven) beat
+  ];
+}
+
+/// Scalar BPM cannot guarantee a constant pulse on a variable event grid.
+bool hasConstantTempoLockGrid(ClipTempoMetadata tempo) =>
+    tempo.hasReliableBpm &&
+    tempo.hasReliableBeatGrid &&
+    tempo.hasDownbeats &&
+    _uniformBeatInterval(tempo.beatsMs) != null;
 
 /// Projects a reliable raw beat grid into the selected octave interpretation.
 /// Source timestamps are not stored back into [ClipTempoMetadata], and phrase
@@ -1216,7 +1323,8 @@ int downbeatSnapToleranceMs(
   );
   final beatStride = switch (snapMode) {
     BeatSnapMode.free => 1,
-    BeatSnapMode.downbeat || BeatSnapMode.beat4 => 4,
+    BeatSnapMode.downbeat => tempo.beatsPerBar ?? 4,
+    BeatSnapMode.beat4 => 4,
     BeatSnapMode.beat1 => 1,
     BeatSnapMode.beat16 => 16,
   };

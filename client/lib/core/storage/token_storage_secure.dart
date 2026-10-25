@@ -1,18 +1,11 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'token_storage_backend.dart';
+import '../platform/desktop_initialization.dart';
 import '../api/api_endpoint.dart';
 
 TokenStorageBackend createTokenStorageBackend({FlutterSecureStorage? storage}) {
-  return SecureTokenStorage(
-    storage: storage ??
-        const FlutterSecureStorage(
-          aOptions: AndroidOptions(encryptedSharedPreferences: true),
-          iOptions: IOSOptions(
-            accessibility: KeychainAccessibility.first_unlock,
-          ),
-        ),
-  );
+  return SecureTokenStorage(storage: storage ?? applicationSecureStorage());
 }
 
 class SecureTokenStorage implements TokenStorageBackend {

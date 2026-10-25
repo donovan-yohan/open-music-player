@@ -350,7 +350,9 @@ class _MetadataChip extends StatelessWidget {
       ),
       decoration: BoxDecoration(
         color: keyColors?.background ?? theme.colorScheme.secondaryContainer,
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: MediaQuery.sizeOf(context).width >= 960
+            ? BorderRadius.zero
+            : BorderRadius.circular(4),
       ),
       child: Center(
         widthFactor: 1,

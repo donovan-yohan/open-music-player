@@ -18,15 +18,16 @@ enum LaneRole { previous, current, upcoming, collapsed }
 
 /// List-like identity strip for a timeline lane: artwork, title, artist.
 ///
-/// The timeline decides how much horizontal space remains before the lane's
-/// end and clips this widget accordingly. That keeps future songs readable like
-/// queue rows while letting ended songs disappear off the left edge.
+/// Desktop reserves a duration-independent cell; phone metadata remains
+/// overlaid and clipped at the lane's temporal end.
 class TimelineLaneHeader extends StatelessWidget {
   final QueueTrack track;
   final String? laneId;
   final LaneRole role;
   final String statusLabel;
   final Color accent;
+  final VoidCallback? onTap;
+  final double? gain;
 
   const TimelineLaneHeader({
     super.key,
@@ -35,6 +36,8 @@ class TimelineLaneHeader extends StatelessWidget {
     required this.role,
     required this.statusLabel,
     required this.accent,
+    this.onTap,
+    this.gain,
   });
 
   bool get _active => role == LaneRole.current;
@@ -53,10 +56,39 @@ class TimelineLaneHeader extends StatelessWidget {
   static double minimumVisibleWidthForTextScale(double textScale) =>
       textScale >= 1.3 ? 140 : 56;
 
+  static double desktopHeight(BuildContext context, {required bool showGain}) {
+    final text = Theme.of(context).textTheme;
+    var height = 17.0; // vertical padding and the shared bottom rule
+    for (final style in [
+      text.labelSmall,
+      text.bodyMedium,
+      text.bodySmall,
+      if (showGain) text.labelSmall?.copyWith(fontFamily: 'IBM Plex Mono')
+    ]) {
+      final painter = TextPainter(
+          text: TextSpan(text: 'Ag', style: style),
+          textScaler: MediaQuery.textScalerOf(context),
+          textDirection: TextDirection.ltr)
+        ..layout();
+      height += painter.height;
+      painter.dispose();
+    }
+    return height.ceilToDouble();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final muted = role == LaneRole.previous;
+    if (MediaQuery.sizeOf(context).width >= 960) {
+      return _DesktopLaneIdentity(
+          track: track,
+          role: role,
+          statusLabel: statusLabel,
+          accent: accent,
+          onTap: onTap,
+          gain: gain);
+    }
     final textScale = MediaQuery.textScalerOf(context).scale(1);
     final headerHeight = heightForTextScale(textScale);
 
@@ -220,6 +252,135 @@ class TimelineLaneHeader extends StatelessWidget {
   }
 }
 
+/// The reserved desktop identity cell follows the existing lane scroll owner.
+/// Native InkWell owns keyboard activation and Tooltip owns disclosure.
+class _DesktopLaneIdentity extends StatefulWidget {
+  const _DesktopLaneIdentity(
+      {required this.track,
+      required this.role,
+      required this.statusLabel,
+      required this.accent,
+      this.onTap,
+      this.gain});
+  final QueueTrack track;
+  final LaneRole role;
+  final String statusLabel;
+  final Color accent;
+  final VoidCallback? onTap;
+  final double? gain;
+
+  @override
+  State<_DesktopLaneIdentity> createState() => _DesktopLaneIdentityState();
+}
+
+class _DesktopLaneIdentityState extends State<_DesktopLaneIdentity> {
+  final _tooltip = GlobalKey<TooltipState>();
+  bool _focused = false;
+  bool _hovered = false;
+  bool _pressed = false;
+
+  void _revealFocused() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _focused) _tooltip.currentState?.ensureTooltipVisible();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final feedback = _focused || _hovered || _pressed;
+    final background = _pressed
+        ? colors.onSurface
+        : feedback
+            ? colors.secondary
+            : colors.surface;
+    final foreground = feedback ? colors.onSecondary : colors.onSurface;
+    final secondary = feedback ? foreground : colors.onSurfaceVariant;
+    final active = widget.role == LaneRole.current;
+    final name =
+        '${widget.track.title}\n${widget.track.artist ?? 'Unknown artist'}';
+    return Tooltip(
+      key: _tooltip,
+      message: name,
+      excludeFromSemantics: true,
+      constraints: BoxConstraints(
+          maxWidth: math.min(560, MediaQuery.sizeOf(context).width - 32)),
+      decoration: BoxDecoration(color: colors.inverseSurface),
+      textStyle:
+          theme.textTheme.bodyMedium?.copyWith(color: colors.onInverseSurface),
+      child: Material(
+        color: background,
+        child: InkWell(
+          onTap: widget.onTap,
+          overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+          onFocusChange: (value) {
+            setState(() => _focused = value);
+            if (value) {
+              _revealFocused();
+            } else {
+              Tooltip.dismissAllToolTips();
+            }
+          },
+          onHover: (value) {
+            setState(() => _hovered = value);
+            if (!value && _focused) _revealFocused();
+          },
+          onHighlightChanged: (value) => setState(() => _pressed = value),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            foregroundDecoration: _focused
+                ? BoxDecoration(border: Border.all(color: foreground))
+                : null,
+            decoration: BoxDecoration(
+                border: Border(
+              left: BorderSide(
+                  color: active ? colors.primary : Colors.transparent,
+                  width: 3),
+              bottom: BorderSide(color: theme.dividerColor),
+            )),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(widget.statusLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                        color: feedback
+                            ? foreground
+                            : active
+                                ? colors.primary
+                                : secondary)),
+                Text(widget.track.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                        color: foreground,
+                        fontWeight:
+                            active ? FontWeight.w700 : FontWeight.w600)),
+                Text(widget.track.artist ?? 'Unknown artist',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                        theme.textTheme.bodySmall?.copyWith(color: secondary)),
+                if (widget.gain case final gain?)
+                  Text('gain ${(gain.clamp(0, 1) * 100).round()}%',
+                      key:
+                          ValueKey('timeline_gain_${widget.track.queueItemId}'),
+                      style: theme.textTheme.labelSmall?.copyWith(
+                          color: secondary,
+                          fontFamily: 'IBM Plex Mono',
+                          fontFeatures: const [FontFeature.tabularFigures()])),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// The waveform body of a clip placed in the timeline pane.
 ///
 /// Fills its positioned box with the transient-preserving waveform, an active
@@ -296,6 +457,8 @@ class TimelineClipWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final gainScalar = gain.clamp(0.0, 1.0).toDouble();
+    final desktop = MediaQuery.sizeOf(context).width >= 960;
+    final radius = desktop ? BorderRadius.zero : BorderRadius.circular(6);
     final waveAlpha =
         (_muted ? 0.45 : 0.62 + (gainScalar * 0.38)).clamp(0.0, 1.0).toDouble();
     final waveColor = accent.withValues(alpha: waveAlpha);
@@ -303,14 +466,14 @@ class TimelineClipWidget extends StatelessWidget {
 
     return ClipRRect(
       key: ValueKey('timeline_clip_$_laneIdentity'),
-      borderRadius: BorderRadius.circular(6),
+      borderRadius: radius,
       clipBehavior: Clip.antiAlias,
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: accent.withValues(
             alpha: _active ? 0.10 + gainScalar * 0.08 : 0.05,
           ),
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: radius,
         ),
         child: Stack(
           children: [
@@ -356,19 +519,23 @@ class TimelineClipWidget extends StatelessWidget {
             if (stemChangePoints.isNotEmpty)
               Positioned.fill(child: _stemChangePointOverlay()),
             if (showInLaneChip)
-              Positioned(left: 4, top: 4, right: 4, child: _inLaneChip(theme)),
+              Positioned(
+                  left: 4,
+                  top: 4,
+                  right: 4,
+                  child: _inLaneChip(theme, desktop)),
             if (showGainBadge)
               Positioned(
                 key: ValueKey('timeline_gain_$_laneIdentity'),
                 right: 6,
                 bottom: 6,
-                child: _gainBadge(theme, gainScalar),
+                child: _gainBadge(theme, gainScalar, desktop),
               ),
             Positioned.fill(
               child: IgnorePointer(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(6),
+                    borderRadius: radius,
                     border: Border.all(
                       color: _active ? accent : accent.withValues(alpha: 0.35),
                       width: _active ? 1.5 + gainScalar : 1,
@@ -469,31 +636,32 @@ class TimelineClipWidget extends StatelessWidget {
     );
   }
 
-  Widget _gainBadge(ThemeData theme, double gainScalar) {
+  Widget _gainBadge(ThemeData theme, double gainScalar, bool desktop) {
     final gainPercent = (gainScalar * 100).round();
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
         color: theme.colorScheme.inverseSurface,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: desktop ? BorderRadius.zero : BorderRadius.circular(10),
       ),
       child: Text(
         'gain $gainPercent%',
         style: theme.textTheme.labelSmall?.copyWith(
           color: theme.colorScheme.onInverseSurface,
+          fontFamily: desktop ? 'IBM Plex Mono' : null,
           fontWeight: FontWeight.w700,
         ),
       ),
     );
   }
 
-  Widget _inLaneChip(ThemeData theme) {
+  Widget _inLaneChip(ThemeData theme, bool desktop) {
     final dur = _formatMs(trim.selectedDurationMs);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
         color: theme.colorScheme.surface.withValues(alpha: 0.82),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: desktop ? BorderRadius.zero : BorderRadius.circular(10),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,

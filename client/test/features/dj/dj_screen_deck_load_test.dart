@@ -101,6 +101,35 @@ void main() {
   });
 
   testWidgets(
+      'a pending deck A source does not block deck B screen preparation',
+      (tester) async {
+    pinViewport(tester);
+    final playback = testPlaybackStateForRows([_track('11'), _track('12')]);
+    final entered = Completer<void>();
+    final release = Completer<void>();
+    final session = DjSessionProvider(
+      deckA: _deck(DjDeckId.a, _PendingResolver(entered, release)),
+      deckB: _deck(DjDeckId.b, const _LocalResolver()),
+    );
+    await tester.pumpWidget(djPlaybackProviders(
+      playback: playback,
+      child: MaterialApp(home: DjScreen(session: session)),
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(entered.isCompleted, isTrue);
+    final peerLoaded = session.deckB.isLoaded;
+    release.complete();
+    await tester.pump();
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 20));
+    session.dispose();
+    await disposeTestPlaybackState(playback);
+    expect(peerLoaded, isTrue);
+  });
+
+  testWidgets(
       'a genuinely empty queue renders the inline load affordance '
       'instead of a modal', (tester) async {
     pinViewport(tester);
@@ -243,6 +272,21 @@ DeckController _deck(DjDeckId deckId, EngineAudioSourceResolver resolver) =>
       resolver: resolver,
       slew: const Duration(milliseconds: 1),
     );
+
+class _PendingResolver implements EngineAudioSourceResolver {
+  _PendingResolver(this.entered, this.release);
+  final Completer<void> entered;
+  final Completer<void> release;
+  @override
+  Future<ResolvedAudioSource> resolve(dynamic clip) async {
+    if (!entered.isCompleted) entered.complete();
+    await release.future;
+    return ResolvedAudioSource.local(Uri.file('/pending.mp3'));
+  }
+
+  @override
+  Future<void> warm(String ref, {required Set<String> protect}) async {}
+}
 
 class _LocalResolver implements EngineAudioSourceResolver {
   const _LocalResolver();

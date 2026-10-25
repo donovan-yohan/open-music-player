@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
@@ -54,6 +57,7 @@ func (f *fakePlaybackLibraryRepo) IsTrackInLibrary(ctx context.Context, userID u
 type fakePlaybackStorage struct {
 	info        map[string]*storage.ObjectInfo
 	statErr     error
+	statErrs    map[string]error
 	presignErr  error
 	lastTTL     time.Duration
 	statKeys    []string
@@ -65,9 +69,12 @@ func (f *fakePlaybackStorage) StatObject(ctx context.Context, key string) (*stor
 	if f.statErr != nil {
 		return nil, f.statErr
 	}
+	if err := f.statErrs[key]; err != nil {
+		return nil, err
+	}
 	info, ok := f.info[key]
 	if !ok {
-		return nil, errors.New("not found")
+		return nil, fmt.Errorf("failed to stat object %s: %w", key, minio.ErrorResponse{Code: "NoSuchKey", StatusCode: http.StatusNotFound})
 	}
 	return info, nil
 }
@@ -292,6 +299,99 @@ func TestPlaybackURLIssuanceReportsArtifactMissing(t *testing.T) {
 	}
 	if len(got.URLs) != 0 {
 		t.Fatalf("urls = %+v, want no signed URL for missing artifact", got.URLs)
+	}
+}
+
+// Typed dependency-interface tests, separate from real-SDK loopback probes.
+func TestPlaybackURLStatErrorClassification(t *testing.T) {
+	cases := []struct {
+		name    string
+		err     error
+		missing bool
+	}{
+		{"wrapped_object_404", fmt.Errorf("stat: %w", minio.ErrorResponse{Code: "NoSuchKey", StatusCode: 404}), true},
+		{"wrapped_access_403", fmt.Errorf("stat: %w", minio.ErrorResponse{Code: "AccessDenied", StatusCode: 403, Message: "private upstream detail"}), false},
+		{"wrapped_service_503", fmt.Errorf("stat: %w", minio.ErrorResponse{Code: "ServiceUnavailable", StatusCode: 503}), false},
+		{"wrapped_network", fmt.Errorf("stat: %w", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("private upstream detail")}), false},
+		{"wrapped_bucket_404", fmt.Errorf("stat: %w", minio.ErrorResponse{Code: "NoSuchBucket", StatusCode: 404}), false},
+		{"unknown_404", fmt.Errorf("stat: %w", minio.ErrorResponse{Code: "UnknownError", StatusCode: 404}), false},
+		{"unknown_error", errors.New("NoSuchKey not found 404 private upstream detail"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, mixed := range []bool{false, true} {
+				t.Run(fmt.Sprintf("mixed_%t", mixed), func(t *testing.T) {
+					store := &fakePlaybackStorage{
+						info: map[string]*storage.ObjectInfo{
+							"audio/1.mp3": {Size: 100, ContentType: "audio/mpeg"},
+							"audio/3.mp3": {Size: 100, ContentType: "audio/mpeg"},
+						},
+						statErrs: map[string]error{"audio/2.mp3": tc.err},
+					}
+					tracks := &fakePlaybackTrackRepo{tracks: map[int64]*db.Track{}}
+					for _, id := range []int64{1, 2, 3} {
+						tracks.tracks[id] = &db.Track{ID: id, StorageKey: sql.NullString{String: fmt.Sprintf("audio/%d.mp3", id), Valid: true}}
+					}
+					h := NewPlaybackHandlers(tracks, &fakePlaybackLibraryRepo{allowed: map[int64]bool{1: true, 2: true, 3: true}}, store)
+					body := `{"trackIds":[2]}`
+					if mixed {
+						body = `{"trackIds":[1,2,3]}`
+					}
+					r := playbackRequest(t, h.CreatePlaybackURLs, body)
+					if r.Header().Get("Cache-Control") != "no-store" || r.Header().Get("Content-Type") != "application/json" {
+						t.Fatalf("headers=%v", r.Header())
+					}
+					if tc.missing {
+						var got PlaybackURLResponse
+						if err := json.Unmarshal(r.Body.Bytes(), &got); err != nil || r.Code != 200 {
+							t.Fatalf("status=%d decode=%v body=%s", r.Code, err, r.Body)
+						}
+						wantURLs := 0
+						if mixed {
+							wantURLs = 2
+						}
+						if len(got.URLs) != wantURLs || len(got.Unavailable) != 1 || got.Unavailable[0] != (PlaybackUnavailableItem{TrackID: 2, Code: "artifact_missing", Message: "stored audio object is unavailable"}) {
+							t.Fatalf("unexpected missing-object response: %+v", got)
+						}
+						if mixed && (got.URLs[0].TrackID != 1 || got.URLs[1].TrackID != 3) {
+							t.Fatal("available order changed")
+						}
+						if !mixed && r.Body.String() != "{\"urls\":[],\"unavailable\":[{\"trackId\":2,\"code\":\"artifact_missing\",\"message\":\"stored audio object is unavailable\"}]}\n" {
+							t.Fatal("missing-object bytes changed")
+						}
+					} else {
+						want := "{\"code\":\"SERVICE_UNAVAILABLE\",\"message\":\"playback URL issuance is unavailable\"}\n"
+						if r.Code != 503 || r.Body.String() != want {
+							t.Fatalf("status=%d want=503 generic envelope; body=%s", r.Code, r.Body)
+						}
+						wantCalls, wantSigns := 1, 0
+						if mixed {
+							wantCalls, wantSigns = 2, 1
+						}
+						if tracks.calls != wantCalls || len(store.statKeys) != wantCalls || len(store.presignKeys) != wantSigns {
+							t.Fatalf("tracks=%d stat=%v sign=%v", tracks.calls, store.statKeys, store.presignKeys)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestPlaybackURLStatCancellationDoesNotPublish(t *testing.T) {
+	for _, cause := range []error{context.Canceled, minio.ErrorResponse{Code: "NoSuchKey", StatusCode: 404}, minio.ErrorResponse{Code: "AccessDenied", StatusCode: 403}} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			store := &fakePlaybackStorage{statErr: fmt.Errorf("stat: %w", cause)}
+			h, tracks := newPlaybackHandlerForTrack(&db.Track{ID: 42, StorageKey: sql.NullString{String: "audio/42.mp3", Valid: true}}, true, store)
+			r := playbackRequest(t, func(w http.ResponseWriter, r *http.Request) {
+				ctx, cancel := context.WithCancel(r.Context())
+				cancel()
+				h.CreatePlaybackURLs(w, r.WithContext(ctx))
+			}, `{"trackIds":[42,43]}`)
+			if r.Body.Len() != 0 || len(r.Header()) != 0 || len(store.presignKeys) != 0 || len(store.statKeys) != 1 || tracks.calls != 1 {
+				t.Fatalf("cancellation published response or continued work: body=%s headers=%v", r.Body, r.Header())
+			}
+		})
 	}
 }
 

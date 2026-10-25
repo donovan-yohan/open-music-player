@@ -1,3 +1,5 @@
+import 'app_snack_bar.dart';
+
 import 'package:flutter/material.dart';
 import '../../core/api/api_client.dart';
 import '../../core/services/services.dart';
@@ -46,13 +48,13 @@ class _TrackActionSheetState extends State<TrackActionSheet> {
       if (mounted) {
         Navigator.of(context).pop();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Added to library')),
+          const AppSnackBar(content: Text('Added to library')),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to add to library: $e')),
+          AppSnackBar(content: Text('Failed to add to library: $e')),
         );
       }
     } finally {

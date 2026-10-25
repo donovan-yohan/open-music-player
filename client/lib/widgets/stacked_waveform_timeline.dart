@@ -606,6 +606,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
   final GlobalKey _scrubCoordinateSpaceKey = GlobalKey();
   TimelineViewport? _renderedViewport;
   double _renderedPaneWidth = 0;
+  double _identityWidth = 0;
   double? _scrubPointerLocalX;
   late final Ticker _scrubEdgeTicker;
   Duration? _lastScrubEdgeTickElapsed;
@@ -708,9 +709,22 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
         Expanded(
           child: LayoutBuilder(
             builder: (context, constraints) {
-              final paneWidth =
-                  (constraints.maxWidth - StackedWaveformTimeline.railWidth)
-                      .clamp(1.0, double.infinity);
+              final desktop = MediaQuery.sizeOf(context).width >= 960;
+              final ratio = MediaQuery.devicePixelRatioOf(context);
+              _identityWidth = desktop
+                  ? (math.min(
+                                240 *
+                                    MediaQuery.textScalerOf(context)
+                                        .scale(1)
+                                        .clamp(1.0, 1.4),
+                                constraints.maxWidth * .45,
+                              ) *
+                              ratio)
+                          .round() /
+                      ratio
+                  : StackedWaveformTimeline.railWidth;
+              final paneWidth = (constraints.maxWidth - _identityWidth)
+                  .clamp(1.0, double.infinity);
               return _buildTimeline(context, paneWidth);
             },
           ),
@@ -799,6 +813,21 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
       );
     }
     final placedClips = layout.placedClips;
+    if (_identityWidth > 0) {
+      final minimum = TimelineLaneHeader.desktopHeight(context,
+          showGain: widget.timelineModel?.clips.isNotEmpty == true);
+      for (var i = 0; i < lanes.length; i++) {
+        final lane = lanes[i];
+        if (lane.height >= minimum) continue;
+        lanes[i] = _LaneModel(
+            track: lane.track,
+            mixClip: lane.mixClip,
+            role: lane.role,
+            accent: lane.accent,
+            status: lane.status,
+            height: minimum);
+      }
+    }
     final selectedLane = _selectedLaneForRegion(lanes);
 
     final overlapBands = _buildOverlapBands(
@@ -826,7 +855,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
           Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _buildRuler(context, viewport, paneWidth),
+              Padding(
+                padding: EdgeInsets.only(left: _identityWidth),
+                child: _buildRuler(context, viewport, paneWidth),
+              ),
               if (selectedLane != null)
                 ValueListenableBuilder<int>(
                   valueListenable: _livePlayheadMs,
@@ -893,6 +925,16 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
               child: const Icon(Icons.tune),
             ),
           ),
+          if (_identityWidth > 0)
+            Positioned(
+              key: const ValueKey('timeline_identity_divider'),
+              left: _identityWidth - 1 / MediaQuery.devicePixelRatioOf(context),
+              top: 0,
+              bottom: 0,
+              width: 1 / MediaQuery.devicePixelRatioOf(context),
+              child: IgnorePointer(
+                  child: ColoredBox(color: Theme.of(context).dividerColor)),
+            ),
         ],
       ),
     );
@@ -934,9 +976,15 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
 
         final dominantClip = _dominantClipAt(placedClips, playheadMs);
         final playheadLabel = _playheadTimeLabel(playheadMs, dominantClip);
-        final badgeLeft =
-            (StackedWaveformTimeline.railWidth + playheadPaneX + 6)
+        final badgeLeft = _identityWidth == 0
+            ? (playheadPaneX + 6)
                 .clamp(4.0, math.max(4.0, paneWidth - 152))
+                .toDouble()
+            : (_identityWidth + playheadPaneX + 6)
+                .clamp(
+                    _identityWidth + 4,
+                    math.max(
+                        _identityWidth + 4, _identityWidth + paneWidth - 320))
                 .toDouble();
 
         return Stack(
@@ -946,7 +994,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
               key: const ValueKey('timeline_playhead'),
               top: 0,
               bottom: 0,
-              left: StackedWaveformTimeline.railWidth + playheadPaneX,
+              left: _identityWidth + playheadPaneX,
               width: 2,
               child: IgnorePointer(
                 child: Semantics(
@@ -968,7 +1016,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
                 key: const ValueKey('timeline_playhead_drag_handle'),
                 top: 0,
                 bottom: 0,
-                left: StackedWaveformTimeline.railWidth + playheadPaneX - 14,
+                left: _identityWidth + playheadPaneX - 14,
                 width: 28,
                 child: GestureDetector(
                   behavior: HitTestBehavior.translucent,
@@ -1672,20 +1720,24 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
 
   Widget _playheadBadge(BuildContext context, String label) {
     final theme = Theme.of(context);
+    final desktop = _identityWidth > 0;
     return IgnorePointer(
       child: Container(
-        constraints: const BoxConstraints(maxWidth: 148),
+        constraints: BoxConstraints(maxWidth: desktop ? 320 : 148),
         padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
         decoration: BoxDecoration(
-          color: theme.colorScheme.inverseSurface.withValues(alpha: 0.82),
-          borderRadius: BorderRadius.circular(8),
+          color: desktop
+              ? theme.colorScheme.inverseSurface
+              : theme.colorScheme.inverseSurface.withValues(alpha: 0.82),
+          borderRadius: desktop ? BorderRadius.zero : BorderRadius.circular(8),
         ),
         child: Text(
           label,
-          maxLines: 1,
+          maxLines: desktop ? 2 : 1,
           overflow: TextOverflow.ellipsis,
           style: theme.textTheme.labelSmall?.copyWith(
             color: theme.colorScheme.onInverseSurface,
+            fontFamily: desktop ? 'IBM Plex Mono' : null,
             fontWeight: FontWeight.w700,
           ),
         ),
@@ -1738,7 +1790,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
         final overlapEndX = viewport.msToX(overlapEnd);
         final visibleStartX = overlapStartX.clamp(0.0, paneWidth).toDouble();
         final visibleEndX = overlapEndX.clamp(0.0, paneWidth).toDouble();
-        final left = StackedWaveformTimeline.railWidth + visibleStartX;
+        final left = _identityWidth + visibleStartX;
         final minBandWidth = math.min(2.0, paneWidth);
         final width = (visibleEndX - visibleStartX).clamp(
           minBandWidth,
@@ -1798,37 +1850,56 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
     final width = (viewport.msToX(lane.timelineEndMs) -
             viewport.msToX(lane.timelineStartMs))
         .clamp(8.0, double.infinity);
+    final plot = ClipRect(
+      child: Stack(
+        children: [
+          _buildLaneSpan(context, lane, viewport),
+          Positioned(
+            left: left,
+            top: 8,
+            bottom: 8,
+            width: width,
+            child: _buildClipSurface(context, lane, viewport, width, left,
+                paneWidth, activeSampleCap),
+          ),
+          if (_identityWidth == 0)
+            _buildLaneIdentity(context, lane, viewport, paneWidth),
+        ],
+      ),
+    );
     return SizedBox(
       width: double.infinity,
       height: lane.height,
-      child: ClipRect(
-        child: Stack(
-          children: [
-            _buildLaneSpan(context, lane, viewport),
-            Positioned(
-              left: left,
-              top: 8,
-              bottom: 8,
-              width: width,
-              child: _buildClipSurface(
-                context,
-                lane,
-                viewport,
-                width,
-                left,
-                paneWidth,
-                activeSampleCap,
+      child: _identityWidth == 0
+          ? plot
+          : DecoratedBox(
+              decoration: BoxDecoration(
+                  border: Border(
+                      bottom:
+                          BorderSide(color: Theme.of(context).dividerColor))),
+              position: DecorationPosition.foreground,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SizedBox(
+                    width: _identityWidth,
+                    child: TimelineLaneHeader(
+                      key: ValueKey('timeline_lane_header_${lane.laneId}'),
+                      track: lane.track,
+                      laneId: lane.laneId,
+                      role: lane.role,
+                      statusLabel: lane.status,
+                      accent: lane.accent,
+                      gain: widget.timelineModel?.clips.isNotEmpty == true
+                          ? _clipDisplayGain(lane.mixClip)
+                          : null,
+                      onTap: () => _selectLane(lane.laneId),
+                    ),
+                  ),
+                  Expanded(child: plot),
+                ],
               ),
             ),
-            _buildLaneIdentity(
-              context,
-              lane,
-              viewport,
-              paneWidth,
-            ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -1955,7 +2026,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
       stateLabel: lane.status,
       snapMarkerCount: _snapMode.markerCount,
       gain: _clipDisplayGain(lane.mixClip),
-      showGainBadge: widget.timelineModel?.clips.isNotEmpty ?? false,
+      showGainBadge: _identityWidth == 0 &&
+          (widget.timelineModel?.clips.isNotEmpty ?? false),
       showInLaneChip: false,
       stemChangePoints: widget.stemChangePointsFor?.call(lane.track) ??
           const <StemGainEvent>[],
@@ -2452,7 +2524,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
                 margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
                 decoration: BoxDecoration(
                   color: accent.withValues(alpha: enabled ? 0.88 : 0.35),
-                  borderRadius: BorderRadius.circular(5),
+                  borderRadius: _identityWidth > 0
+                      ? BorderRadius.zero
+                      : BorderRadius.circular(5),
                   border: Border.all(
                     color: Colors.white.withValues(alpha: 0.75),
                   ),
@@ -2540,7 +2614,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
                   child: Material(
                     key: ValueKey('timeline_selection_toolbar_$laneId'),
                     color: theme.colorScheme.surface.withValues(alpha: 0.78),
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: _identityWidth > 0
+                        ? BorderRadius.zero
+                        : BorderRadius.circular(8),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -2872,7 +2948,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
     final theme = Theme.of(context);
     final ruler = Container(
       key: const ValueKey('timeline_ruler'),
-      height: 40,
+      height: _identityWidth > 0
+          ? 24 + MediaQuery.textScalerOf(context).scale(16)
+          : 40,
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
         border: Border(bottom: BorderSide(color: theme.dividerColor)),
@@ -2884,7 +2962,14 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
               painter: _RulerPainter(
                 viewport: viewport,
                 color: theme.dividerColor,
-                textColor: theme.textTheme.labelSmall?.color ?? Colors.grey,
+                textColor: theme.colorScheme.onSurfaceVariant,
+                textScaler: _identityWidth > 0
+                    ? MediaQuery.textScalerOf(context)
+                    : TextScaler.noScaling,
+                textStyle: _identityWidth > 0
+                    ? theme.textTheme.labelSmall!
+                        .copyWith(fontFamily: 'IBM Plex Mono')
+                    : const TextStyle(fontSize: 9),
               ),
             ),
           ),
@@ -2911,10 +2996,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
     return GestureDetector(
       key: const ValueKey('timeline_ruler_scrub_surface'),
       behavior: HitTestBehavior.opaque,
+      // A held pointer retains its hit-test transform across layout changes.
+      // Resolve against the current plot, just like the playhead drag does.
       onHorizontalDragStart: (details) =>
-          _beginScrubAt(viewport, paneWidth, details.localPosition.dx),
+          _beginScrubFromGlobal(details.globalPosition),
       onHorizontalDragUpdate: (details) =>
-          _updateScrubAt(viewport, paneWidth, details.localPosition.dx),
+          _updateScrubFromGlobal(details.globalPosition),
       onHorizontalDragEnd: (_) => _endScrub(),
       onHorizontalDragCancel: _endScrub,
       child: ruler,
@@ -2938,7 +3025,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
           key: const ValueKey('timeline_ruler_playhead'),
           top: 0,
           bottom: 0,
-          left: StackedWaveformTimeline.railWidth + playheadPaneX,
+          left: playheadPaneX,
           width: 2,
           child: const IgnorePointer(
             child: ColoredBox(color: Color(0xFFD32F2F)),
@@ -2986,12 +3073,18 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
               decoration: BoxDecoration(
-                color: accent,
-                borderRadius: BorderRadius.circular(8),
+                color: _identityWidth > 0 ? theme.colorScheme.surface : accent,
+                borderRadius: _identityWidth > 0
+                    ? BorderRadius.zero
+                    : BorderRadius.circular(8),
               ),
               child: Text(
                 'transition ${_formatClock(durationMs)} · $hint',
-                style: const TextStyle(color: Colors.white, fontSize: 10),
+                style: _identityWidth > 0
+                    ? theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurface,
+                        fontFamily: 'IBM Plex Mono')
+                    : const TextStyle(color: Colors.white, fontSize: 10),
               ),
             ),
           ),
@@ -3034,10 +3127,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
             _effectiveMaxPixelsPerSecond(_resolveTimelineLayout().placed),
           )
           .toDouble();
-      final focalX =
-          (details.localFocalPoint.dx - StackedWaveformTimeline.railWidth)
-              .clamp(0.0, viewport.widthPx)
-              .toDouble();
+      final focalX = (details.localFocalPoint.dx - _identityWidth)
+          .clamp(0.0, viewport.widthPx)
+          .toDouble();
       final next = startViewport.zoomAround(
         newPixelsPerSecond: nextPps,
         focalXPx: focalX,
@@ -3071,9 +3163,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
     double paneWidth,
     double localX,
   ) {
-    final paneX = (localX - StackedWaveformTimeline.railWidth)
-        .clamp(0.0, paneWidth)
-        .toDouble();
+    final paneX = (localX - _identityWidth).clamp(0.0, paneWidth).toDouble();
     return viewport.xToMs(paneX).clamp(0, viewport.durationMs).toInt();
   }
 
@@ -3159,7 +3249,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
       return;
     }
     final velocity = timelineScrubEdgeVelocityPxPerSecond(
-      pointerPaneX: pointerLocalX - StackedWaveformTimeline.railWidth,
+      pointerPaneX: pointerLocalX - _identityWidth,
       paneWidth: _renderedPaneWidth,
     );
     final atLeftBound = velocity < 0 && viewport.offsetMs <= 0;
@@ -3194,7 +3284,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
     if (tickInterval <= Duration.zero) return;
 
     final velocity = timelineScrubEdgeVelocityPxPerSecond(
-      pointerPaneX: pointerLocalX - StackedWaveformTimeline.railWidth,
+      pointerPaneX: pointerLocalX - _identityWidth,
       paneWidth: _renderedPaneWidth,
     );
     if (velocity == 0) {
@@ -3314,11 +3404,15 @@ class _RulerPainter extends CustomPainter {
   final TimelineViewport viewport;
   final Color color;
   final Color textColor;
+  final TextScaler textScaler;
+  final TextStyle textStyle;
 
   _RulerPainter({
     required this.viewport,
     required this.color,
     required this.textColor,
+    required this.textScaler,
+    required this.textStyle,
   });
 
   @override
@@ -3347,13 +3441,18 @@ class _RulerPainter extends CustomPainter {
       final tp = TextPainter(
         text: TextSpan(
           text: _formatClock(ms),
-          style: TextStyle(color: textColor, fontSize: 9),
+          style: textStyle.copyWith(color: textColor),
         ),
         textDirection: TextDirection.ltr,
+        textScaler: textScaler,
       )..layout();
-      if (x < lastLabelRight + 6) continue;
+      if (x < lastLabelRight + 6 || x + 2 + tp.width > size.width) {
+        tp.dispose();
+        continue;
+      }
       tp.paint(canvas, Offset(x + 2, 2));
       lastLabelRight = x + 2 + tp.width;
+      tp.dispose();
     }
   }
 
@@ -3381,7 +3480,9 @@ class _RulerPainter extends CustomPainter {
   bool shouldRepaint(covariant _RulerPainter old) =>
       old.viewport != viewport ||
       old.color != color ||
-      old.textColor != textColor;
+      old.textColor != textColor ||
+      old.textScaler != textScaler ||
+      old.textStyle != textStyle;
 }
 
 /// Timeline-shaped loading surface: ruler + ghost lane geometry, never a

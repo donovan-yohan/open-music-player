@@ -18,7 +18,32 @@ import 'package:open_music_player/features/player/widgets/mini_player.dart';
 import 'package:open_music_player/shared/models/models.dart';
 
 void main() {
-  testWidgets('Home follows full viewport shell breakpoints exactly', (
+  testWidgets('desktop Home uses wide space without decorative clipping',
+      (tester) async {
+    final router = _homeRouter();
+    addTearDown(router.dispose);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    tester.view.devicePixelRatio = 1;
+    await _pumpAt(tester, router, const Size(2560, 1440));
+    expect(find.text('39'), findsNothing);
+    final heading = find.text('Recently played');
+    final firstTitle =
+        find.text('A deliberately long desktop track title number 0');
+    expect(tester.getTopLeft(firstTitle).dy - tester.getBottomLeft(heading).dy,
+        lessThan(420));
+    expect(find.byKey(const ValueKey('home_main_secondary')), findsOneWidget);
+    final recent = tester
+        .getRect(find.byKey(const ValueKey('home_header_Recently played')));
+    final playlists =
+        tester.getRect(find.byKey(const ValueKey('home_header_Playlists')));
+    expect(recent.top, playlists.top);
+    expect(recent.right, playlists.left);
+    expect(recent.width, greaterThan(playlists.width));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Home follows shell breakpoints and available content width', (
     tester,
   ) async {
     final router = _homeRouter();
@@ -32,29 +57,47 @@ void main() {
     expect(find.byKey(const ValueKey('soundq_desktop_home')), findsNothing);
 
     for (final expectation in <(double, bool, double, int)>[
-      (960, false, 80, 3),
+      (960, false, 80, 2),
       (1199, false, 80, 3),
-      (1200, true, 224, 3),
+      (1200, true, 224, 2),
       (1439, true, 224, 3),
-      (1440, true, 224, 4),
+      (1440, true, 224, 3),
+      (2560, true, 224, 7),
     ]) {
       await _resize(tester, Size(expectation.$1, 900));
-      final rail = tester.widget<NavigationRail>(find.byType(NavigationRail));
-      expect(rail.extended, expectation.$2, reason: '${expectation.$1}px');
+      expect(find.text('Connected devices'),
+          expectation.$2 ? findsOneWidget : findsNothing);
       expect(
         tester
             .getSize(
               find.byKey(const ValueKey('soundq_desktop_rail_container')),
             )
             .width,
-        expectation.$3,
+        expectation.$2 ? greaterThanOrEqualTo(expectation.$3) : expectation.$3,
         reason: '${expectation.$1}px',
       );
+      // The shell now measures full labels even under Ahem. Home follows its
+      // actual slot, not a floating-panel or fixed-font width assumption.
+      final slotWidth = tester
+          .getSize(find.byKey(const ValueKey('soundq_desktop_content_panel')))
+          .width;
       expect(
-        find.byKey(ValueKey('soundq_desktop_home_grid_${expectation.$4}')),
-        findsOneWidget,
+        find.byKey(const ValueKey('home_main_secondary')),
+        slotWidth >= 1100 ? findsOneWidget : findsNothing,
         reason: '${expectation.$1}px',
       );
+      final tile = find
+          .ancestor(
+            of: find.text('A deliberately long desktop track title number 0'),
+            matching: find.byType(InkWell),
+          )
+          .first;
+      final region = tester
+          .getRect(find.byKey(const ValueKey('home_header_Recently played')));
+      expect(tester.getRect(tile).left, region.left);
+      expect(tester.getRect(tile).right, region.right);
+      expect(tester.getSize(tile).height, lessThanOrEqualTo(80));
+      expect(tester.takeException(), isNull);
     }
   });
 
@@ -93,7 +136,9 @@ void main() {
       desktopTheme.navigationRailTheme.selectedIconTheme?.color,
       AppTheme.background,
     );
-    expect(desktopTheme.focusColor.a, greaterThan(0));
+    // Focus is painted by the resolved full-row surface and foreground rule,
+    // not by a second translucent ThemeData ink layer.
+    expect(desktopTheme.focusColor, Colors.transparent);
   });
 
   for (final activation in <(String, LogicalKeyboardKey)>[
@@ -130,14 +175,16 @@ void main() {
       final focusIndicator = tester.widget<AnimatedContainer>(
         find.byKey(const ValueKey('soundq_desktop_nav_focus_0')),
       );
-      final decoration = focusIndicator.decoration! as BoxDecoration;
+      final decoration = focusIndicator.foregroundDecoration! as BoxDecoration;
       expect(
         decoration.border!.top.color,
-        AppTheme.orange,
+        AppTheme.background,
         reason:
             'focused=${focused!.context?.widget} label=${focused.debugLabel}',
       );
-      expect(Theme.of(focused.context!).focusColor.a, greaterThan(0));
+      expect(decoration.border!.top.width, 1);
+      expect(
+          (focusIndicator.decoration! as BoxDecoration).color, AppTheme.accent);
 
       await tester.sendKeyEvent(activation.$2);
       await tester.pumpAndSettle();

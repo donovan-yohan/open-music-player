@@ -974,7 +974,7 @@ void main() {
     expect(find.text('Live playback only'), findsNothing);
     // The import view keeps its own identity: it lists download jobs, so it
     // must not borrow the listening queue's title or row counter (ADR 0012).
-    expect(find.text('Import Queue'), findsOneWidget);
+    expect(find.text('Imports'), findsOneWidget);
     expect(find.text('Playback Queue'), findsNothing);
     expect(find.textContaining('remaining'), findsNothing);
   });
@@ -1090,12 +1090,12 @@ void main() {
     );
     // The import view lists download jobs, so it must not borrow the
     // listening queue's title or row counter (ADR 0012).
-    expect(find.text('Import Queue'), findsOneWidget);
+    expect(find.text('Imports'), findsOneWidget);
     expect(find.text('Playback Queue'), findsNothing);
     expect(find.textContaining('remaining'), findsNothing);
     expect(
       _contrastRatio(
-        _effectiveTextColor(tester, find.text('Import Queue')),
+        _effectiveTextColor(tester, find.text('Imports')),
         header.color!,
       ),
       greaterThanOrEqualTo(4.5),
@@ -2939,7 +2939,7 @@ void main() {
 
     await pumpQueueScreen(tester, showImportJobs: true);
 
-    expect(find.text('Your queue is empty'), findsOneWidget);
+    expect(find.text('No imports pending'), findsOneWidget);
     expect(find.byKey(const ValueKey('queue_view_switch')), findsNothing);
   });
 
@@ -2948,7 +2948,7 @@ void main() {
 
     await pumpQueueScreen(tester, showImportJobs: true);
 
-    expect(find.text('Error loading queue'), findsOneWidget);
+    expect(find.text('Could not load imports'), findsOneWidget);
     expect(find.textContaining('boom'), findsOneWidget);
     expect(find.text('Retry'), findsOneWidget);
   });
@@ -3363,10 +3363,11 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   }
 
   @override
-  void beginTimelineScrub() => scrubEvents.add('begin');
+  Future<void> beginTimelineScrub() async => scrubEvents.add('begin');
 
   @override
-  void updateTimelineScrub(int globalMs) => scrubEvents.add('update:$globalMs');
+  Future<void> updateTimelineScrub(int globalMs) async =>
+      scrubEvents.add('update:$globalMs');
 
   @override
   Future<void> endTimelineScrub(int globalMs) async =>

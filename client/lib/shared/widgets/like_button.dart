@@ -1,3 +1,5 @@
+import 'app_snack_bar.dart';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -49,13 +51,22 @@ class LikeToggleButton extends StatelessWidget {
     final liked = likedState.isLiked(trackId) ?? isLiked ?? false;
     final busy = likedState.isToggling(trackId);
 
+    final desktop = MediaQuery.sizeOf(context).width >= 960;
     return IconButton(
       key: buttonKey ?? ValueKey('like_toggle_$trackId'),
-      iconSize: iconSize,
+      isSelected: desktop ? liked : null,
+      selectedIcon: desktop ? const Icon(Icons.favorite) : null,
+      iconSize: desktop && iconSize <= 24 ? 20 : iconSize,
+      style: desktop && iconSize > 24
+          ? ButtonStyle(
+              fixedSize: WidgetStatePropertyAll(Size.square(iconSize + 16)),
+              iconSize: WidgetStatePropertyAll(iconSize),
+            )
+          : null,
       visualDensity: VisualDensity.compact,
       icon: Icon(
         liked ? Icons.favorite : Icons.favorite_border,
-        color: liked ? Theme.of(context).colorScheme.primary : null,
+        color: !desktop && liked ? Theme.of(context).colorScheme.primary : null,
       ),
       tooltip: liked ? 'Unlike' : 'Like',
       onPressed: busy ? null : () => _toggle(context, likedState),
@@ -76,7 +87,7 @@ class LikeToggleButton extends StatelessWidget {
       await likedState.toggle(trackId);
     } catch (_) {
       messenger.showSnackBar(
-        const SnackBar(content: Text('Could not update liked status')),
+        const AppSnackBar(content: Text('Could not update liked status')),
       );
     }
   }

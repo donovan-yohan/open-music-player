@@ -29,7 +29,7 @@ Relevant current files:
 - `client/lib/services/api_client.dart`: backend queue and mix-plan API client.
 - `client/lib/models/track.dart`: track duration is stored in milliseconds.
 - `client/test/queue_screen_test.dart`: widget coverage for phone-first queue surface, reorder, trim, and mix-plan persistence.
-- `client/lib/app/theme.dart`: Spotify-inspired dark Material 3 theme (`#121212`, `#181818`, `#282828`, `#1DB954`).
+- `client/lib/app/theme.dart`: shared SoundQ semantic colors; desktop presentation follows [Desktop Visual System](DESKTOP_VISUAL_SYSTEM.md), not a Spotify-derived palette.
 
 Design implication: replace the abstract cue chip with an inline trim strip on upcoming rows. Do not introduce a separate waveform editor screen.
 
@@ -97,7 +97,7 @@ Do not make the user guess whether a horizontal motion trims or deletes. If pres
 
 ## Visual states
 
-Use the existing dark theme and one accent color. The waveform is functional instrumentation, not decoration.
+Use existing SoundQ semantic roles. Orange marks primary/current selection; cyan supports secondary actions and feedback. Desktop follows the strict grid and interaction rules in Desktop Visual System. The waveform is functional instrumentation, not decoration.
 
 ### Default / untrimmed
 

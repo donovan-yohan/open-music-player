@@ -89,7 +89,7 @@ class TrackTile extends StatelessWidget {
     return LayoutBuilder(
         builder: (context, constraints) => SongListItem(
               onTap: onTap,
-              leading: leading ?? _buildCoverArt(),
+              leading: leading ?? _buildCoverArt(context),
               title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
               subtitle: subtitle.isEmpty
                   ? null
@@ -105,16 +105,29 @@ class TrackTile extends StatelessWidget {
             ));
   }
 
-  Widget _buildCoverArt() {
+  Widget _buildCoverArt(BuildContext context) {
+    final desktop = MediaQuery.sizeOf(context).width >= 960;
     final resolvedKind = artworkKind ??
         (safeTrackArtworkUrl(coverArtUrl) == null
             ? TrackArtworkKind.none
             : TrackArtworkKind.coverArt);
-    return TrackArtwork(
+    final artwork = TrackArtwork(
+      width: desktop ? 40 : 48,
+      height: desktop ? 40 : 48,
+      borderRadius: desktop ? BorderRadius.zero : BorderRadius.circular(4),
       url: coverArtUrl,
       kind: resolvedKind,
       cacheKey: '${resolvedKind.wireValue}:${coverArtUrl ?? "none"}',
     );
+    // TrackArtwork's shared no-image placeholder retains mobile rounding.
+    // A square Ink backing fills those corners without changing that renderer.
+    return desktop
+        ? Ink(
+            decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest),
+            child: artwork,
+          )
+        : artwork;
   }
 
   Widget _buildTrailingActions(BuildContext context,

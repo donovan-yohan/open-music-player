@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../core/services/playlist_service.dart';
@@ -130,7 +132,7 @@ Future<void> addTracksToPlaylist(
   try {
     final result = await playlistService.addTracks(playlist.id, trackIds);
     messenger.showSnackBar(
-      SnackBar(
+      AppSnackBar(
         key: addToPlaylistSuccessKey,
         content: Text(result.feedbackMessage(playlist.name)),
       ),
@@ -142,6 +144,6 @@ Future<void> addTracksToPlaylist(
 
 void _showFailure(ScaffoldMessengerState messenger, String message) {
   messenger.showSnackBar(
-    SnackBar(key: addToPlaylistFailureKey, content: Text(message)),
+    AppSnackBar(key: addToPlaylistFailureKey, content: Text(message)),
   );
 }

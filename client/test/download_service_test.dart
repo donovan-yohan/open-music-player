@@ -48,6 +48,7 @@ void main() {
             {
               'trackId': id,
               'url': 'https://objects.example/track-$id',
+              'contentType': 'audio/mpeg',
               'expiresAt': DateTime.now()
                   .toUtc()
                   .add(const Duration(minutes: 10))

@@ -8,6 +8,7 @@ import 'timeline_clock.dart';
 import 'timeline_model.dart';
 import 'voice.dart';
 import 'voice_pool.dart';
+import 'native_playback_backend.dart';
 
 class ClipCompletionEvent {
   final String clipId;
@@ -36,6 +37,7 @@ abstract class PlaybackEngineControls {
 class PlaybackEngine implements PlaybackEngineControls {
   factory PlaybackEngine({
     TimelineClock? clock,
+    NativePlaybackBackendFactory? nativeBackendFactory,
     VoicePool? voicePool,
     VoiceFactory? voiceFactory,
     ClickAudioOutputFactory clickAudioOutputFactory = JustAudioClickOutput.new,
@@ -44,6 +46,7 @@ class PlaybackEngine implements PlaybackEngineControls {
   }) {
     final actualClock = clock ?? DefaultTimelineClock();
     return PlaybackEngine._(
+      nativeBackendFactory: nativeBackendFactory,
       clock: actualClock,
       ownsClock: clock == null,
       pool: voicePool ??
@@ -84,14 +87,125 @@ class PlaybackEngine implements PlaybackEngineControls {
     required bool ownsClock,
     required VoicePool pool,
     required ClickAuditioner clickAuditioner,
+    NativePlaybackBackendFactory? nativeBackendFactory,
   })  : _clock = clock,
         _ownsClock = ownsClock,
         _pool = pool,
-        _clickAuditioner = clickAuditioner {
+        _clickAuditioner = clickAuditioner,
+        _nativeFactory = nativeBackendFactory {
     _bind();
   }
 
   final TimelineClock _clock;
+  final NativePlaybackBackendFactory? _nativeFactory;
+  NativePlaybackBackend? _native;
+  bool _disposed = false;
+  final _positionEvents = StreamController<int>.broadcast();
+  final _playingEvents = StreamController<bool>.broadcast();
+  final _completionEvents = StreamController<void>.broadcast();
+  final _runtimeEvents = StreamController<void>.broadcast();
+  final _errors = StreamController<Object>.broadcast();
+  Map<String, String> _expectedHashes = {};
+  bool get usesNativeBackend => _native != null;
+  bool get supportsNativePreparedPlayback => _nativeFactory != null;
+  int get preparedNativeBytes => _native?.preparedBytes ?? 0;
+  int get nativeDecoderCount => _native?.decoderCount ?? 0;
+  List<MixClip> get activeClips =>
+      _native?.activeClips ?? List.unmodifiable(_pool.activeClips.values);
+  int get activeVoiceCount => activeClips.length;
+  Set<String> get pitchFallbackClipIds =>
+      usesNativeBackend ? const {} : _pool.pitchFallbackClipIds;
+  bool get hasPitchFallback => pitchFallbackClipIds.isNotEmpty;
+  Stream<void> get runtimeStateStream => _runtimeEvents.stream;
+  Stream<void> get completedStream => _completionEvents.stream;
+  Stream<Object> get playbackErrors => _errors.stream;
+
+  Future<void> selectPreparedBackend(
+      {Map<String, String> expectedSourceHashes = const {}}) async {
+    if (_native != null) {
+      _expectedHashes = {..._expectedHashes, ...expectedSourceHashes};
+      return;
+    }
+    if (_nativeFactory == null) {
+      throw UnsupportedError(
+          'Native prepared-stem playback is unavailable on this platform.');
+    }
+    // Quiesce the original consumer before attaching the only native consumer.
+    await _clock.pause();
+    await _pool.loadMix(TimelineModel());
+    await _pool.stop();
+    final backend = _nativeFactory!();
+    _native = backend;
+    _expectedHashes = Map.of(expectedSourceHashes);
+    await _rebind();
+  }
+
+  Future<void> selectLegacyBackend() async {
+    final native = _native;
+    if (native == null) return;
+    final position = native.clock.positionMs;
+    await native.close(); // Failure retains current ownership, never fallback.
+    _native = null;
+    _expectedHashes = {};
+    _clock.durationMs = _model.durationMs;
+    await _clock.seek(position);
+    await _rebind();
+    await _pool.start();
+  }
+
+  Future<StemGainAcknowledgement> setStemGain(
+      String queueItemId, String channel, double gain,
+      {int rampMs = 8}) {
+    final native = _native;
+    if (native == null) {
+      return Future.error(UnsupportedError('Native stems are not active.'));
+    }
+    return native.setStemGain(queueItemId, channel, gain, rampMs: rampMs);
+  }
+
+  Map<String, Map<String, double>> get liveStemOverrides =>
+      _native?.liveStemOverrides ?? const {};
+
+  Future<void> clearStemOverrides(String queueItemId) {
+    final native = _native;
+    if (native == null) {
+      return Future.error(UnsupportedError('Native stems are not active.'));
+    }
+    return native.clearStemOverrides(queueItemId);
+  }
+
+  void cancelPreparedRequests() => _native?.cancelPreparation();
+
+  Future<void> loadPreparedMixAt(
+      TimelineModel model, int initialPositionMs) async {
+    final native = _native;
+    if (native == null) throw StateError('Prepared backend not selected.');
+    await native.load(model,
+        expectedSourceHashes: _expectedHashes,
+        initialPositionMs: initialPositionMs);
+    _model = model;
+    _lastPositionMs = initialPositionMs;
+    _completedClipIds.clear();
+  }
+
+  Future<void> replacePreparedMix(TimelineModel model) async {
+    final native = _native;
+    if (native == null) {
+      throw UnsupportedError('Native prepared backend is not selected.');
+    }
+    await native.load(model,
+        preserveActivePlayback: true, expectedSourceHashes: _expectedHashes);
+    _model = model;
+  }
+
+  Future<void> _rebind() async {
+    for (final sub in _subscriptions) {
+      await sub.cancel();
+    }
+    _subscriptions.clear();
+    _bind();
+  }
+
   final bool _ownsClock;
   final VoicePool _pool;
   final ClickAuditioner _clickAuditioner;
@@ -105,7 +219,7 @@ class PlaybackEngine implements PlaybackEngineControls {
   final Set<String> _completedClipIds = {};
 
   VoicePool get pool => _pool;
-  TimelineClock get clock => _clock;
+  TimelineClock get clock => _native?.clock ?? _clock;
   TimelineModel get model => _model;
   ClickAuditionState get clickAuditionState => _clickAuditioner.state;
   Stream<ClickAuditionState> get clickAuditionStateStream =>
@@ -114,22 +228,31 @@ class PlaybackEngine implements PlaybackEngineControls {
       _clipCompletionController.stream;
 
   @override
-  int get positionMs => _clock.positionMs;
+  int get positionMs => clock.positionMs;
   @override
-  int get durationMs => _clock.durationMs;
+  int get durationMs => clock.durationMs;
   @override
-  bool get isPlaying => _clock.isPlaying;
+  bool get isPlaying => clock.isPlaying;
   @override
-  Stream<int> get positionMsStream => _clock.positionMsStream;
+  Stream<int> get positionMsStream => _positionEvents.stream;
   @override
-  Stream<bool> get isPlayingStream => _clock.isPlayingStream;
+  Stream<bool> get isPlayingStream => _playingEvents.stream;
 
-  Future<void> start() => _pool.start();
+  Future<void> start() async {
+    if (!usesNativeBackend) await _pool.start();
+  }
 
   Future<void> loadMix(
     TimelineModel model, {
     bool preserveActivePlayback = false,
   }) async {
+    if (_native != null) {
+      await _native!.load(model,
+          preserveActivePlayback: preserveActivePlayback,
+          expectedSourceHashes: _expectedHashes);
+      _model = model;
+      return;
+    }
     _model = model;
     if (preserveActivePlayback) {
       final clipIds = model.clips.map((clip) => clip.id).toSet();
@@ -155,6 +278,10 @@ class PlaybackEngine implements PlaybackEngineControls {
   }
 
   void replaceMixMetadata(TimelineModel model) {
+    if (_native != null) {
+      throw StateError(
+          'Native metadata requires acknowledged replacePreparedMix.');
+    }
     _model = model;
     final clickReplacement = _clickAuditioner.beginModelReplacement(model);
     try {
@@ -166,8 +293,13 @@ class PlaybackEngine implements PlaybackEngineControls {
     }
   }
 
-  ClickAuditionLease openClickAudition(ClickAuditionRequest request) =>
-      _clickAuditioner.open(request);
+  ClickAuditionLease openClickAudition(ClickAuditionRequest request) {
+    if (_native != null) {
+      throw UnsupportedError(
+          'Click audition is unavailable on native prepared playback.');
+    }
+    return _clickAuditioner.open(request);
+  }
 
   @override
   Future<void> play() => playGuarded(stillCurrent: () => true);
@@ -175,6 +307,17 @@ class PlaybackEngine implements PlaybackEngineControls {
   /// Checks intent immediately before clock and voice dispatch, not afterwards.
   Future<void> playGuarded({required bool Function() stillCurrent}) async {
     if (!stillCurrent()) return;
+    if (_native != null) {
+      await clock.play();
+      if (!stillCurrent()) await clock.pause();
+      return;
+    }
+    if (_model.clips.any((clip) =>
+        clip.stemEdits != null ||
+        Uri.tryParse(clip.audioSourceRef)?.scheme == 'soundq-prepared')) {
+      throw UnsupportedError(
+          'Prepared stem playback requires the native backend.');
+    }
     _pool.beginCoordinatedResume(stillCurrent: stillCurrent);
     var completed = false;
     try {
@@ -199,35 +342,42 @@ class PlaybackEngine implements PlaybackEngineControls {
 
   @override
   Future<void> pause() async {
+    if (_native != null) {
+      await clock.pause();
+      return;
+    }
     await _clock.pause();
     await _pool.pauseActive();
     unawaited(_clickAuditioner.transportChanged(forceSeek: true));
   }
 
   void beginScrub() {
-    _clock.beginScrub();
+    clock.beginScrub();
     unawaited(_clickAuditioner.transportChanged(forceSeek: true));
   }
 
   void updateScrub(int globalMs) {
     _markManualPositionJump();
-    _clock.updateScrub(globalMs);
+    clock.updateScrub(globalMs);
   }
 
   Future<void> endScrub(int globalMs) async {
     _markManualPositionJump();
-    await _clock.endScrub(globalMs);
+    await clock.endScrub(globalMs);
     unawaited(_clickAuditioner.transportChanged(forceSeek: true));
   }
 
   @override
   Future<void> seek(int globalMs) async {
     _markManualPositionJump();
-    await _clock.seek(globalMs);
+    await clock.seek(globalMs);
     unawaited(_clickAuditioner.transportChanged(forceSeek: true));
   }
 
   Future<void> dispose() async {
+    if (_disposed) return;
+    await _native?.close();
+    _disposed = true;
     for (final sub in _subscriptions) {
       await sub.cancel();
     }
@@ -236,12 +386,30 @@ class PlaybackEngine implements PlaybackEngineControls {
     await _pool.dispose();
     if (_ownsClock) await _clock.dispose();
     await _clipCompletionController.close();
+    await _positionEvents.close();
+    await _playingEvents.close();
+    await _completionEvents.close();
+    await _runtimeEvents.close();
+    await _errors.close();
   }
 
   void _bind() {
     _subscriptions
-      ..add(_clock.positionMsStream.listen(_onPosition))
-      ..add(_clock.completedStream.listen((_) => _emitNaturalCompletions()));
+      ..add(clock.positionMsStream.listen((position) {
+        _onPosition(position);
+        _positionEvents.add(position);
+      }))
+      ..add(clock.isPlayingStream.listen(_playingEvents.add))
+      ..add(clock.completedStream.listen((_) {
+        _emitNaturalCompletions();
+        _completionEvents.add(null);
+      }))
+      ..add(_pool.voiceStatusStream.listen((_) => _runtimeEvents.add(null)))
+      ..add(_pool.pitchFallbackClipIdsStream
+          .listen((_) => _runtimeEvents.add(null)));
+    if (_native != null) {
+      _subscriptions.add(_native!.errors.listen(_errors.add));
+    }
   }
 
   void _markManualPositionJump() {
@@ -250,15 +418,15 @@ class PlaybackEngine implements PlaybackEngineControls {
 
   void _onPosition(int positionMs) {
     final isManualPositionJump =
-        _manualPositionJumpPending || _clock.isScrubbing;
+        _manualPositionJumpPending || clock.isScrubbing;
     if (positionMs < _lastPositionMs) {
       _forgetCompletionsAfter(positionMs);
     }
     for (final clip in _model.clips) {
       if (_lastPositionMs < clip.timelineEndMs &&
           positionMs >= clip.timelineEndMs) {
-        if (clip.timelineEndMs == _clock.durationMs &&
-            positionMs >= _clock.durationMs &&
+        if (clip.timelineEndMs == clock.durationMs &&
+            positionMs >= clock.durationMs &&
             !isManualPositionJump) {
           continue;
         }
@@ -283,7 +451,7 @@ class PlaybackEngine implements PlaybackEngineControls {
   }
 
   void _emitNaturalCompletions() {
-    for (final clip in _model.activeClipsAt(_clock.durationMs - 1)) {
+    for (final clip in _model.activeClipsAt(clock.durationMs - 1)) {
       _emitCompletionForClip(clip, wasSkipped: false);
     }
   }

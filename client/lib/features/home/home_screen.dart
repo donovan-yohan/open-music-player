@@ -1,3 +1,5 @@
+import '../../shared/widgets/app_snack_bar.dart';
+
 import '../../shared/widgets/now_playing_row.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +14,7 @@ import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/song_list_item.dart';
 import '../../shared/widgets/track_artwork.dart';
+import '../../core/models/settings_model.dart';
 import '../../core/services/home_service.dart';
 import 'home_state.dart';
 
@@ -106,7 +109,7 @@ class _HomeScreenState extends State<HomeScreen> {
       // library, so no playback URL will be issued for it. Say that, rather
       // than the transport-level "no longer available" copy.
       messenger.showSnackBar(
-        const SnackBar(content: Text(homeNotInLibraryMessage)),
+        const AppSnackBar(content: Text(homeNotInLibraryMessage)),
       );
       return;
     }
@@ -123,7 +126,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(
+        AppSnackBar(
           content: Text(playback.playbackError ?? 'Could not play this track.'),
           backgroundColor: Colors.red,
         ),
@@ -139,12 +142,12 @@ class _HomeScreenState extends State<HomeScreen> {
       await playback.queueTrack(track.toPlaybackJson(), mode: mode);
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(content: Text(mode.confirmationFor(track.title))),
+        AppSnackBar(content: Text(mode.confirmationFor(track.title))),
       );
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
-        const SnackBar(content: Text('Could not add to queue')),
+        const AppSnackBar(content: Text('Could not add to queue')),
       );
     }
   }
@@ -183,8 +186,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// The single, terminal empty state. No spinner, no error, no retry — just an
-/// invitation to start listening.
+/// The single, terminal empty state with a path to source discovery.
 class _HomeEmptyState extends StatelessWidget {
   const _HomeEmptyState();
 
@@ -210,9 +212,14 @@ class _HomeEmptyState extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'Play something to get started',
+                    'Find music to add to your library',
                     style: theme.textTheme.titleMedium,
                     textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: () => context.go('/search'),
+                    child: const Text('Discover music'),
                   ),
                 ],
               ),
@@ -245,8 +252,9 @@ class _HomeContent extends StatelessWidget {
         return _DesktopHomeContent(
           sections: sections,
           onPlayTrack: onPlayTrack,
+          onEnqueueTrack: onEnqueueTrack,
           onOpenPlaylist: onOpenPlaylist,
-          columns: viewportWidth >= 1440 ? 4 : 3,
+          availableWidth: constraints.maxWidth,
         );
       }
       return _MobileHomeContent(
@@ -305,134 +313,241 @@ class _DesktopHomeContent extends StatelessWidget {
   const _DesktopHomeContent({
     required this.sections,
     required this.onPlayTrack,
+    required this.onEnqueueTrack,
     required this.onOpenPlaylist,
-    required this.columns,
+    required this.availableWidth,
   });
 
   final HomeSections sections;
   final void Function(List<Track> tracks, int startIndex) onPlayTrack;
+  final Future<void> Function(Track track) onEnqueueTrack;
   final void Function(Playlist playlist) onOpenPlaylist;
-  final int columns;
+  final double availableWidth;
 
   @override
   Widget build(BuildContext context) {
-    final tracks = [...sections.recentlyPlayed, ...sections.topTracks];
-    final items = <_DesktopPosterItem>[
-      for (var i = 0; i < tracks.length; i++)
-        _DesktopPosterItem.track(track: tracks[i], index: i),
-      for (final playlist in sections.playlists)
-        _DesktopPosterItem.playlist(playlist: playlist),
+    final trackRegions = <Widget>[
+      if (sections.recentlyPlayed.isNotEmpty)
+        _trackRegion('Recently played', sections.recentlyPlayed),
+      if (sections.topTracks.isNotEmpty)
+        _trackRegion('Your top tracks', sections.topTracks),
     ];
-    return Stack(
-      children: [
-        Positioned(
-          right: -18,
-          top: -52,
-          child: ExcludeSemantics(
-            child: Text(
-              '39',
-              style: TextStyle(
-                color: Theme.of(context)
-                    .colorScheme
-                    .primary
-                    .withValues(alpha: 0.14),
-                fontSize: 184,
-                fontWeight: FontWeight.w800,
-                height: 1,
-              ),
-            ),
-          ),
-        ),
-        CustomScrollView(
-          key: const ValueKey('soundq_desktop_home'),
-          slivers: [
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(32, 28, 32, 112),
-              sliver: SliverList(
-                delegate: SliverChildListDelegate.fixed([
-                  Text('Your rotation',
-                      style: Theme.of(context).textTheme.headlineMedium),
-                  const SizedBox(height: 6),
-                  Text('Recent tracks, top plays, and playlists.',
-                      style: Theme.of(context).textTheme.bodyMedium),
-                  const SizedBox(height: 24),
-                ]),
-              ),
-            ),
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(32, 0, 32, 112),
-              sliver: SliverGrid(
-                key: ValueKey('soundq_desktop_home_grid_$columns'),
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: columns,
-                  mainAxisSpacing: 16,
-                  crossAxisSpacing: 16,
-                  childAspectRatio: 0.82,
-                ),
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    final item = items[index];
-                    return _DesktopPoster(
-                      item: item,
-                      onTap: item.track == null
-                          ? () => onOpenPlaylist(item.playlist!)
-                          : () => onPlayTrack(tracks, item.index!),
-                    );
-                  },
-                  childCount: items.length,
+    final playlists = sections.playlists.isEmpty
+        ? null
+        : _DesktopHomeRegion(
+            title: 'Playlists',
+            itemCount: sections.playlists.length,
+            itemBuilder: (context, index) {
+              final playlist = sections.playlists[index];
+              return _DesktopHomeTile(
+                item: _DesktopHomeEntry.playlist(playlist: playlist),
+                onTap: () => onOpenPlaylist(playlist),
+                onEnqueue: null,
+              );
+            },
+          );
+    // One viewport owns both tracks. Each region stays lazy and can grow
+    // intrinsically with text; the collection column is not a nested scroller.
+    final split =
+        availableWidth >= 1100 && trackRegions.isNotEmpty && playlists != null;
+    return CustomScrollView(
+      key: const ValueKey('soundq_desktop_home'),
+      slivers: [
+        if (split)
+          SliverCrossAxisGroup(
+            key: const ValueKey('home_main_secondary'),
+            slivers: [
+              SliverConstrainedCrossAxis(
+                // Snap the shared rule to a physical pixel, including at 2x.
+                maxExtent: (availableWidth *
+                            2 /
+                            3 *
+                            MediaQuery.devicePixelRatioOf(context))
+                        .floorToDouble() /
+                    MediaQuery.devicePixelRatioOf(context),
+                sliver: DecoratedSliver(
+                  position: DecorationPosition.foreground,
+                  decoration: BoxDecoration(
+                    border: Border(
+                      right: BorderSide(
+                          color: Theme.of(context).colorScheme.outline),
+                    ),
+                  ),
+                  sliver: SliverMainAxisGroup(slivers: trackRegions),
                 ),
               ),
-            ),
-          ],
-        ),
+              SliverCrossAxisExpanded(flex: 1, sliver: playlists),
+            ],
+          )
+        else ...[
+          ...trackRegions,
+          if (playlists != null) playlists,
+        ],
       ],
+    );
+  }
+
+  Widget _trackRegion(String title, List<Track> tracks) {
+    return _DesktopHomeRegion(
+      title: title,
+      itemCount: tracks.length,
+      itemBuilder: (context, index) {
+        final track = tracks[index];
+        return _DesktopHomeTile(
+          item: _DesktopHomeEntry.track(track: track),
+          onTap: () => onPlayTrack(tracks, index),
+          onEnqueue:
+              isPlayableFromHome(track) ? () => onEnqueueTrack(track) : null,
+        );
+      },
     );
   }
 }
 
-class _DesktopPosterItem {
-  const _DesktopPosterItem.track({required this.track, required this.index})
-      : playlist = null;
-  const _DesktopPosterItem.playlist({required this.playlist})
-      : track = null,
-        index = null;
+/// Headers and rows share one continuous rule; there is no per-item card moat.
+class _DesktopHomeRegion extends StatelessWidget {
+  const _DesktopHomeRegion({
+    required this.title,
+    required this.itemCount,
+    required this.itemBuilder,
+  });
+
+  final String title;
+  final int itemCount;
+  final IndexedWidgetBuilder itemBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final rule = BorderSide(color: theme.colorScheme.outline);
+    return SliverMainAxisGroup(slivers: [
+      SliverToBoxAdapter(
+        child: Container(
+          key: ValueKey('home_header_$title'),
+          decoration: BoxDecoration(border: Border(bottom: rule)),
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
+          child: Semantics(
+            header: true,
+            child: Text(title, style: theme.textTheme.titleLarge),
+          ),
+        ),
+      ),
+      SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, index) => DecoratedBox(
+            position: DecorationPosition.foreground,
+            decoration: BoxDecoration(border: Border(bottom: rule)),
+            child: itemBuilder(context, index),
+          ),
+          childCount: itemCount,
+        ),
+      ),
+    ]);
+  }
+}
+
+class _DesktopHomeEntry {
+  const _DesktopHomeEntry.track({required this.track}) : playlist = null;
+  const _DesktopHomeEntry.playlist({required this.playlist}) : track = null;
 
   final Track? track;
   final Playlist? playlist;
-  final int? index;
 
   String get title => track?.title ?? playlist!.name;
   String get subtitle => track?.displayArtist ?? playlist!.trackCountLabel;
   String? get imageUrl => playlist?.coverUrl;
 }
 
-class _DesktopPoster extends StatelessWidget {
-  const _DesktopPoster({required this.item, required this.onTap});
+class _DesktopHomeTile extends StatefulWidget {
+  const _DesktopHomeTile({
+    required this.item,
+    required this.onTap,
+    required this.onEnqueue,
+  });
 
-  final _DesktopPosterItem item;
+  final _DesktopHomeEntry item;
   final VoidCallback onTap;
+  final VoidCallback? onEnqueue;
+
+  @override
+  State<_DesktopHomeTile> createState() => _DesktopHomeTileState();
+}
+
+class _DesktopHomeTileState extends State<_DesktopHomeTile> {
+  final _states = WidgetStatesController();
+
+  @override
+  void initState() {
+    super.initState();
+    _states.addListener(_updateInteraction);
+  }
+
+  void _updateInteraction() => setState(() {});
+
+  @override
+  void dispose() {
+    _states.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
+    final item = widget.item;
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final focused = _states.value.contains(WidgetState.focused);
+    final hovered = _states.value.contains(WidgetState.hovered);
+    final pressed = _states.value.contains(WidgetState.pressed);
+    final active = focused || hovered || pressed;
+    final playable = item.track == null || isPlayableFromHome(item.track!);
+    final queueMode = context.select<PlaybackState?, QueueInsertMode>(
+      (playback) => playback?.swipeQueueMode ?? QueueInsertMode.addToQueue,
+    );
+    final tooltip = item.track == null
+        ? 'Open ${item.title}'
+        : playable
+            ? 'Play ${item.title}'
+            : '${item.title}\n$homeNotInLibraryMessage';
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.zero,
+      side: BorderSide(
+        color: focused ? colors.secondary : Colors.transparent,
+        width: focused ? 2 : 1,
+      ),
+    );
+    const overlay = WidgetStatePropertyAll(Colors.transparent);
     return Material(
-      color: colors.surfaceContainerHigh,
+      color: active
+          ? theme.brightness == Brightness.dark
+              ? colors.outline
+              : Color.lerp(colors.surface, colors.outline, .12)!
+          : colors.surface,
+      shape: shape,
+      animationDuration: Duration.zero,
+      clipBehavior: Clip.antiAlias,
       child: NowPlayingRow(
-          trackId: item.track?.id.toString(),
+        trackId: item.track?.id.toString(),
+        child: Tooltip(
+          message: tooltip,
           child: InkWell(
-            onTap: onTap,
+            statesController: _states,
+            customBorder: shape,
+            overlayColor: overlay,
+            onTap: widget.onTap,
             child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
                 children: [
-                  Expanded(
-                    child: SizedBox.expand(
+                  ClipRect(
+                    child: SizedBox(
+                      width: 40,
+                      height: 40,
                       child: item.track != null
                           ? TrackArtwork.fromTrack(
                               item.track!,
-                              width: double.infinity,
-                              height: double.infinity,
+                              width: 40,
+                              height: 40,
+                              borderRadius: BorderRadius.zero,
                             )
                           : item.imageUrl == null || item.imageUrl!.isEmpty
                               ? const _CoverPlaceholder()
@@ -444,20 +559,46 @@ class _DesktopPoster extends StatelessWidget {
                                 ),
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  SongRowTitle(item.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(height: 2),
-                  Text(item.subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SongRowTitle(item.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodyLarge?.copyWith(
+                                fontSize: 18, fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 2),
+                        Text(playable ? item.subtitle : 'Not in your library',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodyMedium
+                                ?.copyWith(color: colors.onSurfaceVariant)),
+                      ],
+                    ),
+                  ),
+                  if (item.track != null) ...[
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: playable
+                          ? queueMode == QueueInsertMode.playNext
+                              ? 'Play next: ${item.title}'
+                              : 'Add ${item.title} to queue'
+                          : homeNotInLibraryMessage,
+                      onPressed: widget.onEnqueue,
+                      icon: const Icon(Icons.add_to_queue, size: 20),
+                      // Let the native theme resolve both the whole surface and
+                      // foreground together, including disabled/combined states.
+                    ),
+                  ],
                 ],
               ),
             ),
-          )),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -635,8 +776,8 @@ class _CoverPlaceholder extends StatelessWidget {
     return Container(
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: Icon(
-        Icons.music_note,
-        color: Theme.of(context).colorScheme.outline,
+        Icons.library_music_outlined,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
       ),
     );
   }

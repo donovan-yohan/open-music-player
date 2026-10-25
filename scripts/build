@@ -67,6 +67,17 @@ case "$TARGET" in
   client)
     run_client
     ;;
+  client-macos)
+    (
+      cd "$ROOT/client"
+      flutter pub get
+      flutter build macos --release --no-pub
+      # Flutter can report success while an incremental Xcode build has retained
+      # an outer seal for an older App.framework. The packaged app is the gate.
+      /usr/bin/codesign --verify --deep --strict --verbose=2 \
+        build/macos/Build/Products/Release/SoundQ.app
+    )
+    ;;
   client-web)
     run_client_web
     ;;
@@ -80,7 +91,7 @@ case "$TARGET" in
     run_extension
     ;;
   *)
-    echo "usage: scripts/build [native-macos|native-android|backend|analyzer|client|client-web|extension|all]" >&2
+    echo "usage: scripts/build [native-macos|native-android|backend|analyzer|client|client-macos|client-web|extension|all]" >&2
     exit 2
     ;;
 esac
