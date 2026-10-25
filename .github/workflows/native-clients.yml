@@ -74,6 +74,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - run: scripts/build native-macos
+        id: native-macos-build
       - name: Collect native search optical discriminator
         id: search-optical-diagnostic
         run: |
@@ -100,6 +101,8 @@ jobs:
           if-no-files-found: error
       - name: Test macOS queue disclosure and unattached AppKit layout
         id: macos-layout
+        # Collector failure must not hide product regressions or make the job green.
+        if: ${{ !cancelled() && steps.native-macos-build.outcome == 'success' }}
         run: |
           python3 -B <<'PY'
           import os
