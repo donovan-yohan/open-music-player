@@ -74,6 +74,17 @@ for scale:CGFloat in [1,2] {
   let bitmap=searchRaster(a.search,backing),text=cell.searchTextRect(forBounds:a.search.bounds),glyph=cell.searchButtonRect(forBounds:a.search.bounds)
   let t=ink(bitmap,text,backing),g=ink(bitmap,glyph,backing),tag="\(Int(scale))-\(value.isEmpty ? "placeholder" : "typed")-\(backing)"
   print("SEARCH_INK",tag,"glyph",g,"text",t)
+  // Preserve the exact measured native cell raster on hosted OS variants.
+  // This is diagnostic output only: no redraw, metric or threshold change.
+  if CommandLine.arguments.count>2 {
+   let output=URL(fileURLWithPath:CommandLine.arguments[2]).appendingPathComponent("search-raster",isDirectory:true)
+   try FileManager.default.createDirectory(at:output,withIntermediateDirectories:true)
+   let png=bitmap.representation(using:.png,properties:[:])!
+   try png.write(to:output.appendingPathComponent(tag+".png"),options:.withoutOverwriting)
+   func metric(_ value:(count:Int,mid:CGFloat,height:CGFloat))->[String:Any] {["count":value.count,"mid":value.mid,"height":value.height]}
+   let record:[String:Any] = ["case":tag,"class":"native cell-only raster, not external screenshot","text":value,"scale":scale,"backing":backing,"pixels":[bitmap.pixelsWide,bitmap.pixelsHigh],"textInk":metric(t),"glyphInk":metric(g),"opticalThreshold":3,"bounds":NSStringFromRect(a.search.bounds),"textRect":NSStringFromRect(text),"glyphRect":NSStringFromRect(glyph),"fontName":a.search.font!.fontName,"fontPointSize":a.search.font!.pointSize,"fontMetrics":[a.search.font!.ascender,a.search.font!.descender,a.search.font!.leading],"appearance":a.search.effectiveAppearance.name.rawValue,"singleLine":cell.usesSingleLineMode,"windowAttached":a.search.window != nil]
+   try JSONSerialization.data(withJSONObject:record,options:[.sortedKeys,.prettyPrinted]).write(to:output.appendingPathComponent(tag+".json"),options:.withoutOverwriting)
+  }
   check("optical-nonempty-native-glyph-text-"+tag,t.count>100 && g.count>20)
   check("optical-native-text-glyph-track-"+tag,t.count>0 && g.count>0 && abs(t.mid-g.mid)<=3)
   check("optical-retains-single-line-policy-"+tag,single && cell.usesSingleLineMode && !cell.wraps)
@@ -567,7 +578,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix='library-dock-', dir=os.environ.get('TMPDIR')) as tmp:
         argv = ['/usr/bin/swiftc', '-swift-version', '6', '-j', '2', '-num-threads', '2', '-module-cache-path', str(Path(tmp) / 'modules'), *map(str,dependencies), str(args.output / 'main.swift'), '-o', str(Path(tmp) / 'probe')]
         built = subprocess.run(argv, capture_output=True, timeout=180)
-        ran = subprocess.run([str(Path(tmp) / 'probe'),str(args.source_root / 'native/macos/Sources/Resources')], capture_output=True, timeout=60) if built.returncode == 0 else None
+        if built.returncode == 0:
+            annotations = subprocess.run(['/usr/bin/otool', '-l', str(Path(tmp) / 'probe')], capture_output=True, timeout=30)
+            (args.output / 'probe-macho.log').write_bytes(annotations.stdout + annotations.stderr)
+        ran = subprocess.run([str(Path(tmp) / 'probe'),str(args.source_root / 'native/macos/Sources/Resources'),str(args.output.resolve())], capture_output=True, timeout=60) if built.returncode == 0 else None
         for name, result in [('compiler.log', built), ('runtime.log', ran)]:
             (args.output / name).write_bytes(result.stdout + result.stderr if result else b'NOT RUN\n')
     lines = ran.stdout.decode().splitlines() if ran else []

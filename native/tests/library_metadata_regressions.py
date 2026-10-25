@@ -2,8 +2,10 @@
 """Source-bound Library Full details contract and native wrapper regressions.
 
 No NSApplication/window is created. A predecessor with no explicit Library route
-fails the contract assertion, not compilation. Successor probes compile production
-open/close/reconcile/action/command/apply methods against boundary facades.
+fails the contract assertion, not compilation. Probes compile exact production
+open/close/reconcile/action/command/apply methods against boundary facades, then
+repeat browse-selection invariants using a real, window-free NSTableView hierarchy.
+Only AppKit owns reload, selection and delegate notification behavior in that probe.
 """
 import argparse
 import hashlib
@@ -99,7 +101,69 @@ print("LIBRARY_METADATA_PASS \(passes.count) failures=\(failures.count)");exit(f
 '''
 
 
-def facade_probe(root, output):
+NATIVE_SELECTION_CASES = r'''
+var failures=[String](),passes=[String]()
+func check(_ name:String,_ value:Bool) {if value {passes.append(name);print("PASS \(name)")} else {failures.append(name);print("FAIL \(name)")}}
+func state(_ ids:[Int64],session:UInt64=1,auth:Bool=true,epoch:UInt64=1,scalar:Bool=false)->Snapshot {
+ Snapshot(epoch:epoch,session:session,revision:1,authenticated:auth,library:ids.map {Track(id:$0,title:"Track \($0)",artist:"Artist",duration_ms:30000)},library_unchanged:scalar,total:UInt64(ids.count),queue:[],queue_unchanged:scalar,selected_occurrence:nil,transport:"paused",position_ms:10,duration_ms:30000,error:nil)
+}
+func ready(_ ids:[Int64]=[7,8],row:Int=0)->App {
+ let a=App();a.apply(state(ids));if row>=0 {a.table.selectRowIndexes(IndexSet(integer:row),byExtendingSelection:false)};return a
+}
+func noChoice(_ a:App,_ name:String) {
+ let menu=a.makeLibraryMenu();let item=menu.items[0];menu.update()
+ check(name+"-no-selection-or-capability",a.table.selectedRow == -1 && a.libraryDetailsAction == nil && !a.libraryDetails.isEnabled && !item.isEnabled && a.libraryDock!.selected == false)
+ let p=Player();a.player=p
+ a.openLibraryDetailsFromMenu(item)
+ let detailsOpened=a.libraryDetailsAlert != nil
+ a.selectTrack()
+ print("OBSERVE \(name) row=\(a.table.selectedRow) detailsOpened=\(detailsOpened) requests=\(a.bridge.requests) revocations=\(a.bridge.revocations)")
+ check(name+"-raw-play-and-details-refused",a.bridge.sent.isEmpty && a.bridge.revocations==0 && p.events.isEmpty && !detailsOpened && a.libraryDetailsAlert==nil)
+}
+// A native hierarchy only: no NSApplication, NSWindow, input or capture.
+let witness=ready(),before=witness.table.selectedRow
+witness.snapshot=state([8,9]);witness.table.reloadData()
+check("native-reload-positively-retains-numeric-row",before==0 && witness.table.selectedRow==0 && witness.snapshot!.library[witness.table.selectedRow].id==8 && witness.table.window==nil && witness.table.superview != nil)
+for (name,ids) in [("removed-same-count",[Int64(8),9]),("filtered-still-valid-index",[Int64(8)])] {
+ let a=ready(),old=a.libraryDetailsAction!
+ check(name+"-selected-owner-established",old.track.id==7 && a.libraryDetails.isEnabled && a.libraryDock!.selected==true)
+ a.apply(state(ids));old.open();noChoice(a,name)
+ check(name+"-old-capability-retired",!old.active && a.libraryDetailsAlert==nil)
+ let reappeared=ready();reappeared.apply(state(ids));reappeared.apply(state([7,8]));noChoice(reappeared,name+"-reappeared")
+ let explicit=ready();explicit.apply(state(ids));explicit.apply(state([7,8]))
+ explicit.table.selectRowIndexes(IndexSet(integer:0),byExtendingSelection:false)
+ check(name+"-explicit-reselection-restores-current",explicit.libraryDetailsAction?.track.id==7 && explicit.libraryDetails.isEnabled && explicit.libraryDock!.selected==true)
+}
+let reordered=ready(),kept=reordered.libraryDetailsAction!
+reordered.apply(state([8,7,9]))
+check("native-reorder-preserves-id-and-capability",reordered.table.selectedRow==1 && reordered.libraryDetailsAction === kept && kept.active && reordered.libraryDock!.selected==true)
+kept.open()
+check("native-reordered-current-details-open",reordered.libraryDetailsAlert?.action.track.id==7 && reordered.bridge.sent.isEmpty)
+reordered.selectTrack()
+check("native-reordered-current-play-exact-wire",reordered.bridge.requests.count==1 && reordered.bridge.requests[0]["command"] as? String == "select" && (reordered.bridge.requests[0]["track_id"] as? NSNumber)?.int64Value==7 && reordered.bridge.revocations==1 && reordered.libraryDetailsAlert==nil)
+let none=ready(row:-1);none.apply(state([8,9]));noChoice(none,"no-prior-selection")
+let empty=ready();empty.apply(state([]));noChoice(empty,"empty-results")
+let trailing=ready([7,8,9],row:2);trailing.apply(state([8]));noChoice(trailing,"old-index-out-of-range")
+let malformed=ready();malformed.snapshot=state([]);malformed.apply(state([8,9]));noChoice(malformed,"prior-row-outside-model")
+let scalar=ready(),action=scalar.libraryDetailsAction!,loads=scalar.table.reloads
+for _ in 0..<120 {scalar.apply(state([],scalar:true))}
+check("native-120-scalars-no-reload-or-choice-change",scalar.table.reloads==loads && scalar.table.selectedRow==0 && scalar.libraryDetailsAction === action && action.active)
+for (name,incoming) in [("session",state([8,7],session:2)),("auth",state([8,7],auth:false)),("epoch",state([8,7],epoch:2))] {
+ let a=ready(),old=a.libraryDetailsAction!;a.apply(incoming);old.open()
+ check("native-ownership-old-details-retired-"+name,!old.active && a.libraryDetailsAlert==nil && a.table.selectedRow==1)
+ check("native-ownership-current-details-"+name,(a.libraryDetailsAction != nil)==(name=="session"))
+}
+let account=ready(),old=account.libraryDetailsAction!;account.accountScope+=1
+let m=account.makeLibraryMenu();m.update();old.open()
+check("native-account-retained-details-refused",!m.items[0].isEnabled && account.libraryDetailsAlert==nil)
+let changed=ready(),previous=changed.libraryDetailsAction!
+changed.table.selectRowIndexes(IndexSet(integer:1),byExtendingSelection:false);previous.open()
+check("native-delegate-selection-retires-previous",!previous.active && changed.libraryDetailsAction?.track.id==8 && changed.libraryDetailsAlert==nil)
+print("LIBRARY_NATIVE_SELECTION_PASS \(passes.count) failures=\(failures.count)");exit(failures.isEmpty ? 0 : 1)
+'''
+
+
+def facade_probe(root, output, native_selection=False):
     source=(root/'native/macos/Sources/main.swift').read_text()
     metadata=(root/'native/macos/Sources/LibraryMetadataDisclosure.swift').read_text()
     base=marker.SWIFT_FACADES.split('__TYPES__')[0]
@@ -113,6 +177,8 @@ def facade_probe(root, output):
     base=base.replace(' func revoke()->UInt64', ' @MainActor func revoke()->UInt64').replace(' func send(_ data:', ' @MainActor func send(_ data:')
     types=['struct Track:', 'struct Occurrence:', 'struct Snapshot:', 'struct AudioEffect:', 'struct Credentials:', 'struct Reply:']
     methods=['func makeLibraryMenu()', 'func libraryDetailsMenuAvailable(', '@objc func openLibraryDetailsFromMenu(', 'func validateMenuItem(', 'func updateLibraryDetailsAction()', 'func openLibraryDetails(', 'func closeLibraryDetails()', 'func retireLibraryDetails()', 'func reconcileLibraryDetails(', 'func command(', 'func apply(_ incoming: Snapshot)', '@objc func signIn()', '@objc func signOut()', '@objc func selectTrack()', 'func queueCommand(', 'func applicationWillTerminate(', 'func windowWillClose(', 'func tableViewSelectionDidChange(', 'func updateLibraryAvailability()']
+    if native_selection:
+        methods.append('func numberOfRows(in tableView: NSTableView)')
     blocks={s:swift_block(source,s) for s in types+methods}
     projection=swift_block((root/'native/macos/Sources/LibraryDockView.swift').read_text(),'struct DockChrome {')
     app=r'''
@@ -129,8 +195,25 @@ def facade_probe(root, output):
  __METHODS__
 }
 '''.replace('__METHODS__','\n'.join(blocks[s] for s in methods))
-    base=base.replace('func updateProgress(position:UInt64,duration:UInt64){}','func updateProgress(position:UInt64,duration:UInt64){};func setLibraryAvailability(selected:Bool,canLoadMore:Bool){}')
-    cases = re.sub(r'(?m)^func ', '@MainActor func ', SWIFT_CASES)
+    base=base.replace('func updateProgress(position:UInt64,duration:UInt64){}','func updateProgress(position:UInt64,duration:UInt64){};var selected=false;func setLibraryAvailability(selected:Bool,canLoadMore:Bool){self.selected=selected}')
+    # A real NSTableView owns reload/selection/delegate semantics. Only sheet,
+    # transport and chrome boundaries stay facades; no production policy is copied.
+    if native_selection:
+        base=base.replace('import CoreGraphics', 'import CoreGraphics\nimport AppKit')
+        base=re.sub(r'@MainActor class Table \{[^\n]+', '''@MainActor class Table: NSTableView {
+ var reloads=0
+ override func reloadData() {reloads+=1;super.reloadData()}
+}''',base)
+        app=app.replace('class App:NSObject,NSMenuItemValidation', 'class App:NSObject,NSMenuItemValidation,NSTableViewDataSource,NSTableViewDelegate')
+        app=app.replace('var window=Window();', '''let root=NSView(frame:NSRect(x:0,y:0,width:600,height:400))
+ let scroll=AppKit.NSScrollView(frame:NSRect(x:0,y:0,width:600,height:400))
+ override init() {
+  super.init();table.addTableColumn(NSTableColumn(identifier:NSUserInterfaceItemIdentifier("track")))
+  table.headerView=nil;table.dataSource=self;table.delegate=self
+  scroll.documentView=table;root.addSubview(scroll);libraryDock=LibraryDockView()
+ }
+ var window=Window();''')
+    cases = re.sub(r'(?m)^func ', '@MainActor func ', NATIVE_SELECTION_CASES if native_selection else SWIFT_CASES)
     generated=base+'\n'+'\n'.join(blocks[s] for s in types)+'\n'+projection+'\n'+metadata.replace('import AppKit','')+'\n'+app+'\n'+cases
     path=output/'main.swift';path.write_text(generated)
     argv=['/usr/bin/swiftc','-swift-version','6','-j','2','-num-threads','2',str(path),'-o',str(output/'probe')]
@@ -139,7 +222,7 @@ def facade_probe(root, output):
     for name,r in [('compiler.log',built),('runtime.log',ran)]: (output/name).write_bytes(r.stdout+r.stderr if r else b'NOT RUN\n')
     lines=ran.stdout.decode().splitlines() if ran else []
     sha=lambda b:hashlib.sha256(b).hexdigest()
-    result=dict(compileExit=built.returncode,runExit=ran.returncode if ran else None,compileArgv=argv,blocks={s:sha(b.encode()) for s,b in blocks.items()},metadataSha256=sha(metadata.encode()),probeSha256=sha(generated.encode()),testSha256=sha(Path(__file__).read_bytes()),facadeDependencySha256=sha(Path(marker.__file__).read_bytes()),passNames=[l[5:] for l in lines if l.startswith('PASS ')],failures=[l[5:] for l in lines if l.startswith('FAIL ')],logs={s:sha((output/s).read_bytes()) for s in ['compiler.log','runtime.log']})
+    result=dict(scope='native window-free NSTableView with sheet/transport/chrome facades' if native_selection else 'sheet/transport/AppKit boundary facades',productionSha256=sha(source.encode()),projectionSha256=sha(projection.encode()),compileExit=built.returncode,runExit=ran.returncode if ran else None,compileArgv=argv,blocks={s:sha(b.encode()) for s,b in blocks.items()},metadataSha256=sha(metadata.encode()),probeSha256=sha(generated.encode()),testSha256=sha(Path(__file__).read_bytes()),facadeDependencySha256=sha(Path(marker.__file__).read_bytes()),passNames=[l[5:] for l in lines if l.startswith('PASS ')],failures=[l[5:] for l in lines if l.startswith('FAIL ')],logs={s:sha((output/s).read_bytes()) for s in ['compiler.log','runtime.log']})
     (output/'facade-receipt.json').write_text(json.dumps(result,indent=2)+'\n')
     print((output/'compiler.log').read_text());print((output/'runtime.log').read_text())
     return built.returncode or (ran.returncode if ran else 1)
@@ -170,7 +253,13 @@ def main():
                   classification='explicit-route-contract' if not exists else 'route-present')
     (a.output/'receipt.json').write_text(json.dumps(result, indent=2)+'\n')
     print(('PASS ' if exists else 'FAIL ')+'unqueued selected Library row exposes a native Full details action')
-    return facade_probe(a.source_root,a.output) if exists else 1
+    if not exists:
+        return 1
+    facade_output=a.output/'facade';facade_output.mkdir()
+    native_output=a.output/'native-selection';native_output.mkdir()
+    facade_exit=facade_probe(a.source_root,facade_output)
+    native_exit=facade_probe(a.source_root,native_output,native_selection=True)
+    return facade_exit or native_exit
 
 
 if __name__ == '__main__':

@@ -259,6 +259,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         if rowsChanged {
             table.reloadData()
             if let browseID, let row = value.library.firstIndex(where:{$0.id == browseID}) {table.selectRowIndexes(IndexSet(integer:row),byExtendingSelection:false)}
+            else {table.selectRowIndexes([],byExtendingSelection:false)}
             libraryDock?.updateContent(empty:value.library.isEmpty)
         }
         if rowsChanged || prior?.total != value.total || prior?.authenticated != value.authenticated || prior?.epoch != value.epoch || prior?.session != value.session {updateLibraryAvailability()}

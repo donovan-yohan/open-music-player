@@ -75,6 +75,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: scripts/build native-macos
       - name: Test macOS queue disclosure and unattached AppKit layout
+        id: macos-layout
         run: |
           python3 -B <<'PY'
           import os
@@ -88,6 +89,8 @@ jobs:
           import queue_current_marker_regressions
 
           output = Path(tempfile.mkdtemp(prefix='macos-queue-', dir=os.environ['RUNNER_TEMP']))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write('evidence=' + str(output) + '\n')
           result = queue_current_marker_regressions.run_platform('macos', root, output / 'current-marker')
           if result:
               raise SystemExit(result)
@@ -98,6 +101,13 @@ jobs:
           subprocess.run([sys.executable, '-B', 'native/tests/native_review_regressions.py'], check=True)
           subprocess.run([sys.executable, '-B', 'native/tests/library_metadata_regressions.py', '--output', str(output / 'library-metadata')], check=True)
           PY
+      - name: Preserve macOS layout diagnostics
+        if: always() && steps.macos-layout.outputs.evidence != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-macos-layout-diagnostics
+          path: ${{ steps.macos-layout.outputs.evidence }}
+          if-no-files-found: error
       - name: Test terminal EOF feedback through the fresh core ABI (Mac9)
         run: |
           python3 -B <<'PY'
