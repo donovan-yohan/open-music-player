@@ -9,7 +9,7 @@ let package = Package(
     targets: [
         .systemLibrary(name: "SoundQCore", path: "CBridge"),
         .executableTarget(name: "SoundQNative", dependencies: ["SoundQCore"],
-                          path: "Sources", linkerSettings: [
+                          path: "Sources", resources: [.copy("Resources")], linkerSettings: [
                             .unsafeFlags(["-L", coreLibraryDirectory, "-lsoundq_core",
                                           "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])
                           ])

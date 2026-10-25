@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import MediaPlayer
 import Security
+import CoreText
 import SoundQCore
 
 struct Track: Decodable {
@@ -26,6 +27,10 @@ struct Snapshot: Decodable {
     let position_ms: UInt64
     let duration_ms: UInt64
     let error: String?
+    // Core load_occurrence sets selected_occurrence before preparing and marks
+    // transport failed on preparation refusal; AudioReport.failed does likewise.
+    // Ordinary Library/auth/save errors alone are not playback failures.
+    var canRetryPlayback: Bool {authenticated && transport == "failed" && selected_occurrence != nil}
 }
 struct AudioEffect: Decodable {
     let action: String
@@ -62,7 +67,7 @@ final class Bridge: @unchecked Sendable {
 }
 
 @MainActor
-final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSMenuItemValidation {
+final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSMenuItemValidation {
     var window: NSWindow!
     var bridge: Bridge!
     var snapshot: Snapshot?
@@ -78,12 +83,15 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     var email = NSTextField()
     var password = NSSecureTextField()
     var endpoint = NSTextField()
-    var search = NSSearchField()
+    var search = SoundQSearchField()
+    var libraryDock: LibraryDockView?
+    var dockTrackID: Int64?
+    var nativeAssets: NativeAssets?
     var slider = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
     var loginArea = NSStackView()
     var libraryArea = NSStackView()
-    var play = NSButton(title: "Play", target: nil, action: nil)
-    var logout = NSButton(title: "Sign out", target: nil, action: nil)
+    var play = SoundQButton(title: "Play", target: nil, action: nil)
+    var logout = SoundQButton(title: "Sign out", target: nil, action: nil)
     var scroll = NSScrollView()
     var keychainService = "com.soundq.native.preview.credentials.v1"
     var busy = 0
@@ -93,6 +101,10 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     var accountScope: UInt64 = 1
     var storedCredentialVersion: UInt64 = 0
     var queueNameAlert: (alert: NSAlert, id: UInt64)?
+    var libraryDetails = SoundQButton(title:"Full details",target:nil,action:nil)
+    var libraryDetailsMenuItem: NSMenuItem?
+    var libraryDetailsAction: LibraryMetadataAction?
+    var libraryDetailsAlert: (alert: NSAlert, action: LibraryMetadataAction)?
 
     func fixtureCacheRoot() -> URL? {
         guard endpoint.stringValue == "http://127.0.0.1:54761/api/v1",
@@ -135,69 +147,73 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     func buildWindow() {
         window = NSWindow(contentRect: NSRect(x: 100,y: 100,width: 1100,height: 760),styleMask: [.titled,.closable,.miniaturizable,.resizable],backing: .buffered,defer: false)
         window.title = "SoundQ Native Preview"
+        window.delegate = self
         window.minSize = NSSize(width: 760,height: 540)
-        let content = NSStackView();content.orientation = .vertical;content.spacing = 16;content.edgeInsets = NSEdgeInsets(top: 20,left: 24,bottom: 20,right: 24)
-        content.translatesAutoresizingMaskIntoConstraints = false
-        window.contentView!.addSubview(content)
-        NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo:window.contentView!.leadingAnchor),content.trailingAnchor.constraint(equalTo:window.contentView!.trailingAnchor),content.topAnchor.constraint(equalTo:window.contentView!.topAnchor),content.bottomAnchor.constraint(equalTo:window.contentView!.bottomAnchor)])
-        titleLabel.font = .monospacedSystemFont(ofSize: 25,weight: .bold)
-        let heading = NSStackView(views:[titleLabel,NSView(),logout]);heading.orientation = .horizontal;heading.distribution = .fill
-        logout.target = self;logout.action = #selector(signOut)
-        content.addArrangedSubview(heading);heading.widthAnchor.constraint(equalTo:content.widthAnchor,constant:-48).isActive = true
-        email.placeholderString = "Email";password.placeholderString = "Password"
-        endpoint.placeholderString = "API base URL"
-        endpoint.isEditable = false
-        loginArea.orientation = .vertical;loginArea.alignment = .leading;loginArea.spacing = 10
-        for field in [endpoint,email,password] {field.widthAnchor.constraint(equalToConstant:420).isActive = true; loginArea.addArrangedSubview(field)}
-        let signIn = NSButton(title:"Sign in",target:self,action:#selector(signIn));signIn.keyEquivalent = "\r";loginArea.addArrangedSubview(signIn)
-        content.addArrangedSubview(loginArea)
-        search.placeholderString = "Search your library";search.delegate = self
-        let refresh = NSButton(title:"Refresh",target:self,action:#selector(refresh))
-        let more = NSButton(title:"Load more",target:self,action:#selector(loadMore))
-        let searchRow = NSStackView(views:[search,refresh,more]);searchRow.orientation = .horizontal
-        libraryArea.orientation = .vertical;libraryArea.spacing = 8
-        libraryArea.addArrangedSubview(searchRow)
-        table.addTableColumn(NSTableColumn(identifier:NSUserInterfaceItemIdentifier("title")))
-        table.tableColumns[0].title = "TITLE";table.tableColumns[0].width = 510
-        let artist = NSTableColumn(identifier:NSUserInterfaceItemIdentifier("artist"));artist.title = "ARTIST";artist.width = 300;table.addTableColumn(artist)
-        table.headerView = NSTableHeaderView();table.rowHeight = 44;table.usesAlternatingRowBackgroundColors = true
-        table.delegate = self;table.dataSource = self;table.target = self;table.doubleAction = #selector(selectTrack)
-        table.setAccessibilityLabel("Library tracks")
-        table.autosaveName = "SoundQNativeLibrary";table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        scroll.documentView = table;scroll.hasVerticalScroller = true;scroll.autohidesScrollers = true
-        scroll.setAccessibilityLabel("Library scroll area")
-        libraryArea.addArrangedSubview(scroll);scroll.heightAnchor.constraint(greaterThanOrEqualToConstant:200).isActive = true
-        content.addArrangedSubview(libraryArea);libraryArea.widthAnchor.constraint(equalTo:content.widthAnchor,constant:-48).isActive = true
-        searchRow.widthAnchor.constraint(equalTo:libraryArea.widthAnchor).isActive = true
-        scroll.widthAnchor.constraint(equalTo:libraryArea.widthAnchor).isActive = true
-        libraryArea.setContentHuggingPriority(.defaultLow,for:.vertical)
-        status.textColor = .secondaryLabelColor;status.maximumNumberOfLines = 2;content.addArrangedSubview(status)
-        let select = NSButton(title:"Play selected",target:self,action:#selector(selectTrack))
-        select.setAccessibilityIdentifier("play-selected")
-        play.target = self;play.action = #selector(toggle)
-        play.setAccessibilityIdentifier("toggle-playback")
-        let retry = NSButton(title:"Retry",target:self,action:#selector(retry))
-        let previous = NSButton(title:"Previous",target:self,action:#selector(previousTrack))
-        let next = NSButton(title:"Next",target:self,action:#selector(nextTrack))
-        let queue = NSButton(title:"Queue",target:self,action:#selector(showQueue))
-        // One native line yields before the window's width; Full name keeps exact metadata.
-        transportLabel.lineBreakMode = .byWordWrapping
-        transportLabel.maximumNumberOfLines = 1
-        transportLabel.cell?.truncatesLastVisibleLine = true
-        transportLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
-        let transport = NSStackView(views:[select,previous,play,next,retry,queue,transportLabel]);transport.orientation = .horizontal
-        content.addArrangedSubview(transport);transport.widthAnchor.constraint(equalTo:content.widthAnchor,constant:-48).isActive = true
-        slider.target = self;slider.action = #selector(seek);slider.isContinuous = false
-        slider.setAccessibilityLabel("Playback position")
-        content.addArrangedSubview(slider);slider.widthAnchor.constraint(equalTo:content.widthAnchor,constant:-48).isActive = true
-        let provenance = NSTextField(labelWithString:"Native preview · Rust core ABI 1 · " + (ProcessInfo.processInfo.environment["OMP_SOURCE_REF"] ?? "local source"))
-        provenance.font = .monospacedSystemFont(ofSize:10,weight:.regular);provenance.textColor = .tertiaryLabelColor;content.addArrangedSubview(provenance)
+        do {nativeAssets = try NativeAssets.load()} catch {
+            let alert = NSAlert();alert.messageText = "SoundQ resources could not be loaded";alert.informativeText = String(describing:error);alert.runModal();NSApp.terminate(nil);return
+        }
+        mountLibraryDock(in:window.contentView!,assets:nativeAssets!)
         window.center();window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
         let menu = NSMenu();let item = NSMenuItem();menu.addItem(item);let appMenu = NSMenu();appMenu.addItem(withTitle:"Quit SoundQ Native Preview",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q");item.submenu = appMenu;NSApp.mainMenu = menu
+        titleLabel.stringValue = "Library"
+        let editItem = NSMenuItem();menu.addItem(editItem);let edit = NSMenu(title:"Edit");editItem.submenu = edit
+        let libraryItem = NSMenuItem();libraryItem.title = "Library";libraryItem.submenu = makeLibraryMenu();menu.addItem(libraryItem)
+        for (title,action,key) in [("Copy",#selector(NSText.copy(_:)),"c"),("Paste",#selector(NSText.paste(_:)),"v"),("Select All",#selector(NSText.selectAll(_:)),"a")] {edit.addItem(withTitle:title,action:action,keyEquivalent:key)}
+    }
+    func makeLibraryMenu() -> NSMenu {
+        let menu = NSMenu(title:"Library");menu.autoenablesItems = true
+        let details = NSMenuItem(title:"Full details",action:#selector(openLibraryDetailsFromMenu(_:)),keyEquivalent:"i")
+        details.keyEquivalentModifierMask = [.command];details.target = self
+        menu.addItem(details);libraryDetailsMenuItem = details
+        return menu
+    }
+    func libraryDetailsMenuAvailable(_ item: NSMenuItem) -> Bool {
+        guard item === libraryDetailsMenuItem, let action = libraryDetailsAction,
+              !action.consumed, let s = snapshot else {return false}
+        return action.matches(s,account:accountScope,epoch:epoch)
+    }
+    @objc func openLibraryDetailsFromMenu(_ sender: NSMenuItem) {
+        guard libraryDetailsMenuAvailable(sender), let action = libraryDetailsAction else {return}
+        action.open()
+    }
+    func mountLibraryDock(in host: NSView, assets: NativeAssets) {
+        logout.target = self;logout.action = #selector(signOut);logout.setAccessibilityLabel("Sign out")
+        email.placeholderString = "Email";password.placeholderString = "Password";endpoint.placeholderString = "API base URL";endpoint.isEditable = false
+        loginArea.orientation = .vertical;loginArea.alignment = .leading;loginArea.spacing = 8
+        for field in [endpoint,email,password] {field.widthAnchor.constraint(equalToConstant:420).isActive = true;loginArea.addArrangedSubview(field)}
+        let signIn = SoundQButton(title:"Sign in",target:self,action:#selector(signIn));signIn.keyEquivalent = "\r";loginArea.addArrangedSubview(signIn)
+        search.placeholderString = "Search your library";search.delegate = self
+        let refresh = SoundQButton(title:"Refresh",target:self,action:#selector(refresh))
+        let more = SoundQButton(title:"Load more",target:self,action:#selector(loadMore))
+        let select = SoundQButton(title:"Play selected",target:self,action:#selector(selectTrack));select.setAccessibilityIdentifier("play-selected")
+        let retry = SoundQButton(title:"Retry playback",target:self,action:#selector(retry));retry.isEnabled = false
+        let previous = SoundQButton(title:"Previous",target:self,action:#selector(previousTrack));previous.symbol = "backward.end.fill";previous.glyphSize = 24
+        let next = SoundQButton(title:"Next",target:self,action:#selector(nextTrack));next.symbol = "forward.end.fill";next.glyphSize = 24
+        let queue = SoundQButton(title:"Queue",target:self,action:#selector(showQueue))
+        for button in [refresh,more,select,retry,previous,next,queue,play] {button.setAccessibilityLabel(button.title);button.wantsLayer = true}
+        play.target = self;play.action = #selector(toggle);play.setAccessibilityIdentifier("toggle-playback");play.primary = true;play.symbol = "play.fill";play.glyphSize = 24
+        slider.target = self;slider.action = #selector(seek);slider.isContinuous = false;slider.setAccessibilityLabel("Playback position")
+        table.addTableColumn(NSTableColumn(identifier:NSUserInterfaceItemIdentifier("track")))
+        table.tableColumns[0].width = 600;table.headerView = nil;table.rowHeight = 56;table.intercellSpacing = .zero
+        table.style = .plain;table.usesAlternatingRowBackgroundColors = false;table.delegate = self;table.dataSource = self;table.target = self;table.doubleAction = #selector(selectTrack)
+        table.setAccessibilityLabel("Library tracks");table.autosaveName = "SoundQNativeLibrary";table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        scroll.documentView = table;scroll.hasVerticalScroller = true;scroll.autohidesScrollers = true;scroll.setAccessibilityLabel("Library scroll area")
+        libraryArea.addSubview(scroll)
+        libraryDetails.setAccessibilityLabel("Full details for selected Library track")
+        libraryDetails.setAccessibilityIdentifier("library-full-details")
+        libraryDetails.isEnabled = false
+        table.nextKeyView = libraryDetails;libraryDetails.nextKeyView = select
+        let controls = LibraryDockControls(table:table,scroll:scroll,search:search,slider:slider,play:play,title:titleLabel,identity:transportLabel,status:status,login:loginArea,library:libraryArea,logout:logout,refresh:refresh,more:more,select:select,details:libraryDetails,retry:retry,previous:previous,next:next,queue:queue)
+        let shell = LibraryDockView(controls:controls,assets:assets);shell.frame = host.bounds;shell.autoresizingMask = [.width,.height];host.addSubview(shell);libraryDock = shell
+        // App-local accessibility sizing, no global preference writes. Retain a
+        // single scale input so runtime QA can qualify the actual mounted fonts.
+        shell.textScale = max(1,NSFont.preferredFont(forTextStyle:.body).pointSize/13)
+        for field in [endpoint,email,password] {field.font = NativeAssets.font(14,scale:shell.textScale)}
+        signIn.font = NativeAssets.font(14,weight:500,scale:shell.textScale)
     }
     func command(_ value: [String:Any], completion: (@MainActor () -> Void)? = nil) {
         let kind = value["command"] as? String ?? ""
-        if ["login","register","restore","logout","select","queue_play","next","previous","queue_clear","queue_restore"].contains(kind) {closeQueueName()}
+        if ["login","register","restore","logout","select","queue_play","next","previous","queue_clear","queue_restore"].contains(kind) {closeQueueName();retireLibraryDetails()}
         if ["login","register","restore","logout"].contains(kind) {
             accountScope += 1;storedCredentialVersion = 0
             if kind != "restore", ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_FIXTURE_HOME"] == nil {deleteCredentials()}
@@ -227,18 +243,45 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
         var value = incoming
         if value.library_unchanged {value.library = snapshot?.library ?? []}
         if value.queue_unchanged {value.queue = snapshot?.queue ?? []}
-        let rowsChanged = !value.library_unchanged && (snapshot?.library.map(\.id) != value.library.map(\.id) || snapshot?.library.map(\.title) != value.library.map(\.title))
-        reconcileQueueName(value)
+        // Content topics alone pay this comparison; String equality is canonical,
+        // not byte equality, so compare UTF8 for exact metadata publications.
+        let rowsChanged = !value.library_unchanged && (snapshot?.library.count != value.library.count || !zip(snapshot?.library ?? [],value.library).allSatisfy {
+            $0.id == $1.id && $0.title.utf8.elementsEqual($1.title.utf8) &&
+            ($0.artist == nil) == ($1.artist == nil) && ($0.artist ?? "").utf8.elementsEqual(($1.artist ?? "").utf8) && $0.duration_ms == $1.duration_ms
+        })
+        let prior = snapshot
+        let browseID = rowsChanged && table.selectedRow >= 0 && table.selectedRow < (prior?.library.count ?? 0) ? prior?.library[table.selectedRow].id : nil
+        let chromeChanged = !value.queue_unchanged || prior?.authenticated != value.authenticated || prior?.epoch != value.epoch || prior?.session != value.session || prior?.selected_occurrence != value.selected_occurrence || prior?.transport != value.transport
+        if chromeChanged {reconcileQueueName(value)}
+        if rowsChanged || prior?.authenticated != value.authenticated || prior?.epoch != value.epoch || prior?.session != value.session {reconcileLibraryDetails(value)}
         snapshot = value
-        loginArea.isHidden = value.authenticated;libraryArea.isHidden = !value.authenticated;logout.isHidden = !value.authenticated
-        if rowsChanged {table.reloadData()}
-        titleLabel.stringValue = value.authenticated ? "SoundQ / Library" : "SoundQ"
-        transportLabel.stringValue = (value.queue.first(where:{$0.id==value.selected_occurrence})?.track.title ?? "No selection") + " · " + value.transport
-        play.title = value.transport == "playing" ? "Pause" : "Play"
-        play.isEnabled = !value.queue.isEmpty
+        if prior?.authenticated != value.authenticated {loginArea.isHidden = value.authenticated;libraryArea.isHidden = !value.authenticated;logout.isHidden = !value.authenticated}
+        if rowsChanged {
+            table.reloadData()
+            if let browseID, let row = value.library.firstIndex(where:{$0.id == browseID}) {table.selectRowIndexes(IndexSet(integer:row),byExtendingSelection:false)}
+            else {table.selectRowIndexes([],byExtendingSelection:false)}
+            libraryDock?.updateContent(empty:value.library.isEmpty)
+        }
+        if rowsChanged || prior?.total != value.total || prior?.authenticated != value.authenticated || prior?.epoch != value.epoch || prior?.session != value.session {updateLibraryAvailability()}
+        if prior?.authenticated != value.authenticated {titleLabel.stringValue = "Library";libraryDock?.updateAuthentication(value.authenticated)}
+        if chromeChanged {
+            let chrome = DockChrome(value)
+            let oldTrackID = dockTrackID;dockTrackID = chrome.trackID
+            if libraryDock == nil {transportLabel.stringValue = chrome.title}
+            play.title = value.transport == "playing" ? "Pause" : "Play"
+            play.setAccessibilityLabel(play.title)
+            play.isEnabled = !value.queue.isEmpty
+            libraryDock?.setPlaybackRetryAvailable(value.canRetryPlayback && value.epoch == epoch)
+            libraryDock?.updateChrome(chrome)
+            libraryDock?.updateCurrent(old:oldTrackID,new:chrome.trackID)
+        }
         slider.maxValue = Double(max(value.duration_ms,1));slider.doubleValue = Double(value.position_ms)
-        slider.isEnabled = !value.queue.isEmpty
-        status.stringValue = value.error?.replacingOccurrences(of:"_",with:" ") ?? "\(value.library.count) of \(value.total) tracks"
+        if chromeChanged {slider.isEnabled = !value.queue.isEmpty}
+        libraryDock?.updateProgress(position:value.position_ms,duration:value.duration_ms)
+        // Local command failures can change the displayed feedback independently
+        // of snapshot topics. A successful scalar recovery must publish truth too.
+        let feedback = value.error?.replacingOccurrences(of:"_",with:" ") ?? "\(value.library.count) of \(value.total) tracks"
+        if status.stringValue != feedback {status.stringValue = feedback}
     }
     func applyAudio(_ effect: AudioEffect) {
         guard effect.epoch == epoch else{return}
@@ -285,6 +328,7 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     }
     func loadLibrary(offset: Int = 0) {command(["command":"library","offset":offset,"query":search.stringValue,"sort":"added_at","order":"desc"])}
     @objc func signIn() {
+        retireLibraryDetails()
         closeQueueName()
         player?.pause();player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke()
 
@@ -293,10 +337,10 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
             self.password.stringValue = "";self.loadLibrary()
         }
     }
-    @objc func signOut() {closeQueueName();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();deleteCredentials();command(["command":"logout"])}
+    @objc func signOut() {retireLibraryDetails();closeQueueName();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();deleteCredentials();command(["command":"logout"])}
     @objc func refresh() {loadLibrary()}
     @objc func loadMore() {loadLibrary(offset:snapshot?.library.count ?? 0)}
-    @objc func selectTrack() {let row = table.selectedRow;guard let s = snapshot,row >= 0,row < s.library.count else{return};closeQueueName();player?.pause();player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();command(["command":"select","track_id":s.library[row].id])}
+    @objc func selectTrack() {let row = table.selectedRow;guard let s = snapshot,row >= 0,row < s.library.count else{return};retireLibraryDetails();closeQueueName();player?.pause();player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();command(["command":"select","track_id":s.library[row].id])}
     @objc func toggle() {command(["command":snapshot?.transport == "playing" ? "pause" : "resume"])}
     func queueCommand(_ kind:String,id:UInt64?=nil,index:Int?=nil) {
         guard let s=snapshot else{return}
@@ -304,6 +348,7 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
         if kind=="next" && (selected==nil || selected!+1>=s.queue.count) {return}
         if kind=="previous" && (selected==nil || selected == 0) {return}
         if ["queue_play","next","previous","queue_clear"].contains(kind) || kind=="queue_remove" && id==s.selected_occurrence {
+            retireLibraryDetails()
             closeQueueName()
             player?.pause();observation=nil;player?.replaceCurrentItem(with:nil);player=nil;epoch=bridge.revoke()
         }
@@ -315,6 +360,7 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     @objc func nextTrack() {queueCommand("next")}
     @objc func previousTrack() {queueCommand("previous")}
     @objc func showQueue() {
+        closeLibraryDetails()
         closeQueueName()
         let menu=NSMenu(title:"Listening queue")
         for o in snapshot?.queue ?? [] {
@@ -332,6 +378,9 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     // AppKit autoenables menu items by asking their target on every validation.
     // Resolve occurrence identity against the latest snapshot, never opening order.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(openLibraryDetailsFromMenu(_:)) {
+            return libraryDetailsMenuAvailable(menuItem)
+        }
         if menuItem.action == #selector(clearQueue) {return snapshot?.queue.isEmpty == false}
         if menuItem.action == #selector(showOccurrenceName(_:)) {return queueNameOccurrence(menuItem) != nil}
         let action = menuItem.action
@@ -357,6 +406,7 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
     }
     @objc func showOccurrenceName(_ sender: NSMenuItem) {
         guard let occurrence = queueNameOccurrence(sender) else {return}
+        closeLibraryDetails()
         closeQueueName()
         let alert = NSAlert();alert.messageText = "Full name"
         let done = alert.addButton(withTitle:"Done");done.keyEquivalent = "\u{1b}"
@@ -395,18 +445,75 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
             closeQueueName()
         }
     }
-    @objc func retry() {command(["command":"retry"])}
+    func updateLibraryDetailsAction() {
+        let row = table.selectedRow
+        guard let s = snapshot, s.authenticated, s.epoch == epoch,
+              row >= 0, row < s.library.count else {retireLibraryDetails();return}
+        let track = s.library[row]
+        if let action = libraryDetailsAction, !action.consumed, action.track.id == track.id,
+           action.matches(s,account:accountScope,epoch:epoch) {return}
+        if libraryDetailsAlert?.action !== libraryDetailsAction {libraryDetailsAction?.active = false}
+        let action = LibraryMetadataAction(owner:self,account:accountScope,snapshot:s,track:track)
+        libraryDetailsAction = action;libraryDetails.target = action;libraryDetails.action = #selector(LibraryMetadataAction.open)
+        libraryDetails.isEnabled = true
+    }
+    func openLibraryDetails(_ action: LibraryMetadataAction) {
+        guard libraryDetailsAction === action, !action.consumed, let s = snapshot,
+              action.matches(s,account:accountScope,epoch:epoch) else {return}
+        action.consumed = true
+        closeLibraryDetails();closeQueueName()
+        let alert = NSAlert();alert.messageText = "Full details"
+        let done = alert.addButton(withTitle:"Done");done.keyEquivalent = "\u{1b}"
+        let screen = window.screen?.visibleFrame ?? window.frame
+        let available = NSSize(width:min(window.contentLayoutRect.width,screen.width),height:min(window.contentLayoutRect.height,screen.height))
+        let area = LibraryMetadataDisclosure.area(track:action.track,available:available,font:libraryDetails.font ?? NSFont.systemFont(ofSize:14))
+        alert.accessoryView = area;alert.window.initialFirstResponder = area.documentView
+        libraryDetailsAlert = (alert,action)
+        alert.beginSheetModal(for:window) { [weak self, weak alert] _ in
+            guard let self, self.libraryDetailsAlert?.alert === alert else {return}
+            self.libraryDetailsAlert?.action.active = false
+            self.libraryDetailsAlert = nil;self.updateLibraryDetailsAction()
+        }
+        // The toolbar's next native dispatch is a fresh capability; a retained
+        // old target cannot dismiss or replace this or a later disclosure.
+        updateLibraryDetailsAction()
+    }
+    func closeLibraryDetails() {
+        guard let detail = libraryDetailsAlert else {return}
+        detail.action.active = false;libraryDetailsAlert = nil
+        window.endSheet(detail.alert.window)
+    }
+    func retireLibraryDetails() {
+        libraryDetailsAction?.active = false;libraryDetailsAction = nil
+        libraryDetails.target = nil;libraryDetails.action = nil;libraryDetails.isEnabled = false
+        closeLibraryDetails()
+    }
+    func reconcileLibraryDetails(_ incoming: Snapshot) {
+        if let action = libraryDetailsAction, !action.matches(incoming,account:accountScope,epoch:epoch) {
+            action.active = false;libraryDetailsAction = nil
+            libraryDetails.target = nil;libraryDetails.action = nil;libraryDetails.isEnabled = false
+        }
+        if let detail = libraryDetailsAlert, !detail.action.matches(incoming,account:accountScope,epoch:epoch) {closeLibraryDetails()}
+    }
+    @objc func retry() {guard let s = snapshot, s.epoch == epoch, s.canRetryPlayback else {return};command(["command":"retry"])}
     @objc func seek() {command(["command":"seek","position_ms":UInt64(slider.doubleValue)])}
     func controlTextDidEndEditing(_ obj: Notification) {if (obj.object as? NSSearchField) === search {loadLibrary()}}
+    func updateLibraryAvailability() {
+        let authenticated = snapshot?.authenticated == true
+        libraryDock?.setLibraryAvailability(selected:authenticated && table.selectedRow >= 0 && table.selectedRow < (snapshot?.library.count ?? 0),canLoadMore:authenticated && UInt64(snapshot?.library.count ?? 0) < (snapshot?.total ?? 0))
+        updateLibraryDetailsAction()
+    }
+    func tableViewSelectionDidChange(_ notification: Notification) {updateLibraryAvailability()}
     func numberOfRows(in tableView: NSTableView)->Int {snapshot?.library.count ?? 0}
     func tableView(_ tableView: NSTableView,viewFor tableColumn:NSTableColumn?,row:Int)->NSView? {
         guard let track = snapshot?.library[row] else{return nil}
         let id = tableColumn!.identifier
-        let field = (tableView.makeView(withIdentifier:id,owner:self) as? NSTextField) ?? NSTextField(labelWithString:"")
-        field.identifier = id;field.lineBreakMode = .byTruncatingTail
-        field.stringValue = id.rawValue == "title" ? track.title : (track.artist ?? "Unknown artist")
-        return field
+        let cell = (tableView.makeView(withIdentifier:id,owner:self) as? LibraryTrackCell) ?? LibraryTrackCell(frame:.zero)
+        cell.identifier = id;cell.objectValue = track.id
+        cell.configure(track:track,current:track.id == dockTrackID,scale:libraryDock?.textScale ?? 1,transport:snapshot?.transport ?? "paused")
+        return cell
     }
+    func tableView(_ tableView: NSTableView,rowViewForRow row: Int) -> NSTableRowView? {LibraryTrackRow()}
     func configureMediaControls() {
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.addTarget { [weak self] _ in Task { @MainActor in self?.command(["command":"resume"]) };return .success }
@@ -437,12 +544,21 @@ final class App: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTable
         command(["command":"acknowledge_credentials","version":version])
     }
     func deleteCredentials() {SecItemDelete(keychainQuery() as CFDictionary)}
-    func applicationWillTerminate(_ notification:Notification) {closeQueueName();timer?.invalidate();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;_ = bridge.revoke()}
+    func applicationWillTerminate(_ notification:Notification) {retireLibraryDetails();closeQueueName();timer?.invalidate();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;_ = bridge.revoke()}
+    func windowWillClose(_ notification:Notification) {retireLibraryDetails()}
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {true}
 }
 
-let application = NSApplication.shared
-application.setActivationPolicy(.regular)
-let delegate = App()
-application.delegate = delegate
-application.run()
+let resourceProbe = CommandLine.arguments.contains("--resources-only")
+if resourceProbe {
+    do {
+        let assets = try NativeAssets.load()
+        print("SOUNDQ_RESOURCES_PASS fonts=6 licenses=2 logo=1 root=\(assets.root.path)")
+    } catch {fputs("SoundQ resource verification failed: \(error)\n",stderr);exit(1)}
+} else {
+    let application = NSApplication.shared
+    application.setActivationPolicy(.regular)
+    let delegate = App()
+    application.delegate = delegate
+    application.run()
+}

@@ -57,13 +57,15 @@ SWIFT_FACADES = r'''import Foundation
 import CoreFoundation
 import CoreGraphics
 enum NSLineBreakMode {case byWordWrapping,byCharWrapping}
+enum NSEvent {struct ModifierFlags:OptionSet {let rawValue:Int;static let command=Self(rawValue:1)}}
 @objc protocol NSMenuItemValidation {
  func validateMenuItem(_ menuItem:NSMenuItem)->Bool
 }
 class NSMenuItem: NSObject {
  let title:String; let action:Selector?; var target:AnyObject?
  var representedObject:Any?; var submenu:NSMenu?; var isEnabled=true; weak var menu:NSMenu?
- init(title:String,action:Selector?,keyEquivalent:String) {self.title=title;self.action=action}
+ var keyEquivalent:String;var keyEquivalentModifierMask:NSEvent.ModifierFlags = [.command]
+ init(title:String,action:Selector?,keyEquivalent:String) {self.title=title;self.action=action;self.keyEquivalent=keyEquivalent}
  static func separator()->NSMenuItem {NSMenuItem(title:"separator",action:nil,keyEquivalent:"")}
 }
 class NSMenu {
@@ -141,8 +143,12 @@ class NSAlert:NSObject {
  func finish(_ parent:Window) {parent.endSheet(window)}
  func drainCompletion() {if pendingCompletion {pendingCompletion=false;completion?(1000)}}
 }
-class Label {var stringValue="";var isHidden=false;var isEnabled=true;var title=""}
-class Table {var selectedRow=0;func reloadData() {}}
+class Label {var stringValue="";var isHidden=false;var isEnabled=true;var title="";func setAccessibilityLabel(_ value:String){}}
+class Table {var selectedRow=0;func reloadData() {};func selectRowIndexes(_ indexes:IndexSet,byExtendingSelection:Bool){selectedRow=indexes.first ?? -1}}
+// Rendering is tested by the real unattached AppKit gate. These optional nil
+// presentation references let the unchanged command/disclosure facades compose
+// the complete production apply, including the real DockChrome projection.
+class LibraryDockView {func updateAuthentication(_ authenticated:Bool){};func updateContent(empty:Bool){};func updateChrome(_ value:DockChrome){};func updateCurrent(old:Int64?,new:Int64?){};func updateProgress(position:UInt64,duration:UInt64){};func setPlaybackRetryAvailable(_ available:Bool){}}
 class Slider {var maxValue=0.0;var doubleValue=0.0;var isEnabled=true}
 // Record only native/core boundary effects. Production owns all admission,
 // selection, account, epoch and disclosure predicates; replies stay held.
@@ -173,6 +179,8 @@ class App:NSObject__VALIDATION__ {
  var email=Label();var password=Label();var credentialDeletes=0;var libraryLoads=0
  var loginArea=Label();var libraryArea=Label();var logout=Label();var table=Table()
  var titleLabel=Label();var transportLabel=Label();var play=Label();var slider=Slider();var status=Label()
+ var libraryDock:LibraryDockView?;var dockTrackID:Int64?
+ func updateLibraryAvailability(){};func retireLibraryDetails(){};func libraryDetailsMenuAvailable(_ item:NSMenuItem)->Bool {false};@objc func openLibraryDetailsFromMenu(_ item:NSMenuItem){};func closeLibraryDetails(){};func reconcileLibraryDetails(_ s:Snapshot){}
 __DETAIL_FIELDS__
  func deleteCredentials() {credentialDeletes+=1}
  func storeCredentials(_ credentials:Credentials,epoch:UInt64) {}
@@ -604,6 +612,8 @@ def run_platform(platform, root, output):
                           '@objc func signIn()', '@objc func signOut()', '@objc func selectTrack()']
             assert all(source.count(s) == 1 for s in type_signatures + signatures), 'production extraction must be unambiguous'
             types = '\n'.join(swift_block(source, s) for s in type_signatures)
+            projection = (root / 'native/macos/Sources/LibraryDockView.swift').read_text()
+            types += '\n' + swift_block(projection, 'struct DockChrome {')
             methods = '\n'.join(swift_block(source, s) for s in signatures)
             assert source.count('func validateMenuItem(') <= 1
             validation = swift_block(source, 'func validateMenuItem(') if 'func validateMenuItem(' in source else ''

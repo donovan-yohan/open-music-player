@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "authority": "frozen Flutter reference; exact copied bytes",
+  "files": [
+    {
+      "path": "fonts/spacegrotesk/SpaceGrotesk-Regular.ttf",
+      "reference": "client/assets/fonts/spacegrotesk/SpaceGrotesk-Regular.ttf",
+      "sha256": "28af0332e262e4953efdf5159fb8426f8218a84ab2f22453f85d258c62773fcd",
+      "bytes": 88324
+    },
+    {
+      "path": "fonts/spacegrotesk/SpaceGrotesk-Medium.ttf",
+      "reference": "client/assets/fonts/spacegrotesk/SpaceGrotesk-Medium.ttf",
+      "sha256": "170fc655be8d0ec0c6e07b62299670cfbe2b3455730b43b97c553d19ac0839d5",
+      "bytes": 88328
+    },
+    {
+      "path": "fonts/spacegrotesk/SpaceGrotesk-SemiBold.ttf",
+      "reference": "client/assets/fonts/spacegrotesk/SpaceGrotesk-SemiBold.ttf",
+      "sha256": "a3916fb4a0f1362c88e0918eda2e1fc5bab2fde1ad3e102a5e3c89713c2b09bb",
+      "bytes": 88240
+    },
+    {
+      "path": "fonts/spacegrotesk/SpaceGrotesk-Bold.ttf",
+      "reference": "client/assets/fonts/spacegrotesk/SpaceGrotesk-Bold.ttf",
+      "sha256": "ecab4b0a0d1d0f9ad6d056fa966b642f25addb75111f22b4a194cf3ca54fbb49",
+      "bytes": 88224
+    },
+    {
+      "path": "fonts/spacegrotesk/OFL.txt",
+      "reference": "client/assets/fonts/spacegrotesk/OFL.txt",
+      "sha256": "564ce565c371c5e5bbf286006565a7c9aa55a9f56e7ca58d56e05d649dd61a72",
+      "bytes": 4495
+    },
+    {
+      "path": "fonts/ibmplexmono/IBMPlexMono-Regular.ttf",
+      "reference": "client/assets/fonts/ibmplexmono/IBMPlexMono-Regular.ttf",
+      "sha256": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46",
+      "bytes": 135580
+    },
+    {
+      "path": "fonts/ibmplexmono/IBMPlexMono-Medium.ttf",
+      "reference": "client/assets/fonts/ibmplexmono/IBMPlexMono-Medium.ttf",
+      "sha256": "a9b4c49bb299e05b5f6c481e7fb5e78943d2793249a0c8874ab574a2d1ea6755",
+      "bytes": 136704
+    },
+    {
+      "path": "fonts/ibmplexmono/OFL.txt",
+      "reference": "client/assets/fonts/ibmplexmono/OFL.txt",
+      "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da",
+      "bytes": 4456
+    },
+    {
+      "path": "fonts/sources.json",
+      "reference": "client/assets/fonts/sources.json",
+      "sha256": "b95b845320da6d8709b4c07edc0a16873361d97219a446cf2145457c6e841c49",
+      "bytes": 5737
+    },
+    {
+      "path": "brand/soundq-logo.png",
+      "reference": "client/assets/brand/soundq-logo.png",
+      "sha256": "8b8ec5737c39efab15cc513772ee83360bda623c7aaf02aaa0cb4bc0c4e589f8",
+      "bytes": 664777
+    },
+    {
+      "path": "brand/soundq-brand-assets.json",
+      "reference": "client/assets/brand/soundq-brand-assets.json",
+      "sha256": "329ce46e57b3d69746aa9408df98d847f000e894210be0b2cd1210e7b3c4615d",
+      "bytes": 4733
+    }
+  ]
+}

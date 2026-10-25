@@ -74,7 +74,35 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - run: scripts/build native-macos
+        id: native-macos-build
+      - name: Collect native search optical discriminator
+        id: search-optical-diagnostic
+        run: |
+          python3 -B <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+
+          output = Path(tempfile.mkdtemp(prefix='search-optical-', dir=os.environ['RUNNER_TEMP']))
+          # The runner requires a fresh destination; retain the allocated parent.
+          evidence = output / 'evidence'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write('evidence=' + str(output) + '\n')
+          subprocess.run([sys.executable, '-B', 'native/tests/search_optical_diagnostics.py', '--output', str(evidence)], check=True)
+          PY
+      - name: Preserve native search discriminator
+        if: always() && steps.search-optical-diagnostic.outputs.evidence != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-macos-search-optical-diagnostic
+          path: ${{ steps.search-optical-diagnostic.outputs.evidence }}
+          if-no-files-found: error
       - name: Test macOS queue disclosure and unattached AppKit layout
+        id: macos-layout
+        # Collector failure must not hide product regressions or make the job green.
+        if: ${{ !cancelled() && steps.native-macos-build.outcome == 'success' }}
         run: |
           python3 -B <<'PY'
           import os
@@ -88,11 +116,25 @@ jobs:
           import queue_current_marker_regressions
 
           output = Path(tempfile.mkdtemp(prefix='macos-queue-', dir=os.environ['RUNNER_TEMP']))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write('evidence=' + str(output) + '\n')
           result = queue_current_marker_regressions.run_platform('macos', root, output / 'current-marker')
           if result:
               raise SystemExit(result)
           subprocess.run([sys.executable, '-B', 'native/tests/queue_transport_layout.py', '--appkit', '--output', str(output / 'transport-layout')], check=True)
+          # The layout entrypoint compiles the actual Library/dock production
+          # builder, tokens, assets and scalar publication counters. Keep package
+          # provenance/refusal controls separately executable and fail closed.
+          subprocess.run([sys.executable, '-B', 'native/tests/native_review_regressions.py'], check=True)
+          subprocess.run([sys.executable, '-B', 'native/tests/library_metadata_regressions.py', '--output', str(output / 'library-metadata')], check=True)
           PY
+      - name: Preserve macOS layout diagnostics
+        if: always() && steps.macos-layout.outputs.evidence != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-macos-layout-diagnostics
+          path: ${{ steps.macos-layout.outputs.evidence }}
+          if-no-files-found: error
       - name: Test terminal EOF feedback through the fresh core ABI (Mac9)
         run: |
           python3 -B <<'PY'

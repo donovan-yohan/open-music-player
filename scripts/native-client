@@ -61,6 +61,17 @@ def main():
         (app/"Contents/MacOS").mkdir(parents=True, exist_ok=True)
         (app/"Contents/Frameworks").mkdir(parents=True, exist_ok=True)
         shutil.copy2(NATIVE/"macos/.build/release/SoundQNative", app/"Contents/MacOS/SoundQNative")
+        # SwiftPM's executable target emits this single owned resource bundle.
+        # Replace only that tree: incremental packages must not retain removed data.
+        resource_name = "SoundQNative_SoundQNative.bundle"
+        resource = NATIVE/"macos/.build/release"/resource_name
+        if not (resource/"Resources").is_dir():
+            raise SystemExit("missing required SwiftPM SoundQ resources")
+        packaged_resource = app/"Contents/Resources"/resource_name
+        if packaged_resource.exists():
+            shutil.rmtree(packaged_resource)
+        packaged_resource.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(resource, packaged_resource)
         shutil.copy2(target/"release/libsoundq_core.dylib", app/"Contents/Frameworks/libsoundq_core.dylib")
         import plistlib
         (app/"Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier":"com.soundq.native.preview", "CFBundleName":"SoundQ Native Preview", "CFBundleExecutable":"SoundQNative", "CFBundlePackageType":"APPL", "CFBundleShortVersionString":"0.1.0", "LSMinimumSystemVersion":"14.0", "NSHighResolutionCapable":True}))

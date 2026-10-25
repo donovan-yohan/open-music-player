@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class BuildProvenance(unittest.TestCase):
-    def exercise(self, platform, target_kind, java=None, override=None):
+    def exercise(self, platform, target_kind, java=None, override=None, resources=True):
         with tempfile.TemporaryDirectory(prefix="native-review-", dir=os.environ.get("TMPDIR")) as tmp:
             root = Path(tmp) / "source with spaces"
             root.mkdir()
@@ -36,6 +36,10 @@ class BuildProvenance(unittest.TestCase):
             stale.parent.mkdir(parents=True)
             stale.write_bytes(b"POISON-OLD-CORE")
             calls = []
+            owned = native / "artifacts/SoundQ Native Preview.app/Contents/Resources/SoundQNative_SoundQNative.bundle"
+            owned.mkdir(parents=True)
+            (owned / "stale.txt").write_bytes(b"STALE-REMOVED-RESOURCE")
+            (owned.parent / "unrelated.txt").write_bytes(b"UNRELATED-RESOURCE")
             environment = {"PATH": os.defpath, "HOME": str(root), "SOUNDQ_RUST_BIN": str(root / "rust"), "SOUNDQ_GRADLE": "fake-gradle"}
             if target_kind in ("absolute", "relative"):
                 environment["CARGO_TARGET_DIR"] = str(target) if target_kind == "absolute" else "relative target"
@@ -64,14 +68,29 @@ class BuildProvenance(unittest.TestCase):
                     binary = native / "macos/.build/release/SoundQNative"
                     binary.parent.mkdir(parents=True)
                     binary.write_bytes(b"FACADE-SWIFT-EXECUTABLE")
+                    if resources:
+                        resource = binary.parent / "SoundQNative_SoundQNative.bundle/Resources/probe.txt"
+                        resource.parent.mkdir(parents=True)
+                        resource.write_bytes(b"FRESH-RESOURCES")
                 return subprocess.CompletedProcess(argv, 0, b"")
 
             module = runpy.run_path(str(ROOT / "scripts/native-client"), run_name="native_client_under_test")
             module["main"].__globals__.update(ROOT=root, NATIVE=native)
             with patch.dict(os.environ, environment, clear=True), patch.object(sys, "platform", "darwin"), patch.object(sys, "argv", ["native-client", platform, "--evidence", str(root / "receipts")]), patch.object(Path, "home", return_value=root), patch.object(subprocess, "run", side_effect=command), patch.object(subprocess, "check_output", return_value="facade:\n\told/libsoundq_core.dylib (compatibility version 0.0.0)\n"):
+                if platform == "macos" and not resources:
+                    with self.assertRaisesRegex(SystemExit, "missing required SwiftPM"):
+                        module["main"]()
+                    self.assertFalse(any(Path(a[0]).name == "codesign" for a, _, _ in calls))
+                    return
                 module["main"]()
             packaged = native / ("artifacts/SoundQ Native Preview.app/Contents/Frameworks/libsoundq_core.dylib" if platform == "macos" else "android/app/src/main/jniLibs/arm64-v8a/libsoundq_core.so")
             self.assertEqual(packaged.read_bytes(), b"FRESH-CURRENT-CORE", "packaged stale default-target library")
+            if platform == "macos":
+                resource = native / "artifacts/SoundQ Native Preview.app/Contents/Resources/SoundQNative_SoundQNative.bundle/Resources/probe.txt"
+                self.assertTrue(resource.is_file(), "packaged app omitted its required resource bundle")
+                self.assertEqual(resource.read_bytes(), b"FRESH-RESOURCES")
+                self.assertFalse((owned / "stale.txt").exists(), "removed resource survived incremental package")
+                self.assertEqual((owned.parent / "unrelated.txt").read_bytes(), b"UNRELATED-RESOURCE")
             receipts = list((root / "receipts").glob("*.json"))
             self.assertTrue(receipts)
             self.assertTrue(all(json.loads(p.read_text())["exitCode"] == 0 for p in receipts))
@@ -90,6 +109,9 @@ class BuildProvenance(unittest.TestCase):
         for kind in ("default", "absolute", "relative", "configured"):
             with self.subTest(target=kind):
                 self.exercise("macos", kind)
+
+    def test_missing_resources_refuses_before_signing(self):
+        self.exercise("macos", "default", resources=False)
 
     def test_effective_output_android(self):
         for kind in ("default", "absolute", "relative", "configured"):
@@ -130,6 +152,7 @@ class SwiftCoreLink(unittest.TestCase):
             (package / "Sources").mkdir(parents=True)
             shutil.copytree(ROOT / "native/macos/CBridge", package / "CBridge")
             shutil.copy2(ROOT / "native/macos/Package.swift", package / "Package.swift")
+            shutil.copytree(ROOT / "native/macos/Sources/Resources", package / "Sources/Resources")
             shutil.copy2(ROOT / "native/core/include/soundq_core.h", core / "include/soundq_core.h")
             (core / "src").mkdir()
             (core / "src/lib.rs").write_text("pub fn metadata_only() {}\n")
@@ -225,7 +248,7 @@ class SwiftReporting(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="native-review-swift-", dir=os.environ.get("TMPDIR")) as tmp:
             path = Path(tmp)
             (path / "main.swift").write_text(source)
-            built = subprocess.run(["/usr/bin/swiftc", "-j", "2", str(path / "main.swift"), "-o", str(path / "probe")], capture_output=True, text=True)
+            built = subprocess.run(["/usr/bin/swiftc", "-j", "2", "-num-threads", "2", str(path / "main.swift"), "-o", str(path / "probe")], capture_output=True, text=True)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
             result = subprocess.run([str(path / "probe"), *args], capture_output=True, text=True)
             self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
@@ -272,7 +295,7 @@ struct Snapshot {var queue=[Occurrence(id:11),Occurrence(id:12)];var selected_oc
 class Player {var retired=false;func pause(){};func replaceCurrentItem(with:Any?){retired=true}}
 class Bridge {var epoch:UInt64=1;func revoke()->UInt64{epoch+=1;return epoch}}
 class App {var snapshot:Snapshot?=Snapshot();var player:Player?=Player();var observation:Int?;var epoch:UInt64=1;var bridge=Bridge();var wantsPlayback=false;var sent=[[String:Any]]()
-func closeQueueName(){}
+func closeQueueName(){};func retireLibraryDetails(){}
 func command(_ value:[String:Any]) {let kind=value["command"] as? String ?? ""
 __INTENT__
 sent.append(value)}

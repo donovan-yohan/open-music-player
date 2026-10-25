@@ -563,8 +563,14 @@ mod queue_feedback {
 
 SWIFT = r'''
 import Foundation
+import CoreFoundation
 import SoundQCore
 __TYPES__
+let kSecValueData="data",kSecAttrAccessible="accessible",kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly="device"
+let errSecSuccess:Int32=0,errSecDuplicateItem:Int32 = -25299
+@MainActor var keychainResult:Int32=0
+@MainActor func SecItemAdd(_ query:CFDictionary,_ result:UnsafeMutablePointer<CFTypeRef?>?)->Int32 {keychainResult}
+@MainActor func SecItemUpdate(_ query:CFDictionary,_ values:CFDictionary)->Int32 {keychainResult}
 struct Clock {var seconds:Double}
 enum ItemStatus {case failed,readyToPlay}
 @MainActor class Item {var status=ItemStatus.readyToPlay;var duration=Clock(seconds:30)}
@@ -572,19 +578,22 @@ enum ItemStatus {case failed,readyToPlay}
  var error:String?;var rate:Float=1;var time=Clock(seconds:0);var currentItem:Item?=Item()
  func currentTime()->Clock {time};func pause(){rate=0}
 }
-@MainActor class Field {var stringValue="";var isHidden=false;var title="";var isEnabled=true;var maxValue:Double=1;var doubleValue:Double=0;func reloadData(){}}
+@MainActor class Field {var stringValue="";var isHidden=false;var title="";var isEnabled=true;var maxValue:Double=1;var doubleValue:Double=0;var selectedRow = -1;func reloadData(){};func selectRowIndexes(_ indexes:IndexSet,byExtendingSelection:Bool){selectedRow=indexes.first ?? -1};func setAccessibilityLabel(_ value:String){}}
+@MainActor class LibraryDockView {func updateAuthentication(_ authenticated:Bool){};func updateContent(empty:Bool){};func updateChrome(_ value:DockChrome){};func updateCurrent(old:Int64?,new:Int64?){};func updateProgress(position:UInt64,duration:UInt64){};func setPlaybackRetryAvailable(_ available:Bool){}}
 @MainActor class MPNowPlayingInfoCenter {enum State {case playing,paused};var playbackState=State.paused;static let shared=MPNowPlayingInfoCenter();static func `default`()->MPNowPlayingInfoCenter {shared}}
 @MainActor class Bridge {
  let handle:UInt64
- var calls=[[String:Any]]();var replies=[Reply]();var pending=[(@Sendable (Data)->Void,Data)]();var refuse=false
+ var calls=[[String:Any]]();var replies=[Reply]();var pending=[(@Sendable (Data)->Void,Data)]();var refuse=false;var invalid=false;var injected:Data?
  init(_ endpoint:String,_ root:String){handle=endpoint.withCString {e in root.withCString {sq_core_open(e,$0)}};precondition(handle != 0)}
  func revoke()->UInt64 {sq_core_revoke(handle)}
  func send(_ data:Data,epoch:UInt64,completion:@escaping @Sendable (Data)->Void){
   calls.append(try! JSONSerialization.jsonObject(with:data) as! [String:Any])
   let result:Data
-  if refuse {refuse=false;result=Data(#"{"ok":false,"code":"binding_failure"}"#.utf8)}
+  if let data=injected {injected=nil;result=data}
+  else if invalid {invalid=false;result=Data("{invalid".utf8)}
+  else if refuse {refuse=false;result=Data(#"{"ok":false,"code":"binding_failure"}"#.utf8)}
   else {let text=String(data:data,encoding:.utf8)!;let raw=text.withCString {sq_core_execute(handle,epoch,$0)}!;result=Data(bytes:raw,count:strlen(raw));sq_core_string_free(raw)}
-  replies.append(try! JSONDecoder().decode(Reply.self,from:result));pending.append((completion,result))
+  if let reply=try? JSONDecoder().decode(Reply.self,from:result) {replies.append(reply)};pending.append((completion,result))
  }
  func deliver(){let (completion,data)=pending.removeFirst();completion(data)}
  func close(){sq_core_close(handle)}
@@ -594,19 +603,22 @@ enum ItemStatus {case failed,readyToPlay}
  var busy=0 {didSet {if busy<oldValue {settled?();settled=nil}}};var settled:(()->Void)?
  var accountScope:UInt64=1;var storedCredentialVersion:UInt64=0;var wantsPlayback=false
  var status=Field();var loginArea=Field();var libraryArea=Field();var logout=Field();var titleLabel=Field();var transportLabel=Field();var play=Field();var slider=Field();var table=Field()
+ var libraryDock:LibraryDockView?;var dockTrackID:Int64?
+ func updateLibraryAvailability(){};func retireLibraryDetails(){};func reconcileLibraryDetails(_ s:Snapshot){}
  var effects=[AudioEffect]()
- func closeQueueName(){};func reconcileQueueName(_ s:Snapshot){};func deleteCredentials(){};func storeCredentials(_ c:Credentials,epoch:UInt64){fatalError("unexpected credential storage")}
+ func closeQueueName(){};func reconcileQueueName(_ s:Snapshot){};func deleteCredentials(){};func keychainQuery()->[String:Any] {[:]}
  func applyAudio(_ effect:AudioEffect){effects.append(effect);if effect.action=="load" {player=Player()};if effect.action=="pause" {player?.pause()};if effect.action=="play" {player?.rate=1};if effect.action=="seek" {player?.time.seconds=Double(effect.position_ms)/1000};if effect.action=="stop" {player=nil}}
  __METHODS__
  func drain() async {while !bridge.pending.isEmpty {await withCheckedContinuation {continuation in settled={continuation.resume()};bridge.deliver()}};precondition(busy==0)}
  func send(_ command:String,_ values:[String:Any]=[:]) async {var v=values;v["command"]=command;self.command(v);await drain()}
  func eof() async {player!.rate=0;player!.time.seconds=30;report();await drain()}
 }
-@MainActor func require(_ value:Bool,_ message:String){if !value {fatalError(message)}}
+@MainActor var failures=[String]()
+@MainActor func require(_ value:Bool,_ message:String){if !value {failures.append(message);print("FAIL \(message)")}}
 @main enum Probe {
  @MainActor static func main() async {
   let endpoint=CommandLine.arguments[1];let root=CommandLine.arguments[2];var passes=0
-  func test(_ name:String,_ body:() async -> Void) async {await body();passes+=1;print("PASS \(name)")}
+  func test(_ name:String,_ body:() async -> Void) async {let before=failures.count;await body();if before==failures.count {passes+=1;print("PASS \(name)")}}
   func ready(_ track:Int=1) async -> App {
    let a=App();let path=root+"/"+UUID().uuidString;a.bridge=Bridge(endpoint,path)
    await a.send("restore",["access_token":"synthetic-access","refresh_token":"synthetic-refresh","account_id":"feedback-account"])
@@ -626,11 +638,12 @@ enum ItemStatus {case failed,readyToPlay}
    a.report();await a.drain();require(a.snapshot!.transport=="playing","new session report refused");await a.eof();await repeats(a);a.bridge.close()
   }
   await test("busy-and-pending-do-not-consume-undelivered-EOF") {
+   let local=await ready(2);local.busy=32;local.command(["command":"pause"]);require(local.status.stringValue=="Playback is busy. Try again.","busy command feedback hidden");local.busy=0;await local.send("snapshot");require(local.status.stringValue=="2 of 2 tracks","scalar success retained local busy failure");local.bridge.invalid=true;await local.send("snapshot");require(local.status.stringValue=="Invalid native response","decode error hidden");await local.send("snapshot");require(local.status.stringValue=="2 of 2 tracks","scalar success retained decode failure");local.bridge.close()
    let a=await ready(2);a.busy=1;a.player!.rate=0;a.player!.time.seconds=30;let n=a.bridge.calls.count;a.report();require(a.bridge.calls.count==n,"busy not coalesced");a.busy=0;a.report();await a.drain();require(a.snapshot!.transport=="ended","busy EOF lost");await repeats(a);a.bridge.close()
    let b=await ready(2);b.report();require(b.reportPending,"no pending report");b.player!.rate=0;b.player!.time.seconds=30;b.report();await b.drain();require(b.snapshot!.transport=="playing","pending changed EOF early");b.report();await b.drain();require(b.snapshot!.transport=="ended","pending EOF lost");await repeats(b);b.bridge.close()
   }
   await test("binding-refusal-retries-initial-EOF-and-failure-precedes-ended") {
-   let a=await ready(2);a.bridge.refuse=true;await a.eof();require(a.status.stringValue=="binding failure" && a.snapshot!.transport=="playing" && !a.reportPending,"refusal hidden");a.report();await a.drain();require(a.snapshot!.transport=="ended","refused delivery was acknowledged");await repeats(a)
+   let a=await ready(2);a.bridge.refuse=true;await a.eof();require(a.status.stringValue=="binding failure" && a.snapshot!.transport=="playing" && !a.reportPending,"refusal hidden");a.report();await a.drain();require(a.snapshot!.transport=="ended","refused delivery was acknowledged");require(a.status.stringValue=="2 of 2 tracks","successful scalar EOF retained false binding failure");await repeats(a)
    a.player!.currentItem!.status = .failed;a.player!.time.seconds = .nan;a.report();await a.drain();require(a.snapshot!.transport=="failed" && a.status.stringValue=="native playback failed","genuine failure hidden by terminal dedup");a.bridge.close()
   }
   await test("ended-valid-seek-paused-then-resume-permits-new-EOF") {
@@ -651,7 +664,24 @@ enum ItemStatus {case failed,readyToPlay}
   await test("revoked-held-terminal-publication-does-not-poison-new-selection") {
    let a=await ready(2);a.player!.rate=0;a.player!.time.seconds=30;a.report();a.player=nil;a.epoch=a.bridge.revoke();a.command(["command":"select","track_id":1]);await a.drain();require(!a.reportPending && a.snapshot!.epoch==a.epoch && a.snapshot!.transport=="preparing" && a.snapshot!.error==nil,"retired terminal crossed replacement");a.report();await a.drain();require(a.snapshot!.transport=="playing","replacement report lost");a.bridge.close()
   }
-  print("QUEUE_FEEDBACK_MAC_PASS \(passes) failures=0")
+  await test("failed-reply-preserves-audio-credential-delivery-and-save-feedback") {
+   let a=await ready(2)
+   @MainActor func inject(_ failedSave:Bool) async {
+    keychainResult=failedSave ? -1 : 0
+    let s=a.snapshot!,before=a.effects.count
+    let object:[String:Any] = ["ok":false,"code":"queue_storage_failed","snapshot":["epoch":s.epoch,"session":s.session,"revision":s.revision,"authenticated":true,"library":[],"library_unchanged":true,"total":2,"queue":[],"queue_unchanged":true,"selected_occurrence":s.selected_occurrence as Any,"transport":s.transport,"position_ms":s.position_ms,"duration_ms":s.duration_ms,"error":"queue_storage_failed"],"audio":["action":"play","epoch":s.epoch,"session":s.session,"position_ms":0,"cached":false],"credentials":["access_token":"synthetic-access","refresh_token":"synthetic-refresh","account_id":"feedback-account","version":UInt64(failedSave ? 3 : 4)]]
+    a.bridge.injected=try! JSONSerialization.data(withJSONObject:object)
+    // Synthetic reply; Security calls above are nonpersistent boundary facades.
+    var storedAtCompletion:UInt64=0
+    unsetenv("SOUNDQ_NATIVE_FIXTURE_HOME");a.command(["command":"snapshot"]) {storedAtCompletion=a.storedCredentialVersion}
+    await a.drain();setenv("SOUNDQ_NATIVE_FIXTURE_HOME","synthetic-device-free",1)
+    require(a.effects.count==before+1 && a.effects.last!.action=="play","save refusal lost independent audio")
+    if failedSave {require(a.status.stringValue=="Could not save session" && a.storedCredentialVersion==0,"Keychain failure hidden during failed command")}
+    else {require(storedAtCompletion==4 && a.bridge.calls.contains {($0["command"] as? String)=="acknowledge_credentials" && ($0["version"] as? UInt64)==4},"valid credentials lost with playback failure")}
+   }
+   await inject(true);await inject(false);keychainResult=0;a.bridge.close()
+  }
+  print("QUEUE_FEEDBACK_MAC_PASS \(passes) failures=\(failures.count)");exit(failures.isEmpty ? 0 : 1)
  }
 }
 '''
@@ -761,13 +791,15 @@ def rust(root, output):
 
 def macos(root, output):
     source = (root / 'native/macos/Sources/main.swift').read_text()
-    signatures = ['struct Track:', 'struct Occurrence:', 'struct Snapshot:', 'struct AudioEffect:', 'struct Credentials:', 'struct Reply:', 'func report(state:', 'func command(', 'func apply(_ incoming: Snapshot)']
+    signatures = ['struct Track:', 'struct Occurrence:', 'struct Snapshot:', 'struct AudioEffect:', 'struct Credentials:', 'struct Reply:', 'func report(state:', 'func command(', 'func apply(_ incoming: Snapshot)', 'func storeCredentials(']
     blocks = {s: swift_block(source, s) for s in signatures}
+    projection = (root / 'native/macos/Sources/LibraryDockView.swift').read_text()
+    blocks['struct Reply:'] += '\n' + swift_block(projection, 'struct DockChrome {')
     generated = SWIFT.replace('__TYPES__', '\n'.join(blocks[s] for s in signatures[:6])).replace('__METHODS__', '\n'.join(blocks[s] for s in signatures[6:]))
     path = output / 'Probe.swift'
     path.write_text(generated)
     library = Path(os.environ['SOUNDQ_CORE_LIBRARY']).resolve()
-    (output / 'extraction.json').write_text(json.dumps({'blocks': {s: sha(b.encode()) for s, b in blocks.items()}, 'probeSha256': sha(path.read_bytes()), 'coreSha256': sha(library.read_bytes())}, indent=2) + '\n')
+    (output / 'extraction.json').write_text(json.dumps({'blocks': {s: sha(b.encode()) for s, b in blocks.items()}, 'probeSha256': sha(path.read_bytes()), 'coreSha256': sha(library.read_bytes()), 'testSha256': sha(Path(__file__).read_bytes()), 'productionSha256': sha(source.encode())}, indent=2) + '\n')
     code = run(['/usr/bin/swiftc', '-parse-as-library', '-swift-version', '6', '-j', '2', '-num-threads', '2', '-I', root / 'native/macos/CBridge', '-L', library.parent, '-lsoundq_core', '-Xlinker', '-rpath', '-Xlinker', library.parent, path, '-o', output / 'probe'], root, output, 'compile')
     if code:
         return code
