@@ -169,13 +169,69 @@ for (stage,scale):(Int,CGFloat) in [(0,1),(1,2),(2,1)] {
  }
 }
 
+// Native cache rasters, window-free. AppKit transforms the configured tint in
+// legacy appearances; calibrate against an independent enabled stock control,
+// never against the product's observed tint or its output bitmap.
+@MainActor func sliderBitmap(_ slider:NSSlider,_ backing:Int)->NSBitmapImageRep {
+ let bitmap=NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:Int(slider.bounds.width)*backing,pixelsHigh:Int(slider.bounds.height)*backing,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)!
+ bitmap.size=slider.bounds.size
+ slider.cacheDisplay(in:slider.bounds,to:bitmap)
+ return bitmap
+}
+@MainActor func barPixel(_ slider:NSSlider,_ bitmap:NSBitmapImageRep,_ x:CGFloat,_ backing:Int)->NSColor {
+ var bar=(slider.cell as! NSSliderCell).barRect(flipped:slider.isFlipped)
+ if !slider.bounds.contains(bar) || bar.width<=slider.bounds.width/2 || bar.height<=0 {
+  // Current-linked disabled cells report a sentinel, not paint coordinates.
+  // The native enabled bar establishes only the track, never the value witness.
+  let geometry=NSSlider(value:50,minValue:0,maxValue:100,target:nil,action:nil)
+  geometry.frame=slider.frame;geometry.appearance=slider.effectiveAppearance;geometry.isEnabled=true;geometry.layoutSubtreeIfNeeded()
+  bar=(geometry.cell as! NSSliderCell).barRect(flipped:geometry.isFlipped)
+ }
+ precondition(slider.bounds.contains(bar) && bar.width>slider.bounds.width/2 && bar.height>0)
+ let y=slider.isFlipped ? bar.midY : slider.bounds.height-bar.midY
+ return bitmap.colorAt(x:Int(x*CGFloat(backing)),y:Int(y*CGFloat(backing)))!.usingColorSpace(.deviceRGB)!
+}
+@MainActor func referenceTint(_ appearance:NSAppearance,_ color:NSColor,_ backing:Int)->NSColor {
+ let stock=NSSlider(value:100,minValue:0,maxValue:100,target:nil,action:nil)
+ stock.frame=NSRect(x:0,y:0,width:400,height:40);stock.appearance=appearance;stock.isEnabled=true;stock.trackFillColor=color;stock.layoutSubtreeIfNeeded()
+ return barPixel(stock,sliderBitmap(stock,backing),100,backing)
+}
+// Disabled native treatments differ: legacy paints a neutral thumb, while
+// current-linked cells expose sentinel geometry and a different alpha profile.
+// Independently requested stock paint supplies the witness coordinates. Require
+// positive native ink and every alpha distinction from BOTH endpoint rasters;
+// neither the tested control's value/geometry nor its pixels choose the mask.
+@MainActor func disabledValuePaint(_ actual:NSBitmapImageRep,_ appearance:NSAppearance,_ token:NSColor,_ value:Double,_ backing:Int)->(zero:Int,zeroMatched:Int,full:Int,fullMatched:Int) {
+ func stock(_ requested:Double)->NSBitmapImageRep {
+  let slider=NSSlider(value:requested,minValue:0,maxValue:100,target:nil,action:nil)
+  slider.frame=NSRect(x:0,y:0,width:400,height:40);slider.appearance=appearance;slider.isEnabled=false;slider.trackFillColor=token;slider.layoutSubtreeIfNeeded()
+  return sliderBitmap(slider,backing)
+ }
+ let requested=stock(value),zero=stock(0),full=stock(100)
+ var zeroCount=0,zeroMatched=0,fullCount=0,fullMatched=0
+ for y in 0..<requested.pixelsHigh {for x in 0..<requested.pixelsWide {
+  let expected=requested.colorAt(x:x,y:y)!.alphaComponent,z=zero.colorAt(x:x,y:y)!.alphaComponent,f=full.colorAt(x:x,y:y)!.alphaComponent
+  let observed=actual.colorAt(x:x,y:y)!.alphaComponent
+  if max(expected,z)>0.1 && abs(expected-z)>0.01 {zeroCount+=1;if abs(observed-expected)<0.01 {zeroMatched+=1}}
+  if max(expected,f)>0.1 && abs(expected-f)>0.01 {fullCount+=1;if abs(observed-expected)<0.01 {fullMatched+=1}}
+ }}
+ return (zeroCount,zeroMatched,fullCount,fullMatched)
+}
+@MainActor func matchingPixels(_ bitmap:NSBitmapImageRep,_ token:NSColor)->Int {
+ var result=0
+ for y in 0..<bitmap.pixelsHigh {for x in 0..<bitmap.pixelsWide {
+  let c=bitmap.colorAt(x:x,y:y)!.usingColorSpace(.deviceRGB)!
+  if c.alphaComponent>0.1 && abs(c.redComponent-token.redComponent)<0.04 && abs(c.greenComponent-token.greenComponent)<0.04 && abs(c.blueComponent-token.blueComponent)<0.04 {result+=1}
+ }}
+ return result
+}
 for dark in [true,false] {for enabled in [true,false] {for value in [0.0,50.0,100.0] {for backing in [1,2] {
  let app=App();let host=NSView(frame:NSRect(x:0,y:0,width:960,height:900));app.mountLibraryDock(in:host,assets:assets);let dock=app.libraryDock!
  dock.appearance=NSAppearance(named:dark ? .darkAqua : .aqua);dock.applyColors()
  app.slider.frame=NSRect(x:0,y:0,width:400,height:40);app.slider.isEnabled=enabled;app.slider.minValue=0;app.slider.maxValue=100;app.slider.doubleValue=value;app.slider.layoutSubtreeIfNeeded()
  let bitmap=NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:400*backing,pixelsHigh:40*backing,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)!;bitmap.size=NSSize(width:400,height:40)
  app.slider.cacheDisplay(in:app.slider.bounds,to:bitmap)
- let token=SoundQTokens(dark:dark).primary.usingColorSpace(.deviceRGB)!
+ let token=referenceTint(dock.effectiveAppearance,SoundQTokens(dark:dark).primary,backing)
  var primary=0,blue=0,coverage=0
  for y in 0..<40*backing {for x in 0..<400*backing {let c=bitmap.colorAt(x:x,y:y)!.usingColorSpace(.deviceRGB)!
   if c.alphaComponent>0.1 {coverage+=1;if abs(c.redComponent-token.redComponent)<0.04 && abs(c.greenComponent-token.greenComponent)<0.04 && abs(c.blueComponent-token.blueComponent)<0.04 {primary+=1};if c.blueComponent>0.6 && c.redComponent<0.5 {blue+=1}}
@@ -187,8 +243,23 @@ for dark in [true,false] {for enabled in [true,false] {for value in [0.0,50.0,10
  let cell=app.slider.cell as! NSSliderCell
  let stock=NSSlider(value:value,minValue:0,maxValue:100,target:nil,action:nil);stock.frame=app.slider.frame;stock.isEnabled=enabled;stock.appearance=dock.effectiveAppearance;stock.layoutSubtreeIfNeeded();let stockCell=stock.cell as! NSSliderCell
  check("progress-native-thumb-bar-geometry-"+tag,cell.knobRect(flipped:app.slider.isFlipped)==stockCell.knobRect(flipped:stock.isFlipped) && cell.barRect(flipped:app.slider.isFlipped)==stockCell.barRect(flipped:stock.isFlipped))
- let played=bitmap.colorAt(x:100*backing,y:20*backing)!.usingColorSpace(.deviceRGB)!,unplayed=bitmap.colorAt(x:300*backing,y:20*backing)!.usingColorSpace(.deviceRGB)!
- check("progress-value-driven-segment-"+tag,value==0 ? played.alphaComponent<0.2 && unplayed.alphaComponent<0.2 : value==50 ? played.alphaComponent>unplayed.alphaComponent : abs(played.alphaComponent-unplayed.alphaComponent)<0.01)
+ let played=barPixel(app.slider,bitmap,100,backing),unplayed=barPixel(app.slider,bitmap,300,backing)
+ var disabledMidpoint=false
+ if !enabled && value==50 {
+  let witness=disabledValuePaint(bitmap,dock.effectiveAppearance,SoundQTokens(dark:dark).primary,value,backing)
+  print("PROGRESS_DISABLED_VALUE_WITNESS",tag,witness)
+  disabledMidpoint=witness.zero>20 && witness.full>20 && witness.zeroMatched==witness.zero && witness.fullMatched==witness.full
+ }
+ print("PROGRESS_NATIVE_SAMPLE",tag,"bar",cell.barRect(flipped:app.slider.isFlipped),"expected",token,"played",played,"unplayed",unplayed)
+ check("progress-value-driven-segment-"+tag,value==0 ? played.alphaComponent<0.2 && unplayed.alphaComponent<0.2 : value==50 ? (enabled ? played.alphaComponent>unplayed.alphaComponent : disabledMidpoint) : abs(played.alphaComponent-unplayed.alphaComponent)<0.01)
+ if enabled && value==50 {
+  for (name,color):(String,NSColor?) in [("uncolored",nil),("blue",.blue),("wrong-green",.green)] {
+   let negative=NSSlider(value:value,minValue:0,maxValue:100,target:nil,action:nil)
+   negative.frame=app.slider.frame;negative.appearance=dock.effectiveAppearance;negative.isEnabled=true;negative.trackFillColor=color;negative.layoutSubtreeIfNeeded()
+   let rejected=sliderBitmap(negative,backing),negativePlayed=barPixel(negative,rejected,100,backing)
+   check("progress-semantic-rejects-"+name+"-"+tag,matchingPixels(rejected,token)==0 && negativePlayed.alphaComponent>0.9)
+  }
+ }
  check("progress-native-input-contract-"+tag,type(of:app.slider)==NSSlider.self && type(of:cell)==NSSliderCell.self && app.slider.target === app && app.slider.action == #selector(App.seek) && !app.slider.isContinuous && app.slider.accessibilityLabel()=="Playback position" && app.slider.isEnabled==enabled && app.slider.doubleValue==value)
 }}}}
 

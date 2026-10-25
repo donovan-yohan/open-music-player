@@ -74,6 +74,30 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - run: scripts/build native-macos
+      - name: Collect native search optical discriminator
+        id: search-optical-diagnostic
+        run: |
+          python3 -B <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+
+          output = Path(tempfile.mkdtemp(prefix='search-optical-', dir=os.environ['RUNNER_TEMP']))
+          # The runner requires a fresh destination; retain the allocated parent.
+          evidence = output / 'evidence'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write('evidence=' + str(output) + '\n')
+          subprocess.run([sys.executable, '-B', 'native/tests/search_optical_diagnostics.py', '--output', str(evidence)], check=True)
+          PY
+      - name: Preserve native search discriminator
+        if: always() && steps.search-optical-diagnostic.outputs.evidence != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-macos-search-optical-diagnostic
+          path: ${{ steps.search-optical-diagnostic.outputs.evidence }}
+          if-no-files-found: error
       - name: Test macOS queue disclosure and unattached AppKit layout
         id: macos-layout
         run: |
