@@ -96,6 +96,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
     var keychainService = "com.soundq.native.preview.credentials.v1"
     var busy = 0
     var journeyStarted = false
+    var phaseConfiguration: FixturePhaseConfiguration?
+    var fixtureJourneyTask: Task<Void,Never>?
+    var phaseFinalized = false
     var lastEffectCached = false
     var wantsPlayback = false
     var accountScope: UInt64 = 1
@@ -127,6 +130,12 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
             command(["command":"snapshot"]) {
                 print("SWIFT_ABI_SMOKE_PASS version=1 native=AppKit")
                 NSApp.terminate(nil)
+            }
+            return
+        }
+        if let configuration = phaseConfiguration {
+            command(["command":"login","email":configuration.email,"password":configuration.password]) { [weak self] in
+                self?.loadLibrary();self?.startFixtureJourney()
             }
             return
         }
@@ -544,11 +553,21 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         command(["command":"acknowledge_credentials","version":version])
     }
     func deleteCredentials() {SecItemDelete(keychainQuery() as CFDictionary)}
-    func applicationWillTerminate(_ notification:Notification) {retireLibraryDetails();closeQueueName();timer?.invalidate();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;_ = bridge.revoke()}
+    func applicationWillTerminate(_ notification:Notification) {
+        if phaseConfiguration != nil {
+            fixtureJourneyTask?.cancel()
+            _ = finishPhaseMeasurement(passed:false,code:"termination")
+        }
+        retireLibraryDetails();closeQueueName();timer?.invalidate();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;_ = bridge.revoke()
+    }
     func windowWillClose(_ notification:Notification) {retireLibraryDetails()}
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {true}
 }
 
+// This runs before NSApplication.shared and before any bridge/window/login.
+let phaseConfiguration: FixturePhaseConfiguration?
+do {phaseConfiguration = try FixturePhaseConfiguration.prepare(arguments:CommandLine.arguments,environment:ProcessInfo.processInfo.environment)}
+catch {fputs("SOUNDQ_PHASE_SETUP_FAILED\n",stderr);exit(EXIT_FAILURE)}
 let resourceProbe = CommandLine.arguments.contains("--resources-only")
 if resourceProbe {
     do {
@@ -559,6 +578,7 @@ if resourceProbe {
     let application = NSApplication.shared
     application.setActivationPolicy(.regular)
     let delegate = App()
+    delegate.phaseConfiguration = phaseConfiguration
     application.delegate = delegate
     application.run()
 }
