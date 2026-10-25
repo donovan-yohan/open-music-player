@@ -19,6 +19,8 @@ jobs:
         with:
           components: rustfmt
       - run: scripts/test native
+      - name: Test offline performance evidence
+        run: python3 -B -m unittest discover -s native/tests -p test_matched_performance.py -v
   macos:
     name: Native macOS build
     runs-on: macos-15
