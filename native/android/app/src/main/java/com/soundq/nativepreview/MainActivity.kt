@@ -29,6 +29,7 @@ class MainActivity : Activity() {
     private lateinit var logout: Button
     private var dragging = false
     private var queueListDialog: AlertDialog? = null
+    private var queueListSelection: Long? = null
     private var queueActionDialog: AlertDialog? = null
     private var queueNameDialog: AlertDialog? = null
     private var queueActions: ArrayAdapter<String>? = null
@@ -101,6 +102,9 @@ class MainActivity : Activity() {
     private fun label(value: String, size: Float) = TextView(this).apply { text = value; textSize = size; setTextColor(Color.rgb(225, 235, 243)); setPadding(4, 8, 4, 8) }
     private fun button(value: String, action: () -> Unit) = Button(this).apply { text = value; setOnClickListener { action() } }
     private fun render(snapshot: JSONObject, error: String?) {
+        // The outer list's labels are an opening snapshot, not live queue truth.
+        val selected = if (snapshot.isNull("selected_occurrence")) null else snapshot.optLong("selected_occurrence")
+        if (queueListDialog != null && selected != queueListSelection) dismissQueueActions()
         queueActions?.notifyDataSetChanged()
         val authenticated = snapshot.optBoolean("authenticated")
         login.visibility = if (authenticated) View.GONE else View.VISIBLE
@@ -125,6 +129,7 @@ class MainActivity : Activity() {
         val dialog = queueActionDialog
         val nameDialog = queueNameDialog
         queueListDialog = null
+        queueListSelection = null
         queueActionDialog = null
         queueNameDialog = null
         queueActions = null
@@ -201,7 +206,8 @@ class MainActivity : Activity() {
             }
         }.show()
         queueListDialog = list
-        list.setOnDismissListener { if (queueListDialog === list) queueListDialog = null }
+        queueListSelection = if (s.snapshot.isNull("selected_occurrence")) null else s.snapshot.optLong("selected_occurrence")
+        list.setOnDismissListener { if (queueListDialog === list) { queueListDialog = null; queueListSelection = null } }
     }
     override fun onDestroy() { dismissQueueActions(); service?.listener = null; unbindService(connection); super.onDestroy() }
     data class Row(val id: Long, val title: String, val artist: String)

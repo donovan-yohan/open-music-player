@@ -22,6 +22,22 @@ JOURNEY = 'native/android/app/src/androidTest/java/com/soundq/nativepreview/Nati
 SERVICE = 'native/android/app/src/main/java/com/soundq/nativepreview/PlaybackService.kt'
 
 
+def replace_once(text, anchor, replacement):
+    count = text.count(anchor)
+    if count != 1:
+        raise AssertionError(f'expected one cursor probe anchor {anchor!r}, found {count}')
+    return text.replace(anchor, replacement, 1)
+
+
+def native_getter(source, name):
+    anchor = 'internal fun ' + name + '()'
+    lines = [line.strip().removeprefix('internal ') for line in source.splitlines() if anchor in line]
+    count = source.count(anchor)
+    if count != 1:
+        raise AssertionError(f'expected one service getter anchor {anchor!r}, found {count}')
+    return lines[0]
+
+
 def probe(root):
     journey = (root / JOURNEY).read_text()
     begin = journey.index('\n', journey.index('waitFor("final native pause")')) + 1
@@ -48,12 +64,14 @@ def probe(root):
 }
 ''' + harness[end:]
     # Model asynchronous decoder completion independently from the command reply.
-    harness = harness.replace('fun seekTo(p:Long,m:Int){currentPosition=p.toInt()}', 'var seekPending=false;fun seekTo(p:Long,m:Int){seekPending=true}')
+    harness = replace_once(harness, 'fun seekTo(p:Long,m:Int){currentPosition=p.toInt()}', 'var seekPending=false;fun seekTo(p:Long,m:Int){seekPending=true}')
     source = (root / SERVICE).read_text()
-    getters = {name: next(line.strip().removeprefix('internal ') for line in source.splitlines() if 'internal fun '+name+'()' in line) for name in ['nativePositionMs', 'nativePlaying']}
-    harness = harness.replace('fun nativePositionMs()=player?.currentPosition?.toLong() ?: 0L', getters['nativePositionMs'])
-    harness = harness.replace('fun nativePositionMs(): Long', getters['nativePlaying'] + '\nfun nativePositionMs(): Long')
-    harness = harness.replace('fun optJSONObject(i:Int):JSONObject?=null', 'fun getJSONArray(k:String)=optJSONArray(k)!!\nfun optJSONObject(i:Int):JSONObject?=null')
+    getters = {name: native_getter(source, name) for name in ['nativePositionMs', 'nativePlaying']}
+    harness = replace_once(harness, 'fun nativePositionMs()=player?.currentPosition?.toLong() ?: 0L', getters['nativePositionMs'])
+    # Intentionally match the newly inserted real getter, exactly once, to keep
+    # nativePlaying adjacent without changing either production getter's bytes.
+    harness = replace_once(harness, 'fun nativePositionMs(): Long', getters['nativePlaying'] + '\nfun nativePositionMs(): Long')
+    harness = replace_once(harness, 'fun optJSONObject(i:Int):JSONObject?=null', 'fun getJSONArray(k:String)=optJSONArray(k)!!\nfun optJSONObject(i:Int):JSONObject?=null')
     # The exact journey block uses normal File reads and real private-field probes.
     harness = harness.replace('import java.util.ArrayDeque\n', '')
     prefix = r'''import java.io.File

@@ -256,6 +256,72 @@ fun Fixture.names(vararg names:String) {
  names.forEachIndexed {i,name->queue.getJSONObject(i).getJSONObject("track").put("title",name)}
 }
 fun main() {
+ test("outer-list-selected-publication-retires-stale-current-marker") {
+  val f=Fixture(11,12,13);val old=f.queueDialog()
+  requireThat((old.listView.children[0] as TextView).text=="Current · Same recording","opening Current marker missing")
+  f.service.snapshot.put("selected_occurrence",12L);f.service.listener!!.invoke(f.service.snapshot,null)
+  requireThat(old.dismissed && !old.isShowing,"selected publication left stale Current marker mounted")
+ }
+ for(selected in listOf<Long?>(null,99L)) test("outer-list-selected-$selected-publication-retires-marker") {
+  val f=Fixture(11,12,13);val old=f.queueDialog()
+  f.service.snapshot.put("selected_occurrence",selected);f.service.listener!!.invoke(f.service.snapshot,null)
+  requireThat(old.dismissed && !old.isShowing,"lost/missing selection left stale marker mounted")
+  val fresh=f.queueDialog()
+  requireThat(fresh.listView.children.none {(it as TextView).text.toString().startsWith("Current · ")},"absent selection marked a duplicate")
+  fresh.choose(1);AlertDialog.shown.last().choose(0);f.sent("queue_play",12)
+ }
+ for(transport in listOf("preparing","playing","paused","ended")) test("outer-list-unchanged-$transport-report-retains-current-row-and-clear") {
+  val f=Fixture(11,12,13);val old=f.queueDialog();val listener=f.service.listener
+  f.service.snapshot.put("queue_unchanged",true).put("transport",transport).put("position_ms",5984L).put("revision",22L)
+  f.service.listener!!.invoke(f.service.snapshot,null)
+  requireThat(old.isShowing && AlertDialog.shown.last()===old && listener===f.service.listener,"unchanged report retired list or stole listener")
+  requireThat(old.listView.children.map {(it as TextView).text.toString()}==listOf("Current · Same recording","Same recording","Same recording"),"transport changed neutral occurrence markers")
+  old.choose(1);AlertDialog.shown.last().choose(0);f.sent("queue_play",12)
+  f.service.calls.clear();val current=f.queueDialog();current.clear();f.sent("queue_clear")
+ }
+ for(change in listOf("library","noncurrent-remove","noncurrent-reorder")) test("outer-list-$change-retains-authority") {
+  val f=Fixture(11,12,13);val old=f.queueDialog()
+  when(change) {
+   "library"->f.service.snapshot.put("library",JSONArray()).put("total",9L)
+   "noncurrent-remove"->f.queue(11,12)
+   else->f.queue(11,13,12)
+  }
+  f.service.listener!!.invoke(f.service.snapshot,null)
+  requireThat(old.isShowing,"unrelated/noncurrent publication retired list")
+  old.choose(1);AlertDialog.shown.last().choose(0);f.sent("queue_play",12)
+ }
+ test("outer-list-live-removed-target-refuses-row-keeps-clear-usable") {
+  val f=Fixture(11,12,13);val old=f.queueDialog();f.publish(11,13)
+  requireThat(old.isShowing,"noncurrent removal retired list")
+  old.raw(1);requireThat(AlertDialog.shown.last()===old && f.service.calls.isEmpty(),"removed target opened actions")
+  old.clear();f.sent("queue_clear")
+ }
+ test("outer-list-selected-removal-publication-retires-marker") {
+  val f=Fixture(11,12,13);val old=f.queueDialog();f.publish(12,13)
+  requireThat(old.dismissed,"removed current left stale marker mounted")
+ }
+ test("outer-list-null-selection-unchanged-report-retains-dialog") {
+  val f=Fixture(11,12,13);f.service.snapshot.put("selected_occurrence",null);val old=f.queueDialog()
+  f.service.snapshot.put("position_ms",99L);f.service.listener!!.invoke(f.service.snapshot,null)
+  requireThat(old.isShowing,"unchanged null selection retired list")
+  requireThat(old.listView.children.none {(it as TextView).text.toString().startsWith("Current · ")},"null selection acquired Current")
+  old.clear();f.sent("queue_clear")
+ }
+ for(next in listOf("list","action","detail")) test("outer-list-marker-retirement-old-callbacks-and-cleanup-preserve-new-$next") {
+  val f=Fixture(11,12,13);val old=f.queueDialog();old.pressNeutral()
+  f.service.snapshot.put("selected_occurrence",12L);f.service.listener!!.invoke(f.service.snapshot,null)
+  requireThat(old.dismissed && !old.isShowing,"selection did not retire window synchronously")
+  val fresh=when(next) {"list"->f.queueDialog();"action"->f.actions(1);else->fullName(f.actions(1))}
+  val shown=AlertDialog.shown.size;old.raw(0);old.rawNeutral();AlertDialog.drainButtons();AlertDialog.drainDismissals();old.raw(2);old.rawNeutral()
+  requireThat(f.service.calls.isEmpty() && fresh.isShowing && AlertDialog.shown.size==shown,"retired marker capability mutated or superseded new owner")
+  if(next=="list") {
+   requireThat(fresh.listView.children.map {(it as TextView).text.toString()}==listOf("Same recording","Current · Same recording","Same recording"),"reopened marker picked recording instead of occurrence")
+   // Old posted cleanup must preserve both the new identity and its baseline.
+   f.service.listener!!.invoke(f.service.snapshot,null);requireThat(fresh.isShowing,"old cleanup cleared fresh selection baseline")
+   fresh.clear();f.sent("queue_clear")
+  } else if(next=="action") {fresh.choose(0);f.sent("queue_play",12)}
+  else {f.activity.onDestroy();requireThat(fresh.dismissed,"new detail lost teardown owner")}
+ }
  for(boundary in listOf("dismiss","disconnect","destroy","new-list","new-action","new-detail","service-replacement")) {
   test("outer-list-$boundary-retires-window-and-retained-clear") {
    val f=Fixture(11,12,13);val old=f.queueDialog()

@@ -38,6 +38,9 @@ struct State {
     retry_target: Option<i64>,
     delivered_paths: HashSet<PathBuf>,
     persisted_position: Option<(Option<u64>, u64)>,
+    // Commit witness only: equal cursor values do not prove whether this command
+    // crossed rename. Never persisted and never used as playback state authority.
+    queue_write_revision: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -234,6 +237,7 @@ impl Core {
                 retry_target: None,
                 delivered_paths: HashSet::new(),
                 persisted_position: None,
+                queue_write_revision: 0,
             }),
             client,
             endpoint: url.as_str().trim_end_matches('/').into(),
@@ -376,7 +380,10 @@ impl Core {
         // its selection/cursor owners, but never roll back a committed write or
         // account credential rotation merely because reply delivery was revoked.
         if cancelled_before_persistence || persistence_error == Some("cancelled") {
-            if let Some(ref previous) = checkpoint {
+            if let Some(ref previous) = checkpoint
+                .as_ref()
+                .filter(|previous| previous.queue_write_revision == state.queue_write_revision)
+            {
                 state.snapshot = previous.snapshot.clone();
                 state.current_path = previous.current_path.clone();
                 state.next_occurrence = previous.next_occurrence;
@@ -810,7 +817,16 @@ impl Core {
                     .find(|o| Some(o.id) == saved.selected)
                     .map(|o| &o.track);
                 s.snapshot.duration_ms = track.and_then(|t| t.duration_ms).unwrap_or(0);
-                s.snapshot.position_ms = saved.position_ms.min(s.snapshot.duration_ms);
+                // Zero denotes an unknown bound, not a zero-length recording.
+                // Only clamp against positive metadata; decoder duration is not
+                // stored in v1, but its accepted resting cursor is.
+                s.snapshot.position_ms = if track.is_none() {
+                    0
+                } else if s.snapshot.duration_ms > 0 {
+                    saved.position_ms.min(s.snapshot.duration_ms)
+                } else {
+                    saved.position_ms
+                };
                 s.snapshot.session += 1;
                 s.current_path = None;
                 s.snapshot.transport = if saved.selected.is_some() {
@@ -894,6 +910,7 @@ impl Core {
         drop(file);
         fs::rename(&pending.0, target).map_err(|_| "queue_storage_failed")?;
         pending.1 = false;
+        s.queue_write_revision = s.queue_write_revision.wrapping_add(1);
         s.persisted_position = Some((s.snapshot.selected_occurrence, s.snapshot.position_ms));
         Ok(())
     }

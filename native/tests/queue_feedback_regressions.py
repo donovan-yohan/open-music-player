@@ -25,16 +25,19 @@ RUST = r'''
 mod queue_feedback {
     use super::*;
     use std::cell::RefCell;
-    type Hook = Box<dyn FnOnce(&Core)>;
+    type Hook = Box<dyn FnOnce(&Core, &mut State)>;
     thread_local! { static HOOK: RefCell<Option<(&'static str, Hook)>> = RefCell::new(None); }
-    fn arm(stage: &'static str, action: impl FnOnce(&Core) + 'static) {
+    fn arm_state(stage: &'static str, action: impl FnOnce(&Core, &mut State) + 'static) {
         HOOK.with(|h| { assert!(h.borrow().is_none()); *h.borrow_mut() = Some((stage, Box::new(action))); });
     }
-    pub(super) fn hit(c: &Core, stage: &'static str) {
+    fn arm(stage: &'static str, action: impl FnOnce(&Core) + 'static) {
+        arm_state(stage, move |c, _| action(c));
+    }
+    pub(super) fn hit(c: &Core, s: &mut State, stage: &'static str) {
         let action = HOOK.with(|h| {
             if h.borrow().as_ref().is_some_and(|(s, _)| *s == stage) { h.borrow_mut().take() } else { None }
         });
-        if let Some((_, action)) = action { action(c); }
+        if let Some((_, action)) = action { action(c, s); }
     }
     fn prepared() -> (Core, PathBuf) {
         let c = tests::populated_queue_core();
@@ -122,6 +125,381 @@ mod queue_feedback {
         assert_eq!(current.snapshot.error, None);
         assert_eq!(c.state.lock().unwrap().persisted_position, Some((saved.selected, saved.position_ms)));
         fs::remove_dir_all(&c.root).unwrap();
+    }
+    fn eof(c: &Core) -> Reply {
+        let session = c.state.lock().unwrap().snapshot.session;
+        c.execute(Command::AudioReport { epoch: c.epoch.load(Ordering::SeqCst), session, state: AudioState::Ended, position_ms: 30000, duration_ms: 30000 })
+    }
+    fn pending_credentials(c: &Core, s: &mut State) {
+        // Admit an independent synthetic refresh result after the playback
+        // checkpoint through the actual credential owner, not checkpoint fields.
+        c.admit_credentials(s, AuthResponse {
+            access_token: "synthetic-rotated-access".into(), // dummy test credential, never an account token
+            refresh_token: "synthetic-rotated-refresh".into(),
+            user: User { id: "queue-test".into() },
+        }).unwrap();
+    }
+    fn credential_readback(c: &Core) {
+        let current = c.execute(Command::Snapshot {});
+        assert_eq!(current.snapshot.error, None);
+        assert_eq!(current.credentials.unwrap().version, 1);
+        assert!(c.state.lock().unwrap().credentials_changed);
+        assert!(c.execute(Command::AcknowledgeCredentials { version: 1 }).ok);
+        assert!(!c.state.lock().unwrap().credentials_changed);
+    }
+    fn playback_owners(s: &State) -> Value {
+        json!({"snapshot":s.snapshot,"path":s.current_path,"next":s.next_occurrence,"retry":s.retry_target,"persisted":s.persisted_position})
+    }
+    #[test]
+    fn eof_early_commit_then_prepare_cancellation_keeps_durable_successor() {
+        let (c, target) = prepared();
+        let before = c.state.lock().unwrap().clone();
+        let successor = before.snapshot.queue[3].id;
+        // The original committed hook is after actual rename and before prepare.
+        // No copied persistence/rollback policy: the ordinary EOF calls both.
+        let path = target.clone();
+        arm_state("committed", move |c, _| {
+            let saved = c.read_saved_queue(&path).unwrap().unwrap();
+            assert_eq!(saved.selected, Some(successor));
+            assert_eq!(saved.position_ms, 0);
+            arm_state("prepare", |c, s| { pending_credentials(c, s); c.revoke(); });
+        });
+        let cancelled = eof(&c);
+        assert_eq!(cancelled.code, "cancelled");
+        assert!(cancelled.audio.is_none());
+        {
+            let after = c.state.lock().unwrap();
+            assert_eq!(after.snapshot.selected_occurrence, Some(successor), "committed EOF successor was rolled back in memory");
+            assert_eq!(after.snapshot.position_ms, 0);
+            assert_eq!(after.snapshot.session, before.snapshot.session + 1);
+            assert!(after.current_path.is_none());
+            assert_eq!(after.retry_target, Some(4));
+            assert_eq!(after.persisted_position, Some((Some(successor), 0)));
+            assert_eq!(after.snapshot.error, None);
+        }
+        credential_readback(&c);
+        let current = c.execute(Command::Snapshot {});
+        assert_eq!(current.snapshot.selected_occurrence, Some(successor));
+        assert_eq!(current.snapshot.position_ms, 0);
+        let restored = c.execute(Command::QueueRestore {});
+        assert!(restored.ok);
+        assert_eq!(restored.snapshot.selected_occurrence, Some(successor));
+        assert_eq!(restored.snapshot.transport, AudioState::Paused);
+        assert_eq!(restored.audio.unwrap().action, "stop");
+        let resume = c.execute(Command::Resume {});
+        assert!(resume.ok);
+        assert_eq!(resume.audio.unwrap().position_ms, 0);
+        assert_eq!(resume.snapshot.selected_occurrence, Some(successor));
+        fs::remove_dir_all(&c.root).unwrap();
+    }
+    fn eof_uncommitted_cancellation(stage: &'static str, failed_write: bool) {
+        let (c, target) = prepared();
+        let mut before = playback_owners(&c.state.lock().unwrap());
+        let bytes = fs::read(&target).unwrap();
+        if failed_write {
+            // Real writer failure before rename, followed by cancellation inside
+            // actual prepare. The saved cursor remains identical to checkpoint.
+            fs::write(&target, b"{broken").unwrap();
+            arm_state("prepare", |c, s| { pending_credentials(c, s); c.revoke(); });
+        } else { arm_state(stage, |c, s| { pending_credentials(c, s); c.revoke(); }); }
+        let cancelled = eof(&c);
+        assert_eq!(cancelled.code, "cancelled");
+        assert!(cancelled.audio.is_none());
+        let mut after = playback_owners(&c.state.lock().unwrap());
+        before["snapshot"].as_object_mut().unwrap().remove("revision");
+        after["snapshot"].as_object_mut().unwrap().remove("revision");
+        assert_eq!(after, before, "uncommitted EOF owners not restored");
+        assert_eq!(fs::read(&target).unwrap(), if failed_write { b"{broken".to_vec() } else { bytes });
+        assert!(fs::read_dir(target.parent().unwrap()).unwrap().all(|p| !p.unwrap().path().extension().is_some_and(|s| s == "pending")));
+        credential_readback(&c);
+        fs::remove_dir_all(&c.root).unwrap();
+    }
+    #[test]
+    fn eof_commit_with_identical_persisted_cursor_after_storage_failure_is_not_provisional() {
+        let (c, target) = prepared();
+        let next = c.execute(Command::Next {});
+        assert!(next.ok);
+        let successor = next.snapshot.selected_occurrence;
+        let bytes = fs::read(&target).unwrap();
+        // A genuine failed backward write leaves the durable cursor at the EOF
+        // destination. Repairing the file externally does not change that marker.
+        fs::write(&target, b"{broken").unwrap();
+        let previous = c.execute(Command::Previous {});
+        assert_eq!(previous.code, "invalid_saved_queue");
+        assert_eq!(previous.audio.unwrap().action, "load");
+        assert_ne!(previous.snapshot.selected_occurrence, successor);
+        assert_eq!(c.state.lock().unwrap().persisted_position, Some((successor, 0)));
+        fs::write(&target, &bytes).unwrap();
+        let path = target.clone();
+        arm_state("committed", move |c, s| {
+            assert_eq!(fs::read(&path).unwrap(), bytes, "new commit intentionally has identical bytes");
+            assert_eq!(s.persisted_position, Some((successor, 0)));
+            arm_state("prepare", |c, s| { pending_credentials(c, s); c.revoke(); });
+            let _ = c;
+        });
+        let cancelled = eof(&c);
+        assert_eq!(cancelled.code, "cancelled");
+        let s = c.state.lock().unwrap();
+        assert_eq!(s.snapshot.selected_occurrence, successor, "equal persisted cursor hid an actual EOF commit");
+        assert_eq!(s.snapshot.position_ms, 0);
+        assert_eq!(s.persisted_position, Some((successor, 0)));
+        // The previous genuine error remains independently observable; cancellation
+        // must not manufacture a new error or erase an existing accepted one.
+        assert_eq!(s.snapshot.error.as_deref(), Some("invalid_saved_queue"));
+        assert_eq!(s.credentials.as_ref().unwrap().version, 1);
+        assert!(s.credentials_changed);
+        drop(s);
+        assert_eq!(c.execute(Command::Snapshot {}).snapshot.selected_occurrence, successor);
+        fs::remove_dir_all(&c.root).unwrap();
+    }
+    #[test]
+    fn eof_early_write_cancelled_at_entry_rolls_back() { eof_uncommitted_cancellation("entered", false); }
+    #[test]
+    fn eof_early_write_cancelled_after_sync_rolls_back() { eof_uncommitted_cancellation("synced", false); }
+    #[test]
+    fn eof_failed_early_write_then_prepare_cancel_rolls_back() { eof_uncommitted_cancellation("prepare", true); }
+    #[test]
+    fn identical_selected_cursor_precommit_cancellation_still_restores_session_path() {
+        let (c, target) = prepared();
+        let before = c.state.lock().unwrap().clone();
+        let bytes = fs::read(&target).unwrap();
+        let id = before.snapshot.selected_occurrence.unwrap();
+        assert_eq!(before.persisted_position, Some((Some(id), 0)));
+        arm_state("synced", |c, s| { pending_credentials(c, s); c.revoke(); });
+        let cancelled = c.execute(Command::QueuePlay { occurrence_id: id });
+        assert_eq!(cancelled.code, "cancelled");
+        let after = c.state.lock().unwrap().clone();
+        assert_eq!(after.snapshot.session, before.snapshot.session);
+        assert_eq!(after.current_path, before.current_path);
+        assert_eq!(after.snapshot.selected_occurrence, Some(id));
+        assert_eq!(after.persisted_position, before.persisted_position);
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        credential_readback(&c);
+        fs::remove_dir_all(&c.root).unwrap();
+    }
+    #[test]
+    fn eof_committed_selection_survives_genuine_prepare_failure() {
+        let (c, target) = prepared();
+        let path = target.clone();
+        arm("committed", move |c| {
+            // Cache metadata points to a real directory; opening it succeeds on
+            // supported hosts but the production read returns cache_io.
+            let dir = path.parent().unwrap();
+            let name = "4-directory.wav";
+            fs::create_dir(dir.join(name)).unwrap();
+            fs::write(dir.join("4.json"), json!({"name":name,"sha256":"irrelevant"}).to_string()).unwrap();
+            let _ = c;
+        });
+        let result = eof(&c);
+        assert_eq!(result.code, "cache_io");
+        assert!(result.audio.is_none());
+        let saved = c.read_saved_queue(&target).unwrap().unwrap();
+        assert_eq!(result.snapshot.selected_occurrence, saved.selected);
+        assert_eq!(result.snapshot.position_ms, 0);
+        assert_eq!(result.snapshot.transport, AudioState::Failed);
+        assert_eq!(c.execute(Command::Snapshot {}).snapshot.error.as_deref(), Some("cache_io"));
+        fs::remove_dir_all(&c.root).unwrap();
+    }
+    #[test]
+    fn eof_genuine_storage_failure_keeps_current_successor_load() {
+        let (c, target) = prepared();
+        fs::write(&target, b"{broken").unwrap();
+        let result = eof(&c);
+        assert_eq!(result.code, "invalid_saved_queue");
+        assert_eq!(result.snapshot.selected_occurrence, Some(result.snapshot.queue[3].id));
+        assert_eq!(result.audio.unwrap().action, "load");
+        assert_eq!(fs::read(&target).unwrap(), b"{broken");
+        assert_eq!(c.execute(Command::Snapshot {}).snapshot.error.as_deref(), Some("invalid_saved_queue"));
+        fs::remove_dir_all(&c.root).unwrap();
+    }
+    fn http_core() -> Core {
+        let endpoint = std::env::var("SOUNDQ_FEEDBACK_ENDPOINT").unwrap();
+        let root = std::env::temp_dir().join(format!("sq-feedback-http-{}-{}", std::process::id(), NEXT_CACHE_TEMPORARY.fetch_add(1, Ordering::Relaxed)));
+        let c = Core::open(&endpoint, root).unwrap();
+        authenticate(&c);
+        assert!(c.execute(Command::Library { offset: 0, query: "".into(), sort: "title".into(), order: "asc".into() }).ok);
+        c
+    }
+    fn authenticate(c: &Core) {
+        assert!(c.execute(Command::Restore { access_token: "synthetic-access".into(), refresh_token: "synthetic-refresh".into(), account_id: "feedback-account".into() }).ok);
+    }
+    fn restart(c: Core) -> Core {
+        let root = c.root.clone();
+        let endpoint = c.endpoint.clone();
+        drop(c);
+        let next = Core::open(&endpoint, root).unwrap();
+        authenticate(&next);
+        next
+    }
+    fn reported_cursor(c: &Core, position: u64, duration: u64) -> Reply {
+        let session = c.state.lock().unwrap().snapshot.session;
+        c.execute(Command::AudioReport { epoch: 1, session, state: AudioState::Paused, position_ms: position, duration_ms: duration })
+    }
+    #[test]
+    fn eof_real_http_prepare_held_after_early_commit_then_cancel_keeps_successor() {
+        let c = std::sync::Arc::new(http_core());
+        let selected = c.execute(Command::Select { track_id: 1 });
+        assert!(selected.ok);
+        let next = selected.snapshot.queue[1].id;
+        let target = c.account_dir(&c.state.lock().unwrap()).unwrap().join("listening-queue-v1.json");
+        let control = |route: &str| c.client.post(format!("{}/test/{route}", c.endpoint)).send().unwrap().error_for_status().unwrap();
+        control("arm");
+        let worker = c.clone();
+        let pending = std::thread::spawn(move || eof(&worker));
+        control("waiting");
+        // Read durable bytes without acquiring the mutex held by real prepare.
+        let saved = c.read_saved_queue(&target).unwrap().unwrap();
+        c.revoke();
+        control("release");
+        let cancelled = pending.join().unwrap();
+        assert_eq!(saved.selected, Some(next));
+        assert_eq!(saved.position_ms, 0);
+        assert_eq!(cancelled.code, "cancelled");
+        assert!(cancelled.audio.is_none());
+        let current = c.execute(Command::Snapshot {});
+        assert_eq!(current.snapshot.selected_occurrence, saved.selected, "held HTTP prepare cancellation undid committed successor");
+        assert_eq!(current.snapshot.position_ms, saved.position_ms);
+        assert_eq!(current.snapshot.error, None);
+        let restored = c.execute(Command::QueueRestore {});
+        assert!(restored.ok);
+        assert_eq!(restored.snapshot.selected_occurrence, Some(next));
+        assert_eq!(restored.snapshot.transport, AudioState::Paused);
+        let resumed = c.execute(Command::Resume {});
+        assert!(resumed.ok);
+        assert_eq!(resumed.snapshot.selected_occurrence, Some(next));
+        assert_eq!(resumed.audio.unwrap().position_ms, 0);
+        fs::remove_dir_all(&c.root).unwrap();
+    }
+    #[test]
+    fn identical_selected_cursor_postcommit_cancellation_keeps_new_session_path() {
+        let (c, target) = prepared();
+        let before = c.state.lock().unwrap().clone();
+        let id = before.snapshot.selected_occurrence.unwrap();
+        let bytes = fs::read(&target).unwrap();
+        arm_state("committed", |c, s| { pending_credentials(c, s); c.revoke(); });
+        let cancelled = c.execute(Command::QueuePlay { occurrence_id: id });
+        assert_eq!(cancelled.code, "cancelled");
+        let after = c.state.lock().unwrap().clone();
+        assert_eq!(after.snapshot.session, before.snapshot.session + 1);
+        assert!(after.current_path.is_some());
+        assert_eq!(after.snapshot.transport, AudioState::Preparing);
+        assert_eq!(after.persisted_position, before.persisted_position);
+        assert_eq!(fs::read(&target).unwrap(), bytes, "equal bytes cannot identify a new commit");
+        credential_readback(&c);
+        fs::remove_dir_all(&c.root).unwrap();
+    }
+    fn unknown_duration_restart(track_id: i64) {
+        let c = http_core();
+        let selected = c.execute(Command::Select { track_id });
+        assert!(selected.ok);
+        let selection = selected.snapshot.selected_occurrence;
+        assert_eq!(selected.snapshot.duration_ms, 0);
+        assert!(selected.audio.unwrap().path.unwrap().is_file());
+        let report = reported_cursor(&c, 12345, 50000);
+        assert!(report.ok);
+        assert_eq!(report.snapshot.duration_ms, 50000);
+        let target = c.account_dir(&c.state.lock().unwrap()).unwrap().join("listening-queue-v1.json");
+        let saved = c.read_saved_queue(&target).unwrap().unwrap();
+        assert_eq!(saved.selected, selection);
+        assert_eq!(saved.position_ms, 12345);
+        assert_eq!(saved.queue.iter().find(|o| Some(o.id) == selection).unwrap().track.duration_ms, if track_id == 1 { None } else { Some(0) });
+        let bytes = fs::read(&target).unwrap();
+        let c = restart(c);
+        let restored = c.execute(Command::QueueRestore {});
+        assert!(restored.ok);
+        assert_eq!(restored.snapshot.selected_occurrence, selection);
+        assert_eq!(restored.snapshot.position_ms, 12345, "unknown metadata duration erased actual resting cursor");
+        assert_eq!(restored.snapshot.duration_ms, 0, "unknown duration must not be fabricated from cursor");
+        assert_eq!(restored.snapshot.transport, AudioState::Paused);
+        assert_eq!(restored.audio.unwrap().action, "stop");
+        assert!(c.state.lock().unwrap().current_path.is_none());
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        assert_eq!(c.execute(Command::Seek { position_ms: 12345 }).code, "invalid_seek", "no decoder cannot seek");
+        let resumed = c.execute(Command::Resume {});
+        assert!(resumed.ok);
+        assert_eq!(resumed.snapshot.position_ms, 12345);
+        assert_eq!(resumed.snapshot.duration_ms, 0);
+        let effect = resumed.audio.unwrap();
+        assert_eq!(effect.action, "load");
+        assert_eq!(effect.position_ms, 12345, "Resume silently reset restored cursor");
+        assert!(effect.cached && effect.path.unwrap().is_file());
+        assert_eq!(c.execute(Command::Seek { position_ms: 12345 }).code, "invalid_seek", "unknown bound must not authorize positive seek");
+        assert!(reported_cursor(&c, 12345, 0).ok);
+        assert_eq!(c.execute(Command::Snapshot {}).snapshot.position_ms, 12345);
+        assert!(reported_cursor(&c, 12345, 50000).ok);
+        for position in [23456, 50000] {
+            let seek = c.execute(Command::Seek { position_ms: position });
+            assert!(seek.ok);
+            assert_eq!(seek.audio.unwrap().position_ms, position);
+        }
+        assert_eq!(c.execute(Command::Seek { position_ms: 50001 }).code, "invalid_seek");
+        assert_eq!(c.execute(Command::Snapshot {}).snapshot.position_ms, 50000);
+        assert_eq!(c.read_saved_queue(&target).unwrap().unwrap().position_ms, 50000);
+        fs::remove_dir_all(&c.root).unwrap();
+    }
+    #[test]
+    fn absent_metadata_duration_resting_report_restart_resume_exact_cursor_and_seek() { unknown_duration_restart(1); }
+    #[test]
+    fn zero_metadata_duration_remains_unknown_across_restart_resume_and_seek() { unknown_duration_restart(2); }
+    #[test]
+    fn known_metadata_duration_clamps_saved_cursor_and_resume_at_bound() {
+        let c = http_core();
+        assert!(c.execute(Command::Select { track_id: 3 }).ok);
+        assert!(reported_cursor(&c, 40000, 50000).ok);
+        let c = restart(c);
+        let restored = c.execute(Command::QueueRestore {});
+        assert!(restored.ok);
+        assert_eq!(restored.snapshot.duration_ms, 30000);
+        assert_eq!(restored.snapshot.position_ms, 30000);
+        let resume = c.execute(Command::Resume {});
+        assert!(resume.ok);
+        assert_eq!(resume.audio.unwrap().position_ms, 30000);
+        assert!(c.execute(Command::Seek { position_ms: 30000 }).ok);
+        assert_eq!(c.execute(Command::Seek { position_ms: 30001 }).code, "invalid_seek");
+        fs::remove_dir_all(&c.root).unwrap();
+    }
+    #[test]
+    fn unselected_and_empty_restore_have_no_cursor_or_implicit_playback() {
+        let c = http_core();
+        assert!(c.execute(Command::QueueAppend { track_id: 1 }).ok);
+        assert!(reported_cursor(&c, 12345, 50000).ok);
+        let c = restart(c);
+        let restored = c.execute(Command::QueueRestore {});
+        assert!(restored.ok);
+        assert!(restored.snapshot.selected_occurrence.is_none());
+        assert_eq!(restored.snapshot.queue.len(), 1);
+        assert_eq!(restored.snapshot.transport, AudioState::Idle);
+        assert_eq!(restored.snapshot.position_ms, 0);
+        assert_eq!(restored.snapshot.duration_ms, 0);
+        assert_eq!(c.execute(Command::Resume {}).code, "no_selection");
+        assert_eq!(c.execute(Command::Seek { position_ms: 0 }).code, "invalid_seek");
+        assert!(c.execute(Command::QueueClear {}).ok);
+        let c = restart(c);
+        let restored = c.execute(Command::QueueRestore {});
+        assert!(restored.ok && restored.snapshot.queue.is_empty());
+        assert_eq!(restored.snapshot.position_ms, 0);
+        assert_eq!(restored.snapshot.duration_ms, 0);
+        assert_eq!(c.execute(Command::Resume {}).code, "no_selection");
+        fs::remove_dir_all(&c.root).unwrap();
+    }
+    #[test]
+    fn unknown_duration_restore_does_not_rewrite_corrupt_or_future_bytes() {
+        for future in [false, true] {
+            let c = http_core();
+            assert!(c.execute(Command::Select { track_id: 1 }).ok);
+            assert!(reported_cursor(&c, 12345, 50000).ok);
+            let target = c.account_dir(&c.state.lock().unwrap()).unwrap().join("listening-queue-v1.json");
+            let mut value: Value = serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+            value["queue"][0]["track"]["future_duration_policy"] = json!("unsupported");
+            let bytes = if future { serde_json::to_vec(&value).unwrap() } else { b"{broken".to_vec() };
+            fs::write(&target, &bytes).unwrap();
+            let c = restart(c);
+            assert_eq!(c.execute(Command::QueueRestore {}).code, "invalid_saved_queue");
+            assert!(c.execute(Command::Snapshot {}).snapshot.selected_occurrence.is_none());
+            assert_eq!(c.execute(Command::Resume {}).code, "no_selection");
+            assert_eq!(fs::read(&target).unwrap(), bytes);
+            fs::remove_dir_all(&c.root).unwrap();
+        }
     }
     #[test]
     fn genuine_persistence_faults_keep_feedback_and_valid_load_effect() {
@@ -294,7 +672,8 @@ def run(argv, cwd, output, name, env=None):
     (output / (name + '.stdout')).write_bytes(result.stdout)
     (output / (name + '.stderr')).write_bytes(result.stderr)
     (output / (name + '.json')).write_text(json.dumps({'argv': [str(a) for a in argv], 'cwd': str(cwd), 'exitCode': result.returncode}, indent=2) + '\n')
-    print(result.stdout.decode(errors='replace'), end='')
+    if name not in ('metadata', 'compile'):
+        print(result.stdout.decode(errors='replace'), end='')
     if result.returncode:
         print(result.stderr.decode(errors='replace'), end='')
     return result.returncode
@@ -306,9 +685,10 @@ def rust(root, output):
     path = private / 'src/lib.rs'
     source = path.read_text()
     edits = [
-        ('fn persist_queue(&self, s: &mut State, epoch: u64) -> Result<()> {', 'fn persist_queue(&self, s: &mut State, epoch: u64) -> Result<()> {\n        #[cfg(test)] queue_feedback::hit(self, "entered");'),
-        ('file.sync_all().map_err(|_| "queue_storage_failed")?;', 'file.sync_all().map_err(|_| "queue_storage_failed")?;\n        #[cfg(test)] queue_feedback::hit(self, "synced");'),
-        ('s.persisted_position = Some((s.snapshot.selected_occurrence, s.snapshot.position_ms));', 's.persisted_position = Some((s.snapshot.selected_occurrence, s.snapshot.position_ms));\n        #[cfg(test)] queue_feedback::hit(self, "committed");'),
+        ('fn persist_queue(&self, s: &mut State, epoch: u64) -> Result<()> {', 'fn persist_queue(&self, s: &mut State, epoch: u64) -> Result<()> {\n        #[cfg(test)] queue_feedback::hit(self, s, "entered");'),
+        ('file.sync_all().map_err(|_| "queue_storage_failed")?;', 'file.sync_all().map_err(|_| "queue_storage_failed")?;\n        #[cfg(test)] queue_feedback::hit(self, s, "synced");'),
+        ('s.persisted_position = Some((s.snapshot.selected_occurrence, s.snapshot.position_ms));', 's.persisted_position = Some((s.snapshot.selected_occurrence, s.snapshot.position_ms));\n        #[cfg(test)] queue_feedback::hit(self, s, "committed");'),
+        ('fn prepare(&self, s: &mut State, id: i64, epoch: u64) -> Result<(PathBuf, bool)> {', 'fn prepare(&self, s: &mut State, id: i64, epoch: u64) -> Result<(PathBuf, bool)> {\n        #[cfg(test)] queue_feedback::hit(self, s, "prepare");'),
         ('fn populated_queue_core() -> Core {', 'pub(super) fn populated_queue_core() -> Core {'),
     ]
     for old, new in edits:
@@ -317,7 +697,66 @@ def rust(root, output):
     path.write_text(source + RUST)
     (output / 'instrumentation.json').write_text(json.dumps({'productionSha256': sha((root / 'native/core/src/lib.rs').read_bytes()), 'instrumentedSha256': sha(path.read_bytes()), 'testSha256': sha(RUST.encode()), 'edits': edits}, indent=2) + '\n')
     cargo = Path(os.environ['SOUNDQ_RUST_BIN']) / 'cargo'
-    return run([cargo, 'test', '--locked', '--offline', '--jobs', '2', '--manifest-path', private / 'Cargo.toml', 'queue_feedback::', '--', '--nocapture', '--test-threads=1'], root, output, 'rust')
+    manifest = private / 'Cargo.toml'
+    code = run([cargo, 'metadata', '--format-version', '1', '--no-deps', '--locked', '--offline', '--manifest-path', manifest], root, output, 'metadata')
+    if code:
+        return code
+    target = Path(json.loads((output / 'metadata.stdout').read_text())['target_directory'])
+    code = run([cargo, 'test', '--no-run', '--message-format=json', '--locked', '--offline', '--jobs', '2', '--manifest-path', manifest], root, output, 'compile')
+    if code:
+        return code
+    artifacts = [json.loads(line) for line in (output / 'compile.stdout').read_text().splitlines() if line.startswith('{')]
+    binaries = [Path(a['executable']) for a in artifacts if a.get('reason') == 'compiler-artifact' and a.get('executable') and a['target']['name'] == 'soundq_core']
+    assert len(binaries) == 1 and binaries[0].is_relative_to(target), binaries
+    executable = output / 'rust-tests'
+    shutil.copy2(binaries[0], executable)
+    (output / 'artifact.json').write_text(json.dumps({'targetDirectory': str(target), 'compilerExecutable': str(binaries[0]), 'testExecutable': str(executable), 'sha256': sha(executable.read_bytes())}, indent=2) + '\n')
+    counts = {'descriptor': 0, 'download': 0, 'refresh': 0, 'library': 0}
+    held = threading.Event(); release = threading.Event(); gate = [False]
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args): pass
+        def respond(self, value):
+            data = value if isinstance(value, bytes) else json.dumps(value).encode()
+            self.send_response(200); self.send_header('Content-Length', str(len(data)))
+            self.end_headers(); self.wfile.write(data)
+        def do_POST(self):
+            value = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or '{}')
+            if self.path.startswith('/api/v1/test/'):
+                route = self.path.rsplit('/', 1)[1]
+                if route == 'arm': gate[0] = True; held.clear(); release.clear()
+                elif route == 'waiting': assert held.wait(5), 'successor never entered HTTP prepare'
+                elif route == 'release': gate[0] = False; release.set()
+                else: raise AssertionError(route)
+                self.respond({})
+            elif self.path == '/api/v1/auth/refresh':
+                counts['refresh'] += 1
+                self.respond({'accessToken': 'synthetic-access', 'refreshToken': 'synthetic-refresh', 'user': {'id': 'feedback-account'}})
+            else:
+                assert self.path == '/api/v1/playback/urls', self.path
+                counts['descriptor'] += 1
+                if gate[0]:
+                    held.set()
+                    assert release.wait(5), 'held successor not released'
+                self.respond({'urls': [{'trackId': i, 'url': f'http://127.0.0.1:{server.server_port}/asset.wav', 'contentType': 'audio/wav', 'sizeBytes': 12} for i in value['trackIds']]})
+        def do_GET(self):
+            if self.path.startswith('/api/v1/library?'):
+                counts['library'] += 1
+                self.respond({'tracks': [{'id': 1, 'title': 'Unknown duration'}, {'id': 2, 'title': 'Zero duration', 'duration_ms': 0}, {'id': 3, 'title': 'Known duration', 'duration_ms': 30000}], 'total': 3, 'offset': 0})
+            else:
+                assert self.path == '/asset.wav', self.path
+                counts['download'] += 1
+                self.respond(b'RIFFfeedback')
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    try:
+        code = run([executable, 'queue_feedback::', '--nocapture', '--test-threads=1'], root, output, 'rust', env=dict(os.environ, SOUNDQ_FEEDBACK_ENDPOINT=f'http://127.0.0.1:{server.server_port}/api/v1'))
+        (output / 'synthetic-http.json').write_text(json.dumps(counts, indent=2) + '\n')
+        if code == 0:
+            assert counts['descriptor'] == 8 and counts['download'] == 7, counts
+        return code
+    finally:
+        server.shutdown(); server.server_close(); thread.join(3)
+        assert not thread.is_alive()
 
 
 def macos(root, output):

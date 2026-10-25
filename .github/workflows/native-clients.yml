@@ -43,7 +43,7 @@ jobs:
           env = dict(os.environ, SOUNDQ_CORE_LIBRARY=str(library), SOUNDQ_REPAIR_EVIDENCE=str(evidence))
           subprocess.run([sys.executable, '-B', 'native/tests/listening_queue.py'], env=env, check=True)
           PY
-      - name: Test cancelled persistence feedback (Rust8)
+      - name: Test persistence feedback and restored cursors (Rust23)
         run: |
           python3 -B <<'PY'
           import os
@@ -61,6 +61,8 @@ jobs:
           env = dict(os.environ, SOUNDQ_RUST_BIN=str(Path(cargo).parent), CARGO_TARGET_DIR=str(output / 'target'))
           subprocess.run([sys.executable, '-B', 'native/tests/queue_feedback_regressions.py', '--source-root', str(Path.cwd()), '--rust', '--output', str(output / 'rust')], env=env, check=True)
           PY
+      - name: Test cursor extraction anchors (Anchor14)
+        run: python3 -B -m unittest discover -s native/tests -p test_queue_restore_cursor_regressions.py -v
       - name: Test offline performance evidence
         run: python3 -B -m unittest discover -s native/tests -p test_matched_performance.py -v
   macos:
