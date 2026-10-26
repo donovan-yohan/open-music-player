@@ -806,6 +806,7 @@ class VoicePool {
       final voice = _activeVoices[clip.id];
       if (voice == null || !voice.isReady) return;
       if (!isCurrent() || !_isCurrentVoice(clip.id, voice, generation)) return;
+      final owner = _sourceOwners[voice];
       try {
         await _applyPlaybackTuning(voice, clip, globalMs);
         if (!isCurrent() || !_isCurrentVoice(clip.id, voice, generation)) {
@@ -815,7 +816,7 @@ class VoicePool {
         restored[clip.id] = voice;
       } catch (error, stack) {
         controlError ??= error;
-        _sourceOwners[voice]?.revokeRead(terminal: true);
+        owner?.revokeRead(terminal: true);
         controlStack ??= stack;
       }
     }));
@@ -976,13 +977,17 @@ class VoicePool {
 
   void _requestPlay(String clipId, Voice voice) {
     if (!(_resumeIntent?.call() ?? true) || !_clock.isPlaying) return;
+    final owner = _sourceOwners[voice];
     unawaited(() async {
       try {
         await voice.play();
       } catch (_) {
-        if (!_isCurrentVoice(clipId, voice, _generation)) return;
+        owner?.revokeRead(terminal: true);
+        if (!identical(_activeVoices[clipId], voice) ||
+            !identical(_sourceOwners[voice], owner)) {
+          return;
+        }
         _voiceStatus[clipId] = VoiceEventKind.error;
-        _sourceOwners[voice]?.revokeRead(terminal: true);
         _publishStatus();
       }
     }());
@@ -1196,6 +1201,7 @@ class VoicePool {
       return;
     }
     _voiceGain.remove(voice);
+    final owner = _sourceOwners[voice];
     final applying = () async {
       try {
         await voice.setVolume(clamped);
@@ -1204,7 +1210,7 @@ class VoicePool {
         _voiceGain[voice] = clamped;
       } catch (_) {
         _voiceGain.remove(voice);
-        _sourceOwners[voice]?.revokeRead(terminal: true);
+        owner?.revokeRead(terminal: true);
         rethrow;
       }
     }();

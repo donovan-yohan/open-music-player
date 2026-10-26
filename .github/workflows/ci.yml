@@ -174,7 +174,20 @@ jobs:
         run: ../scripts/lint client
 
       - name: Test production native-readback adapter contract
+        id: native-readback-method
         run: python3 -B test/just_audio_native_readback_contracts.py --output "$RUNNER_TEMP/native-readback-method"
+
+      - name: Preserve native-readback adapter diagnostics
+        if: always() && (steps.native-readback-method.outcome == 'success' || steps.native-readback-method.outcome == 'failure')
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-native-readback-method
+          path: |
+            ${{ runner.temp }}/native-readback-method/*.log
+            ${{ runner.temp }}/native-readback-method/receipt.json
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7
 
       - name: Run tests
         run: ../scripts/test client
