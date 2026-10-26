@@ -67,6 +67,8 @@ jobs:
         run: python3 -B -m unittest discover -s native/tests -p test_matched_performance.py -v
       - name: Enforce phase baseline admission and budget mutation controls
         run: python3 -B -m unittest discover -s native/tests -p test_performance_gate.py -v
+      - name: Test explicit-artifact Flutter launch and report refusal controls
+        run: python3 -B -m unittest discover -s native/tests -p test_flutter_profile_launch.py -v
   macos:
     name: Native macOS build
     runs-on: macos-15

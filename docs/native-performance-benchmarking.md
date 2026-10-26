@@ -1,5 +1,53 @@
 # Offline native performance evidence
 
+## Explicit-artifact Flutter renderer launch
+
+`native/tests/flutter_profile_launch.py` is a separate opt-in application launcher,
+not part of the offline reducer. It never builds, installs, provisions an API,
+changes signing/entitlements, or accesses personal application storage. Supply an
+already reviewed profile bundle and caller-owned disposable API at literal
+`http://127.0.0.1:54761/api/v1`. The app-side process-descriptor fixture must be
+present in the supplied source; a normal personal application is not an eligible
+artifact. Keep descriptors and every evidence packet private.
+
+```sh
+python3 -B native/tests/flutter_profile_launch.py manifest --app /ABS/Fixture.app --executable Contents/MacOS/SoundQ --source-commit EXACT_COMMIT --source-tree EXACT_TREE --source-manifest-sha256 EXACT_SOURCE_MANIFEST_SHA256 --output /ABS/NEW_MANIFEST.json
+python3 -B native/tests/flutter_profile_launch.py run --app /ABS/Fixture.app --manifest /ABS/NEW_MANIFEST.json --descriptor /ABS/PRIVATE_DESCRIPTOR.json --evidence /ABS/NEW_EVIDENCE --timeout-seconds 100
+python3 -B -m unittest discover -s native/tests -p test_flutter_profile_launch.py -v
+```
+
+The versioned artifact manifest inventories regular bundle files and contained
+framework symlinks after signing. Both prelaunch and post-cleanup inventories must
+match. Source commit/tree/hash are externally supplied provenance, not authenticated
+compiler proof. The descriptor is a canonical, regular, mode-private file bounded
+to 16 KiB. Its exact keys are `schema: soundq.flutter.fixture.process.v1`, `endpoint`,
+`email`, `password`, `run_id`, `source_commit`, `source_tree`,
+`source_manifest_sha256`, and a random per-launch `report_token` (64 lowercase hex).
+Source pins must equal the artifact manifest. Only the launched child's minimal
+environment receives this private descriptor. Child stdout/stderr are not exported.
+
+The runner owns only its child and a finite `127.0.0.1:54762/report` receiver.
+It authenticates the bearer capability, bounds request size and absolute request
+time including header/body parsing, validates the exact child report schema,
+source/run/PID, raw FrameTiming arithmetic, nonoverlapping windows, complete scroll
+geometry/durations, and fixed storage/audio exclusions before persistence ACK.
+The scheduler/Stopwatch join allows at most 100 ms clock-boundary difference, an
+admission tolerance rather than a performance budget. Failed or missing reports,
+artifact drift, malformed frames, source mismatch, bad workload tails and cleanup
+failures cannot become successful samples. Rejected arbitrary payloads are not
+retained; fixed refusal codes and valid failed child reports remain visible.
+
+`soundq.flutter.profile-launch.v1` returns renderer distributions in microseconds,
+nearest-rank p50/p95/p99/min/max/spread and sample count, alongside original validated
+frames and per-window evidence. Process start is an owned launch wall-time receipt,
+not a kernel-authenticated start identity. `completed-diagnostic` is explicitly
+not full-app acceptance. These runs use ephemeral preferences/native SQLite and
+memory-only artwork cache, exclude disk/download/playback-cache/artwork acquisition
+and audio, and do not establish a production persistence baseline, physical FPS,
+positive audio-active workload or matched native/Flutter speedup. Missing refresh,
+power or platform qualification remains unavailable. CI exercises synthetic child
+controls only; actual app collection remains separately owned and opt-in.
+
 ## Resource regression gate and external response diagnostic
 
 These are bounded additions, not completion of the replacement benchmark.
