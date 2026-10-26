@@ -217,6 +217,7 @@ impl Core {
                     session: 0,
                     authenticated: false,
                     library: vec![],
+                    favorite_track_ids: vec![],
                     library_unchanged: false,
                     total: 0,
                     offset: 0,
@@ -317,6 +318,7 @@ impl Core {
                     epoch: self.epoch.load(Ordering::SeqCst),
                     authenticated: false,
                     library: vec![],
+                    favorite_track_ids: vec![],
                     queue: vec![],
                     selected_occurrence: None,
                     transport: AudioState::Idle,
@@ -326,7 +328,14 @@ impl Core {
                 credentials: None,
             };
         }
-        let admission = self.validate_queue_command(&state, &command);
+        // Favorite metadata intent cannot acquire a new playback epoch or reset
+        // its session/cursor. The adapter must admit it in the loaded epoch.
+        let admission =
+            if matches!(&command, Command::SetFavorite { .. }) && state.snapshot.epoch != epoch {
+                Err("cancelled")
+            } else {
+                self.validate_queue_command(&state, &command)
+            };
         if state.snapshot.epoch != epoch && admission.is_ok() {
             state.snapshot.epoch = epoch;
             state.snapshot.session += 1;
@@ -421,6 +430,7 @@ impl Core {
                 session: state.snapshot.session,
                 authenticated: state.snapshot.authenticated,
                 library: vec![],
+                favorite_track_ids: vec![],
                 library_unchanged: true,
                 total: state.snapshot.total,
                 offset: state.snapshot.offset,
@@ -439,6 +449,7 @@ impl Core {
         // epoch; native consumers also gate private effects against current epoch.
         if self.check(epoch).is_err() {
             snapshot.library.clear();
+            snapshot.favorite_track_ids.clear();
             snapshot.queue.clear();
             snapshot.selected_occurrence = None;
             snapshot.authenticated = false;
@@ -574,6 +585,7 @@ impl Core {
                 s.credentials_changed = false;
                 s.snapshot.authenticated = false;
                 s.snapshot.library.clear();
+                s.snapshot.favorite_track_ids.clear();
                 s.snapshot.total = 0;
                 s.snapshot.queue.clear();
                 s.snapshot.selected_occurrence = None;
@@ -613,22 +625,106 @@ impl Core {
                 let tracks = page.tracks.unwrap_or_default();
                 if page.offset != offset
                     || tracks.len() > 50
-                    || tracks.iter().any(|t| t.id <= 0 || t.title.len() > 16384)
+                    || tracks
+                        .iter()
+                        .any(|t| t.track.id <= 0 || t.track.title.len() > 16384)
                 {
                     return Err("invalid_library");
                 }
                 self.check(epoch)?;
+                let mut favorites: HashSet<i64> = if offset == 0 {
+                    HashSet::new()
+                } else {
+                    s.snapshot.favorite_track_ids.iter().copied().collect()
+                };
+                for t in &tracks {
+                    if t.is_liked {
+                        favorites.insert(t.track.id);
+                    } else {
+                        favorites.remove(&t.track.id);
+                    }
+                }
                 if offset == 0 {
-                    s.snapshot.library = tracks;
+                    s.snapshot.library = tracks.into_iter().map(|t| t.track).collect();
                 } else {
                     for t in tracks {
-                        if !s.snapshot.library.iter().any(|x| x.id == t.id) {
-                            s.snapshot.library.push(t);
+                        if !s.snapshot.library.iter().any(|x| x.id == t.track.id) {
+                            s.snapshot.library.push(t.track);
                         }
                     }
                 }
+                s.snapshot.favorite_track_ids = s
+                    .snapshot
+                    .library
+                    .iter()
+                    .filter(|t| favorites.contains(&t.id))
+                    .map(|t| t.id)
+                    .collect();
                 s.snapshot.total = page.total;
                 s.snapshot.offset = offset;
+            }
+            Command::SetFavorite { track_id, liked } => {
+                if !s.snapshot.authenticated || s.credentials.is_none() {
+                    return Err("unauthenticated");
+                }
+                if track_id <= 0 || !s.snapshot.library.iter().any(|t| t.id == track_id) {
+                    return Err("track_not_loaded");
+                }
+                let method = if liked { "POST" } else { "DELETE" };
+                // No refresh/replay: the server may have committed a mutation
+                // even if the response is lost. Only a read can reconcile it.
+                let response = self
+                    .request_response(
+                        s,
+                        method,
+                        &format!("/library/tracks/{track_id}/like"),
+                        None,
+                        epoch,
+                        false,
+                    )
+                    .map_err(|code| {
+                        if code == "cancelled" {
+                            code
+                        } else {
+                            "favorite_uncertain"
+                        }
+                    })?;
+                let status = response.status().as_u16();
+                if (400..500).contains(&status) {
+                    return Err(Self::api_error(status));
+                }
+                if status != if liked { 201 } else { 204 } {
+                    return Err("favorite_uncertain");
+                }
+                if liked {
+                    let ack = self.read_json(response, epoch).map_err(|code| {
+                        if code == "cancelled" {
+                            code
+                        } else {
+                            "favorite_uncertain"
+                        }
+                    })?;
+                    if ack.get("track_id").and_then(Value::as_i64) != Some(track_id)
+                        || ack.get("liked").and_then(Value::as_bool) != Some(true)
+                    {
+                        return Err("favorite_uncertain");
+                    }
+                }
+                self.check(epoch)?;
+                let mut favorites: HashSet<i64> =
+                    s.snapshot.favorite_track_ids.iter().copied().collect();
+                if liked {
+                    favorites.insert(track_id);
+                } else {
+                    favorites.remove(&track_id);
+                }
+                s.snapshot.favorite_track_ids = s
+                    .snapshot
+                    .library
+                    .iter()
+                    .filter(|t| favorites.contains(&t.id))
+                    .map(|t| t.id)
+                    .collect();
             }
             Command::Select { track_id } => {
                 if s.snapshot.library.len() > 10000 {
@@ -1082,6 +1178,7 @@ impl Core {
         s.retry_target = None;
         s.snapshot.authenticated = false;
         s.snapshot.library.clear();
+        s.snapshot.favorite_track_ids.clear();
         s.snapshot.total = 0;
         s.snapshot.queue.clear();
         s.snapshot.selected_occurrence = None;
@@ -1099,6 +1196,7 @@ impl Core {
             .is_some_and(|c| c.account_id != a.user.id)
         {
             s.snapshot.library.clear();
+            s.snapshot.favorite_track_ids.clear();
             s.snapshot.queue.clear();
             s.snapshot.selected_occurrence = None;
             s.snapshot.transport = AudioState::Idle;
@@ -1125,6 +1223,34 @@ impl Core {
         epoch: u64,
         retry_read: bool,
     ) -> Result<Value> {
+        let response = self.request_response(s, method, path, data, epoch, retry_read)?;
+        if !response.status().is_success() {
+            return Err(Self::api_error(response.status().as_u16()));
+        }
+        if response.status().as_u16() == 204 {
+            return Ok(json!({}));
+        }
+        self.read_json(response, epoch)
+    }
+    fn api_error(status: u16) -> &'static str {
+        match status {
+            401 => "unauthenticated",
+            404 => "not_found",
+            503 => "service_unavailable",
+            _ => "api_refused",
+        }
+    }
+    // Preserve the authenticated request and credential-rotation fences while
+    // allowing a mutation to validate its method-specific acknowledgment.
+    fn request_response(
+        &self,
+        s: &mut State,
+        method: &str,
+        path: &str,
+        data: Option<Value>,
+        epoch: u64,
+        retry_read: bool,
+    ) -> Result<reqwest::blocking::Response> {
         for attempt in 0..2 {
             self.check(epoch)?;
             let token = s
@@ -1163,18 +1289,7 @@ impl Core {
                 self.admit_credentials(s, auth)?;
                 continue;
             }
-            if !response.status().is_success() {
-                return Err(match response.status().as_u16() {
-                    401 => "unauthenticated",
-                    404 => "not_found",
-                    503 => "service_unavailable",
-                    _ => "api_refused",
-                });
-            }
-            if response.status().as_u16() == 204 {
-                return Ok(json!({}));
-            }
-            return self.read_json(response, epoch);
+            return Ok(response);
         }
         Err("unauthenticated")
     }

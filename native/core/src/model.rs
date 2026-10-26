@@ -24,6 +24,10 @@ pub enum Command {
         sort: String,
         order: String,
     },
+    SetFavorite {
+        track_id: i64,
+        liked: bool,
+    },
     Select {
         track_id: i64,
     },
@@ -104,6 +108,9 @@ pub struct Snapshot {
     pub session: u64,
     pub authenticated: bool,
     pub library: Vec<Track>,
+    // Same topic as library: empty when library_unchanged, otherwise a complete
+    // projection of favorites among the currently loaded library IDs only.
+    pub favorite_track_ids: Vec<i64>,
     pub library_unchanged: bool,
     pub total: u64,
     pub offset: u32,
@@ -149,8 +156,16 @@ pub struct Credentials {
 }
 
 #[derive(Deserialize)]
+pub struct LibraryTrack {
+    #[serde(flatten)]
+    pub track: Track,
+    #[serde(default)]
+    pub is_liked: bool,
+}
+
+#[derive(Deserialize)]
 pub struct LibraryPage {
-    pub tracks: Option<Vec<Track>>,
+    pub tracks: Option<Vec<LibraryTrack>>,
     pub total: u64,
     pub offset: u32,
 }

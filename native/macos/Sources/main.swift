@@ -19,6 +19,8 @@ struct Snapshot: Decodable {
     let authenticated: Bool
     var library: [Track]
     let library_unchanged: Bool
+    // Library-only user projection. Never added to persisted queue Track v1.
+    var favorite_track_ids: [Int64]? = nil
     let total: UInt64
     var queue: [Occurrence]
     let queue_unchanged: Bool
@@ -167,6 +169,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         titleLabel.stringValue = "Library"
         let editItem = NSMenuItem();menu.addItem(editItem);let edit = NSMenu(title:"Edit");editItem.submenu = edit
         let libraryItem = NSMenuItem();libraryItem.title = "Library";libraryItem.submenu = makeLibraryMenu();menu.addItem(libraryItem)
+        let favoritesItem = NSMenuItem();favoritesItem.title = "Favorites";favoritesItem.submenu = LibraryFavoriteMenu(owner:self);menu.addItem(favoritesItem)
         for (title,action,key) in [("Copy",#selector(NSText.copy(_:)),"c"),("Paste",#selector(NSText.paste(_:)),"v"),("Select All",#selector(NSText.selectAll(_:)),"a")] {edit.addItem(withTitle:title,action:action,keyEquivalent:key)}
     }
     func makeLibraryMenu() -> NSMenu {
@@ -251,6 +254,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
     func apply(_ incoming: Snapshot) {
         var value = incoming
         if value.library_unchanged {value.library = snapshot?.library ?? []}
+        if value.library_unchanged {value.favorite_track_ids = snapshot?.favorite_track_ids}
         if value.queue_unchanged {value.queue = snapshot?.queue ?? []}
         // Content topics alone pay this comparison; String equality is canonical,
         // not byte equality, so compare UTF8 for exact metadata publications.
