@@ -1,5 +1,95 @@
 # Offline native performance evidence
 
+## Resource regression gate and external response diagnostic
+
+These are bounded additions, not completion of the replacement benchmark.
+The phase gate consumes the existing native launcher, not a frame schema:
+
+```sh
+python3 -B native/tests/performance_gate.py baseline --cohort BUNDLE/cohort.json --evidence NEW_DIRECTORY
+python3 -B native/tests/performance_gate.py compare --baseline-cohort BASE/cohort.json --cohort NEXT/cohort.json --policy REVIEWED_POLICY.json --evidence OTHER_NEW_DIRECTORY
+python3 -B -m unittest discover -s native/tests -p test_performance_gate.py -v
+```
+
+`soundq.phase-cohort.v1` requires `run_id`, `source: {commit, tree}`,
+`manifest_sha256`, `build_mode: release`, and the exact `environment`, `workload`,
+`features`, `visible` manifests documented below. `attempts` is the full chronological
+list of `{report: {path, sha256}, process_start}`. Each report is the unchanged
+`soundq.macos.phase-launch.v1` output. Process-start tokens are supplied custody
+assertions, not authenticated OS observations. Five distinct PID/run/start/report
+identities are mandatory. Reusing a failed process cannot mint a valid repetition.
+All functional/audio, artifact, exit and cleanup predicates must pass independently
+of resource budgets. The existing child validator recomputes phase arithmetic.
+The caller remains responsible for actual workload correspondence, complete retry
+history, source-to-package provenance and host qualification.
+
+Outputs include all attempt slots, failure reasons and separate admitted versus
+failure-inclusive distributions. Completed valid phases survive later journey
+failure. CPU is percent of one core; RSS end and positive boundary growth are bytes,
+not peaks or a sustained trend. Nearest-rank p50/p95/p99, min/max/spread count
+process-phase observations. Five observations do not estimate a stable p99 tail.
+Shared-host, unknown environment or incomplete feature cohorts remain unqualified.
+
+There is deliberately no numeric default. `soundq.phase-policy.v1` requires the
+canonical `baseline_sha256` emitted by `baseline`, a `reviewer` token,
+`calibration: {cohort_sha256, rationale}`, and `budgets` keyed by every existing
+phase and each metric (`cpu_percent`, `rss_end_bytes`, `rss_growth_bytes`). Each
+budget has nonnegative `relative_allowance` and `absolute_allowance`, in that
+metric's units. Every candidate observation must be at or below
+`baseline maximum * (1 + relative_allowance) + absolute_allowance`.
+Review the observed spread and separate held-out baseline repeats before approving
+allowances. Reviewer/rationale tokens document external review; the CLI does not
+authenticate a human reviewer. Baselines are rederived from pinned original inputs,
+never updated or automatically ratcheted. Changed baseline bytes, policy pins,
+workload/environment/feature drift, missing runs, malformed tails and any budget
+breach fail closed. Exit 0 means qualified baseline or passed comparison, 1 means
+failed/unqualified evidence, 2 means output-directory/usage refusal. Inputs are
+bounded regular files (4 MiB each), retained privately with hashes; reports contain
+no original paths or raw exception messages. Keep all retained inputs private.
+
+The external public macOS collector observes captured window pixels:
+
+```sh
+swiftc -O -parse-as-library -swift-version 5 -num-threads 2 native/tests/window_response.swift -o PRIVATE_OUTPUT/window-response
+PRIVATE_OUTPUT/window-response --pid OWNED_PID --window-id OWNED_WINDOW_ID --evidence NEW_PRIVATE_DIRECTORY --roi X,Y,WIDTH,HEIGHT --point SCREEN_X,SCREEN_Y --scroll-pixels -300 --threshold 2 --timeout-seconds 3
+python3 -B -m unittest discover -s native/tests -p test_window_response.py -v
+```
+
+The caller must own the target and its source/artifact/launch receipt. The helper
+attaches only to that PID/window, preflights existing screen-capture/event access
+without prompting, and never starts/stops the app or a fixture. On a failed
+background event route, an explicitly authorized caller may front the exact target
+and add `--foreground-route`; this checks the active PID before posting through the
+HID route. It never activates a target itself. Do not use foreground mode while a
+user is interacting with another app. Routes are distinct diagnostic cohorts.
+
+`soundq.window-response.v1` retains Mach absolute input-call brackets, timebase,
+complete capture sample event/callback timestamps, ROI hashes/change distances,
+geometry, target executable hash and terminal failures. Capture/sample status is
+not a renderer frame identity. A 200 ms baseline dwell rejects observed unrelated
+changes; the caller must exclude cursor, progress, caret and transient decoration
+from its predeclared ROI. The first post-input ROI mean-absolute RGB difference
+above the explicit threshold yields zero lower bound and an outward-rounded
+WindowServer-event-time upper bound; callback detection delay is separate.
+These thresholds define a pixel predicate, not a performance budget. There is no
+semantic causal proof, no physical input-to-photon measurement, no FPS, no acoustic
+onset and no automatic matched comparison. Requested 60 Hz capture is only an
+observer setting. Missing changes, capture errors, geometry drift or target loss
+remain failed/unavailable, not invented zero-latency samples. Original attempts
+must be retained. Public ScreenCaptureKit requires macOS 14+ and a real WindowServer
+session; window-free controls are not a live collection gate.
+
+CI runs deterministic gate/parser/budget mutation controls and macOS collector
+compilation/refusal tests alongside existing native source/layout gates. It does
+not enforce physical timing on heterogeneous hosted runners. Actual collection is
+opt-in through the commands above under one device/fixture owner, with no competing
+builds, new owner-labelled disposable resources, failure-inclusive private artifact
+custody and exact cleanup. Current whole-framework holds remain actual-root Flutter
+collector/isolation, ordinary transitions/control/startup/playback latency, sustained
+memory, calibrated reviewed hardware policy, five alternating equivalent app runs,
+renderer-neutral semantic response acceptance, Android/Windows qualification and
+protected publication. No Flutter replacement or speedup is established here.
+
 `native/tests/matched_performance.py` validates portable input bundles and reduces
 raw frame observations using Python's standard library. It **never** launches an
 app, subprocess, device command, service or network request. There is no `run`
