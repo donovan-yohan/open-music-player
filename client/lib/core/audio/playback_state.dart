@@ -9,6 +9,7 @@ import '../cache/playback_cache_manager.dart';
 import '../engine/click_audition_projection.dart';
 import '../engine/click_auditioner.dart';
 import '../engine/playback_engine.dart';
+import '../engine/voice.dart' show JustAudioVoice;
 import '../engine/native_playback_backend.dart';
 import '../engine/tempo_automation.dart';
 import '../engine/timeline_model.dart';
@@ -242,6 +243,69 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
 
   /// Monotonic canonical incarnation, including reloads of the same saved ID.
   int get sessionGeneration => _queueController.sessionGeneration;
+
+  /// Read the single active legacy native player under this canonical session.
+  /// Caller must also fence its AuthState.sessionRevision around the await.
+  Future<Map<String, dynamic>> soundqNativeReadback({
+    required String capability,
+  }) async {
+    if (!kProfileMode ||
+        !const bool.fromEnvironment('SOUNDQ_NATIVE_PLAYER_READBACK') ||
+        _disposed ||
+        _accountRetirement != null) {
+      throw StateError('native-readback-unavailable');
+    }
+    final engine = _queueController.engine;
+    final pool = engine.pool;
+    final session = sessionGeneration;
+    final account = _accountGeneration;
+    final command = _transportCommandGeneration;
+    final playRequest = _playRequestGeneration;
+    final poolGeneration = pool.generation;
+    final before = snapshot;
+    final cue = currentCueFor(before);
+    final voices = pool.activeVoices;
+    if (engine.usesNativeBackend ||
+        !before.playing ||
+        cue == null ||
+        voices.length != 1 ||
+        voices[cue.cueId] is! JustAudioVoice) {
+      throw StateError('native-readback-unavailable');
+    }
+    final voice = voices[cue.cueId] as JustAudioVoice;
+    final capture =
+        pool.captureSingleSourceRead(cue.cueId, cue.queueItemId, cue.trackId);
+    if (capture == null) {
+      throw StateError('native-readback-unavailable');
+    }
+    final sample = await capture.read((sourceVoice) {
+      if (!identical(sourceVoice, voice)) {
+        throw StateError('native-readback-stale');
+      }
+      return voice.soundqNativeReadback(capability: capability);
+    });
+    if (_disposed ||
+        _accountRetirement != null ||
+        account != _accountGeneration ||
+        command != _transportCommandGeneration ||
+        playRequest != _playRequestGeneration ||
+        session != sessionGeneration ||
+        snapshot.sessionId != before.sessionId ||
+        snapshot.currentCueId != before.currentCueId ||
+        !snapshot.playing ||
+        engine.usesNativeBackend) {
+      throw StateError('native-readback-stale');
+    }
+    return Map.unmodifiable({
+      'session_id': before.sessionId,
+      'session_generation': session,
+      'cue_id': cue.cueId,
+      'queue_item_id': cue.queueItemId,
+      'track_id': cue.trackId,
+      'pool_generation': poolGeneration,
+      'native': sample,
+    });
+  }
 
   /// Live global mix timeline state for the waveform surface. This is the raw
   /// engine clock/model contract, not the source-relative player position.

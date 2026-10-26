@@ -173,6 +173,9 @@ jobs:
       - name: Analyze code
         run: ../scripts/lint client
 
+      - name: Test production native-readback adapter contract
+        run: python3 -B test/just_audio_native_readback_contracts.py --output "$RUNNER_TEMP/native-readback-method"
+
       - name: Run tests
         run: ../scripts/test client
         env:

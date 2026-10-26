@@ -1,0 +1,195 @@
+--- a/lib/just_audio.dart
++++ b/lib/just_audio.dart
+@@ -114,6 +114,74 @@
+   StreamSubscription<void>? _errorsResetSubscription;
+ 
+   String? _id;
++  /// Opt-in macOS fixture diagnostic of this already-active native player.
++  /// Does not activate an idle player or alter transport. Endpoint observations
++  /// are not acoustic output or proof of uninterrupted playback.
++  @experimental
++  Future<Map<String, dynamic>> soundqNativeReadback({
++    required String capability,
++  }) async {
++    if (!kProfileMode ||
++        !const bool.fromEnvironment('SOUNDQ_NATIVE_PLAYER_READBACK') ||
++        !_isDarwin() ||
++        !RegExp(r'^[0-9a-f]{64}$').hasMatch(capability)) {
++      throw StateError('native-readback-unavailable');
++    }
++    final platform = _platformValue;
++    final source = sequenceState.currentSource;
++    if (!_active || _disposed || platform == null ||
++        platform is _IdleAudioPlayer || platform.id != _id || source == null) {
++      throw StateError('native-readback-unavailable');
++    }
++    final value = await MethodChannel(
++      'com.ryanheise.just_audio.methods.${platform.id}',
++    ).invokeMapMethod<String, dynamic>('soundqNativeReadback', {
++      'capability': capability,
++    }).timeout(const Duration(seconds: 2));
++    if (!_active || _disposed || !identical(_platformValue, platform) ||
++        platform.id != _id || value == null ||
++        value['schema'] != 'soundq.just-audio.native-readback.v1' ||
++        value['platform_id'] != platform.id ||
++        !identical(sequenceState.currentSource, source) ||
++        value['source_id'] != source._id) {
++      throw StateError('native-readback-stale');
++    }
++    const integerFields = {
++      'pid', 'player_witness', 'item_witness', 'before_ticks', 'after_ticks',
++      'timebase_numer', 'timebase_denom', 'position_value',
++      'position_timescale', 'position_epoch', 'position_flags',
++      'item_position_value', 'item_position_timescale', 'item_position_epoch',
++      'item_position_flags', 'time_control_status', 'player_status',
++      'item_status', 'current_index',
++    };
++    const keys = {
++      ...integerFields, 'schema', 'platform_id', 'source_id', 'clock',
++      'rate', 'error_present',
++    };
++    if (value.length != keys.length || !value.keys.toSet().containsAll(keys) ||
++        integerFields.any((key) => value[key] is! int ||
++            (value[key] as int) < 0) ||
++        ['pid', 'player_witness', 'item_witness', 'before_ticks',
++         'timebase_numer', 'timebase_denom', 'position_timescale',
++         'item_position_timescale'].any((key) => value[key] == 0) ||
++        (value['after_ticks'] as int) < (value['before_ticks'] as int) ||
++        value['position_epoch'] != 0 || value['item_position_epoch'] != 0 ||
++        ((value['position_flags'] as int) & 0x1d) != 1 ||
++        ((value['item_position_flags'] as int) & 0x1d) != 1 ||
++        ![0, 1, 2].contains(value['time_control_status']) ||
++        ![0, 1, 2].contains(value['player_status']) ||
++        ![0, 1, 2].contains(value['item_status']) ||
++        value['clock'] != 'mach_absolute_time' ||
++        value['error_present'] is! bool || value['rate'] is! num ||
++        !(value['rate'] as num).isFinite ||
++        value['source_id'] is! String ||
++        !RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
++            .hasMatch(value['source_id'] as String)) {
++      throw StateError('native-readback-invalid');
++    }
++    return Map<String, dynamic>.unmodifiable(value);
++  }
++
+   final _proxy = _ProxyHttpServer();
+   // ignore: deprecated_member_use_from_same_package
+   final ConcatenatingAudioSource _playlist;
+--- a/darwin/just_audio/Sources/just_audio/AudioPlayer.m
++++ b/darwin/just_audio/Sources/just_audio/AudioPlayer.m
+@@ -10,6 +10,11 @@
+ #import <AVFoundation/AVFoundation.h>
+ #import <stdlib.h>
+ #include <TargetConditionals.h>
++#if TARGET_OS_OSX
++#include <mach/mach_time.h>
++#include <limits.h>
++#include <math.h>
++#endif
+ 
+ #define TREADMILL_SIZE 2
+ #define ERROR_ABORT 10000000
+@@ -53,6 +58,14 @@
+     NSDictionary<NSString *, NSObject *> *_icyMetadata;
+     NSNumber *_errorCode;
+     NSString *_errorMessage;
++#if TARGET_OS_OSX
++    // Zeroing weak references avoid retaining retired playback resources.
++    // Strong sample-local references prevent pointer reuse during one read.
++    __weak AVQueuePlayer *_soundqObservedPlayer;
++    __weak AVPlayerItem *_soundqObservedItem;
++    unsigned long long _soundqPlayerGeneration;
++    unsigned long long _soundqItemGeneration;
++#endif
+ }
+ 
+ - (instancetype)initWithRegistrar:(NSObject<FlutterPluginRegistrar> *)registrar playerId:(NSString*)idParam loadConfiguration:(NSDictionary *)loadConfiguration useLazyPreparation:(BOOL)useLazyPreparation {
+@@ -126,7 +139,9 @@
+     @try {
+         //NSLog(@"method: %@ index=%d", call.method, _index);
+         NSDictionary *request = (NSDictionary *)call.arguments;
+-        if ([@"load" isEqualToString:call.method]) {
++        if ([@"soundqNativeReadback" isEqualToString:call.method]) {
++            [self soundqNativeReadback:call.arguments result:result];
++        } else if ([@"load" isEqualToString:call.method]) {
+             CMTime initialPosition = request[@"initialPosition"] == (id)[NSNull null] ? kCMTimeInvalid : CMTimeMake([request[@"initialPosition"] longLongValue], 1000000);
+             [self load:request[@"audioSource"] initialPosition:initialPosition initialIndex:request[@"initialIndex"] result:result];
+         } else if ([@"play" isEqualToString:call.method]) {
+@@ -1341,7 +1356,77 @@
+     }
+ }
+ 
++- (void)soundqNativeReadback:(id)arguments result:(FlutterResult)result {
++#if TARGET_OS_OSX
++    NSDictionary *environment = NSProcessInfo.processInfo.environment;
++    NSString *expected = environment[@"SOUNDQ_NATIVE_PLAYER_READBACK_TOKEN"];
++    NSString *supplied = [arguments isKindOfClass:NSDictionary.class] ? arguments[@"capability"] : nil;
++    NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet];
++    if (![environment[@"SOUNDQ_NATIVE_PLAYER_READBACK"] isEqualToString:@"1"] ||
++        ![NSThread isMainThread] || ![arguments isKindOfClass:NSDictionary.class] ||
++        [(NSDictionary *)arguments count] != 1 || ![expected isKindOfClass:NSString.class] ||
++        ![supplied isKindOfClass:NSString.class] || expected.length != 64 || supplied.length != 64 ||
++        [expected rangeOfCharacterFromSet:invalid].location != NSNotFound ||
++        [supplied rangeOfCharacterFromSet:invalid].location != NSNotFound) {
++        result([FlutterError errorWithCode:@"native-readback-unavailable" message:nil details:nil]);return;
++    }
++    unsigned int difference = 0;
++    for (NSUInteger i = 0; i < 64; i++) difference |= [expected characterAtIndex:i] ^ [supplied characterAtIndex:i];
++    AVQueuePlayer *player = _player;
++    AVPlayerItem *item = player.currentItem;
++    if (difference || !player || !item || ![[NSUUID alloc] initWithUUIDString:_playerId] ||
++        _index < 0 || _index >= _indexedAudioSources.count) {
++        result([FlutterError errorWithCode:@"native-readback-unavailable" message:nil details:nil]);return;
++    }
++    IndexedAudioSource *source = _indexedAudioSources[_index];
++    NSString *sourceId = source.sourceId;
++    if (![[NSUUID alloc] initWithUUIDString:sourceId] ||
++        (source.playerItem != item && source.playerItem2 != item) ||
++        _soundqPlayerGeneration == LLONG_MAX || _soundqItemGeneration == LLONG_MAX) {
++        result([FlutterError errorWithCode:@"native-readback-unavailable" message:nil details:nil]);return;
++    }
++    if (_soundqObservedPlayer != player) {_soundqObservedPlayer = player;_soundqPlayerGeneration++;}
++    if (_soundqObservedItem != item) {_soundqObservedItem = item;_soundqItemGeneration++;}
++    mach_timebase_info_data_t base;
++    if (mach_timebase_info(&base) != KERN_SUCCESS || !base.numer || !base.denom) {
++        result([FlutterError errorWithCode:@"native-readback-unavailable" message:nil details:nil]);return;
++    }
++    uint64_t before = mach_absolute_time();
++    CMTime position = player.currentTime;
++    CMTime itemPosition = item.currentTime;
++    float rate = player.rate;
++    AVPlayerTimeControlStatus control = player.timeControlStatus;
++    AVPlayerStatus playerStatus = player.status;
++    AVPlayerItemStatus itemStatus = item.status;
++    BOOL error = player.error != nil || item.error != nil;
++    uint64_t after = mach_absolute_time();
++    if (before == 0 || after < before || after > LLONG_MAX || !isfinite(rate) ||
++        !CMTIME_IS_NUMERIC(position) || position.timescale <= 0 || position.epoch != 0 ||
++        !CMTIME_IS_NUMERIC(itemPosition) || itemPosition.timescale <= 0 || itemPosition.epoch != 0 ||
++        _player != player || player.currentItem != item || _indexedAudioSources[_index] != source ||
++        ![source.sourceId isEqualToString:sourceId]) {
++        result([FlutterError errorWithCode:@"native-readback-stale" message:nil details:nil]);return;
++    }
++    result(@{@"schema":@"soundq.just-audio.native-readback.v1", @"platform_id":_playerId,
++        @"pid":@(NSProcessInfo.processInfo.processIdentifier), @"source_id":sourceId,
++        @"player_witness":@(_soundqPlayerGeneration), @"item_witness":@(_soundqItemGeneration),
++        @"clock":@"mach_absolute_time", @"before_ticks":@(before), @"after_ticks":@(after),
++        @"timebase_numer":@(base.numer), @"timebase_denom":@(base.denom),
++        @"position_value":@(position.value), @"position_timescale":@(position.timescale),
++        @"position_epoch":@(position.epoch), @"position_flags":@(position.flags),
++        @"item_position_value":@(itemPosition.value), @"item_position_timescale":@(itemPosition.timescale),
++        @"item_position_epoch":@(itemPosition.epoch), @"item_position_flags":@(itemPosition.flags),
++        @"rate":@(rate), @"time_control_status":@(control), @"player_status":@(playerStatus),
++        @"item_status":@(itemStatus), @"error_present":@(error), @"current_index":@(_index)});
++#else
++    result([FlutterError errorWithCode:@"native-readback-unavailable" message:nil details:nil]);
++#endif
++}
++
+ - (void)dispose:(BOOL)calledFromDealloc {
++#if TARGET_OS_OSX
++    _soundqObservedPlayer = nil;_soundqObservedItem = nil;
++#endif
+     if (!_player) return;
+     if (_processingState != psIdle) {
+         [_player pause];

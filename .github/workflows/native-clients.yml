@@ -85,6 +85,8 @@ jobs:
         run: python3 -B -m unittest discover -s native/tests -p test_window_response.py -v
       - run: scripts/build native-macos
         id: native-macos-build
+      - name: Test Flutter owned-player sampler without audio
+        run: python3 -B native/tests/flutter_native_readback_regressions.py --output "$RUNNER_TEMP/flutter-native-readback"
       - name: Collect native search optical discriminator
         id: search-optical-diagnostic
         run: |

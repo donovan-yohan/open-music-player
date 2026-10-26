@@ -12,6 +12,25 @@ import 'voice.dart';
 
 enum DriftCorrectionKind { speedNudge, hardSeek }
 
+/// A single observation of one loaded source, not a playback or byte lease.
+/// Observation never occupies scheduling or native mutation queues.
+class VoiceSourceReadCapture {
+  VoiceSourceReadCapture._(this._voice, this._isCurrent);
+
+  final Voice _voice;
+  final bool Function() _isCurrent;
+  bool _used = false;
+
+  Future<T> read<T>(Future<T> Function(Voice) observe) async {
+    if (_used) throw StateError('native-readback-stale');
+    _used = true;
+    if (!_isCurrent()) throw StateError('native-readback-stale');
+    final result = await observe(_voice);
+    if (!_isCurrent()) throw StateError('native-readback-stale');
+    return result;
+  }
+}
+
 class DriftCorrectionEvent {
   const DriftCorrectionEvent({
     required this.clipId,
@@ -121,6 +140,8 @@ class VoicePool {
   Future<void>? _disposeFuture;
   int _generation = 0;
   int _modelRevision = 0;
+  int _pendingReadValidations = 0;
+  int _readMappingRevision = 0;
   bool _started = false;
   bool _coordinatedResumeInProgress = false;
   bool _suppressClockSync = false;
@@ -140,6 +161,101 @@ class VoicePool {
       _driftCorrectionController.stream;
   Stream<Set<String>> get pitchFallbackClipIdsStream =>
       _pitchFallbackController.stream;
+
+  /// Captures the exact loaded owner; labels alone never authorize a read.
+  VoiceSourceReadCapture? captureSingleSourceRead(
+      String clipId, String? queueItemId, String trackId) {
+    final voice = _activeVoices[clipId];
+    final clip = _activeClips[clipId];
+    final owner = _sourceOwners[voice];
+    final scope = owner?.readScope;
+    final source = owner?.source;
+    final identity = _activeSourceIdentities[clipId];
+    bool current() =>
+        _started &&
+        _stopFuture == null &&
+        _disposeFuture == null &&
+        _pendingReadValidations == 0 &&
+        _activeVoices.length == 1 &&
+        identical(_activeVoices[clipId], voice) &&
+        identical(_sourceOwners[voice], owner) &&
+        identical(owner?.readScope, scope) &&
+        scope != null &&
+        !scope.revoked &&
+        source != null &&
+        identical(owner?.source, source) &&
+        identity != null &&
+        identical(_activeSourceIdentities[clipId], identity) &&
+        voice != null &&
+        voice.isLoaded &&
+        voice.isReady &&
+        _voiceStatus[clipId] == VoiceEventKind.ready &&
+        owner?.clipId == clipId &&
+        owner?.queueItemId == queueItemId &&
+        owner?.trackId == trackId &&
+        _activeClips[clipId]?.queueItemId == queueItemId &&
+        _activeClips[clipId]?.trackId == trackId;
+    if (clip == null || !current()) return null;
+    return VoiceSourceReadCapture._(voice!, current);
+  }
+
+  void _revokeSourceReads({bool terminal = false}) {
+    for (final owner in _sourceOwners.values) {
+      owner.revokeRead(terminal: terminal);
+    }
+  }
+
+  bool _sameReadMapping(MixClip a, MixClip b) =>
+      a.id == b.id &&
+      a.queueItemId == b.queueItemId &&
+      a.trackId == b.trackId &&
+      a.audioSourceRef == b.audioSourceRef &&
+      a.timelineStartMs == b.timelineStartMs &&
+      a.placement.sourceStartMs == b.placement.sourceStartMs &&
+      a.placement.sourceEndMs == b.placement.sourceEndMs &&
+      a.placement.sourceDurationMs == b.placement.sourceDurationMs &&
+      a.rateAutomation == b.rateAutomation;
+
+  // Intent-time revocation precedes queued sync and native awaits, including
+  // edit-away/edit-back and transient cardinality changes.
+  void _revokeChangedReadMapping(TimelineModel model, int globalMs,
+      {bool force = false}) {
+    final active = model.activeClipsAt(globalMs).take(_maxVoices).toList();
+    if (force ||
+        active.length != _activeClips.length ||
+        active.any((clip) =>
+            _activeClips[clip.id] == null ||
+            !_sameReadMapping(_activeClips[clip.id]!, clip))) {
+      _readMappingRevision++;
+      _revokeSourceReads();
+    }
+  }
+
+  void _admitSourceReads() {
+    if (!_started || _disposeFuture != null || _pendingReadValidations != 0) {
+      return;
+    }
+    for (final entry in _activeVoices.entries) {
+      final voice = entry.value;
+      final owner = _sourceOwners[voice];
+      if (owner == null || owner.readTerminal || owner.source == null) continue;
+      final clip = _activeClips[entry.key];
+      if (clip == null ||
+          owner.clipId != clip.id ||
+          owner.queueItemId != clip.queueItemId ||
+          owner.trackId != clip.trackId ||
+          owner.audioSourceRef != clip.audioSourceRef) {
+        continue;
+      }
+      if (voice.isLoaded &&
+          voice.isReady &&
+          _activeSourceIdentities[entry.key] != null &&
+          _voiceStatus[entry.key] == VoiceEventKind.ready &&
+          (owner.readScope == null || owner.readScope!.revoked)) {
+        owner.readScope = _SourceReadScope();
+      }
+    }
+  }
 
   Future<void> start() async {
     if (_disposeFuture != null) return;
@@ -183,6 +299,8 @@ class VoicePool {
     bool preserveActivePlayback = false,
   }) async {
     // Revoke an in-flight synchronization before its queued successor runs.
+    _revokeChangedReadMapping(model, _clock.positionMs,
+        force: !preserveActivePlayback);
     _modelRevision += 1;
     _model = model;
     _retireTerminalStatuses(model);
@@ -203,6 +321,7 @@ class VoicePool {
   /// unchanged. Active voice references are refreshed so later gain/tempo
   /// updates consume the new immutable clips.
   void replaceMixMetadata(TimelineModel model) {
+    _revokeChangedReadMapping(model, _clock.positionMs);
     _model = model;
     _retireTerminalStatuses(model);
     final clipsById = {for (final clip in model.clips) clip.id: clip};
@@ -227,14 +346,27 @@ class VoicePool {
 
   Future<void> _enqueueSyncAt(int globalMs,
       {bool forceSeek = false, bool validateResolvedIdentities = false}) {
+    _revokeChangedReadMapping(_model, globalMs,
+        force: forceSeek || validateResolvedIdentities);
     // A queued position belongs to the model intent at request time, not the
     // replacement that may be installed while an earlier native load yields.
     final modelRevision = _modelRevision;
+    final validatesRead = forceSeek || validateResolvedIdentities;
+    final readMappingRevision = _readMappingRevision;
+    if (validatesRead) _pendingReadValidations++;
     final next = _syncChain.then<void>((_) async {
-      if (modelRevision != _modelRevision) return;
-      await _syncAt(globalMs,
-          forceSeek: forceSeek,
-          validateResolvedIdentities: validateResolvedIdentities);
+      var admitted = false;
+      try {
+        if (modelRevision != _modelRevision) return;
+        await _syncAt(globalMs,
+            forceSeek: forceSeek,
+            validateResolvedIdentities: validateResolvedIdentities);
+        admitted = modelRevision == _modelRevision &&
+            readMappingRevision == _readMappingRevision;
+      } finally {
+        if (validatesRead) _pendingReadValidations--;
+        if (admitted) _admitSourceReads();
+      }
     });
     _syncChain = next.then((_) {}, onError: (_) {});
     return next;
@@ -268,7 +400,14 @@ class VoicePool {
           final voice = entry.value;
           final owner = _sourceOwners[voice];
           if (!_isCurrentVoice(entry.key, voice, generation)) continue;
-          await voice.pause();
+          try {
+            await voice.pause();
+          } catch (_) {
+            // Native control errors need not emit a processing error. Retire
+            // only the owner submitted to native, never a later replacement.
+            owner?.revokeRead(terminal: true);
+            rethrow;
+          }
           if (!isCurrent() ||
               !_isCurrentVoice(entry.key, voice, generation) ||
               !identical(_sourceOwners[voice], owner)) {
@@ -293,7 +432,13 @@ class VoicePool {
         if (existing != null) {
           _activeClips[clip.id] = clip;
           if (forceSeek) {
-            await existing.seekLocal(_localPosition(clip, globalMs));
+            final owner = _sourceOwners[existing];
+            try {
+              await existing.seekLocal(_localPosition(clip, globalMs));
+            } catch (_) {
+              owner?.revokeRead(terminal: true);
+              rethrow;
+            }
           }
           continue;
         }
@@ -339,6 +484,7 @@ class VoicePool {
   }
 
   Future<void> stop() {
+    _revokeSourceReads();
     final pending = _stopFuture;
     if (pending != null) return pending;
     late final Future<void> stopping;
@@ -476,6 +622,7 @@ class VoicePool {
 
   Future<void> _releaseClip(String clipId, Voice voice) async {
     if (_activeVoices[clipId] != voice) return;
+    _revokeSourceReads();
     final owner = _sourceOwners[voice];
     _activeVoices.remove(clipId);
     _activeClips.remove(clipId);
@@ -525,7 +672,8 @@ class VoicePool {
     Voice voice,
   ) async {
     final modelRevision = _modelRevision;
-    final owner = _VoiceSourceOwner();
+    final owner = _VoiceSourceOwner(clip);
+    _revokeSourceReads();
     _sourceOwners[voice] = owner;
     _activeVoices[clip.id] = voice;
     _activeClips[clip.id] = clip;
@@ -585,6 +733,7 @@ class VoicePool {
       _voiceStatus[clip.id] = VoiceEventKind.error;
       _publishStatus();
       var cleanupFailed = false;
+      owner.revokeRead(terminal: true);
       try {
         await _retirePreparedVoice(clip.id, voice, owner);
       } catch (_) {
@@ -666,6 +815,7 @@ class VoicePool {
         restored[clip.id] = voice;
       } catch (error, stack) {
         controlError ??= error;
+        _sourceOwners[voice]?.revokeRead(terminal: true);
         controlStack ??= stack;
       }
     }));
@@ -719,7 +869,13 @@ class VoicePool {
     final currentMs = _clock.positionMs;
     await _setVoiceVolume(voice, 0);
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
-    await voice.seekLocal(_localPosition(clip, currentMs));
+    final owner = _sourceOwners[voice];
+    try {
+      await voice.seekLocal(_localPosition(clip, currentMs));
+    } catch (_) {
+      owner?.revokeRead(terminal: true);
+      rethrow;
+    }
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
     if (_clock.isPlaying) _requestPlay(clip.id, voice);
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
@@ -773,7 +929,13 @@ class VoicePool {
           final voice = _activeVoices[clip.id]!;
           await _setVoiceVolume(voice, 0);
           if (!_isCurrentVoice(clip.id, voice, generation)) return;
-          await voice.seekLocal(_localPosition(clip, globalMs));
+          final owner = _sourceOwners[voice];
+          try {
+            await voice.seekLocal(_localPosition(clip, globalMs));
+          } catch (_) {
+            owner?.revokeRead(terminal: true);
+            rethrow;
+          }
           if (!_isCurrentVoice(clip.id, voice, generation)) return;
           await _applyPlaybackTuning(voice, clip, globalMs);
         }));
@@ -800,7 +962,15 @@ class VoicePool {
       }
     } else {
       final voices = _activeVoices.values.toList(growable: false);
-      await Future.wait(voices.map((voice) => voice.pause()));
+      await Future.wait(voices.map((voice) async {
+        final owner = _sourceOwners[voice];
+        try {
+          await voice.pause();
+        } catch (_) {
+          owner?.revokeRead(terminal: true);
+          rethrow;
+        }
+      }));
     }
   }
 
@@ -812,6 +982,7 @@ class VoicePool {
       } catch (_) {
         if (!_isCurrentVoice(clipId, voice, _generation)) return;
         _voiceStatus[clipId] = VoiceEventKind.error;
+        _sourceOwners[voice]?.revokeRead(terminal: true);
         _publishStatus();
       }
     }());
@@ -900,7 +1071,13 @@ class VoicePool {
         final targetGain = entry.value.gainAt(globalMs);
         await _setVoiceVolume(voice, 0);
         if (!_isCurrentVoice(entry.key, voice, generation)) continue;
-        await voice.resync(expected);
+        final owner = _sourceOwners[voice];
+        try {
+          await voice.resync(expected);
+        } catch (_) {
+          owner?.revokeRead(terminal: true);
+          rethrow;
+        }
         if (!_isCurrentVoice(entry.key, voice, generation)) continue;
         await _setVoiceVolume(voice, targetGain);
       } else if (drift > _driftSpeedNudgeThreshold.inMilliseconds) {
@@ -987,6 +1164,10 @@ class VoicePool {
           .cast<String?>()
           .firstOrNull;
       if (clipId == null) return;
+      if (event.kind == VoiceEventKind.error ||
+          event.kind == VoiceEventKind.completed) {
+        _sourceOwners[voice]?.revokeRead(terminal: true);
+      }
       _voiceStatus[clipId] = event.kind;
       _publishStatus();
       _updateBufferingHold(_model.activeClipsAt(_clock.positionMs));
@@ -1023,6 +1204,7 @@ class VoicePool {
         _voiceGain[voice] = clamped;
       } catch (_) {
         _voiceGain.remove(voice);
+        _sourceOwners[voice]?.revokeRead(terminal: true);
         rethrow;
       }
     }();
@@ -1068,15 +1250,18 @@ class VoicePool {
         (previous.pitchFactor - pitchFactor).abs() >= _tuningPitchEpsilon;
 
     final appliedSpeed = speedChanged ? safeRate : previous.speed;
-    if (speedChanged) {
-      await voice.setSpeed(safeRate);
-    }
-
     bool? pitchSupported = previous?.pitchSupported;
     final appliedPitchFactor =
         pitchChanged ? pitchFactor : previous.pitchFactor;
-    if (pitchChanged || pitchSupported == null) {
-      pitchSupported = await voice.setPitch(pitchFactor);
+    final owner = _sourceOwners[voice];
+    try {
+      if (speedChanged) await voice.setSpeed(safeRate);
+      if (pitchChanged || pitchSupported == null) {
+        pitchSupported = await voice.setPitch(pitchFactor);
+      }
+    } catch (_) {
+      owner?.revokeRead(terminal: true);
+      rethrow;
     }
     _voiceTuning[voice] = _PlaybackTuningState(
       speed: appliedSpeed,
@@ -1161,7 +1346,28 @@ class _PlaybackTuningState {
 }
 
 class _VoiceSourceOwner {
+  _VoiceSourceOwner(MixClip clip)
+      : clipId = clip.id,
+        queueItemId = clip.queueItemId,
+        trackId = clip.trackId,
+        audioSourceRef = clip.audioSourceRef;
+
+  final String clipId;
+  final String? queueItemId;
+  final String trackId;
+  final String audioSourceRef;
   ResolvedAudioSource? source;
+  _SourceReadScope? readScope;
+  bool readTerminal = false;
+
+  void revokeRead({bool terminal = false}) {
+    readScope?.revoked = true;
+    readTerminal |= terminal;
+  }
+}
+
+class _SourceReadScope {
+  bool revoked = false;
 }
 
 class _PreparedVoice {
