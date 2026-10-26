@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'token_storage_backend.dart';
 import 'token_storage_platform.dart';
 import '../platform/desktop_initialization.dart';
+import '../performance/fixture_tokens.dart';
 
 /// An explicit capability for one local authenticated lifetime, not a JWT.
 /// Refresh rotation preserves it; account intent/replacement revokes it.
@@ -53,7 +54,15 @@ class SecureStorage {
   final TokenStorageBackend _tokens;
   final _TokenSession _session;
 
-  SecureStorage(
+  factory SecureStorage(
+      {FlutterSecureStorage? storage, TokenStorageBackend? tokenStorage}) {
+    if (performanceFixtureEnabled) {
+      return SecureStorage._(tokenStorage: fixtureTokenBackend());
+    }
+    return SecureStorage._(storage: storage, tokenStorage: tokenStorage);
+  }
+
+  SecureStorage._(
       {FlutterSecureStorage? storage, TokenStorageBackend? tokenStorage})
       : _tokens = tokenStorage ?? createTokenStorageBackend(storage: storage),
         _session = tokenStorage != null

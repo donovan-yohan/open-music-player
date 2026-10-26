@@ -178,6 +178,9 @@ jobs:
         env:
           FLUTTER_TEST_ARGS: --coverage
 
+      - name: Test opted-in fixture refusal and credential-session isolation
+        run: flutter test --no-pub --concurrency=1 --dart-define=SOUNDQ_PERFORMANCE_FIXTURE=true test/performance_fixture_test.dart test/performance_fixture_source_test.dart test/performance_fixture_export_test.dart
+
       - name: Tune Gradle for CI APK build
         if: ${{ github.event_name == 'pull_request' }}
         run: |
