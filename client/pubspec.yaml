@@ -42,6 +42,8 @@ dependencies:
 
 # Reviewed one-line Android terminal mapping; provenance and checks live beside it.
 dependency_overrides:
+  just_audio:
+    path: third_party/just_audio
   audio_service:
     path: third_party/audio_service
 

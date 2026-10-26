@@ -74,6 +74,7 @@ run_client() {
     cd "$ROOT/client"
     flutter pub get
     python3 test/audio_service_vendor_check.py
+    python3 -B test/just_audio_vendor_check.py
     python3 test/android_media_source_check.py
     if [ -n "${FLUTTER_TEST_ARGS:-}" ]; then
       # shellcheck disable=SC2206

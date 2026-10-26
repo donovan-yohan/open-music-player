@@ -107,6 +107,14 @@ class JustAudioVoice implements Voice {
   }
 
   final AudioPlayer _player;
+
+  /// Explicit fixture-only observation of this voice's existing native player.
+  /// The package method enforces profile/compile/capability/source fences.
+  Future<Map<String, dynamic>> soundqNativeReadback({
+    required String capability,
+  }) =>
+      _player.soundqNativeReadback(capability: capability);
+
   final _events = StreamController<VoiceEvent>.broadcast();
   bool _isLoaded = false;
   bool _isReady = false;

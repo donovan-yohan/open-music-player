@@ -1,0 +1,157 @@
+{
+  "package": "just_audio",
+  "version": "0.10.6",
+  "origin": "installed-pub-cache-exact-files",
+  "upstream_archive_authenticated": false,
+  "included_roots": [
+    "lib",
+    "android",
+    "darwin"
+  ],
+  "files": {
+    "lib/just_audio.dart": {
+      "sha256": "4c806e95ecdcf61f3c8287e37f1f682f62421b080d87156189effd5b62e019de",
+      "mode": "0o644"
+    },
+    "android/build.gradle.kts": {
+      "sha256": "e568ec02f8bdffabfeba525df3acea4959e07212195591285b1e3fda500cc2c2",
+      "mode": "0o644"
+    },
+    "android/settings.gradle.kts": {
+      "sha256": "eeff410ca24e1d9ad3c8191bf54771e3669eac0405c15fdd6fe2c60b89ab5d1d",
+      "mode": "0o644"
+    },
+    "android/gradle.properties": {
+      "sha256": "3c1fc1d9cad8765e2b44821c4774644b590bb58ecab6beb4bae2470ece0175be",
+      "mode": "0o644"
+    },
+    "android/src/main/AndroidManifest.xml": {
+      "sha256": "bfe643676c7bfecf2683b1ad8044a754bc53141c9e4fc6714ad58c1530937b6d",
+      "mode": "0o644"
+    },
+    "android/src/main/java/com/ryanheise/just_audio/BetterEventChannel.java": {
+      "sha256": "ce2816c014760b9397c38c43ccd5d5796928dd77a029b42e136baf4e8f9cfbe7",
+      "mode": "0o644"
+    },
+    "android/src/main/java/com/ryanheise/just_audio/AudioPlayer.java": {
+      "sha256": "b4d27bfe9d66a2fe75f13401b9ffb30bbacc2f614470167f3e7d98864c9f9f3c",
+      "mode": "0o644"
+    },
+    "android/src/main/java/com/ryanheise/just_audio/JustAudioPlugin.java": {
+      "sha256": "b72144aff5e57bc706563287921d8fb7a631f9b7a14fa85a7b77180c2a9b7daa",
+      "mode": "0o644"
+    },
+    "android/src/main/java/com/ryanheise/just_audio/MainMethodCallHandler.java": {
+      "sha256": "e94040e14ae05d48e117fa2499935546bd249570684ceeb791eb2eb539f68779",
+      "mode": "0o644"
+    },
+    "darwin/just_audio.podspec": {
+      "sha256": "480ebdcb82b7de75e4019125d35af16f27549b1d4bcdb8daa7b227a42683c53f",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Package.swift": {
+      "sha256": "b25e80b68322bafadf65d5efce1e7995aaaa42192fe4042900c4d3b9913fc711",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/IndexedAudioSource.m": {
+      "sha256": "87df5be61cd85595f2874a5721b0db3bb07b2873a1bb8b2e3d3c7a9286b7a2e0",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/JustAudioPlugin.m": {
+      "sha256": "22ab13fba44abab5fd71e3fe406ec5ac72e8b506ef6a0449109a49b50537d985",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/ClippingAudioSource.m": {
+      "sha256": "b921ae8cd46710fe93aedb4a9aa16ade2891300638c3ba9c363adef28c6d77ed",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/LoadControl.m": {
+      "sha256": "1ea370a28d1c77fbe662f58f7911566ac23bb5c341c8b6605fa0ca6c8fa75fb2",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/IndexedPlayerItem.m": {
+      "sha256": "1821c63d050efe00643bb3add543ec45a2d1b69f8b30e1216b508a529d2660f3",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/UriAudioSource.m": {
+      "sha256": "2b793848ce3e2b744814c46071db01d47b9e26ac9e072345650be1f4bbf0c041",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/BetterEventChannel.m": {
+      "sha256": "f02acdee5dc1e5becdb3cb262fb8e9a348975ae2dd4dfc9d60752b61d88cfa57",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/ConcatenatingAudioSource.m": {
+      "sha256": "a809c0e0854f5465aae47f9e5cf97f6cbc6d77cdd3e4397dbd222e244aa16b27",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/AudioSource.m": {
+      "sha256": "c2544a8be603f61c096dbc0dbd254d24b7d4095a603c95e874f2d37987974a48",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/AudioPlayer.m": {
+      "sha256": "e9debb9231e4edf7c2bfcbde041df4fd726b33b6f4545425b19738be0454d573",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/LoopingAudioSource.m": {
+      "sha256": "f6743b64e621547168c65e82ac56d8921a37f4fcbc759f64b86c5775784e2556",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/include/just_audio/BetterEventChannel.h": {
+      "sha256": "65e704b1d740892c8c18a92c3df00efb2a578e5e88a0907661fb9bfd6dea5d8a",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/include/just_audio/UriAudioSource.h": {
+      "sha256": "79f74f9ba26672acd7b14d9e6b0f4b592ceb9f83e31445373a076bf4f347fff6",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/include/just_audio/IndexedPlayerItem.h": {
+      "sha256": "724bc8d0559e9f985136a230afb7c28b20aaf8a8a89a3e5b7cdaeede2655a621",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/include/just_audio/ConcatenatingAudioSource.h": {
+      "sha256": "7808b71f43e36d374f024dcbb64f858af4bf16a6f39668b51badf5db811164af",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/include/just_audio/AudioSource.h": {
+      "sha256": "f12f7a9cb7ed182e8087a9fd11fdc3d2f8b1c6516b094c15f7edcee69b48766c",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/include/just_audio/AudioPlayer.h": {
+      "sha256": "0badf9e8f69bc9aaa5544cf80021d6d933d59202b5a1b32e6eef0edb515824dd",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/include/just_audio/LoopingAudioSource.h": {
+      "sha256": "7407557ac8624d6a20d4a9593238db0ded0dd65ca79ea3ecaa3adc19b8f71dd1",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/include/just_audio/IndexedAudioSource.h": {
+      "sha256": "cfe21ec4cdc77e014073f337676ac8e02628b3441e4fb380c9b1c662444d4408",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/include/just_audio/LoadControl.h": {
+      "sha256": "b6e2ec15613c00e7ed78036b9ecc449fe913f1363093384df3970cde193f0654",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/include/just_audio/ClippingAudioSource.h": {
+      "sha256": "142fd8b46d0c737afcc09203b988f1e6ba264380e4ef70660dc9c7333f1692ce",
+      "mode": "0o644"
+    },
+    "darwin/just_audio/Sources/just_audio/include/just_audio/JustAudioPlugin.h": {
+      "sha256": "3b4a0476345e7b873b3360331211de2de7e3ac5632ffba4242c992a354da60c7",
+      "mode": "0o644"
+    },
+    "LICENSE": {
+      "sha256": "63ce4443e916b27424700d7fe970003add9f54944daf732f2dbcc1d8caf1bbad",
+      "mode": "0o644"
+    },
+    "pubspec.yaml": {
+      "sha256": "51acb247dc1685214f65c8fab4825a9132a95921fd6ae9d61eef3b9af7ee1f28",
+      "mode": "0o644"
+    },
+    "analysis_options.yaml": {
+      "sha256": "965b75f8a544c463275f1183d786067d73b8c11bec023989e5310ffe720be549",
+      "mode": "0o644"
+    }
+  }
+}

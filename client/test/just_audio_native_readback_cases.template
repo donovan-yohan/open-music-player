@@ -1,0 +1,116 @@
+import 'dart:async';
+
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+// Generated production method extraction is imported only by its private
+// runner. The actual source method keeps its compile-time opt-in unchanged.
+// This file is a template, not an application audio implementation.
+// __PRODUCTION_METHOD_IMPORT__
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  const id = '00000000-0000-4000-8000-000000000001';
+  final channel = const MethodChannel('com.ryanheise.just_audio.methods.$id');
+  final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  late DiagnosticFacade player;
+  late Map<String, dynamic> response;
+  var calls = 0;
+  Completer<Map<String, dynamic>>? held;
+  final capability = List.filled(64, 'a').join();
+
+  setUp(() {
+    profileMode = true;
+    darwinPlatform = true;
+    calls = 0;
+    held = null;
+    player = DiagnosticFacade(id);
+    response = {
+      'schema': 'soundq.just-audio.native-readback.v1',
+      'platform_id': id,
+      'source_id': '00000000-0000-4000-8000-000000000002',
+      'pid': 10, 'player_witness': 1, 'item_witness': 1,
+      'clock': 'mach_absolute_time', 'before_ticks': 100, 'after_ticks': 102,
+      'timebase_numer': 1, 'timebase_denom': 1,
+      'position_value': 6000, 'position_timescale': 1000,
+      'position_epoch': 0, 'position_flags': 1,
+      'item_position_value': 6000, 'item_position_timescale': 1000,
+      'item_position_epoch': 0, 'item_position_flags': 1,
+      'rate': 1.0, 'time_control_status': 2, 'player_status': 1,
+      'item_status': 1, 'error_present': false, 'current_index': 0,
+    };
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls++;
+      expect(call.method, 'soundqNativeReadback');
+      expect(call.arguments, {'capability': capability});
+      return held == null ? response : await held!.future;
+    });
+  });
+  tearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+  test('production method forwards exact owned player request', () async {
+    final value = await player.soundqNativeReadback(capability: capability);
+    expect(value, response);
+    expect(calls, 1);
+    expect(() => value['pid'] = 2, throwsUnsupportedError);
+    expect(player.activations, 0);
+  });
+
+  for (final kind in ['profile', 'platform', 'capability', 'inactive', 'disposed', 'idle', 'missing', 'id']) {
+    test('production method refuses $kind before dispatch', () async {
+      if (kind == 'profile') profileMode = false;
+      if (kind == 'platform') darwinPlatform = false;
+      if (kind == 'inactive') player.active = false;
+      if (kind == 'disposed') player.disposed = true;
+      if (kind == 'idle') player.platform = IdleFacade(id);
+      if (kind == 'missing') player.platform = null;
+      if (kind == 'id') player.ownerId = 'other';
+      await expectLater(player.soundqNativeReadback(capability: kind == 'capability' ? 'invalid' : capability), throwsStateError);
+      expect(calls, 0);
+      expect(player.activations, 0);
+    });
+  }
+
+  for (final kind in ['replaced', 'retired', 'disposed', 'id', 'source']) {
+    test('production method refuses held response after $kind', () async {
+      held = Completer<Map<String, dynamic>>();
+      final pending = player.soundqNativeReadback(capability: capability);
+      await Future<void>.delayed(Duration.zero);
+      expect(calls, 1);
+      if (kind == 'replaced') player.platform = PlatformFacade(id);
+      if (kind == 'retired') player.active = false;
+      if (kind == 'disposed') player.disposed = true;
+      if (kind == 'id') player.ownerId = 'other';
+      held!.complete(response);
+      if (kind == 'source') player.replaceSource();
+      await expectLater(pending, throwsStateError);
+      expect(player.activations, 0);
+    });
+  }
+
+  for (final entry in <String, Object?>{
+    'schema': 'wrong', 'platform_id': 'wrong', 'source_id': 'private-source',
+    'pid': true, 'before_ticks': 0, 'after_ticks': 99,
+    'timebase_denom': 0, 'position_timescale': 0, 'position_epoch': 1,
+    'position_flags': 5, 'item_position_flags': 0,
+    'rate': '1', 'error_present': 'false', 'current_index': -1,
+    'time_control_status': 3, 'item_status': 3, 'clock': 'wall-clock',
+  }.entries) {
+    test('production method rejects malformed ${entry.key}', () async {
+      response[entry.key] = entry.value;
+      await expectLater(player.soundqNativeReadback(capability: capability), throwsStateError);
+      expect(calls, 1);
+    });
+  }
+  test('production method rejects extra or missing fields', () async {
+    response['url'] = 'not-allowed';
+    await expectLater(player.soundqNativeReadback(capability: capability), throwsStateError);
+    response.remove('url');response.remove('rate');
+    await expectLater(player.soundqNativeReadback(capability: capability), throwsStateError);
+  });
+  test('native refusal remains refusal without retries', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async {calls++;throw PlatformException(code: 'native-readback-unavailable');});
+    await expectLater(player.soundqNativeReadback(capability: capability), throwsA(isA<PlatformException>()));
+    expect(calls, 1);
+  });
+}
