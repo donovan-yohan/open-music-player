@@ -33,9 +33,13 @@ import 'core/download/download_service.dart';
 import 'core/download/download_state.dart';
 import 'core/services/library_service.dart';
 import 'core/services/liked_tracks_state.dart';
+import 'core/performance/performance_fixture.dart';
 
 Future<void> main() async {
+  await PerformanceFixture.preflight();
   WidgetsFlutterBinding.ensureInitialized();
+  PerformanceFixture.verifyIsolation();
+  await PerformanceFixture.configureDatabases();
   await runApplicationStartup(_initializeApplication);
 }
 
@@ -70,6 +74,12 @@ Future<void> _initializeApplication() async {
   final authService = AuthService(api: apiClient, storage: storage);
   final authState = AuthState(authService: authService);
   await authState.checkAuthStatus();
+  final fixture = PerformanceFixture.active;
+  if (fixture != null &&
+      !await authState.login(
+          email: fixture.email, password: fixture.password)) {
+    throw StateError('fixture-authentication-failed');
+  }
   Future<String?> currentAccountId() async =>
       accountIdFromAccessToken(await storage.getAccessToken());
   final initialAccountId = await currentAccountId();
@@ -81,11 +91,13 @@ Future<void> _initializeApplication() async {
 
   final signedAudioUrlService = SignedAudioUrlService(apiClient);
 
-  final offlineDb = OfflineDatabase();
+  final offlineDb =
+      OfflineDatabase(databasePathProvider: fixture?.databasePath);
   final connectivityService = ConnectivityService();
   final downloadService = DownloadService(
     db: offlineDb,
     signedAudioUrlService: signedAudioUrlService,
+    downloadDirectoryProvider: fixture?.downloadDirectory,
   );
   final downloadState = DownloadState(
     downloadService: downloadService,
@@ -101,6 +113,7 @@ Future<void> _initializeApplication() async {
       : PlaybackCacheManager(
           store: offlineDb,
           explicitDownloads: downloadService,
+          cacheDirectoryProvider: fixture?.cacheDirectory,
         );
 
   final audioPreparationService = playbackCacheManager == null
@@ -149,6 +162,7 @@ Future<void> _initializeApplication() async {
   // that do own a shorter-lived handler, and is idempotent for that reason.
   if (!kIsWeb) {
     await audio_service.AudioService.init<MixAudioHandler>(
+      cacheManager: fixture?.artworkCache,
       builder: () => MixAudioHandler(
         playbackState: playbackState,
         likedTracksState: likedTracksState,
