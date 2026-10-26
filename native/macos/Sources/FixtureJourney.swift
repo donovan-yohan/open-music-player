@@ -6,9 +6,25 @@ import Darwin
 // Explicitly opt-in journey against cmd/native-fixture. Calls the actual native
 // view actions and player. It does not stand in for independent human input QA.
 extension App {
+    func phasePlaybackStamp() -> PlaybackStamp {
+        PlaybackStamp(player:player,item:player?.currentItem,account:accountScope,epoch:epoch,
+            session:snapshot?.session ?? 0,occurrence:snapshot?.selected_occurrence,
+            queue:snapshot?.queue.map(\.id) ?? [],rows:snapshot?.library.count ?? 0,
+            settled:busy == 0 && snapshot?.authenticated == true && table.numberOfRows == 500,
+            ready:player?.status == .readyToPlay && player?.currentItem?.status == .readyToPlay,
+            failed:player?.error != nil || player?.currentItem?.status == .failed || snapshot?.transport == "failed",
+            positionSeconds:player?.currentTime().seconds,rate:Double(player?.rate ?? 0),
+            scrollY:Double(scroll.contentView.bounds.origin.y))
+    }
+    func finishPhaseMeasurement(passed:Bool,code:String? = nil) -> Bool {
+        guard let recorder = phaseConfiguration?.recorder,!phaseFinalized else {return passed}
+        phaseFinalized = true
+        do {try recorder.finish(journeyPassed:passed,code:code);return recorder.status == "passed"}
+        catch {return false}
+    }
     func startFixtureJourney() {
         guard !journeyStarted else{return};journeyStarted = true
-        Task { @MainActor in
+        fixtureJourneyTask = Task { @MainActor in
             var samples = [[String:Any]]()
             var checks = [String]()
             let started = ProcessInfo.processInfo.systemUptime
@@ -29,6 +45,11 @@ extension App {
                 try await wait("authenticated populated library") {self.snapshot?.library.count == 50 && self.busy == 0}
                 for _ in 0..<9 {self.loadMore();try await wait("next page settled") {self.busy == 0}}
                 try await wait("500 real Go library rows") {self.snapshot?.library.count == 500}
+                if let recorder = self.phaseConfiguration?.recorder {
+                    try recorder.begin(.populatedIdle,playback:self.phasePlaybackStamp())
+                    try await Task.sleep(for:.milliseconds(3200))
+                    try recorder.end(playback:self.phasePlaybackStamp())
+                }
                 self.command(["command":"clear_cache"])
                 try await wait("owned cache clear settled") {self.busy == 0}
                 self.table.selectRowIndexes(IndexSet(integer:0),byExtendingSelection:false)
@@ -37,10 +58,18 @@ extension App {
                 try await wait("cold platform decoder advances") {self.player?.rate ?? 0 > 0 && self.player?.currentTime().seconds ?? 0 > 0.2}
                 if self.lastEffectCached {throw NSError(domain:"SoundQFixture",code:3,userInfo:[NSLocalizedDescriptionKey:"cold run unexpectedly cached"])}
                 record("cold_selection_to_200ms_native_cursor",begin)
+                if let recorder = self.phaseConfiguration?.recorder {
+                    try await wait("phase audio boundary settled") {self.busy == 0}
+                    try recorder.begin(.audioIdle,playback:self.phasePlaybackStamp())
+                    try await Task.sleep(for:.milliseconds(3200))
+                    try recorder.end(playback:self.phasePlaybackStamp())
+                }
                 // Scripted populated/audio-active list scrolling. Display/frame
                 // instrumentation must be collected independently alongside it.
                 begin = ProcessInfo.processInfo.systemUptime
+                try self.phaseConfiguration?.recorder.begin(.audioScroll,playback:self.phasePlaybackStamp())
                 for row in stride(from:0,to:500,by:7) {self.table.scrollRowToVisible(row);try await Task.sleep(for:.milliseconds(20))}
+                try self.phaseConfiguration?.recorder.end(playback:self.phasePlaybackStamp())
                 record("scripted_audio_active_scroll_500_rows",begin)
                 self.command(["command":"pause"])
                 try await wait("pause reaches platform decoder") {self.player?.rate == 0 && self.busy == 0}
@@ -92,8 +121,12 @@ extension App {
                 try await wait("explicit resume uses restored native cursor") {self.player?.rate ?? 0 > 0 && self.player?.currentTime().seconds ?? 0 > 6.1}
                 self.clearQueue()
                 try await wait("clear queue retires decoder") {self.snapshot?.queue.isEmpty==true && self.player==nil && self.busy==0}
-            } catch {outcome = "failed";failure = String(describing:error)}
+            } catch {
+                outcome = "failed"
+                failure = self.phaseConfiguration == nil ? String(describing:error) : "journey-failed"
+            }
             self.player?.pause();self.observation = nil;self.player?.replaceCurrentItem(with:nil);self.player = nil
+            if !self.finishPhaseMeasurement(passed:outcome == "passed",code:outcome == "passed" ? nil : "journey-failed") {outcome = "failed"}
             var report:[String:Any] = ["status":outcome,"checks":checks,"samples":samples,"elapsedSeconds":ProcessInfo.processInfo.systemUptime-started,"pid":ProcessInfo.processInfo.processIdentifier,"sourceRef":ProcessInfo.processInfo.environment["OMP_SOURCE_REF"] ?? "unknown","limits":"Scripted production AppKit actions and actual AVPlayer cursor/rate. Not loopback capture, human audibility, display FPS, physical controls, underrun measurement or independent review."]
             if let failure {report["failure"] = failure}
             if let path = ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_JOURNEY_REPORT"] {

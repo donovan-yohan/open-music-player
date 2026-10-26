@@ -163,6 +163,36 @@ print("LIBRARY_NATIVE_SELECTION_PASS \(passes.count) failures=\(failures.count)"
 '''
 
 
+TERMINATION_CASES = r'''
+// These collaborators observe the opt-in branch; all termination policy is the
+// byte-for-byte production applicationWillTerminate method extracted above.
+for (name,enabled,hasTask) in [("phase-opt-out",false,true),("phase-opt-in",true,true),("phase-opt-in-no-task",true,false)] {
+ let f=ready(),old=f.libraryDetailsAction!
+ old.open()
+ let sheet=f.libraryDetailsAlert!.alert,p=Player(),task=FixtureJourneyTask(),timer=Timer()
+ f.player=p;f.observation=1;f.timer=timer
+ f.phaseConfiguration=enabled ? PhaseConfiguration() : nil
+ f.fixtureJourneyTask=hasTask ? task : nil
+ var effects=[String](),phaseSawLiveDetails=true,legacySawRetiredDetails=true
+ let phaseBoundary={phaseSawLiveDetails = phaseSawLiveDetails && f.libraryDetailsAlert?.alert === sheet && old.active}
+ task.onCancel={effects.append("cancel");phaseBoundary()}
+ f.onPhaseFinish={effects.append("finish");phaseBoundary()}
+ let legacyBoundary={legacySawRetiredDetails = legacySawRetiredDetails && f.libraryDetailsAlert==nil && !old.active && f.libraryDetailsAction==nil && f.window.attachedSheet==nil}
+ f.onCloseQueueName={effects.append("queue-close");legacyBoundary()}
+ timer.onInvalidate={effects.append("timer");legacyBoundary()}
+ p.onEffect={effects.append(p.events.isEmpty ? "pause" : "replace");legacyBoundary()}
+ f.bridge.onRevoke={effects.append("revoke");legacyBoundary()}
+ check("termination-"+name+"-positive-live-preconditions",f.libraryDetailsAlert?.alert === sheet && old.active && f.player === p && f.observation != nil && (f.phaseConfiguration != nil)==enabled && (f.fixtureJourneyTask != nil)==hasTask)
+ f.applicationWillTerminate(Notification(name:Notification.Name("quit")))
+ let expectedPhase=enabled ? (hasTask ? ["cancel","finish"] : ["finish"]) : []
+ check("termination-"+name+"-exact-effect-order",effects==expectedPhase+["queue-close","timer","pause","replace","revoke"])
+ check("termination-"+name+"-cancel-and-finalize-boundaries",task.cancelCount==(enabled && hasTask ? 1 : 0) && f.phaseFinishes.count==(enabled ? 1 : 0) && (!enabled || (f.phaseFinishes[0].passed==false && f.phaseFinishes[0].code=="termination")) && phaseSawLiveDetails)
+ check("termination-"+name+"-retired-before-every-legacy-effect",legacySawRetiredDetails && f.bridge.revocations==1 && p.events==["pause","replace"] && timer.invalidations==1)
+ old.open();sheet.drainCompletion()
+ check("termination-"+name+"-cleanup-and-no-revival",f.player==nil && f.observation==nil && f.libraryDetailsAlert==nil && f.libraryDetailsAction==nil && !old.active && f.bridge.sent.isEmpty)
+}
+'''
+
 def facade_probe(root, output, native_selection=False):
     source=(root/'native/macos/Sources/main.swift').read_text()
     metadata=(root/'native/macos/Sources/LibraryMetadataDisclosure.swift').read_text()
@@ -182,8 +212,23 @@ def facade_probe(root, output, native_selection=False):
     blocks={s:swift_block(source,s) for s in types+methods}
     projection=swift_block((root/'native/macos/Sources/LibraryDockView.swift').read_text(),'struct DockChrome {')
     app=r'''
-@MainActor class Timer {func invalidate(){}}
+// Deliberately small boundary observers, not a phase recorder or a live Task.
+// The extracted production wrapper alone decides admission and effect order.
+@MainActor class PhaseConfiguration {}
+@MainActor class FixtureJourneyTask {
+ var cancelCount=0;var onCancel:(()->Void)?
+ func cancel(){cancelCount+=1;onCancel?()}
+}
+@MainActor class Timer {
+ var invalidations=0;var onInvalidate:(()->Void)?
+ func invalidate(){invalidations+=1;onInvalidate?()}
+}
 @MainActor class App:NSObject,NSMenuItemValidation {
+ var phaseConfiguration:PhaseConfiguration?;var fixtureJourneyTask:FixtureJourneyTask?
+ var phaseFinishes=[(passed:Bool,code:String?)]();var onPhaseFinish:(()->Void)?;var onCloseQueueName:(()->Void)?
+ func finishPhaseMeasurement(passed:Bool,code:String? = nil)->Bool {
+  phaseFinishes.append((passed,code));onPhaseFinish?();return passed
+ }
  var window=Window();var snapshot:Snapshot?;var epoch:UInt64=1;var bridge=Bridge()
  var busy=0;var accountScope:UInt64=1;var storedCredentialVersion:UInt64=0;var wantsPlayback=false;var reportPending=false;var player:Player?;var observation:Any?;var timer:Timer?
  var email=Label();var password=Label();var loginArea=Label();var libraryArea=Label();var logout=Label();var table=Table();var titleLabel=Label();var transportLabel=Label();var play=Label();var slider=Slider();var status=Label()
@@ -191,7 +236,7 @@ def facade_probe(root, output, native_selection=False):
  var libraryDetailsMenuItem:NSMenuItem?
  @objc func clearQueue(){};@objc func playOccurrence(_ item:NSMenuItem){};@objc func removeOccurrence(_ item:NSMenuItem){};@objc func moveOccurrenceUp(_ item:NSMenuItem){};@objc func moveOccurrenceDown(_ item:NSMenuItem){};@objc func showOccurrenceName(_ item:NSMenuItem){};func queueNameOccurrence(_ item:NSMenuItem)->Occurrence? {nil}
  var libraryDetails=NSButton("Full details","");var libraryDetailsAction:LibraryMetadataAction?;var libraryDetailsAlert:(alert:NSAlert,action:LibraryMetadataAction)?
- func closeQueueName(){};func reconcileQueueName(_ s:Snapshot){};func deleteCredentials(){};func storeCredentials(_ c:Credentials,epoch:UInt64){};func applyAudio(_ effect:AudioEffect){};func loadLibrary(){}
+ func closeQueueName(){onCloseQueueName?()};func reconcileQueueName(_ s:Snapshot){};func deleteCredentials(){};func storeCredentials(_ c:Credentials,epoch:UInt64){};func applyAudio(_ effect:AudioEffect){};func loadLibrary(){}
  __METHODS__
 }
 '''.replace('__METHODS__','\n'.join(blocks[s] for s in methods))
@@ -213,7 +258,9 @@ def facade_probe(root, output, native_selection=False):
   scroll.documentView=table;root.addSubview(scroll);libraryDock=LibraryDockView()
  }
  var window=Window();''')
-    cases = re.sub(r'(?m)^func ', '@MainActor func ', NATIVE_SELECTION_CASES if native_selection else SWIFT_CASES)
+    cases = NATIVE_SELECTION_CASES if native_selection else SWIFT_CASES
+    cases = cases.replace('print("LIBRARY_', TERMINATION_CASES + '\nprint("LIBRARY_')
+    cases = re.sub(r'(?m)^func ', '@MainActor func ', cases)
     generated=base+'\n'+'\n'.join(blocks[s] for s in types)+'\n'+projection+'\n'+metadata.replace('import AppKit','')+'\n'+app+'\n'+cases
     path=output/'main.swift';path.write_text(generated)
     argv=['/usr/bin/swiftc','-swift-version','6','-j','2','-num-threads','2',str(path),'-o',str(output/'probe')]

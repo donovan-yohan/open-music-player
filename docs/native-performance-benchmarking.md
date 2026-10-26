@@ -165,9 +165,92 @@ never emits a cross-app ratio or `measured-matched-subset`.** Even equal domain
 strings cannot authorize one. Current unequal preview/reference visible work must
 remain separate. `full_app_accepted` is always false, regardless of `scope`.
 
-SurfaceFlinger/Perfetto presentation, CPU/RSS, startup, first native-progress
+## macOS app-process phase diagnostic (opt-in)
+
+This is separate from the offline frame reducer above. It records boundary
+`CLOCK_MONOTONIC_RAW` nanoseconds, cumulative self `getrusage` user/system
+microseconds, and Mach `task_info(MACH_TASK_BASIC_INFO)` resident bytes. CPU is
+`100 * delta(user+system) / elapsed`, **100% per core** (may exceed 100%). RSS is
+start/end/delta, not peak/PSS/a sampled distribution. There is no clock-epoch join
+with Python. No frame, FPS, acoustic, uninterrupted-output or speedup claim follows.
+
+```sh
+python3 -B native/tests/macos_phase_journey.py --app APP.app \
+  --artifact-manifest MANIFEST.json --fixture-home APPROVED_PRIVATE_FIXTURE_HOME \
+  --run-id native-01 --evidence NEW_DIRECTORY --timeout-seconds 90
+python3 -B -m unittest discover -s native/tests -p test_macos_phase_journey.py -v
+# Explicit sequential two-thread, window-free compiler lane:
+python3 -B native/tests/native_review_regressions.py --phase-only
+```
+
+The caller supplies a final **post-packaging/signing** manifest (the launcher
+never builds or discovers another artifact). Exact schema:
+
+```json
+{"schema":"soundq.macos.artifact.v1","source_commit":"<40 lowercase hex>",
+ "source_tree":"<40 lowercase hex>","build_mode":"release",
+ "executable":"Contents/MacOS/SoundQNative",
+ "files":[{"path":"Contents/MacOS/SoundQNative","sha256":"<64 lowercase hex>","role":"executable"},
+          {"path":"Contents/Frameworks/libsoundq_core.dylib","sha256":"<64 lowercase hex>","role":"core"},
+          {"path":"Contents/Info.plist","sha256":"<64 lowercase hex>","role":"metadata"},
+          {"path":"Contents/Resources/<every-resource-file>","sha256":"<64 lowercase hex>","role":"resource"}]}
+```
+
+Inventory **every** regular bundle file, including metadata/signature/resources;
+no symlinks, duplicates, omissions or unlisted additions. `debug` is also allowed;
+never pool different build modes as equivalent. Source commit/tree are caller
+provenance assertions, not cryptographic proof of compilation from those sources:
+the caller must bind its source map/build receipt to this final bundle manifest.
+All bundle bytes and manifest are verified before/after the owned child. No
+credentials/environment/log/argv dumps are exported. A corrupt child report is
+rejected rather than copied. Keep the whole evidence directory private.
+
+The supplied executable runs directly with `--fixture-journey --measure-phases`;
+no `open`, service resets, credential acquisition or installation. Only the
+approved disposable loopback fixture endpoint is accepted. Before any
+NSApplication/bridge/window/login, measurement setup validates flags, fixture
+credentials, explicit cache/report paths and writes a checkpoint. Malformed
+requested mode cannot fall through to Keychain/personal Application Support.
+Without the opt-in, ordinary app and fixture behavior stay on their original path.
+
+Phases are populated 500-row idle (3.2 s before cache clear/selection),
+audio-active idle (3.2 s after cold native progress), then the unchanged stride-7,
+20 ms scripted row-jump loop. Boundary direct AVPlayer `currentTime`/rate/status,
+strong retained player/item witnesses, account scope/epoch/session/occurrence,
+queue identity, settled row count and scroll endpoints qualify results. Raw
+account identifiers are not recorded. The script issues no seek/queue edits inside
+these windows. These are endpoint observations, not continuous decoder/failure or
+mutation surveillance: a transient external change that fully reverses between
+boundaries cannot be ruled out. Run without concurrent user/media commands.
+Cursor allowance is 1 ms minimum positive progress and max(100 ms, 10% expected
+progress), with unchanged positive endpoint rate; stalled/jumped/nonfinite or
+identity-changed endpoints are rejected. This is not an invented pending-seek bit.
+
+Report writes occur outside counter windows. Successful boundaries require typed
+UInt64 account/epoch/session identities and positive Swift Int player/item
+witnesses for audio phases. Clocks/cumulative CPU counters use UInt64; successful
+RSS endpoints must fit nonnegative Int64 before the signed Int64 delta is derived.
+Sequential phase intervals cannot overlap or reverse; adjacent end/start equality
+is allowed, and cumulative user/system CPU cannot decrease across phase gaps.
+Failed/incomplete reports may retain typed null unavailable fields without becoming
+successful; malformed reports are discarded with fixed failure codes, not exported.
+A completed phase stays recorded
+when the later queue/EOF journey fails; overall status still fails. AppKit
+termination/cancellation retains an incomplete phase through the existing cleanup
+owner; forced termination retains its last pre-phase `pending_phase` checkpoint
+and completed phases. The launcher reaps only its child, records timeout/crash/
+missing report/exit disagreement, and never deletes the caller fixture home.
+Report size is bounded to 64 KiB. New evidence directory required; 0 means all
+phases, full journey, identities and cleanup passed; 1 failed diagnostic;
+2 output-directory/usage refusal. Controlled Python children and injected Swift
+readers in tests are **not real AVPlayer measurements**. Real runs and three fresh
+process repetitions remain a separate runtime-owner gate. Do not feed this schema
+into `matched_performance.py`.
+
+The offline reducer still excludes SurfaceFlinger/Perfetto presentation,
+CPU/RSS, startup, first native-progress
 latency, acoustics, physical input/output, sustained multi-track qualification and
-full feature parity are excluded/unavailable, not implemented by invented raw
+full feature parity; these remain unavailable to it, not implemented by invented raw
 formats. Archived native frames can be historical diagnostics, never current-source
 performance. The existing Flutter controlled desktop fixture has fake audio and
 is **not an app comparator**. When archived Flutter raw is unavailable, only the

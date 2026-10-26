@@ -321,6 +321,7 @@ class Application {func terminate(_ value:Any?){print("TERMINATE");exit(0)}}
 let NSApp=Application()
 class App {
 var player:Player?=Player();var observation:Int?=1;var bridge:Bridge?=Bridge();var timer:Timer?
+func finishPhaseMeasurement(passed:Bool,code:String? = nil)->Bool {passed}
 func applicationWillTerminate(_ notification:Notification){timer?.invalidate();player?.pause();observation=nil;player?.replaceCurrentItem(with:nil);player=nil;_ = bridge?.revoke()}
 func finish(){
 let samples=[[String:Any]]();let checks=["synthetic"];let started=ProcessInfo.processInfo.systemUptime
@@ -542,10 +543,21 @@ class AndroidService(unittest.TestCase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--compiled", action="store_true")
+    parser.add_argument("--phase-only", action="store_true", help="Window-free Swift phase recorder and controlled launcher only; no SwiftPM/core/Android build")
     parser.add_argument("--source-root", type=Path, default=ROOT, help="Replay identical tests against a preserved production snapshot")
     args, rest = parser.parse_known_args()
     ROOT = args.source_root.resolve()
     suite = unittest.TestSuite([unittest.defaultTestLoader.loadTestsFromTestCase(BuildProvenance)])
+    if args.compiled and args.phase_only:
+        parser.error("--compiled and --phase-only are mutually exclusive")
+    if args.phase_only:
+        os.environ['SOUNDQ_PHASE_COMPILED'] = '1'
+        import test_macos_phase_journey as phases
+        phases.ROOT = ROOT
+        phases.RECORDER = ROOT / 'native/macos/Sources/FixturePhaseMeasurement.swift'
+        phases.LAUNCHER = ROOT / 'native/tests/macos_phase_journey.py'
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(phases))
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(SwiftReporting))
     if args.compiled:
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(SwiftCoreLink))
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(SwiftReporting))
