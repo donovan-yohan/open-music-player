@@ -18,7 +18,7 @@ from typing import Any
 
 from flutter_profile_launch import validate_report
 from matched_performance import Invalid, keys, manifests, number, parse_flutter, quantiles, require, sha, strict_json, token
-from performance_gate import BoundedInputs, bounded_read, load, stats
+from performance_gate import BoundedInputs, bounded_read, evidence_overlap, load, read_attempt, stats
 
 PHASE = 'populated-scroll-audio-unavailable'
 METRICS = ('flutter_ui_us', 'flutter_raster_us', 'flutter_total_span_us', 'flutter_vsync_overhead_us')
@@ -41,9 +41,11 @@ class RendererInputs(BoundedInputs):
                 and all(p not in ('', '.', '..') for p in name.split('/')), 'invalid-path')
         path = self.root/name
         data = bounded_read(path)
+        self.last_read_data = data
+        self.last_read_sha256 = hashlib.sha256(data).hexdigest()
         require(path not in self.files or self.files[path] == data, 'input-changed')
         self.files[path] = data
-        require(hashlib.sha256(data).hexdigest() == ref['sha256'], 'hash-mismatch')
+        require(self.last_read_sha256 == ref['sha256'], 'hash-mismatch')
         return data
 
 
@@ -88,9 +90,7 @@ def reduce_cohort(obj, inputs):
         row: dict[str, Any] = dict(input_index=index, admitted=False, reasons=[], metrics=None,
                    phase_sample_count=None)
         try:
-            keys(attempt, ['report', 'process_start'])
-            token(attempt['process_start'])
-            report = strict_json(inputs.read(attempt['report']))
+            report = read_attempt(attempt, inputs, row, seen)
             keys(report, ['schema', 'status', 'run_id', 'pid', 'process_start_wall_ns',
                           'failure_codes', 'artifact_before', 'artifact_after', 'cleanup',
                           'child_report', 'renderer', 'full_app_accepted', 'limits'],
@@ -100,11 +100,6 @@ def reduce_cohort(obj, inputs):
             require(type(report['pid']) is int and 0 < report['pid'] < 2**31, 'invalid-pid')
             require(type(report['process_start_wall_ns']) is int
                     and 0 < report['process_start_wall_ns'] < 2**63, 'invalid-process-start')
-            identities = [('pid', report['pid']), ('run', report['run_id']),
-                          ('start', report['process_start_wall_ns']),
-                          ('start-label', attempt['process_start']), ('raw', attempt['report']['sha256'])]
-            require(not any(v in seen for v in identities), 'reused-process-population')
-            seen.update(identities)
             expected = dict(source_commit=obj['source']['commit'], source_tree=obj['source']['tree'],
                             source_manifest_sha256=obj['source_manifest_sha256'])
             require(report.get('source') == expected
@@ -209,6 +204,8 @@ def compare(base, base_sha, candidate, reduced, review):
     require(base['qualified'], 'unqualified-baseline')
     mismatch = base['equivalence'] != equivalence(candidate)
     reasons = list(reduced['reasons'])
+    if evidence_overlap(base, reduced):
+        reasons.append('baseline-candidate-evidence-replay')
     if mismatch:reasons.append('environment-workload-feature-mismatch')
     breaches = []
     # Do not compute a budget verdict across incompatible workloads.

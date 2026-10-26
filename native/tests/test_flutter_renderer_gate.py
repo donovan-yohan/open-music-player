@@ -51,7 +51,7 @@ def child(n, factor=1) -> dict[str, Any]:
         rawFrames=[frame(1,100)]+[frame(i+2,3200100+i*70000) for i in range(100)])
 
 
-def fixture(root, factor=1) -> dict[str, Any]:
+def fixture(root, factor=1, *, seed=0) -> dict[str, Any]:
     from flutter_profile_launch import validate_report
     cohort: dict[str, Any] = dict(schema='soundq.flutter.renderer-cohort.v1', run_id='synthetic-only',
         source=dict(commit='a'*40,tree='b'*40), source_manifest_sha256='c'*64,
@@ -66,14 +66,14 @@ def fixture(root, factor=1) -> dict[str, Any]:
         features=dict(name='synthetic',required=['library-scroll'],implemented=['library-scroll'],exercised=['library-scroll'],missing=[]),
         visible=dict(name='synthetic',columns=['title'],artwork='placeholder-only-memory-cache',actions=[],geometry='synthetic'),attempts=[])
     for n in range(5):
-        c=child(n,factor)
+        c=child(seed*100+n,factor)
         report=dict(schema='soundq.flutter.profile-launch.v1',status='completed-diagnostic',
-            run_id=c['run_id'],pid=c['pid'],process_start_wall_ns=1000000000+n,
+            run_id=c['run_id'],pid=c['pid'],process_start_wall_ns=1000000000+seed*100+n,
             failure_codes=[],artifact_before=True,artifact_after=True,cleanup='reaped',
             child_report=c,renderer=validate_report(c,c,c['pid']),full_app_accepted=False,
             limits=['renderer-not-physical-presentation','non-audio-ephemeral-storage-diagnostic','caller-provenance-not-compilation-proof'],
             artifact_manifest_sha256='d'*64,source={k:c[k] for k in ['source_commit','source_tree','source_manifest_sha256']},exit_code=-15)
-        cohort['attempts'].append(dict(report=write(root/f'run-{n}.json',report),process_start='synthetic-start-'+str(n)))
+        cohort['attempts'].append(dict(report=write(root/f'run-{n}.json',report),process_start='synthetic-start-'+str(seed)+'-'+str(n)))
     write(root/'cohort.json',cohort)
     return cohort
 
@@ -84,7 +84,7 @@ class RendererGate(unittest.TestCase):
         self.root=Path(self.temp.name).resolve()
         self.base=self.root/'base';self.base.mkdir()
         self.new=self.root/'new';self.new.mkdir()
-        self.a=fixture(self.base);self.b=fixture(self.new);self.counter=0
+        self.a=fixture(self.base);self.b=fixture(self.new,seed=1);self.counter=0
 
     def tearDown(self):self.temp.cleanup()
 
@@ -122,17 +122,17 @@ class RendererGate(unittest.TestCase):
 
     def test_budget_breach_and_equality_allowances_do_not_ratchet(self):
         self.policy(relative=1);raw=(self.root/'policy.json').read_bytes()
-        self.b=fixture(self.new,2);d,_=self.invoke(True);self.assertEqual(d['status'],'passed')
-        self.b=fixture(self.new,3);d,_=self.invoke(True,1)
+        self.b=fixture(self.new,2,seed=1);d,_=self.invoke(True);self.assertEqual(d['status'],'passed')
+        self.b=fixture(self.new,3,seed=1);d,_=self.invoke(True,1)
         self.assertIn('budget-breached',d['reasons']);self.assertTrue(d['breaches'])
         self.assertEqual((self.root/'policy.json').read_bytes(),raw)
-        self.policy(absolute=35);self.b=fixture(self.new,2);self.invoke(True)
+        self.policy(absolute=35);self.b=fixture(self.new,2,seed=1);self.invoke(True)
 
     def test_mismatch_is_inconclusive_never_speedup(self):
         self.policy()
         for group,key,value in [('workload','cache','warm'),('environment','font_scale',2),('visible','geometry','different')]:
             with self.subTest(key=key):
-                self.b=fixture(self.new);self.b[group][key]=value;write(self.new/'cohort.json',self.b)
+                self.b=fixture(self.new,seed=1);self.b[group][key]=value;write(self.new/'cohort.json',self.b)
                 d,_=self.invoke(True,1);self.assertEqual(d['status'],'inconclusive')
                 self.assertIsNone(d['comparison'])
 
@@ -157,14 +157,14 @@ class RendererGate(unittest.TestCase):
             lambda r:r['child_report'].update(framework_error_count=1)]
         for fn in mutations:
             with self.subTest(mutation=mutations.index(fn)):
-                self.b=fixture(self.new);self.mutate(4,fn);d,_=self.invoke(True,1)
+                self.b=fixture(self.new,seed=1);self.mutate(4,fn);d,_=self.invoke(True,1)
                 self.assertFalse(d['candidate']['attempts'][-1]['admitted'])
 
     def test_replay_missing_unqualified_and_undersampled(self):
         self.policy()
         self.b['attempts'][-1]=copy.deepcopy(self.b['attempts'][0]);write(self.new/'cohort.json',self.b)
         self.invoke(True,1)
-        self.b=fixture(self.new);(self.new/'run-4.json').unlink();d,_=self.invoke(True,1)
+        self.b=fixture(self.new,seed=1);(self.new/'run-4.json').unlink();d,_=self.invoke(True,1)
         self.assertEqual(len(d['candidate']['attempts']),5)
         for mutation in [lambda c:c['environment'].update(quiet=False),lambda c:c['environment'].update(refresh_hz=None),lambda c:c.update(attempts=c['attempts'][:4])]:
             self.a=fixture(self.base);mutation(self.a);write(self.base/'cohort.json',self.a)
@@ -190,7 +190,7 @@ class RendererGate(unittest.TestCase):
     def test_observed_population_and_row_witnesses_bound_to_workload(self):
         self.policy()
         for key,value in [('loaded_list_slots',10000),('witnessed_row_ids',[99999])]:
-            self.b=fixture(self.new)
+            self.b=fixture(self.new,seed=1)
             self.mutate(4,lambda r:r['child_report'].update({key:value}))
             d,_=self.invoke(True,1)
             self.assertIn('observed-population-mismatch',d['candidate']['attempts'][-1]['reasons'])
@@ -208,9 +208,191 @@ class RendererGate(unittest.TestCase):
         self.policy()
         self.mutate(4,lambda r:r['renderer']['flutter_ui_us'].update(spread=False))
         self.invoke(True,1)
-        self.b=fixture(self.new)
+        self.b=fixture(self.new,seed=1)
         self.mutate(4,lambda r:r['child_report']['rawFrames'].reverse())
         self.invoke(True,1)
+
+
+    def test_same_cohort_cannot_compare_against_itself(self):
+        self.policy()
+        d,_=self.invoke(True,1,directory=self.base)
+        self.assertEqual(d['status'],'failed')
+        self.assertIn('baseline-candidate-evidence-replay',d['reasons'])
+
+    def test_one_copied_renamed_report_rejects_partial_overlap(self):
+        self.policy()
+        raw=(self.base/'run-0.json').read_bytes()
+        (self.new/'renamed.json').write_bytes(raw)
+        self.b['attempts'][4]=dict(report=dict(path='renamed.json',sha256=hashlib.sha256(raw).hexdigest()),
+            process_start='renamed-reference-not-a-new-observation')
+        write(self.new/'cohort.json',self.b)
+        before={p:p.read_bytes() for p in [*self.base.iterdir(),self.root/'policy.json']}
+        d,_=self.invoke(True,1)
+        self.assertIn('baseline-candidate-evidence-replay',d['reasons'])
+        self.assertEqual(len(d['candidate']['attempts']),5)
+        self.assertTrue(all(r['admitted'] for r in d['candidate']['attempts']))
+        self.assertIsNotNone(d['candidate']['failure_inclusive'])
+        self.assertEqual({p:p.read_bytes() for p in before},before)
+
+    def test_overlap_hidden_in_failed_hash_attempt_is_retained(self):
+        self.policy()
+        raw=(self.base/'run-0.json').read_bytes()
+        (self.new/'failed-copy.json').write_bytes(raw)
+        self.b['attempts'].append(dict(report=dict(path='failed-copy.json',sha256='0'*64),
+            process_start='failed-copy-distinct-label'))
+        write(self.new/'cohort.json',self.b)
+        d,out=self.invoke(True,1)
+        self.assertIn('baseline-candidate-evidence-replay',d['reasons'])
+        rows=d['candidate']['attempts']
+        self.assertEqual(len(rows),6);self.assertFalse(rows[-1]['admitted'])
+        self.assertIn('hash-mismatch',rows[-1]['reasons'])
+        digest=hashlib.sha256(raw).hexdigest()
+        self.assertEqual(rows[-1]['evidence_identity']['raw_sha256'],digest)
+        self.assertEqual((out/'bundle-0/inputs'/digest).read_bytes(),raw)
+        self.assertIsNotNone(d['candidate']['failure_inclusive'])
+
+    def test_hash_refused_reencoded_report_preserves_known_launch_claims(self):
+        self.policy()
+        original=(self.base/'run-0.json').read_bytes()
+        launch=json.loads(original)
+        raw=json.dumps(launch,indent=2,allow_nan=False).encode()+b'\n'
+        self.assertNotEqual(raw,original)
+        (self.new/'reencoded.json').write_bytes(raw)
+        self.b['attempts'].append(dict(report=dict(path='reencoded.json',sha256='0'*64),
+            process_start='independent-hash-refused-label'))
+        write(self.new/'cohort.json',self.b)
+        d,out=self.invoke(True,1)
+        row=d['candidate']['attempts'][-1]
+        self.assertEqual(d['status'],'failed')
+        self.assertEqual(row['reasons'],['hash-mismatch'])
+        self.assertFalse(row['admitted']);self.assertIsNone(row['metrics'])
+        digest=hashlib.sha256(raw).hexdigest()
+        self.assertEqual(row['evidence_identity']['raw_sha256'],digest)
+        self.assertEqual((out/'bundle-0/inputs'/digest).read_bytes(),raw)
+        self.assertEqual(d['candidate']['failure_inclusive'][PHASE]['flutter_ui_us']['p95']['sample_count'],5)
+        for key in ('run_id','process_start_wall_ns','pid'):
+            self.assertEqual(row['evidence_identity'].get(key),launch[key])
+        self.assertIn('baseline-candidate-evidence-replay',d['reasons'])
+
+    def test_supplied_lifetime_reuse_survives_reencoding_and_failed_status(self):
+        self.policy()
+        old=json.loads((self.base/'run-0.json').read_bytes())
+        old['status']='failed'
+        old['failure_codes']=['synthetic-failure']
+        self.b['attempts'][4]['process_start']=self.a['attempts'][0]['process_start']
+        self.b['attempts'][4]['report']=write(self.new/'run-4.json',old)
+        write(self.new/'cohort.json',self.b)
+        d,_=self.invoke(True,1)
+        self.assertIn('baseline-candidate-evidence-replay',d['reasons'])
+        self.assertFalse(d['candidate']['attempts'][4]['admitted'])
+        self.assertIsNotNone(d['candidate']['failure_inclusive'])
+
+    def test_independent_equal_values_same_source_and_reused_pid_pass(self):
+        self.policy()
+        for n in range(5):
+            pid=json.loads((self.base/f'run-{n}.json').read_bytes())['pid']
+            def reuse_pid(r):
+                r['pid']=pid
+                if 'child_report' in r:r['child_report']['pid']=pid
+            self.mutate(n,reuse_pid)
+        # OS PIDs can be recycled: distinct supplied lifetimes are not replay.
+        def recycle_within(r):
+            r['pid']=100
+            if 'child_report' in r:r['child_report']['pid']=100
+        self.mutate(4,recycle_within)
+        before={p:p.read_bytes() for p in [*self.base.iterdir(),self.root/'policy.json']}
+        d,_=self.invoke(True)
+        self.assertEqual(d['status'],'passed');self.assertIsNone(d['comparison'])
+        self.assertFalse(d['full_app_accepted'])
+        self.assertEqual({p:p.read_bytes() for p in before},before)
+
+    def test_hash_mismatch_preserves_actual_raw_identity_and_bytes(self):
+        self.policy()
+        p=self.new/'run-4.json';raw=p.read_bytes()+b' '
+        p.write_bytes(raw)
+        d,out=self.invoke(True,1)
+        row=d['candidate']['attempts'][4]
+        self.assertIn('hash-mismatch',row['reasons']);self.assertFalse(row['admitted'])
+        digest=hashlib.sha256(raw).hexdigest()
+        self.assertEqual(row.get('evidence_identity',{}).get('raw_sha256'),digest)
+        self.assertEqual((out/'bundle-0/inputs'/digest).read_bytes(),raw)
+        self.assertNotIn('baseline-candidate-evidence-replay',d['reasons'])
+
+
+    def test_invalid_json_preserves_known_start_label_and_parse_refusal(self):
+        self.policy()
+        raw=b'{"run_id":"incomplete-run",'
+        (self.new/'broken.json').write_bytes(raw)
+        digest=hashlib.sha256(raw).hexdigest()
+        label=self.a['attempts'][0]['process_start']
+        self.b['attempts'].append(dict(process_start=label,
+            report=dict(path='broken.json',sha256=digest)))
+        write(self.new/'cohort.json',self.b)
+        d,out=self.invoke(True,1)
+        row=d['candidate']['attempts'][-1]
+        self.assertEqual(row['reasons'],['invalid-json'])
+        self.assertEqual(row['evidence_identity'],dict(process_start=label,raw_sha256=digest))
+        self.assertIsNone(row['metrics']);self.assertFalse(row['admitted'])
+        self.assertEqual((out/'bundle-0/inputs'/digest).read_bytes(),raw)
+        self.assertIn('baseline-candidate-evidence-replay',d['reasons'])
+
+    def test_declared_baseline_digest_does_not_create_false_overlap(self):
+        self.policy()
+        path=self.new/'run-4.json';raw=path.read_bytes()
+        declared=self.a['attempts'][0]['report']['sha256']
+        digest=hashlib.sha256(raw).hexdigest();self.assertNotEqual(digest,declared)
+        self.b['attempts'][4]['report']['sha256']=declared
+        write(self.new/'cohort.json',self.b)
+        d,out=self.invoke(True,1)
+        row=d['candidate']['attempts'][4]
+        self.assertEqual(row['reasons'],['hash-mismatch'])
+        self.assertEqual(row['evidence_identity']['raw_sha256'],digest)
+        self.assertEqual(row['evidence_identity'].get('run_id'),json.loads(raw)['run_id'])
+        self.assertIsNone(row['metrics']);self.assertFalse(row['admitted'])
+        self.assertEqual((out/'bundle-0/inputs'/digest).read_bytes(),raw)
+        self.assertNotIn('baseline-candidate-evidence-replay',d['reasons'])
+
+    def test_unknown_attempt_key_preserves_known_start_label(self):
+        self.policy()
+        label=self.a['attempts'][0]['process_start']
+        self.b['attempts'].append(dict(process_start=label,unknown=True,
+            report=copy.deepcopy(self.b['attempts'][0]['report'])))
+        write(self.new/'cohort.json',self.b)
+        d,_=self.invoke(True,1)
+        row=d['candidate']['attempts'][-1]
+        self.assertEqual(d['status'],'failed')
+        self.assertEqual(row['reasons'],['unknown-or-missing-key'])
+        self.assertFalse(row['admitted']);self.assertIsNone(row['metrics'])
+        self.assertEqual(row['evidence_identity'],dict(process_start=label))
+        self.assertIn('baseline-candidate-evidence-replay',d['reasons'])
+
+    def test_supplied_start_label_alone_rejects_cross_cohort_reuse(self):
+        self.policy()
+        self.b['attempts'][4]['process_start']=self.a['attempts'][0]['process_start']
+        write(self.new/'cohort.json',self.b)
+        d,_=self.invoke(True,1)
+        self.assertIn('baseline-candidate-evidence-replay',d['reasons'])
+        self.assertTrue(all(r['admitted'] for r in d['candidate']['attempts']))
+
+
+    def test_launch_run_alone_rejects_cross_cohort_reuse(self):
+        self.policy()
+        run=json.loads((self.base/'run-0.json').read_bytes())['run_id']
+        def reuse_run(r):
+            r['run_id']=run;r['child_report']['run_id']=run
+        self.mutate(4,reuse_run)
+        d,_=self.invoke(True,1)
+        self.assertIn('baseline-candidate-evidence-replay',d['reasons'])
+        self.assertTrue(all(r['admitted'] for r in d['candidate']['attempts']))
+
+
+    def test_launch_wall_start_alone_rejects_cross_cohort_reuse(self):
+        self.policy()
+        start=json.loads((self.base/'run-0.json').read_bytes())['process_start_wall_ns']
+        self.mutate(4,lambda r:r.update(process_start_wall_ns=start))
+        d,_=self.invoke(True,1)
+        self.assertIn('baseline-candidate-evidence-replay',d['reasons'])
+        self.assertTrue(all(r['admitted'] for r in d['candidate']['attempts']))
 
 
 if __name__=='__main__':unittest.main()

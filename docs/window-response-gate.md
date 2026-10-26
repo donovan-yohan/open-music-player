@@ -35,11 +35,24 @@ geometry includes scale, content/screen rectangles and buffer dimensions.
 Each attempt is `{report:{path,sha256},process_start}`. Paths are bounded,
 contained, regular-file, no-follow reads via existing evidence helpers. Safely
 read hash-mismatched bytes remain retained under actual digest. Five independent
-PID/start-label/report populations are needed for qualified policy. Start and
+start-label/report populations are needed for qualified policy. Start and
 source fields are caller custody assertions, not kernel/compiler attestation.
 Failed attempts reserve identities and remain explicit. Missing/invalid/failed
 trials, shared-host activity, unavailable environment fields and unexercised
 features prevent qualification.
+
+
+Each reduced attempt now includes `evidence_identity`: the actual safely read
+`raw_sha256` plus usable supplied `process_start`, launch `run_id`, `pid` and
+`process_start_wall_ns` when present. Failed and hash-mismatched attempts keep
+known identities and original bytes. Comparison rejects any baseline/candidate
+raw-digest, start-label, launch-run or launch-start overlap with
+`baseline-candidate-evidence-replay`, including a renamed copy or partial overlap
+hidden in failed attempts. A PID alone is recyclable and does not reject distinct
+sequential lifetimes. Equal metrics and unchanged source are allowed for new
+observations. These checks detect known reuse, not authenticated OS independence.
+The additive output fields change canonical baseline hashes: existing policy pins
+fail closed; review a newly recomputed baseline rather than relabeling old receipts.
 
 ## Raw clock and predicate validation
 

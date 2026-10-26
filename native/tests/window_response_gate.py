@@ -13,7 +13,7 @@ from typing import Any, cast
 
 from flutter_renderer_gate import RendererInputs, canonical_hash
 from matched_performance import Invalid, keys, manifests, number, require, sha, strict_json, token
-from performance_gate import load, stats
+from performance_gate import evidence_overlap, load, read_attempt, stats
 
 LIMITS = ['captured-window-change-not-physical-presentation', 'any-roi-change-not-semantic-causality',
           'synthetic-os-event-submission-not-delivery', 'caller-must-exclude-progress-caret-and-unrelated-animation',
@@ -149,13 +149,7 @@ def reduce_cohort(obj,inputs):
     for index,attempt in enumerate(obj['attempts']):
         row:dict[str,Any]=dict(input_index=index,admitted=False,reasons=[],response_upper_ns=None,detected_by_verified=False)
         try:
-            keys(attempt,['report','process_start']);token(attempt['process_start'])
-            report=strict_json(inputs.read(attempt['report']))
-            # Failed/malformed populations reserve usable identity claims too.
-            pid=report.get('pid') if type(report) is dict else None
-            integer(pid,1,2**31-1)
-            identities=[('pid',pid),('start',attempt['process_start']),('raw',attempt['report']['sha256'])]
-            require(not any(i in seen for i in identities),'reused-process-population');seen.update(identities)
+            report=read_attempt(attempt,inputs,row,seen)
             row['response_upper_ns']=parse_report(report,obj)
             require(report['status']=='observed' and report['failure_codes']==[], 'collector-attempt-failed')
             row['admitted']=True
@@ -199,6 +193,7 @@ def compare(base,base_sha,obj,reduced,policy):
     for v in policy['budget'].values():number(v)
     require(base['qualified'],'unqualified-baseline')
     mismatch=base['equivalence']!=equivalence(obj);reasons=list(reduced['reasons']);breaches=[]
+    if evidence_overlap(base,reduced):reasons.append('baseline-candidate-evidence-replay')
     if mismatch:reasons.append('environment-workload-capture-mismatch')
     else:
         b=policy['budget'];threshold=base['admitted_only']['max']*(1+b['relative_allowance'])+b['absolute_allowance']

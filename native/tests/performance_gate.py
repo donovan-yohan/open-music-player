@@ -33,9 +33,11 @@ class BoundedInputs(Inputs):
                 and all(part not in ('', '.', '..') for part in name.split('/')), 'path-escape')
         candidate = self.root / name
         data = bounded_read(candidate)
-        require(hashlib.sha256(data).hexdigest() == ref['sha256'], 'hash-mismatch')
+        self.last_read_data = data
+        self.last_read_sha256 = hashlib.sha256(data).hexdigest()
         require(candidate not in self.files or self.files[candidate] == data, 'input-changed')
         self.files[candidate] = data
+        require(self.last_read_sha256 == ref['sha256'], 'hash-mismatch')
         return data
 
     def verify(self):
@@ -81,6 +83,68 @@ def load(path, inputs):
     return value, hashlib.sha256(data).hexdigest()
 
 
+def evidence_keys(identity):
+    # PID alone is recyclable, not a process incarnation. Labels remain supplied
+    # claims, not OS-authenticated identities or proof of independent sampling.
+    return {(key, identity[key]) for key in
+            ('raw_sha256', 'process_start', 'run_id', 'process_start_wall_ns')
+            if key in identity}
+
+
+def read_attempt(attempt, inputs, row, seen):
+    """Reserve known evidence even when parsing, hash or admission later fails."""
+    identity = row['evidence_identity'] = {}
+    prior = set(seen)
+    inputs.last_read_sha256 = None
+    inputs.last_read_data = None
+    report = None
+    try:
+        if type(attempt) is dict:
+            try:
+                identity['process_start'] = token(attempt.get('process_start'))
+            except Invalid:
+                pass
+        keys(attempt, ['report', 'process_start'])
+        try:
+            raw = inputs.read(attempt['report'])
+        finally:
+            if inputs.last_read_sha256 is not None:
+                identity['raw_sha256'] = inputs.last_read_sha256
+        report = strict_json(raw)
+        token(attempt['process_start'])
+        return report
+    finally:
+        # Hash admission may refuse bytes already safely read and retained.
+        # Inspect only those actual bounded bytes for claims, never metrics.
+        if report is None and inputs.last_read_data is not None:
+            try:
+                report = strict_json(inputs.last_read_data)
+            except Invalid:
+                pass
+        if type(report) is dict:
+            try:
+                token(report.get('run_id'))
+                identity['run_id'] = report['run_id']
+            except Invalid:
+                pass
+            for key, limit in (('pid', 2**31), ('process_start_wall_ns', 2**63)):
+                value = report.get(key)
+                if type(value) is int and 0 < value < limit:
+                    identity[key] = value
+        claims = evidence_keys(identity)
+        seen.update(claims)
+        # Do not overwrite an earlier read/parse failure (e.g. hash-mismatch).
+        if sys.exc_info()[0] is None:
+            require(not prior.intersection(claims), 'reused-process-population')
+
+
+def evidence_overlap(base, candidate):
+    def population(reduced):
+        return {claim for row in reduced['attempts']
+                for claim in evidence_keys(row['evidence_identity'])}
+    return bool(population(base).intersection(population(candidate)))
+
+
 def read_cohort(obj, inputs):
     keys(obj, ['schema', 'run_id', 'source', 'manifest_sha256', 'build_mode',
                'environment', 'workload', 'features', 'visible', 'attempts'])
@@ -99,21 +163,13 @@ def read_cohort(obj, inputs):
     for index, attempt in enumerate(obj['attempts']):
         result = {'input_index': index, 'admitted': False, 'reasons': [], 'metrics': None}
         try:
-            keys(attempt, ['report', 'process_start'])
-            token(attempt['process_start'])
-            report = strict_json(inputs.read(attempt['report']))
+            report = read_attempt(attempt, inputs, result, seen)
             keys(report, ['schema', 'run_id', 'status', 'failure_codes', 'pid', 'exit_code',
                           'cleanup', 'artifact_before', 'artifact_after', 'child_report',
                           'manifest_sha256', 'source_commit', 'source_tree', 'build_mode'])
             require(report['schema'] == 'soundq.macos.phase-launch.v1', 'unknown-launch-version')
             token(report['run_id'])
             require(type(report['pid']) is int and 0 < report['pid'] < 2**31, 'invalid-pid')
-            # Both launch ID and PID must be new. Supplied process-start labels
-            # supplement the owned launch receipt; they do not authenticate it.
-            identities = [('run', report['run_id']), ('pid', report['pid']),
-                          ('start', attempt['process_start']), ('raw', attempt['report']['sha256'])]
-            require(not any(identity in seen for identity in identities), 'reused-process-population')
-            seen.update(identities)  # failed attempts reserve identities too
             require(report['source_commit'] == obj['source']['commit']
                     and report['source_tree'] == obj['source']['tree']
                     and report['manifest_sha256'] == obj['manifest_sha256']
@@ -199,6 +255,8 @@ def compare(base, base_sha, candidate, reduced, review):
     require(base['qualified'], 'unqualified-baseline')
     require(review['calibration']['cohort_sha256'] == base['cohort_sha256'], 'calibration-mismatch')
     reasons = list(reduced['reasons'])
+    if evidence_overlap(base, reduced):
+        reasons.append('baseline-candidate-evidence-replay')
     if base['equivalence'] != equivalence(candidate):
         reasons.append('environment-workload-feature-mismatch')
     breaches = []
