@@ -163,6 +163,8 @@ func main() {
 	protected := auth.Middleware(service)
 	mux.Handle("POST /api/v1/auth/logout", protected(http.HandlerFunc(handlers.Logout)))
 	mux.Handle("GET /api/v1/library", protected(http.HandlerFunc(library.GetLibrary)))
+	mux.Handle("POST /api/v1/library/tracks/{track_id}/like", protected(http.HandlerFunc(library.LikeTrack)))
+	mux.Handle("DELETE /api/v1/library/tracks/{track_id}/like", protected(http.HandlerFunc(library.UnlikeTrack)))
 	mux.Handle("POST /api/v1/playback/urls", protected(http.HandlerFunc(playback.CreatePlaybackURLs)))
 	mux.HandleFunc("GET /fixture-audio/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/fixture-audio/"+asset.token+".wav" {

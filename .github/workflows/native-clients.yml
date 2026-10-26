@@ -137,6 +137,7 @@ jobs:
           # provenance/refusal controls separately executable and fail closed.
           subprocess.run([sys.executable, '-B', 'native/tests/native_review_regressions.py', '--phase-only'], check=True)
           subprocess.run([sys.executable, '-B', 'native/tests/library_metadata_regressions.py', '--output', str(output / 'library-metadata')], check=True)
+          subprocess.run([sys.executable, '-B', 'native/tests/library_favorites_regressions.py', '--output', str(output / 'library-favorites')], check=True)
           PY
       - name: Preserve macOS layout diagnostics
         if: always() && steps.macos-layout.outputs.evidence != ''
