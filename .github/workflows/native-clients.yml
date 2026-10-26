@@ -71,6 +71,8 @@ jobs:
         run: python3 -B -m unittest discover -s native/tests -p test_flutter_profile_launch.py -v
       - name: Enforce Flutter renderer cohort and budget mutation controls
         run: python3 -B -m unittest discover -s native/tests -p test_flutter_renderer_gate.py -v
+      - name: Enforce captured-response clock and latency budget controls
+        run: python3 -B -m unittest discover -s native/tests -p test_window_response_gate.py -v
   macos:
     name: Native macOS build
     runs-on: macos-15

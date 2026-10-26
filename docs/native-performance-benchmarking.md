@@ -64,8 +64,8 @@ python3 -B -m unittest discover -s native/tests -p test_performance_gate.py -v
 `features`, `visible` manifests documented below. `attempts` is the full chronological
 list of `{report: {path, sha256}, process_start}`. Each report is the unchanged
 `soundq.macos.phase-launch.v1` output. Process-start tokens are supplied custody
-assertions, not authenticated OS observations. Five distinct PID/run/start/report
-identities are mandatory. Reusing a failed process cannot mint a valid repetition.
+assertions, not authenticated OS observations. Five distinct run/start/report
+identities are mandatory; PID alone is not a lifetime identity. Reusing a failed process cannot mint a valid repetition.
 All functional/audio, artifact, exit and cleanup predicates must pass independently
 of resource budgets. The existing child validator recomputes phase arithmetic.
 The caller remains responsible for actual workload correspondence, complete retry
@@ -94,6 +94,19 @@ breach fail closed. Exit 0 means qualified baseline or passed comparison, 1 mean
 failed/unqualified evidence, 2 means output-directory/usage refusal. Inputs are
 bounded regular files (4 MiB each), retained privately with hashes; reports contain
 no original paths or raw exception messages. Keep all retained inputs private.
+
+Each reduced attempt now includes `evidence_identity`: the actual safely read
+`raw_sha256` plus usable supplied `process_start`, launch `run_id`, `pid` and
+`process_start_wall_ns` when present. Failed and hash-mismatched attempts keep
+known identities and original bytes. Comparison rejects any baseline/candidate
+raw-digest, start-label, launch-run or launch-start overlap with
+`baseline-candidate-evidence-replay`, including a renamed copy or partial overlap
+hidden in failed attempts. A PID alone is recyclable and does not reject distinct
+sequential lifetimes. Equal metrics and unchanged source are allowed for new
+observations. These checks detect known reuse, not authenticated OS independence.
+The additive output fields change canonical baseline hashes: existing policy pins
+fail closed; review a newly recomputed baseline rather than relabeling old receipts.
+
 All gate CLI paths must use canonical paths without symlink leaves or ancestors;
 resolve aliases before invoking the CLI, not by changing evidence references.
 An output symlink leaf/ancestor prints `symlink-output` on stderr and exits 2;

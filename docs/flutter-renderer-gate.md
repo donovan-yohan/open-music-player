@@ -46,7 +46,7 @@ This binds observed count/subset, not an unobserved complete ordering or metadat
 Safely readable hash-mismatched bytes are retained under their actual digest;
 oversized, escaping, symlink or nonregular inputs remain unread.
 
-Five independent report/run/PID/start-time/start-label populations are required.
+Five independent report/run/start-time/start-label populations are required.
 Failed attempts reserve identities and are retained; missing, invalid or repeated
 reports never silently disappear. Source/artifact identity, original child raw
 frames, frame arithmetic, chronology, viewport/scale, complete scroll legs,
@@ -59,6 +59,19 @@ failed attempts or fewer than five processes make the baseline unqualified.
 The current actual-root runs remain shared-host ephemeral nonaudio diagnostics,
 not a calibrated full-app baseline. Ordinary persistence, downloads, playback
 cache, artwork acquisition and audio are excluded.
+
+
+Each reduced attempt now includes `evidence_identity`: the actual safely read
+`raw_sha256` plus usable supplied `process_start`, launch `run_id`, `pid` and
+`process_start_wall_ns` when present. Failed and hash-mismatched attempts keep
+known identities and original bytes. Comparison rejects any baseline/candidate
+raw-digest, start-label, launch-run or launch-start overlap with
+`baseline-candidate-evidence-replay`, including a renamed copy or partial overlap
+hidden in failed attempts. A PID alone is recyclable and does not reject distinct
+sequential lifetimes. Equal metrics and unchanged source are allowed for new
+observations. These checks detect known reuse, not authenticated OS independence.
+The additive output fields change canonical baseline hashes: existing policy pins
+fail closed; review a newly recomputed baseline rather than relabeling old receipts.
 
 ## Populations and units
 
