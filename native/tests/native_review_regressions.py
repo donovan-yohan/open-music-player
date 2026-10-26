@@ -294,7 +294,7 @@ struct Occurrence {let id:UInt64}
 struct Snapshot {var queue=[Occurrence(id:11),Occurrence(id:12)];var selected_occurrence:UInt64?=11}
 class Player {var retired=false;func pause(){};func replaceCurrentItem(with:Any?){retired=true}}
 class Bridge {var epoch:UInt64=1;func revoke()->UInt64{epoch+=1;return epoch}}
-class App {var snapshot:Snapshot?=Snapshot();var player:Player?=Player();var observation:Int?;var epoch:UInt64=1;var bridge=Bridge();var wantsPlayback=false;var sent=[[String:Any]]()
+class App {var pendingLibraryRead:Int?;var libraryReadInvalid=false;var snapshot:Snapshot?=Snapshot();var player:Player?=Player();var observation:Int?;var epoch:UInt64=1;var bridge=Bridge();var wantsPlayback=false;var sent=[[String:Any]]()
 func closeQueueName(){};func retireLibraryDetails(){}
 func command(_ value:[String:Any]) {let kind=value["command"] as? String ?? ""
 __INTENT__

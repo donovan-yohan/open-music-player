@@ -26,8 +26,16 @@ pub struct Core {
     endpoint: String,
     root: PathBuf,
 }
+#[derive(Clone, PartialEq, Eq)]
+struct LibraryQueryIdentity {
+    liked: bool,
+    query: String,
+    sort: String,
+    order: String,
+}
 #[derive(Clone)]
 struct State {
+    library_query: Option<LibraryQueryIdentity>,
     snapshot: Snapshot,
     credentials: Option<Credentials>,
     credentials_changed: bool,
@@ -210,6 +218,7 @@ impl Core {
         Ok(Self {
             epoch: AtomicU64::new(1),
             state: Mutex::new(State {
+                library_query: None,
                 snapshot: Snapshot {
                     abi: 1,
                     epoch: 1,
@@ -217,6 +226,7 @@ impl Core {
                     session: 0,
                     authenticated: false,
                     library: vec![],
+                    library_revision: 0,
                     favorite_track_ids: vec![],
                     library_unchanged: false,
                     total: 0,
@@ -430,6 +440,7 @@ impl Core {
                 session: state.snapshot.session,
                 authenticated: state.snapshot.authenticated,
                 library: vec![],
+                library_revision: state.snapshot.library_revision,
                 favorite_track_ids: vec![],
                 library_unchanged: true,
                 total: state.snapshot.total,
@@ -486,6 +497,88 @@ impl Core {
             position_ms: s.snapshot.position_ms,
             cached,
         }
+    }
+    fn read_library(
+        &self,
+        s: &mut State,
+        identity: LibraryQueryIdentity,
+        offset: u32,
+        epoch: u64,
+    ) -> Result<()> {
+        let LibraryQueryIdentity {
+            query, sort, order, ..
+        } = &identity;
+        if query.len() > 512
+            || !matches!(sort.as_str(), "added_at" | "title" | "artist" | "duration")
+            || !matches!(order.as_str(), "asc" | "desc")
+            || offset > 1_000_000
+        {
+            return Err("invalid_query");
+        }
+        if offset > 0 && s.library_query.as_ref() != Some(&identity) {
+            return Err("invalid_query");
+        }
+        let mut path = reqwest::Url::parse(&format!("{}/library", self.endpoint))
+            .map_err(|_| "invalid_endpoint")?;
+        path.query_pairs_mut()
+            .append_pair("limit", "50")
+            .append_pair("offset", &offset.to_string())
+            .append_pair("q", &query)
+            .append_pair("sort", &sort)
+            .append_pair("order", &order);
+        if identity.liked {
+            path.query_pairs_mut().append_pair("liked", "true");
+        }
+        let relative = path
+            .as_str()
+            .strip_prefix(&self.endpoint)
+            .ok_or("invalid_endpoint")?;
+        let page: LibraryPage =
+            serde_json::from_value(self.request(s, "GET", relative, None, epoch, true)?)
+                .map_err(|_| "invalid_library")?;
+        let tracks = page.tracks.unwrap_or_default();
+        if page.offset != offset
+            || tracks.len() > 50
+            || tracks
+                .iter()
+                .any(|t| t.track.id <= 0 || t.track.title.len() > 16384)
+        {
+            return Err("invalid_library");
+        }
+        self.check(epoch)?;
+        let mut favorites: HashSet<i64> = if offset == 0 {
+            HashSet::new()
+        } else {
+            s.snapshot.favorite_track_ids.iter().copied().collect()
+        };
+        for t in &tracks {
+            if t.is_liked {
+                favorites.insert(t.track.id);
+            } else {
+                favorites.remove(&t.track.id);
+            }
+        }
+        if offset == 0 {
+            s.snapshot.library = tracks.into_iter().map(|t| t.track).collect();
+        } else {
+            for t in tracks {
+                if !s.snapshot.library.iter().any(|x| x.id == t.track.id) {
+                    s.snapshot.library.push(t.track);
+                }
+            }
+        }
+        s.snapshot.favorite_track_ids = s
+            .snapshot
+            .library
+            .iter()
+            .filter(|t| favorites.contains(&t.id))
+            .map(|t| t.id)
+            .collect();
+        s.snapshot.total = page.total;
+        s.snapshot.offset = offset;
+        s.library_query = Some(identity);
+        s.snapshot.library_revision += 1;
+        Ok(())
     }
     fn apply(
         &self,
@@ -584,6 +677,8 @@ impl Core {
                 s.credentials = None;
                 s.credentials_changed = false;
                 s.snapshot.authenticated = false;
+                s.library_query = None;
+                s.snapshot.library_revision = 0;
                 s.snapshot.library.clear();
                 s.snapshot.favorite_track_ids.clear();
                 s.snapshot.total = 0;
@@ -600,68 +695,35 @@ impl Core {
                 sort,
                 order,
             } => {
-                if query.len() > 512
-                    || !matches!(sort.as_str(), "added_at" | "title" | "artist" | "duration")
-                    || !matches!(order.as_str(), "asc" | "desc")
-                    || offset > 1_000_000
-                {
-                    return Err("invalid_query");
-                }
-                let mut path = reqwest::Url::parse(&format!("{}/library", self.endpoint))
-                    .map_err(|_| "invalid_endpoint")?;
-                path.query_pairs_mut()
-                    .append_pair("limit", "50")
-                    .append_pair("offset", &offset.to_string())
-                    .append_pair("q", &query)
-                    .append_pair("sort", &sort)
-                    .append_pair("order", &order);
-                let relative = path
-                    .as_str()
-                    .strip_prefix(&self.endpoint)
-                    .ok_or("invalid_endpoint")?;
-                let page: LibraryPage =
-                    serde_json::from_value(self.request(s, "GET", relative, None, epoch, true)?)
-                        .map_err(|_| "invalid_library")?;
-                let tracks = page.tracks.unwrap_or_default();
-                if page.offset != offset
-                    || tracks.len() > 50
-                    || tracks
-                        .iter()
-                        .any(|t| t.track.id <= 0 || t.track.title.len() > 16384)
-                {
-                    return Err("invalid_library");
-                }
-                self.check(epoch)?;
-                let mut favorites: HashSet<i64> = if offset == 0 {
-                    HashSet::new()
-                } else {
-                    s.snapshot.favorite_track_ids.iter().copied().collect()
-                };
-                for t in &tracks {
-                    if t.is_liked {
-                        favorites.insert(t.track.id);
-                    } else {
-                        favorites.remove(&t.track.id);
-                    }
-                }
-                if offset == 0 {
-                    s.snapshot.library = tracks.into_iter().map(|t| t.track).collect();
-                } else {
-                    for t in tracks {
-                        if !s.snapshot.library.iter().any(|x| x.id == t.track.id) {
-                            s.snapshot.library.push(t.track);
-                        }
-                    }
-                }
-                s.snapshot.favorite_track_ids = s
-                    .snapshot
-                    .library
-                    .iter()
-                    .filter(|t| favorites.contains(&t.id))
-                    .map(|t| t.id)
-                    .collect();
-                s.snapshot.total = page.total;
-                s.snapshot.offset = offset;
+                self.read_library(
+                    s,
+                    LibraryQueryIdentity {
+                        liked: false,
+                        query,
+                        sort,
+                        order,
+                    },
+                    offset,
+                    epoch,
+                )?;
+            }
+            Command::LibraryLiked {
+                offset,
+                query,
+                sort,
+                order,
+            } => {
+                self.read_library(
+                    s,
+                    LibraryQueryIdentity {
+                        liked: true,
+                        query,
+                        sort,
+                        order,
+                    },
+                    offset,
+                    epoch,
+                )?;
             }
             Command::SetFavorite { track_id, liked } => {
                 if !s.snapshot.authenticated || s.credentials.is_none() {
@@ -1172,6 +1234,8 @@ impl Core {
         Ok(result)
     }
     fn retire_account(&self, s: &mut State) {
+        s.library_query = None;
+        s.snapshot.library_revision = 0;
         s.credentials = None;
         s.credentials_changed = false;
         s.current_path = None;
@@ -1195,6 +1259,8 @@ impl Core {
             .as_ref()
             .is_some_and(|c| c.account_id != a.user.id)
         {
+            s.library_query = None;
+            s.snapshot.library_revision = 0;
             s.snapshot.library.clear();
             s.snapshot.favorite_track_ids.clear();
             s.snapshot.queue.clear();

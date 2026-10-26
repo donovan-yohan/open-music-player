@@ -24,6 +24,12 @@ pub enum Command {
         sort: String,
         order: String,
     },
+    LibraryLiked {
+        offset: u32,
+        query: String,
+        sort: String,
+        order: String,
+    },
     SetFavorite {
         track_id: i64,
         liked: bool,
@@ -108,6 +114,8 @@ pub struct Snapshot {
     pub session: u64,
     pub authenticated: bool,
     pub library: Vec<Track>,
+    // Successful membership publication only; transient, never saved queue state.
+    pub library_revision: u64,
     // Same topic as library: empty when library_unchanged, otherwise a complete
     // projection of favorites among the currently loaded library IDs only.
     pub favorite_track_ids: Vec<i64>,

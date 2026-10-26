@@ -610,7 +610,16 @@ enum ItemStatus {case failed,readyToPlay}
  func applyAudio(_ effect:AudioEffect){effects.append(effect);if effect.action=="load" {player=Player()};if effect.action=="pause" {player?.pause()};if effect.action=="play" {player?.rate=1};if effect.action=="seek" {player?.time.seconds=Double(effect.position_ms)/1000};if effect.action=="stop" {player=nil}}
  __METHODS__
  func drain() async {while !bridge.pending.isEmpty {await withCheckedContinuation {continuation in settled={continuation.resume()};bridge.deliver()}};precondition(busy==0)}
- func send(_ command:String,_ values:[String:Any]=[:]) async {var v=values;v["command"]=command;self.command(v);await drain()}
+ func send(_ command:String,_ values:[String:Any]=[:]) async {
+  var v=values;v["command"]=command
+  // This facade sends Library directly rather than through the mounted reader.
+  // Supply that caller's real request identity, not an unowned publication.
+  if command=="library" {
+   libraryReadSerial+=1
+   pendingLibraryRead=LibraryReadIntent(serial:libraryReadSerial,account:accountScope,epoch:epoch,identity:LibraryReadIdentity(liked:false,queryUTF8:Array((values["query"] as! String).utf8),sort:values["sort"] as! String,order:values["order"] as! String),offset:values["offset"] as! Int)
+  }
+  self.command(v);await drain()
+ }
  func eof() async {player!.rate=0;player!.time.seconds=30;report();await drain()}
 }
 @MainActor var failures=[String]()
@@ -792,10 +801,20 @@ def rust(root, output):
 def macos(root, output):
     source = (root / 'native/macos/Sources/main.swift').read_text()
     signatures = ['struct Track:', 'struct Occurrence:', 'struct Snapshot:', 'struct AudioEffect:', 'struct Credentials:', 'struct Reply:', 'func report(state:', 'func command(', 'func apply(_ incoming: Snapshot)', 'func storeCredentials(']
-    blocks = {s: swift_block(source, s) for s in signatures}
+    extra=[]
+    if 'struct LibraryReadIntent:' in source:
+        extra=['func command(_ value: [String:Any], completion:', 'func finishLibraryRead(', 'func retireLibraryRead(']
+    blocks = {s: swift_block(source, s) for s in signatures+extra}
     projection = (root / 'native/macos/Sources/LibraryDockView.swift').read_text()
     blocks['struct Reply:'] += '\n' + swift_block(projection, 'struct DockChrome {')
-    generated = SWIFT.replace('__TYPES__', '\n'.join(blocks[s] for s in signatures[:6])).replace('__METHODS__', '\n'.join(blocks[s] for s in signatures[6:]))
+    types='\n'.join(blocks[s] for s in signatures[:6])
+    template=SWIFT
+    if extra:
+        import re
+        types+='\n'+'\n'.join(swift_block(source,s) for s in ['struct LibraryReadIdentity:', 'struct LibraryReadIntent:'])
+        fields='\n'.join(line.strip() for line in source.splitlines() if re.match(r'    var (libraryLiked|libraryReadSerial|libraryReadRetired|pendingLibraryRead|acknowledgedLibraryRead|libraryReadFailure|libraryRevision|libraryReadInvalid)\b',line))
+        template=template.replace(' var effects=[AudioEffect]()',fields+'\n func updateLibraryReadPresentation(){}\n var effects=[AudioEffect]()')
+    generated = template.replace('__TYPES__', types).replace('__METHODS__', '\n'.join(('@discardableResult\n' if s.startswith('func command(') and '-> Bool' in blocks[s] else '')+blocks[s] for s in signatures[6:]+extra))
     path = output / 'Probe.swift'
     path.write_text(generated)
     library = Path(os.environ['SOUNDQ_CORE_LIBRARY']).resolve()

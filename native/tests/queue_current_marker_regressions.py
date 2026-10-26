@@ -610,11 +610,15 @@ def run_platform(platform, root, output):
                           '@objc func moveOccurrenceUp(', '@objc func moveOccurrenceDown(',
                           'func moveOccurrence(', '@objc func clearQueue()', 'func queueCommand(', 'func command(',
                           '@objc func signIn()', '@objc func signOut()', '@objc func selectTrack()']
+            if 'struct LibraryReadIntent:' in source:
+                signatures[signatures.index('func command(')] = 'func command(_ value: [String:Any], result:'
+                signatures += ['func command(_ value: [String:Any], completion:', 'func finishLibraryRead(', 'func retireLibraryRead(']
+                type_signatures += ['struct LibraryReadIdentity:', 'struct LibraryReadIntent:']
             assert all(source.count(s) == 1 for s in type_signatures + signatures), 'production extraction must be unambiguous'
             types = '\n'.join(swift_block(source, s) for s in type_signatures)
             projection = (root / 'native/macos/Sources/LibraryDockView.swift').read_text()
             types += '\n' + swift_block(projection, 'struct DockChrome {')
-            methods = '\n'.join(swift_block(source, s) for s in signatures)
+            methods = '\n'.join(('@discardableResult\n' if s.startswith('func command(') and '-> Bool' in swift_block(source,s) else '')+swift_block(source, s) for s in signatures)
             assert source.count('func validateMenuItem(') <= 1
             validation = swift_block(source, 'func validateMenuItem(') if 'func validateMenuItem(' in source else ''
             methods += '\n' + validation
@@ -622,6 +626,10 @@ def run_platform(platform, root, output):
             assert all(source.count(s) <= 1 for s in details), 'detail extraction must be unambiguous'
             methods += '\n' + '\n'.join(swift_block(source, s) for s in details if s in source)
             detail_fields = '\n'.join(line for line in source.splitlines() if line.strip().startswith('var queueNameAlert:'))
+            if 'struct LibraryReadIntent:' in source:
+                import re
+                detail_fields += '\n'+'\n'.join(line.strip() for line in source.splitlines() if re.match(r'    var (libraryLiked|libraryReadSerial|libraryReadRetired|pendingLibraryRead|acknowledgedLibraryRead|libraryReadFailure|libraryRevision|libraryReadInvalid)\b',line))
+                detail_fields += '\n func updateLibraryReadPresentation(){}'
             declaration_start = source.index('final class App:')
             declaration = source[declaration_start:source.index('{', declaration_start)]
             conformance = ',NSMenuItemValidation' if 'NSMenuItemValidation' in declaration else ''

@@ -50,6 +50,7 @@ struct LibraryDockControls {
 // request lifecycle or second navigation state is retained here.
 final class LibraryDockView: NSView {
     let controls: LibraryDockControls
+    let liked: SoundQButton?
     let emblem = NSImageView()
     let wordmark = NSTextField(labelWithString:"SoundQ")
     let navigation = SoundQButton(title:"Library",target:nil,action:nil)
@@ -70,6 +71,7 @@ final class LibraryDockView: NSView {
     private(set) var railWidth: CGFloat = 80
     private(set) var dockHeight: CGFloat = 100
     private(set) var centerWidth: CGFloat = 480
+    var libraryReadFailed = false {didSet {if libraryReadFailed != oldValue {needsLayout = true}}}
     var textScale: CGFloat = 1 {didSet {if textScale != oldValue {applyTypography();needsLayout = true}}}
     var reduceMotion: Bool = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {didSet {if reduceMotion {cancelMotion()}}}
     private var chrome: DockChrome?
@@ -77,14 +79,15 @@ final class LibraryDockView: NSView {
     override var isFlipped: Bool {true}
     override var intrinsicContentSize: NSSize {NSSize(width:NSView.noIntrinsicMetric,height:NSView.noIntrinsicMetric)}
     override var fittingSize: NSSize {NSSize(width:760,height:540)}
-    init(controls: LibraryDockControls, assets: NativeAssets) {
-        self.controls = controls
+    init(controls: LibraryDockControls, assets: NativeAssets, liked: SoundQButton? = nil) {
+        self.controls = controls;self.liked = liked
         super.init(frame:.zero)
         wantsLayer = true
         addSubview(bodyScroll);bodyScroll.documentView = bodyDocument;bodyScroll.hasVerticalScroller = true;bodyScroll.autohidesScrollers = true;bodyScroll.drawsBackground = false
         addSubview(railScroll);railScroll.documentView = railDocument;railScroll.hasVerticalScroller = true;railScroll.autohidesScrollers = true;railScroll.drawsBackground = false
         for view in [emblem,wordmark,navigation,controls.logout] {railDocument.addSubview(view)}
         for view in [controls.title,controls.search,controls.refresh,controls.more,controls.select,controls.details,controls.retry,controls.login,controls.library,controls.status,empty] {bodyDocument.addSubview(view)}
+        if let liked {bodyDocument.addSubview(liked)}
         for view in [controls.identity,artist,dockNote,controls.previous,controls.play,controls.next,controls.queue,controls.slider,elapsed,duration,outgoing] {addSubview(view)}
         dockNote.image = NSImage(systemSymbolName:"music.note",accessibilityDescription:"No artwork available")
         emblem.image = assets.logo;emblem.imageScaling = .scaleProportionallyUpOrDown
@@ -121,6 +124,7 @@ final class LibraryDockView: NSView {
             button.font = NativeAssets.font(14,weight:500,scale:textScale)
             (button as? SoundQButton)?.textScale = textScale
         }
+        liked?.font = controls.refresh.font;liked?.textScale = textScale
         controls.table.rowHeight = SoundQTokens.grid(56*textScale)
         controls.table.noteHeightOfRows(withIndexesChanged:IndexSet(integersIn:0..<controls.table.numberOfRows))
         // Native availability includes retained/in-flight rows outside visibleRect.
@@ -163,9 +167,10 @@ final class LibraryDockView: NSView {
         progressEntries += 1;elapsed.stringValue = Self.timestamp(position);self.duration.stringValue = Self.timestamp(duration)
         controls.slider.setAccessibilityValueDescription("\(elapsed.stringValue) of \(self.duration.stringValue)")
     }
-    func updateContent(empty: Bool) {self.empty.isHidden = !empty || controls.library.isHidden}
+    func updateContent(empty: Bool) {self.empty.isHidden = !empty || libraryReadFailed || controls.library.isHidden}
     func updateAuthentication(_ authenticated: Bool) {
         for view in [controls.search,controls.refresh,controls.more,controls.select,controls.details] {view.isHidden = !authenticated}
+        liked?.isHidden = !authenticated
         empty.isHidden = !authenticated || controls.table.numberOfRows != 0
     }
     func updateCurrent(old: Int64?, new: Int64?) {
@@ -220,12 +225,13 @@ final class LibraryDockView: NSView {
         railScroll.frame = NSRect(x:0,y:0,width:railWidth,height:dockY)
         let left: CGFloat = 24, available = max(1,bodyScroll.contentSize.width-48)
         controls.title.frame = NSRect(x:left,y:(masthead-32*s)/2,width:available,height:32*s)
-        let secondaryButtons = [controls.refresh,controls.more,controls.select,controls.details,controls.retry]
-        let buttonWidths = secondaryButtons.map {max(40,$0.intrinsicContentSize.width)}
+        let secondaryButtons: [NSButton] = [controls.refresh,controls.more,controls.select,controls.details,controls.retry] + (liked.map {[$0]} ?? [])
+        let buttonWidths = secondaryButtons.map {liked == nil ? max(40,$0.intrinsicContentSize.width) : SoundQTokens.grid(max(40,$0.intrinsicContentSize.width))}
         let actionsWidth = buttonWidths.reduce(0,+)+CGFloat(secondaryButtons.count-1)*8
         let wrap = available < actionsWidth+200
         let headingHeight = masthead
         controls.search.frame = NSRect(x:left,y:headingHeight+16,width:wrap ? available : available-actionsWidth-8,height:secondary)
+        if liked != nil && !wrap {controls.search.frame.size.width = floor(controls.search.frame.width/4)*4}
         var x = wrap ? left : controls.search.frame.maxX+8
         var y = wrap ? controls.search.frame.maxY+8 : controls.search.frame.minY
         for (button,width) in zip(secondaryButtons,buttonWidths) {
@@ -237,8 +243,9 @@ final class LibraryDockView: NSView {
         let statusHeight = SoundQTokens.grid(max(32,32*s))
         let documentHeight = max(dockY,bodyTop+112*s+statusHeight+16)
         bodyDocument.frame = NSRect(x:0,y:0,width:bodyScroll.contentSize.width,height:documentHeight)
-        controls.status.frame = NSRect(x:left,y:documentHeight-statusHeight-8,width:available,height:statusHeight)
-        controls.library.frame = NSRect(x:0,y:bodyTop,width:bodyDocument.bounds.width,height:max(56,controls.status.frame.minY-bodyTop-8))
+        controls.status.frame = NSRect(x:left,y:libraryReadFailed ? bodyTop : documentHeight-statusHeight-8,width:available,height:statusHeight)
+        let libraryTop = libraryReadFailed ? controls.status.frame.maxY+8 : bodyTop
+        controls.library.frame = NSRect(x:0,y:libraryTop,width:bodyDocument.bounds.width,height:max(56,(libraryReadFailed ? documentHeight-8 : controls.status.frame.minY-8)-libraryTop))
         controls.scroll.frame = controls.library.bounds
         let railHeight = max(dockY,masthead+cell+secondary+40)
         railDocument.frame = NSRect(x:0,y:0,width:railWidth,height:railHeight)

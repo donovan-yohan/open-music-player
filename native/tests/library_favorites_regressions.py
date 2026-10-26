@@ -47,6 +47,24 @@ do {var value=scalarMissing;let snapshot=scalarOwner.snapshot;__MERGE__;scalarMi
 unknown.snapshot=scalarMissing;unknownMenu.menuNeedsUpdate(unknownMenu)
 check("actual-scalar-merge-preserves-unavailable-projection",scalarMissing.favorite_track_ids==nil && !unknownMenu.validateMenuItem(unknownMenu.items[0]))
 let (scalar,scalarMenu)=ready();let stable=scalarMenu.items[0];var s=value();s.favorite_track_ids=[];scalar.snapshot=s;scalarMenu.performFavorite(stable);check("same-owner-scalar-remains-valid",scalar.sent.count==1)
+// A pending Library filter is a busy read, not a new favorite authority. Keep
+// these existing-menu controls separate from pending App filter callback tests.
+let (filterOwner,filterMenu)=ready();let beforeFilter=filterMenu.items[0]
+filterOwner.busy=1
+filterMenu.performFavorite(beforeFilter)
+check("filter-read-held-retained-favorite-refused",filterOwner.sent.isEmpty && !filterMenu.validateMenuItem(beforeFilter))
+filterMenu.menuNeedsUpdate(filterMenu)
+check("filter-read-held-new-favorite-disabled",!filterMenu.items[0].isEnabled && !filterMenu.validateMenuItem(filterMenu.items[0]))
+filterOwner.snapshot=value([8],[8]);filterOwner.table.selectedRow=0;filterOwner.busy=0
+filterMenu.performFavorite(beforeFilter)
+check("filter-settled-replaced-row-retained-favorite-refused",filterOwner.sent.isEmpty)
+filterMenu.menuNeedsUpdate(filterMenu);let settled=filterMenu.items[0]
+check("filter-settled-row-acknowledged-unlike",filterMenu.validateMenuItem(settled) && settled.title=="Unlike selected track")
+filterMenu.performFavorite(settled)
+check("filter-settled-dispatches-acknowledged-row-only",filterOwner.sent.count==1 && filterOwner.sent[0]["track_id"] as? Int64==8 && filterOwner.sent[0]["liked"] as? Bool==false)
+let (failedOwner,failedMenu)=ready();failedOwner.busy=1;failedOwner.busy=0
+failedMenu.menuNeedsUpdate(failedMenu);failedMenu.performFavorite(failedMenu.items[0])
+check("filter-failure-old-acknowledged-row-remains-actionable",failedOwner.sent.count==1 && failedOwner.sent[0]["track_id"] as? Int64==7)
 print("LIBRARY_FAVORITES_PASS \(passed.count) failures=\(failures.count)");exit(failures.isEmpty ? 0 : 1)
 '''
 
