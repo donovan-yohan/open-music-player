@@ -233,11 +233,29 @@ struct FixturePhaseConfiguration {
         let tree = try token("SOUNDQ_PHASE_SOURCE_TREE","^[a-f0-9]{40}$")
         let manifest = try token("SOUNDQ_PHASE_MANIFEST_SHA256","^[a-f0-9]{64}$")
         guard environment["OMP_API_BASE_URL"] == "http://127.0.0.1:54761/api/v1" else {throw PhaseFailure(code:"invalid-endpoint")}
+        func canonicalPath(_ text:String,allowMissingLeaf:Bool) -> Bool {
+            guard text.hasPrefix("/"),text.count < 4096,!text.utf8.contains(0) else {return false}
+            if text == "/" {return true}
+            let parts = text.dropFirst().split(separator:"/",omittingEmptySubsequences:false)
+            guard parts.allSatisfy({!$0.isEmpty && $0 != "." && $0 != ".."}) else {return false}
+            // Foundation can shorten canonical /private paths to /var or /etc.
+            // Inspect every actual component instead: no spelling exceptions and
+            // no symlink (including a dangling leaf) may cross this boundary.
+            var prefix = ""
+            for (index,part) in parts.enumerated() {
+                prefix += "/" + part
+                var info = stat()
+                if lstat(prefix,&info) != 0 {
+                    return allowMissingLeaf && index == parts.count-1 && errno == ENOENT
+                }
+                if info.st_mode & S_IFMT == S_IFLNK {return false}
+                if index < parts.count-1 && info.st_mode & S_IFMT != S_IFDIR {return false}
+            }
+            return true
+        }
         func path(_ key:String) throws -> URL {
-            guard let text = environment[key],text.hasPrefix("/"),text.count < 4096 else {throw PhaseFailure(code:"invalid-output")}
-            let url = URL(fileURLWithPath:text)
-            guard url.standardizedFileURL.path == text,url.resolvingSymlinksInPath().path == text else {throw PhaseFailure(code:"invalid-output")}
-            return url
+            guard let text = environment[key],canonicalPath(text,allowMissingLeaf:true) else {throw PhaseFailure(code:"invalid-output")}
+            return URL(fileURLWithPath:text)
         }
         let home = try path("SOUNDQ_NATIVE_FIXTURE_HOME"),cache = try path("SOUNDQ_NATIVE_CACHE_ROOT"),report = try path("SOUNDQ_PHASE_REPORT")
         guard !FileManager.default.fileExists(atPath:report.path),
@@ -245,7 +263,7 @@ struct FixturePhaseConfiguration {
               home != report.deletingLastPathComponent(),
               FileManager.default.fileExists(atPath:report.deletingLastPathComponent().path) else {throw PhaseFailure(code:"invalid-output")}
         let credential = home.appendingPathComponent("credentials.json")
-        guard credential.resolvingSymlinksInPath() == credential,
+        guard canonicalPath(credential.path,allowMissingLeaf:false),
               let attributes = try? FileManager.default.attributesOfItem(atPath:credential.path),
               attributes[.type] as? FileAttributeType == .typeRegular,
               let size = attributes[.size] as? NSNumber,size.intValue <= 16_384,

@@ -24,7 +24,7 @@ class Launcher(unittest.TestCase):
 
     def test_missing_app_retains_private_fixed_failure(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
-            p = Path(tmp)
+            p = Path(tmp).resolve(strict=True)
             result = subprocess.run([sys.executable, '-B', str(LAUNCHER), '--app', str(p/'SECRET-MARKER.app'),
                                      '--artifact-manifest', str(p/'manifest.json'), '--fixture-home', str(p/'home'),
                                      '--run-id', 'control', '--evidence', str(p/'out')], capture_output=True, timeout=10)
@@ -46,7 +46,7 @@ class ControlledLauncher(unittest.TestCase):
         else:
             context = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
         with context as tmp:
-            p = Path(tmp)
+            p = Path(tmp).resolve(strict=True)
             app = p/'Control.app'
             home = p/'fixture'; home.mkdir()
             (home/'credentials.json').write_text(json.dumps({'email':'SECRET-MARKER','password':'SECRET-MARKER'}))
@@ -225,7 +225,7 @@ if mode == 'partial': raise SystemExit(1)
 
     def test_output_and_identity_refusals(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
-            p=Path(tmp)
+            p=Path(tmp).resolve(strict=True)
             base=[sys.executable,'-B',str(LAUNCHER),'--app',str(p/'absent.app'),'--artifact-manifest',str(p/'absent.json'),'--fixture-home',str(p/'home'),'--run-id','control']
             existing=p/'existing';existing.mkdir()
             result=subprocess.run(base+['--evidence',str(existing)],capture_output=True,timeout=10)
@@ -335,14 +335,18 @@ static func main() throws {
     }
     func testSetup(_ environment:[String:String],_ expected:String) {
         do {_ = try FixturePhaseConfiguration.prepare(arguments:["probe","--fixture-journey","--measure-phases"],environment:environment);preconditionFailure("setup admitted")}
-        catch let failure as PhaseFailure {precondition(failure.code == expected)}
+        catch let failure as PhaseFailure {precondition(failure.code == expected,"expected \(expected), received \(failure.code)")}
         catch {preconditionFailure("untyped setup error")}
     }
     let base:[String:String] = ["SOUNDQ_PHASE_RUN_ID":"control","SOUNDQ_PHASE_SOURCE_COMMIT":String(repeating:"a",count:40),"SOUNDQ_PHASE_SOURCE_TREE":String(repeating:"b",count:40),"SOUNDQ_PHASE_MANIFEST_SHA256":String(repeating:"c",count:64),"OMP_API_BASE_URL":"http://127.0.0.1:54761/api/v1"]
     testSetup(base,"invalid-output")
     var bad = base;bad["OMP_API_BASE_URL"] = "https://SECRET-MARKER.invalid";testSetup(bad,"invalid-endpoint")
     bad = base;bad["SOUNDQ_PHASE_SOURCE_COMMIT"] = String(repeating:"A",count:40);testSetup(bad,"invalid-identity")
-    let root = URL(fileURLWithPath:ProcessInfo.processInfo.environment["TMPDIR"]!).appendingPathComponent(UUID().uuidString)
+    // Read-only canonical system ancestor: no credential read or output write.
+    precondition(!FileManager.default.fileExists(atPath:"/private/var/credentials.json"))
+    var privateHome = base
+    privateHome["SOUNDQ_NATIVE_FIXTURE_HOME"] = "/private/var"
+    let root = URL(fileURLWithPath:CommandLine.arguments[1]).appendingPathComponent(UUID().uuidString)
     let home = root.appendingPathComponent("fixture"),out = root.appendingPathComponent("out")
     try FileManager.default.createDirectory(at:home,withIntermediateDirectories:true)
     try FileManager.default.createDirectory(at:out,withIntermediateDirectories:true)
@@ -350,13 +354,46 @@ static func main() throws {
     configured["SOUNDQ_NATIVE_FIXTURE_HOME"] = home.path
     configured["SOUNDQ_NATIVE_CACHE_ROOT"] = out.appendingPathComponent("cache").path
     configured["SOUNDQ_PHASE_REPORT"] = out.appendingPathComponent("report.json").path
+    privateHome["SOUNDQ_NATIVE_CACHE_ROOT"] = configured["SOUNDQ_NATIVE_CACHE_ROOT"]
+    privateHome["SOUNDQ_PHASE_REPORT"] = configured["SOUNDQ_PHASE_REPORT"]
+    testSetup(privateHome,"invalid-credentials")
+    privateHome["SOUNDQ_NATIVE_FIXTURE_HOME"] = "/var";testSetup(privateHome,"invalid-output")
     testSetup(configured,"invalid-credentials")
     try Data("{}".utf8).write(to:home.appendingPathComponent("credentials.json"));testSetup(configured,"invalid-credentials")
     try Data(#"{"email":"SECRET-MARKER","password":"SECRET-MARKER"}"#.utf8).write(to:home.appendingPathComponent("credentials.json"))
+    let alias = root.appendingPathComponent("alias")
+    try FileManager.default.createSymbolicLink(at:alias,withDestinationURL:root)
+    let credential = home.appendingPathComponent("credentials.json")
+    let saved = home.appendingPathComponent("saved.json")
+    try FileManager.default.moveItem(at:credential,to:saved)
+    try FileManager.default.createSymbolicLink(at:credential,withDestinationURL:saved)
+    testSetup(configured,"invalid-credentials")
+    try FileManager.default.removeItem(at:credential)
+    try FileManager.default.moveItem(at:saved,to:credential)
+    for key in ["SOUNDQ_NATIVE_FIXTURE_HOME","SOUNDQ_NATIVE_CACHE_ROOT","SOUNDQ_PHASE_REPORT"] {
+        let original = configured[key]!
+        for value in ["relative",original+"/.",original+"/..",original+"/",original+"\0suffix",original.replacingOccurrences(of:root.path,with:alias.path),original.replacingOccurrences(of:root.path,with:root.path+"/missing"),original.replacingOccurrences(of:root.path,with:root.path+"/")] {
+            bad = configured;bad[key] = value;testSetup(bad,"invalid-output")
+        }
+    }
+    let report = out.appendingPathComponent("report.json")
+    try FileManager.default.createSymbolicLink(at:report,withDestinationURL:out.appendingPathComponent("missing"))
+    testSetup(configured,"invalid-output")
+    try FileManager.default.removeItem(at:report)
+    let cache = out.appendingPathComponent("cache")
+    try FileManager.default.createSymbolicLink(at:cache,withDestinationURL:home)
+    testSetup(configured,"invalid-output")
+    try FileManager.default.removeItem(at:cache)
+    // Existing cache and missing report leaf are the launcher's real contract.
+    try FileManager.default.createDirectory(at:cache,withIntermediateDirectories:false)
     let config = try FixturePhaseConfiguration.prepare(arguments:["probe","--fixture-journey","--measure-phases"],environment:configured)!
     let checkpoint = try String(contentsOf:out.appendingPathComponent("report.json"),encoding:.utf8)
     precondition(!checkpoint.contains("SECRET-MARKER") && !checkpoint.contains(home.path))
     testSetup(configured,"invalid-output")
+    try FileManager.default.removeItem(at:report)
+    try FileManager.default.removeItem(at:cache)
+    _ = try FixturePhaseConfiguration.prepare(arguments:["probe","--fixture-journey","--measure-phases"],environment:configured)!
+    precondition(FileManager.default.fileExists(atPath:report.path) && !FileManager.default.fileExists(atPath:cache.path))
     try FileManager.default.removeItem(at:root)
     _ = config
     print("PASS recorder-rejected-controls=\(controls) cancellation write-failure live-self-read opt-out invalid-flags setup-privacy")
@@ -364,13 +401,15 @@ static func main() throws {
 }
 '''
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
-            p = Path(tmp)
+            p = Path(tmp).resolve(strict=True)
             source = p/'Probe.swift'
             source.write_text(harness)
             argv = ['/usr/bin/swiftc', '-swift-version', '6', '-target', 'arm64-apple-macosx14.0', '-j', '2', '-num-threads', '2', '-module-cache-path', str(p/'modules'), str(RECORDER), str(source), '-o', str(p/'probe')]
             result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
-            result = subprocess.run([str(p/'probe')], capture_output=True, text=True, timeout=10)
+            probe_environment = dict(os.environ)
+            probe_environment.pop('TMPDIR', None)
+            result = subprocess.run([str(p/'probe'), str(p)], env=probe_environment, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
             print(result.stdout.strip())
             if os.environ.get('SOUNDQ_PHASE_PROBE_OUTPUT'):
