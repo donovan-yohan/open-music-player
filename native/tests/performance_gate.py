@@ -236,7 +236,10 @@ def main(argv=None):
     try:
         require(not any(p.is_symlink() for p in (out, *out.parents)), 'symlink-output')
         out.mkdir(mode=0o700)
-    except (OSError, Invalid):
+    except Invalid as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except OSError:
         print('evidence-directory-must-be-new', file=sys.stderr)
         return 2
     stores = []

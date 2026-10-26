@@ -94,6 +94,15 @@ breach fail closed. Exit 0 means qualified baseline or passed comparison, 1 mean
 failed/unqualified evidence, 2 means output-directory/usage refusal. Inputs are
 bounded regular files (4 MiB each), retained privately with hashes; reports contain
 no original paths or raw exception messages. Keep all retained inputs private.
+All gate CLI paths must use canonical paths without symlink leaves or ancestors;
+resolve aliases before invoking the CLI, not by changing evidence references.
+An output symlink leaf/ancestor prints `symlink-output` on stderr and exits 2;
+other output-directory creation failures (including an existing directory) print
+`evidence-directory-must-be-new` and exit 2. Neither refusal writes a report or
+changes the target. Input aliases remain refused: a symlink leaf reports
+`symlink-input`, while an ancestor descriptor-open refusal reports
+`input-read-failed` in the failed report (exit 1). Component-wise no-follow opens,
+canonical reference validation and read bounds remain enforced.
 
 The external public macOS collector observes captured window pixels:
 
@@ -126,6 +135,13 @@ observer setting. Missing changes, capture errors, geometry drift or target loss
 remain failed/unavailable, not invented zero-latency samples. Original attempts
 must be retained. Public ScreenCaptureKit requires macOS 14+ and a real WindowServer
 session; window-free controls are not a live collection gate.
+Capture teardown stops only successfully started streams not already stopped by
+the delegate, and attempts stop at most once. The first refusal remains first;
+`capture-stopped`, `capture-cleanup-failed` or the watchdog's
+`capture-operation-timeout` may be appended without replacing it (at most three
+unique fixed failure codes). The existing timeout-plus-five-second watchdog still
+bounds a stuck public capture operation. Source-extracted lifecycle controls use
+injected boundary results, not a real capture or performance measurement.
 
 CI runs deterministic gate/parser/budget mutation controls and macOS collector
 compilation/refusal tests alongside existing native source/layout gates. It does

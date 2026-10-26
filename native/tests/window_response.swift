@@ -10,6 +10,11 @@ import ScreenCaptureKit
 // Owns only its SCStream. The caller owns the target app and fixture lifetime.
 struct Refusal: Error { let code: String }
 func demand(_ ok: Bool, _ code: String) throws { if !ok { throw Refusal(code: code) } }
+func recordFailure(_ code: String, in report: inout [String:Any]) {
+    var codes = report["failure_codes"] as? [String] ?? []
+    if !codes.contains(code), codes.count < 3 { codes.append(code) }
+    report["failure_codes"]=codes;report["status"]="failed"
+}
 struct ROI {
     let x: Int, y: Int, width: Int, height: Int
     func valid(_ w: Int, _ h: Int) -> Bool {
@@ -59,7 +64,7 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate {
         self.roi=roi; self.threshold=threshold; self.pid=pid; self.point=point; self.delta=delta
     }
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        queue.async { self.failure = "capture-stopped"; self.streamError = true }
+        queue.async { if self.failure == nil { self.failure = "capture-stopped" }; self.streamError = true }
     }
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         let callback = mach_absolute_time()
@@ -170,6 +175,40 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate {
         var code=1
         var watchdog: Timer?
         defer { watchdog?.invalidate() }
+        // Called only from the main-actor lifecycle or its main-run-loop watchdog,
+        // never from the observer queue that this snapshot drains.
+        func snapshotObserverFailure() -> Bool {
+            var stopped = false
+            if let observer {
+                observer.queue.sync {
+                    observer.dwellTimer?.cancel()
+                    if let failure=observer.failure { recordFailure(failure,in:&report) }
+                    stopped=observer.streamError
+                    if stopped { recordFailure("capture-stopped",in:&report) }
+                }
+            }
+            return stopped
+        }
+        func finishCapture() async {
+            let stopped=snapshotObserverFailure()
+            // Only a successfully started stream is owned here. Retire it
+            // before awaiting stop so a failed stop is never blindly retried.
+            let active=stream;stream=nil
+            if let active, !stopped {
+                do { try await active.stopCapture() }
+                catch {
+                    if let observer {
+                        observer.queue.sync {
+                            if let failure=observer.failure { recordFailure(failure,in:&report) }
+                            else if observer.positive == nil && (report["failure_codes"] as? [String] ?? []).isEmpty {
+                                recordFailure(observer.input == nil ? "baseline-or-input-timeout":"no-qualified-captured-change",in:&report)
+                            }
+                        }
+                    }
+                    recordFailure("capture-cleanup-failed",in:&report)
+                }
+            }
+        }
         do {
             if CommandLine.arguments == [CommandLine.arguments[0],"--self-test"] {
                 try demand(distance([0,255],[255,0]) == 255,"pixel-distance")
@@ -227,7 +266,7 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate {
             probe.foregroundRoute=foreground
             probe.expectedScreen=window.frame;probe.targetWindowID=windowID
             try demand(window.frame.contains(probe.point),"input-outside-target")
-            let capture=SCStream(filter:filter,configuration:config,delegate:probe);stream=capture
+            let capture=SCStream(filter:filter,configuration:config,delegate:probe)
             try capture.addStreamOutput(probe,type:.screen,sampleHandlerQueue:probe.queue)
             var tb=mach_timebase_info_data_t();try demand(mach_timebase_info(&tb)==KERN_SUCCESS,"timebase-unavailable")
             report["clock"]=["domain":"mach-absolute-time","unit":"tick","numer":tb.numer,"denom":tb.denom]
@@ -238,21 +277,22 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate {
             // refuses a session. Preserve failure and let process exit release
             // capture ownership; never leave an unbounded helper behind.
             watchdog=Timer.scheduledTimer(withTimeInterval:timeout+5,repeats:false) { _ in
-                let failure:[String:Any] = ["schema":"soundq.window-response.v1","status":"failed","failure_codes":["capture-operation-timeout"],"physical_presentation_available":false,"fps":NSNull()]
-                if let bytes=try? JSONSerialization.data(withJSONObject:failure,options:.sortedKeys) {
+                _ = snapshotObserverFailure()
+                recordFailure("capture-operation-timeout",in:&report)
+                if let bytes=try? JSONSerialization.data(withJSONObject:report,options:.sortedKeys) {
                     try? bytes.write(to:url.appendingPathComponent("report.json"),options:.atomic)
                 }
                 fputs("capture-operation-timeout\n",stderr);exit(1)
             }
-            try await capture.startCapture()
+            try await capture.startCapture();stream=capture
             let deadline=ProcessInfo.processInfo.systemUptime+timeout
             while ProcessInfo.processInfo.systemUptime<deadline {
                 if probe.queue.sync(execute:{probe.positive != nil || probe.failure != nil}) { break }
                 if target.isTerminated { probe.queue.sync{probe.failure="target-exited"};break }
                 try await Task.sleep(nanoseconds:10_000_000)
             }
-            probe.queue.sync { probe.dwellTimer?.cancel() }
-            try await capture.stopCapture();stream=nil
+            await finishCapture()
+            if let failure=(report["failure_codes"] as? [String])?.first { throw Refusal(code:failure) }
             try demand(!target.isTerminated,"target-exited")
             let finalHash=SHA256.hash(data:try Data(contentsOf:executable)).map{String(format:"%02x",$0)}.joined()
             try demand(finalHash==hash,"target-artifact-changed")
@@ -264,10 +304,10 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate {
                       let upper=upperNS(positive,input.0,tb.numer,tb.denom),let detection=upperNS(detected,input.0,tb.numer,tb.denom) else { throw Refusal(code:probe.input == nil ? "baseline-or-input-timeout":"no-qualified-captured-change") }
                 report["response_upper_ns"]=upper;report["detected_by_upper_ns"]=detection;report["status"]="observed";code=0
             }
-        } catch let failure as Refusal { report["status"]="failed";report["failure_codes"]=[failure.code] }
-        catch { report["status"]="failed";report["failure_codes"]=["collector-failed"] }
-        observer?.queue.sync { observer?.dwellTimer?.cancel() }
-        if let stream { do { try await stream.stopCapture() } catch { report["status"]="failed";report["failure_codes"]=["capture-cleanup-failed"];code=1 } }
+        } catch let failure as Refusal { recordFailure(failure.code,in:&report) }
+        catch { recordFailure("collector-failed",in:&report) }
+        await finishCapture()
+        if !(report["failure_codes"] as? [String] ?? []).isEmpty { code=1 }
         if let observer { observer.queue.sync { report["samples"]=observer.samples } }
         if let output { do { try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys]).write(to:output.appendingPathComponent("report.json"),options:.atomic) } catch { report["status"]="failed";fputs("report-persistence-failed\n",stderr);code=1 } }
         print(report["status"] as? String ?? "failed");exit(Int32(code))

@@ -183,6 +183,45 @@ class Gate(unittest.TestCase):
         with self.assertRaisesRegex(Invalid,'symlink-input'):
             load(linked,store)
 
+    def test_output_refusal_diagnostics_preserve_targets(self):
+        target = self.root/'output-target'; target.mkdir()
+        marker = target/'marker'; marker.write_bytes(b'unchanged-output')
+        leaf = self.root/'output-link'; leaf.symlink_to(target, target_is_directory=True)
+        ancestor = self.root/'output-ancestor'; ancestor.symlink_to(target, target_is_directory=True)
+        for out, diagnostic in [(target, b'evidence-directory-must-be-new\n'),
+                                (leaf, b'symlink-output\n'),
+                                (ancestor/'new-output', b'symlink-output\n')]:
+            with self.subTest(diagnostic=diagnostic, leaf=out.name):
+                result = subprocess.run([sys.executable, '-B', str(CLI), 'baseline',
+                    '--cohort', str(self.base/'cohort.json'), '--evidence', str(out)],
+                    capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, b'')
+                self.assertEqual(result.stderr, diagnostic)
+                self.assertEqual(list(target.iterdir()), [marker])
+                self.assertEqual(marker.read_bytes(), b'unchanged-output')
+                self.assertTrue(leaf.is_symlink()); self.assertTrue(ancestor.is_symlink())
+
+    def test_input_aliases_refused_without_mutation(self):
+        original = {p.name: p.read_bytes() for p in self.base.iterdir()}
+        leaf = self.root/'cohort-link.json'; leaf.symlink_to(self.base/'cohort.json')
+        ancestor = self.root/'input-ancestor'; ancestor.symlink_to(self.base, target_is_directory=True)
+        for index, (path, reason) in enumerate([(self.base/'cohort.json', None),
+                (leaf, 'symlink-input'), (ancestor/'cohort.json', 'input-read-failed')]):
+            with self.subTest(reason=reason):
+                out = self.root/f'alias-out-{index}'
+                result = subprocess.run([sys.executable, '-B', str(CLI), 'baseline',
+                    '--cohort', str(path), '--evidence', str(out)], capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 0 if reason is None else 1)
+                self.assertEqual(result.stderr, b'')
+                self.assertEqual(result.stdout, b'qualified\n' if reason is None else b'failed\n')
+                report = json.loads((out/'report.json').read_bytes())
+                if reason is not None:
+                    self.assertEqual(report['reasons'], [reason])
+                self.assertNotIn(str(self.root), json.dumps(report))
+                self.assertEqual({p.name: p.read_bytes() for p in self.base.iterdir()}, original)
+                self.assertTrue(leaf.is_symlink()); self.assertTrue(ancestor.is_symlink())
+
     def test_review_required_and_pinned(self):
         self.review(); path=self.root/'policy.json'; obj=json.loads(path.read_bytes())
         for key,value in [('reviewer',''),('baseline_sha256','0'*64),('schema','unknown')]:
