@@ -1,5 +1,159 @@
 # Offline native performance evidence
 
+## Explicit-artifact Flutter renderer launch
+
+`native/tests/flutter_profile_launch.py` is a separate opt-in application launcher,
+not part of the offline reducer. It never builds, installs, provisions an API,
+changes signing/entitlements, or accesses personal application storage. Supply an
+already reviewed profile bundle and caller-owned disposable API at literal
+`http://127.0.0.1:54761/api/v1`. The app-side process-descriptor fixture must be
+present in the supplied source; a normal personal application is not an eligible
+artifact. Keep descriptors and every evidence packet private.
+
+```sh
+python3 -B native/tests/flutter_profile_launch.py manifest --app /ABS/Fixture.app --executable Contents/MacOS/SoundQ --source-commit EXACT_COMMIT --source-tree EXACT_TREE --source-manifest-sha256 EXACT_SOURCE_MANIFEST_SHA256 --output /ABS/NEW_MANIFEST.json
+python3 -B native/tests/flutter_profile_launch.py run --app /ABS/Fixture.app --manifest /ABS/NEW_MANIFEST.json --descriptor /ABS/PRIVATE_DESCRIPTOR.json --evidence /ABS/NEW_EVIDENCE --timeout-seconds 100
+python3 -B -m unittest discover -s native/tests -p test_flutter_profile_launch.py -v
+```
+
+The versioned artifact manifest inventories regular bundle files and contained
+framework symlinks after signing. Both prelaunch and post-cleanup inventories must
+match. Source commit/tree/hash are externally supplied provenance, not authenticated
+compiler proof. The descriptor is a canonical, regular, mode-private file bounded
+to 16 KiB. Its exact keys are `schema: soundq.flutter.fixture.process.v1`, `endpoint`,
+`email`, `password`, `run_id`, `source_commit`, `source_tree`,
+`source_manifest_sha256`, and a random per-launch `report_token` (64 lowercase hex).
+Source pins must equal the artifact manifest. Only the launched child's minimal
+environment receives this private descriptor. Child stdout/stderr are not exported.
+
+The runner owns only its child and a finite `127.0.0.1:54762/report` receiver.
+It authenticates the bearer capability, bounds request size and absolute request
+time including header/body parsing, validates the exact child report schema,
+source/run/PID, raw FrameTiming arithmetic, nonoverlapping windows, complete scroll
+geometry/durations, and fixed storage/audio exclusions before persistence ACK.
+The scheduler/Stopwatch join allows at most 100 ms clock-boundary difference, an
+admission tolerance rather than a performance budget. Failed or missing reports,
+artifact drift, malformed frames, source mismatch, bad workload tails and cleanup
+failures cannot become successful samples. Rejected arbitrary payloads are not
+retained; fixed refusal codes and valid failed child reports remain visible.
+
+`soundq.flutter.profile-launch.v1` returns renderer distributions in microseconds,
+nearest-rank p50/p95/p99/min/max/spread and sample count, alongside original validated
+frames and per-window evidence. Process start is an owned launch wall-time receipt,
+not a kernel-authenticated start identity. `completed-diagnostic` is explicitly
+not full-app acceptance. These runs use ephemeral preferences/native SQLite and
+memory-only artwork cache, exclude disk/download/playback-cache/artwork acquisition
+and audio, and do not establish a production persistence baseline, physical FPS,
+positive audio-active workload or matched native/Flutter speedup. Missing refresh,
+power or platform qualification remains unavailable. CI exercises synthetic child
+controls only; actual app collection remains separately owned and opt-in.
+
+## Resource regression gate and external response diagnostic
+
+These are bounded additions, not completion of the replacement benchmark.
+The phase gate consumes the existing native launcher, not a frame schema:
+
+```sh
+python3 -B native/tests/performance_gate.py baseline --cohort BUNDLE/cohort.json --evidence NEW_DIRECTORY
+python3 -B native/tests/performance_gate.py compare --baseline-cohort BASE/cohort.json --cohort NEXT/cohort.json --policy REVIEWED_POLICY.json --evidence OTHER_NEW_DIRECTORY
+python3 -B -m unittest discover -s native/tests -p test_performance_gate.py -v
+```
+
+`soundq.phase-cohort.v1` requires `run_id`, `source: {commit, tree}`,
+`manifest_sha256`, `build_mode: release`, and the exact `environment`, `workload`,
+`features`, `visible` manifests documented below. `attempts` is the full chronological
+list of `{report: {path, sha256}, process_start}`. Each report is the unchanged
+`soundq.macos.phase-launch.v1` output. Process-start tokens are supplied custody
+assertions, not authenticated OS observations. Five distinct PID/run/start/report
+identities are mandatory. Reusing a failed process cannot mint a valid repetition.
+All functional/audio, artifact, exit and cleanup predicates must pass independently
+of resource budgets. The existing child validator recomputes phase arithmetic.
+The caller remains responsible for actual workload correspondence, complete retry
+history, source-to-package provenance and host qualification.
+
+Outputs include all attempt slots, failure reasons and separate admitted versus
+failure-inclusive distributions. Completed valid phases survive later journey
+failure. CPU is percent of one core; RSS end and positive boundary growth are bytes,
+not peaks or a sustained trend. Nearest-rank p50/p95/p99, min/max/spread count
+process-phase observations. Five observations do not estimate a stable p99 tail.
+Shared-host, unknown environment or incomplete feature cohorts remain unqualified.
+
+There is deliberately no numeric default. `soundq.phase-policy.v1` requires the
+canonical `baseline_sha256` emitted by `baseline`, a `reviewer` token,
+`calibration: {cohort_sha256, rationale}`, and `budgets` keyed by every existing
+phase and each metric (`cpu_percent`, `rss_end_bytes`, `rss_growth_bytes`). Each
+budget has nonnegative `relative_allowance` and `absolute_allowance`, in that
+metric's units. Every candidate observation must be at or below
+`baseline maximum * (1 + relative_allowance) + absolute_allowance`.
+Review the observed spread and separate held-out baseline repeats before approving
+allowances. Reviewer/rationale tokens document external review; the CLI does not
+authenticate a human reviewer. Baselines are rederived from pinned original inputs,
+never updated or automatically ratcheted. Changed baseline bytes, policy pins,
+workload/environment/feature drift, missing runs, malformed tails and any budget
+breach fail closed. Exit 0 means qualified baseline or passed comparison, 1 means
+failed/unqualified evidence, 2 means output-directory/usage refusal. Inputs are
+bounded regular files (4 MiB each), retained privately with hashes; reports contain
+no original paths or raw exception messages. Keep all retained inputs private.
+All gate CLI paths must use canonical paths without symlink leaves or ancestors;
+resolve aliases before invoking the CLI, not by changing evidence references.
+An output symlink leaf/ancestor prints `symlink-output` on stderr and exits 2;
+other output-directory creation failures (including an existing directory) print
+`evidence-directory-must-be-new` and exit 2. Neither refusal writes a report or
+changes the target. Input aliases remain refused: a symlink leaf reports
+`symlink-input`, while an ancestor descriptor-open refusal reports
+`input-read-failed` in the failed report (exit 1). Component-wise no-follow opens,
+canonical reference validation and read bounds remain enforced.
+
+The external public macOS collector observes captured window pixels:
+
+```sh
+swiftc -O -parse-as-library -swift-version 5 -num-threads 2 native/tests/window_response.swift -o PRIVATE_OUTPUT/window-response
+PRIVATE_OUTPUT/window-response --pid OWNED_PID --window-id OWNED_WINDOW_ID --evidence NEW_PRIVATE_DIRECTORY --roi X,Y,WIDTH,HEIGHT --point SCREEN_X,SCREEN_Y --scroll-pixels -300 --threshold 2 --timeout-seconds 3
+python3 -B -m unittest discover -s native/tests -p test_window_response.py -v
+```
+
+The caller must own the target and its source/artifact/launch receipt. The helper
+attaches only to that PID/window, preflights existing screen-capture/event access
+without prompting, and never starts/stops the app or a fixture. On a failed
+background event route, an explicitly authorized caller may front the exact target
+and add `--foreground-route`; this checks the active PID before posting through the
+HID route. It never activates a target itself. Do not use foreground mode while a
+user is interacting with another app. Routes are distinct diagnostic cohorts.
+
+`soundq.window-response.v1` retains Mach absolute input-call brackets, timebase,
+complete capture sample event/callback timestamps, ROI hashes/change distances,
+geometry, target executable hash and terminal failures. Capture/sample status is
+not a renderer frame identity. A 200 ms baseline dwell rejects observed unrelated
+changes; the caller must exclude cursor, progress, caret and transient decoration
+from its predeclared ROI. The first post-input ROI mean-absolute RGB difference
+above the explicit threshold yields zero lower bound and an outward-rounded
+WindowServer-event-time upper bound; callback detection delay is separate.
+These thresholds define a pixel predicate, not a performance budget. There is no
+semantic causal proof, no physical input-to-photon measurement, no FPS, no acoustic
+onset and no automatic matched comparison. Requested 60 Hz capture is only an
+observer setting. Missing changes, capture errors, geometry drift or target loss
+remain failed/unavailable, not invented zero-latency samples. Original attempts
+must be retained. Public ScreenCaptureKit requires macOS 14+ and a real WindowServer
+session; window-free controls are not a live collection gate.
+Capture teardown stops only successfully started streams not already stopped by
+the delegate, and attempts stop at most once. The first refusal remains first;
+`capture-stopped`, `capture-cleanup-failed` or the watchdog's
+`capture-operation-timeout` may be appended without replacing it (at most three
+unique fixed failure codes). The existing timeout-plus-five-second watchdog still
+bounds a stuck public capture operation. Source-extracted lifecycle controls use
+injected boundary results, not a real capture or performance measurement.
+
+CI runs deterministic gate/parser/budget mutation controls and macOS collector
+compilation/refusal tests alongside existing native source/layout gates. It does
+not enforce physical timing on heterogeneous hosted runners. Actual collection is
+opt-in through the commands above under one device/fixture owner, with no competing
+builds, new owner-labelled disposable resources, failure-inclusive private artifact
+custody and exact cleanup. Current whole-framework holds remain actual-root Flutter
+collector/isolation, ordinary transitions/control/startup/playback latency, sustained
+memory, calibrated reviewed hardware policy, five alternating equivalent app runs,
+renderer-neutral semantic response acceptance, Android/Windows qualification and
+protected publication. No Flutter replacement or speedup is established here.
+
 `native/tests/matched_performance.py` validates portable input bundles and reduces
 raw frame observations using Python's standard library. It **never** launches an
 app, subprocess, device command, service or network request. There is no `run`
