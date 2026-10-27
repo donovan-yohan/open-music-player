@@ -256,6 +256,75 @@ def inventory(root):
                 x in {'build', '.gradle', '.cxx'} for x in p.relative_to(root).parts)}
 
 
+def auth_presentation(root, output):
+    variant = os.environ.get('SOUNDQ_AUTH_PRESENTATION_VARIANT', 'green')
+    result = _auth_presentation_variant(root, output, variant)
+    if variant == 'green' and result['passed']:
+        result['mutations'] = {name: _auth_presentation_variant(root, output / name, name)
+            for name in ('auth-mode-copy', 'auth-persistent-labels', 'auth-feedback-scope')}
+        result['passed'] = all(item['passed'] for item in result['mutations'].values())
+        (output/'receipt.json').write_text(json.dumps(result,indent=2)+'\n')
+    return result
+
+
+def _auth_presentation_variant(root, output, variant):
+    output.mkdir(parents=True,exist_ok=False)
+    gradle=shutil.which('gradle')
+    if not gradle:raise RuntimeError('Existing Gradle installation required')
+    if variant not in {'green','auth-cell-minimum-reverted','auth-mode-copy','auth-persistent-labels','auth-feedback-scope'}:raise ValueError('unknown auth presentation variant')
+    project=output/'project'
+    shutil.copytree(root/'native/android',project,ignore=shutil.ignore_patterns('build','.gradle','.cxx','.kotlin','local.properties'))
+    if variant=='auth-cell-minimum-reverted':
+        activity=project/PACKAGE/'MainActivity.kt'
+        text=activity.read_text();start=text.index('                if(authScroll.visibility != View.GONE && library.visibility == View.GONE) {');end=text.index('                val cell = listOf(query',start)
+        activity.write_text(text[:start]+text[end:])
+    if variant in {'auth-mode-copy','auth-persistent-labels','auth-feedback-scope'}:
+        activity=project/PACKAGE/'MainActivity.kt';text=activity.read_text()
+        if variant=='auth-mode-copy':
+            text=replace_once(text,'authInstruction.text=if(registration) "Create an account on your music server." else "Sign in to your music server."','authInstruction.text="Sign in to your music server."')
+        elif variant=='auth-persistent-labels':
+            start=text.index('        for(field in listOf(username,email,password,confirmation)) {')
+            end=text.index('        authFeedback =',start)
+            text=replace_once(text,text[start:end],'        login.addView(username);login.addView(email);login.addView(password);login.addView(confirmation)\n')
+        else:
+            text=replace_once(text,'if(!authenticated) uiError = null\n        else if(error != null)','if(error != null)')
+            text=replace_once(text,'status.visibility = if(authenticated) View.VISIBLE else View.GONE\n        val scopedMessage = if(authenticated) message else ""','status.visibility = View.VISIBLE\n        val scopedMessage = message')
+        activity.write_text(text)
+    inputs=inventory(project);(output/'source-inputs.json').write_text(json.dumps(inputs,indent=2)+'\n')
+    argv=[gradle,'--no-daemon','--max-workers=2','-Dorg.gradle.jvmargs=-Xmx1500m -XX:ActiveProcessorCount=2','-Pkotlin.compiler.execution.strategy=in-process',*shlex.split(os.environ.get('SOUNDQ_PRESENTATION_GRADLE_ARGS','')),':app:testDebugUnitTest','--tests','com.soundq.nativepreview.RegistrationPresentationTest']
+    (output/'command.json').write_text(json.dumps(dict(argv=argv,TMPDIR=os.environ.get('TMPDIR')),indent=2)+'\n')
+    with (output/'gradle.log').open('w') as log:code=run_invocation(argv,project,dict(os.environ,JAVA_TOOL_OPTIONS='-XX:ActiveProcessorCount=2'),log,output)
+    cases=[]
+    for p in (project/'app/build/test-results/testDebugUnitTest').glob('TEST-*.xml'):
+        for c in ET.parse(p).getroot().findall('testcase'):cases.append(dict(name=c.attrib['name'],test_class=c.attrib['classname'],skipped=c.find('skipped') is not None,failures=[x.attrib.get('message','') for x in c.findall('failure')],errors=[x.attrib.get('message','') for x in c.findall('error')]))
+    expected={
+        'normalAuthFormErrorsPendingAndKeyboard','enlargedCompactAuthFormErrorsPendingAndKeyboard',
+        'modeInstructionFollowsActualForm','enlargedCompactModeInstructionFollowsActualForm','normalPopulatedLabelsRetainSecureNativeEditing',
+        'enlargedCompactPopulatedLabelsRetainSecureNativeEditing',
+        'normalAuthScopedFeedbackAndAuthenticatedEmptyTransition',
+        'enlargedCompactAuthScopedFeedbackAndAuthenticatedEmptyTransition',
+    }
+    inventory_ok=len(cases)==len(expected) and {c['name'] for c in cases}==expected and not any(c['skipped'] or c['errors'] or c['test_class']!='com.soundq.nativepreview.RegistrationPresentationTest' for c in cases)
+    failed={c['name']:c['failures'] for c in cases if c['failures']}
+    witnesses={
+        'auth-mode-copy': ({'modeInstructionFollowsActualForm','enlargedCompactModeInstructionFollowsActualForm'},'REG-MODE correct instruction for REGISTER'),
+        'auth-persistent-labels': ({'normalPopulatedLabelsRetainSecureNativeEditing','enlargedCompactPopulatedLabelsRetainSecureNativeEditing','normalAuthFormErrorsPendingAndKeyboard','enlargedCompactAuthFormErrorsPendingAndKeyboard'},'REG-LABELS'),
+        'auth-feedback-scope': ({'normalAuthScopedFeedbackAndAuthenticatedEmptyTransition','enlargedCompactAuthScopedFeedbackAndAuthenticatedEmptyTransition'},'REG-FEEDBACK empty auth-only status'),
+        'auth-cell-minimum-reverted': ({'enlargedCompactAuthFormErrorsPendingAndKeyboard'},'ancestor admits complete cell'),
+    }
+    passed=inventory_ok and code==0 and not failed
+    if variant!='green':
+        names,message=witnesses[variant]
+        passed=inventory_ok and code!=0 and set(failed)==names and all(any(message in x for x in failed[name]) for name in names)
+        if variant=='auth-cell-minimum-reverted':
+            # The retained full-cell mutation now also reaches the new real
+            # confirmed-refusal case; do not drop that mandatory GREEN coverage.
+            additional='enlargedCompactAuthScopedFeedbackAndAuthenticatedEmptyTransition'
+            passed=inventory_ok and code!=0 and set(failed)==names|{additional} and all(any(message in x for x in failed[name]) for name in names) and all('REG-FEEDBACK refused 311 full height' in x for x in failed[additional])
+    receipt=dict(passed=passed,variant=variant,exit_code=code,cases=cases,inventory_admitted=inventory_ok,boundary='real native Activity controls; no service/JNI/device')
+    (output/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');return receipt
+
+
 def run(root, output):
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=True)

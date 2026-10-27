@@ -154,6 +154,8 @@ jobs:
           subprocess.run([sys.executable, '-B', 'native/tests/native_review_regressions.py', '--phase-only'], check=True)
           subprocess.run([sys.executable, '-B', 'native/tests/library_metadata_regressions.py', '--output', str(output / 'library-metadata')], check=True)
           subprocess.run([sys.executable, '-B', 'native/tests/library_favorites_regressions.py', '--output', str(output / 'library-favorites')], check=True)
+          subprocess.run([sys.executable, '-B', 'native/tests/registration_regressions.py', '--platform', 'macos', '--output', str(output / 'registration')], check=True)
+          subprocess.run([sys.executable, '-B', 'native/tests/registration_layout.py', '--output', str(output / 'registration-layout')], check=True)
           PY
       - name: Preserve macOS layout diagnostics
         if: always() && steps.macos-layout.outputs.evidence != ''
@@ -239,7 +241,7 @@ jobs:
               shutil.copyfile(jars[0], home / 'lib' / (name + '.jar'))
           java = Path(os.environ['JAVA_HOME']) / 'bin/java'
           launcher = output / 'kotlinc'
-          launcher.write_text('#!' + sys.executable + '\nimport os, sys\nos.execv(' + repr(str(java)) + ', ' + repr([str(java), '-Dkotlin.home=' + str(home), '-cp', str(home / 'lib/kotlin-compiler.jar') + os.pathsep + str(lib / '*'), 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-kotlin-home', str(home), '-classpath', str(home / 'lib/kotlin-stdlib.jar'), '-Xbackend-threads=2']) + ' + sys.argv[1:])\n')
+          launcher.write_text('#!' + sys.executable + '\nimport os, sys\nos.execv(' + repr(str(java)) + ', ' + repr([str(java), '-XX:ActiveProcessorCount=2', '-Dkotlin.home=' + str(home), '-cp', str(home / 'lib/kotlin-compiler.jar') + os.pathsep + str(lib / '*'), 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-kotlin-home', str(home), '-classpath', str(home / 'lib/kotlin-stdlib.jar'), '-Xbackend-threads=2']) + ' + sys.argv[1:])\n')
           launcher.chmod(0o755)
           # Preserve an explicit caller root; otherwise use this runner-owned output.
           os.environ.setdefault('TMPDIR', str(output))
@@ -255,6 +257,10 @@ jobs:
           result = queue_current_marker_regressions.run_platform('android', Path.cwd(), output / 'current-marker')
           if result:
               raise SystemExit(result)
+          subprocess.run([sys.executable, '-B', 'native/tests/registration_regressions.py', '--platform', 'android', '--output', str(output / 'registration')], env=env, check=True)
+          from android_presentation_regressions import auth_presentation
+          if not auth_presentation(Path.cwd(), output / 'registration-layout')['passed']:
+              raise SystemExit('Native registration layout failed')
           PY
       - uses: actions/upload-artifact@v4
         with:

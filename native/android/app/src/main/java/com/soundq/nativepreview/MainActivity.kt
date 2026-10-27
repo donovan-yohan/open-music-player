@@ -28,6 +28,15 @@ class MainActivity : Activity() {
     private lateinit var time: TextView
     private lateinit var email: EditText
     private lateinit var password: EditText
+    private lateinit var username: EditText
+    private lateinit var confirmation: EditText
+    private lateinit var authSubmit: Button
+    private lateinit var authMode: Button
+    private lateinit var authFeedback: TextView
+    private lateinit var authInstruction: TextView
+    private val authLabels = linkedMapOf<EditText,TextView>()
+    private var suppressAuthEdit = false
+    private var authPresentation = 0L
     private lateinit var query: EditText
     private lateinit var play: ImageButton
     private lateinit var previous: ImageButton
@@ -59,13 +68,17 @@ class MainActivity : Activity() {
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             dismissQueueActions()
+            service?.retireAuthPresentation();clearAuthSecrets()
             service = (binder as PlaybackService.LocalBinder).service
+            authPresentation=service?.authForm?.presentation ?: 0L
             service?.listener = { snapshot, error -> render(snapshot, error) }
             service?.let { render(it.snapshot, null) }
         }
         override fun onServiceDisconnected(name: ComponentName) {
-            dismissQueueActions(); service = null
-            status.text = "Playback disconnected. Reopen SoundQ to reconnect."
+            service?.retireAuthPresentation();clearAuthSecrets()
+            dismissQueueActions(); service = null;updateAuth()
+            status.text = if(status.visibility == View.VISIBLE) "Playback disconnected. Reopen SoundQ to reconnect." else ""
+            if(status.visibility != View.VISIBLE) authFeedback.text = "Connection lost. Reopen SoundQ to reconnect."
             rows.submitList(rows.currentList.map { it.copy(enabled = false) })
             listOf(play,previous,next,seek,all,liked,search,refresh,more).forEach { style.availability(it,false) }
         }
@@ -89,7 +102,22 @@ class MainActivity : Activity() {
                 // Otherwise expansion can alternate with its own successful result.
                 toolScroll.minimumHeight = 0
                 dock.minimumHeight = 0
+                val authScroll = login.parent as BoundedScroll
+                authScroll.viewportHeight = available
+                authScroll.minimumHeight = 0
                 super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(available, MeasureSpec.EXACTLY))
+                if(authScroll.visibility != View.GONE && library.visibility == View.GONE) {
+                    // Keyboard/enlarged form overflow belongs to native scrolling;
+                    // its viewport must still admit one complete real control/error.
+                    val authCell=maxOf(
+                        listOf(username,email,password,confirmation,authFeedback,authSubmit,authMode).filter {it.visibility != View.GONE}.maxOf {it.measuredHeight},
+                        authLabels.filter {it.key.visibility != View.GONE}.maxOfOrNull {it.key.measuredHeight+it.value.measuredHeight} ?: 0)
+                    authScroll.minimumHeight=authCell
+                    super.onMeasure(widthSpec,MeasureSpec.makeMeasureSpec(available,MeasureSpec.EXACTLY))
+                    val chrome=(0 until childCount).map {getChildAt(it)}.filter {it !== authScroll && it.visibility != View.GONE}.sumOf {it.measuredHeight}
+                    super.onMeasure(widthSpec,MeasureSpec.makeMeasureSpec(maxOf(available,chrome+authCell),MeasureSpec.EXACTLY))
+                    return
+                }
                 val cell = listOf(query,all,liked,search,refresh,more).maxOf { it.measuredHeight }
                 val dockCell = listOf(play,seek,previous,next).maxOf { it.measuredHeight }
                 val tools = toolScroll.measuredHeight
@@ -141,11 +169,41 @@ class MainActivity : Activity() {
 
         login = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(style.dp(16),style.dp(16),style.dp(16),style.dp(16)) }
         login.addView(style.label("Your music, together.",28f).apply { typeface = style.bold })
-        login.addView(style.label("Sign in to your music server.",14f,true))
+        authInstruction = style.label("Sign in to your music server.",14f,true)
+        login.addView(authInstruction)
+        username = input("Username").apply { visibility = View.GONE }
         email = input("Email").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS }
-        password = input("Password").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
-        login.addView(email); login.addView(password)
-        login.addView(button("Sign in") { service?.login(email.text.toString(),password.text.toString()); password.text.clear() })
+        password = input("Password").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD; isSaveEnabled = false }
+        confirmation = input("Confirm password").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD; isSaveEnabled = false; visibility = View.GONE }
+        for(field in listOf(username,email,password,confirmation)) {
+            field.id=View.generateViewId()
+            val label=style.label(field.hint.toString(),14f,true).apply {labelFor=field.id;visibility=field.visibility}
+            authLabels[field]=label
+            login.addView(label);login.addView(field)
+        }
+        authFeedback = style.label("",14f).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        login.addView(authFeedback)
+        authSubmit = button("Sign in") { submitAuth() };login.addView(authSubmit)
+        authMode = button("Create account") { changeAuthMode() };login.addView(authMode)
+        for(field in listOf(username,email,password,confirmation)) {
+            field.addTextChangedListener(object: android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    if(!suppressAuthEdit) {
+                        val forced=service?.authForm?.pending != null
+                        service?.authForm?.edited()
+                        if(forced) clearAuthSecrets()
+                        authPresentation=service?.authForm?.presentation ?: 0L
+                        updateAuth()
+                    }
+                }
+                override fun afterTextChanged(s: android.text.Editable?) {}
+            })
+            field.imeOptions = EditorInfo.IME_ACTION_DONE
+            field.setOnEditorActionListener { _,action,event ->
+                if(action == EditorInfo.IME_ACTION_DONE || event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_UP) {submitAuth();true} else false
+            }
+        }
         val loginScroll = BoundedScroll(this,0.85f).apply { addView(login) }
         root.addView(loginScroll,LinearLayout.LayoutParams(-1,-2))
 
@@ -183,7 +241,8 @@ class MainActivity : Activity() {
         fixtureList = list
         library.addView(list,LinearLayout.LayoutParams(-1,0,if(shortHeight) 2f else 1f))
         root.addView(library,LinearLayout.LayoutParams(-1,0,1f))
-        status = style.label("Connecting to your music…",13f,true).apply {
+        status = style.label("",13f,true).apply {
+            visibility = View.GONE
             setPadding(style.dp(16),style.dp(4),style.dp(16),style.dp(4)); accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
         root.addView(status)
@@ -234,6 +293,47 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),1)
         bindService(Intent(this,PlaybackService::class.java),connection,BIND_AUTO_CREATE)
     }
+    private fun clearAuthSecrets() {
+        suppressAuthEdit=true
+        password.text.clear();confirmation.text.clear()
+        suppressAuthEdit=false
+    }
+    private fun changeAuthMode() {
+        val state=service?.authForm ?: return
+        if(!state.changeMode(if(state.mode == AuthFormState.Mode.SIGN_IN) AuthFormState.Mode.REGISTER else AuthFormState.Mode.SIGN_IN)) return
+        clearAuthSecrets();updateAuth()
+    }
+    private fun submitAuth() {
+        val owner=service ?: return
+        if(owner.authForm.pending != null) return
+        owner.submitAuth(username.text.toString(),email.text.toString(),password.text.toString(),confirmation.text.toString())
+        if(owner.authForm.pending != null) clearAuthSecrets()
+        updateAuth()
+    }
+    internal fun updateAuth(state: AuthFormState? = service?.authForm, connected: Boolean = service != null) {
+        val registration=state?.mode == AuthFormState.Mode.REGISTER
+        authInstruction.text=if(registration) "Create an account on your music server." else "Sign in to your music server."
+        username.visibility=if(registration) View.VISIBLE else View.GONE
+        confirmation.visibility=if(registration) View.VISIBLE else View.GONE
+        authLabels.forEach {(field,label) -> label.visibility=field.visibility}
+        if(state != null && authPresentation != state.presentation) {clearAuthSecrets();authPresentation=state.presentation}
+        val pending=state?.pending != null
+        for((key,field) in listOf("username" to username,"email" to email,"password" to password,"confirmation" to confirmation)) {
+            style.availability(field,connected && !pending)
+            field.error=state?.errors?.get(key)
+        }
+        authSubmit.text=if(pending) {if(registration) "Creating account…" else "Signing in…"} else if(registration) "Create account" else "Sign in"
+        authMode.text=if(registration) "Back to sign in" else "Create account"
+        style.availability(authSubmit,connected && !pending);style.availability(authMode,connected && !pending)
+        authFeedback.text=state?.failure ?: state?.errors?.values?.firstOrNull() ?: if(pending) "Please wait…" else ""
+        if(state?.succeeded == true) clearAuthSecrets()
+    }
+    @Deprecated("Native Back is admission guarded")
+    override fun onBackPressed() {
+        if(service?.authForm?.pending != null) return
+        if(service?.authForm?.mode == AuthFormState.Mode.REGISTER) {changeAuthMode();return}
+        super.onBackPressed()
+    }
     private fun input(hintText: String) = EditText(this).apply {
         hint = hintText; contentDescription = hintText; textSize = 16f; typeface = style.regular
         setTextColor(style.primary); setHintTextColor(style.secondary); setSingleLine()
@@ -274,6 +374,7 @@ class MainActivity : Activity() {
         view.animate().alpha(1f).setDuration(duration).setInterpolator(android.view.animation.DecelerateInterpolator()).start()
     }
     private fun render(snapshot: JSONObject, error: String?) {
+        updateAuth()
         val selected = if(snapshot.isNull("selected_occurrence")) null else snapshot.optLong("selected_occurrence")
         if(queueListDialog != null && selected != queueListSelection) dismissQueueActions()
         queueActions?.notifyDataSetChanged()
@@ -295,7 +396,8 @@ class MainActivity : Activity() {
         if(contentChanged) {
             if(nextRows != rows.currentList) rows.submitList(nextRows)
         }
-        if(error != null) uiError = LibraryBrowseState.feedback(error)
+        if(!authenticated) uiError = null
+        else if(error != null) uiError = LibraryBrowseState.feedback(error)
         else if(browse?.loading == true || browse?.favoritePending == true || snapshot.optString("error").let { it.isBlank() || it == "null" }) uiError = null
         val feedback = browse?.failure ?: if(browse?.invalid == true) "Library changed. Refresh before choosing a track." else uiError
         val message = feedback ?: when {
@@ -303,7 +405,9 @@ class MainActivity : Activity() {
             browse?.favoritePending == true -> "Saving liked state…"
             else -> "${nextRows.size} of ${snapshot.optLong("total")} tracks"
         }
-        if(status.text.toString() != message) status.text = message
+        status.visibility = if(authenticated) View.VISIBLE else View.GONE
+        val scopedMessage = if(authenticated) message else ""
+        if(status.text.toString() != scopedMessage) status.text = scopedMessage
         status.setTextColor(if(feedback != null) style.error else style.secondary)
         empty.visibility = if(authenticated && nextRows.isEmpty()) View.VISIBLE else View.GONE
         empty.text = when {
@@ -432,6 +536,7 @@ class MainActivity : Activity() {
     }
     override fun onDestroy() {
         dismissQueueActions(); accountDialog?.dismiss(); trackDialog?.dismiss()
+        service?.retireAuthPresentation();clearAuthSecrets()
         service?.listener = null; unbindService(connection); super.onDestroy()
     }
     internal data class Row(val id: Long, val title: String, val artist: String, val duration: Long, val liked: Boolean, val current: Boolean, val enabled: Boolean, val owner: LibraryBrowseState.RowOwner, val serviceOwner: PlaybackService?)
