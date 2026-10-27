@@ -241,8 +241,20 @@ jobs:
           launcher = output / 'kotlinc'
           launcher.write_text('#!' + sys.executable + '\nimport os, sys\nos.execv(' + repr(str(java)) + ', ' + repr([str(java), '-Dkotlin.home=' + str(home), '-cp', str(home / 'lib/kotlin-compiler.jar') + os.pathsep + str(lib / '*'), 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-kotlin-home', str(home), '-classpath', str(home / 'lib/kotlin-stdlib.jar'), '-Xbackend-threads=2']) + ' + sys.argv[1:])\n')
           launcher.chmod(0o755)
+          # Preserve an explicit caller root; otherwise use this runner-owned output.
+          os.environ.setdefault('TMPDIR', str(output))
           env = dict(os.environ, SOUNDQ_KOTLINC=str(launcher))
           subprocess.run([sys.executable, '-B', 'native/tests/queue_restore_cursor_regressions.py', '--source-root', str(Path.cwd()), '--output', str(output / 'cursor')], env=env, check=True)
+          # Production Library admission and retained Queue disclosure use the
+          # installed compiler; the preceding SDK build compiles the full shell.
+          subprocess.run([sys.executable, '-B', 'native/tests/android_library_regressions.py', '--compiled', '--output', str(output / 'library')], env=env, check=True)
+          subprocess.run([sys.executable, '-B', 'native/tests/queue_dialog_regressions.py', '--output', str(output / 'queue-dialog')], env=env, check=True)
+          sys.path.insert(0, str(Path.cwd() / 'native/tests'))
+          import queue_current_marker_regressions
+          os.environ['SOUNDQ_KOTLINC'] = str(launcher)
+          result = queue_current_marker_regressions.run_platform('android', Path.cwd(), output / 'current-marker')
+          if result:
+              raise SystemExit(result)
           PY
       - uses: actions/upload-artifact@v4
         with:

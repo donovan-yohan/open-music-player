@@ -16,10 +16,10 @@ from test_toolchain import java_home, gson_jar, kotlin_compiler
 sys.path.insert(0, os.environ['SOUNDQ_REPAIR_PROBES'])
 import repair_support as p
 OUT=Path(os.environ['SOUNDQ_REPAIR_OUTPUT'])
-WORK=Path(os.environ['TMPDIR'])/'android-adapter'
+WORK=Path(tempfile.mkdtemp(prefix='composed-credentials-',dir=os.environ['TMPDIR']))
 JAVA=java_home()
 GSON = gson_jar()
-text=(WORK/'AdapterInvariants.kt').read_text()
+text=(OUT/'AdapterInvariants.kt').read_text()
 a=text.index('class JSONObject {');b=text.index('object Base64 {',a)
 text=text[:a]+'''class JSONObject {
     val data:com.google.gson.JsonObject

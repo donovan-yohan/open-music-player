@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Compile the entire production MainActivity against minimal Android facades.
+"""Compile production Queue disclosure against minimal Android facades.
 
-The real onCreate/Queue button/showQueue/AlertDialog adapter and callbacks run;
+The retained production showQueue/AlertDialog adapter and callbacks run;
 only platform Views/dialog mounting and the service command boundary are facades.
 This is device-free behavior proof, not Android rendering/accessibility acceptance.
 Requires the installed JDK and kotlinc (see test_toolchain.py); no network/build.
@@ -536,12 +536,14 @@ def main():
     args = parser.parse_args()
     production = args.source_root.resolve() / ACTIVITY
     source_bytes = production.read_bytes()
+    from android_library_regressions import prepare_queue_harness
+    sources_text = prepare_queue_harness(args.source_root.resolve())
     java = java_home()
     env = dict(os.environ, JAVA_HOME=str(java), JAVA_TOOL_OPTIONS='-XX:ActiveProcessorCount=2')
     with tempfile.TemporaryDirectory(prefix='queue-dialog-', dir=os.environ.get('TMPDIR')) as tmp:
         work = Path(tmp)
         sources = []
-        for name, text in {**FACADES, 'Probe.kt': PROBE, 'MainActivity.kt': source_bytes.decode()}.items():
+        for name, text in sources_text.items():
             path = work / name
             path.write_text(text)
             sources.append(str(path))
@@ -554,6 +556,8 @@ def main():
             ran = subprocess.run(run_argv, env=env, capture_output=True, text=True, timeout=30)
             print(ran.stdout + ran.stderr, end='')
         receipt = dict(productionSha256=hashlib.sha256(source_bytes).hexdigest(),
+                       evidenceClass='production-queue-disclosure-with-shell-boundary-facade-not-whole-Activity',
+                       sourceHashes={name:hashlib.sha256(text.encode()).hexdigest() for name,text in sources_text.items()},
                        testSha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                        compileArgv=compile_argv, compileExit=compiled.returncode,
                        runArgv=run_argv, runExit=ran.returncode if ran else None,

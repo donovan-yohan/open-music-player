@@ -1,0 +1,45 @@
+{
+  "authority": "frozen Flutter SoundQ assets mirrored in native macOS resources; no network retrieval",
+  "files": [
+    {
+      "path": "font/soundq_regular.ttf",
+      "source": "native/macos/Sources/Resources/fonts/spacegrotesk/SpaceGrotesk-Regular.ttf",
+      "sha256": "28af0332e262e4953efdf5159fb8426f8218a84ab2f22453f85d258c62773fcd"
+    },
+    {
+      "path": "font/soundq_medium.ttf",
+      "source": "native/macos/Sources/Resources/fonts/spacegrotesk/SpaceGrotesk-Medium.ttf",
+      "sha256": "170fc655be8d0ec0c6e07b62299670cfbe2b3455730b43b97c553d19ac0839d5"
+    },
+    {
+      "path": "font/soundq_bold.ttf",
+      "source": "native/macos/Sources/Resources/fonts/spacegrotesk/SpaceGrotesk-Bold.ttf",
+      "sha256": "ecab4b0a0d1d0f9ad6d056fa966b642f25addb75111f22b4a194cf3ca54fbb49"
+    },
+    {
+      "path": "font/soundq_mono.ttf",
+      "source": "native/macos/Sources/Resources/fonts/ibmplexmono/IBMPlexMono-Regular.ttf",
+      "sha256": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46"
+    },
+    {
+      "path": "raw/soundq_spacegrotesk_ofl.txt",
+      "source": "native/macos/Sources/Resources/fonts/spacegrotesk/OFL.txt",
+      "sha256": "564ce565c371c5e5bbf286006565a7c9aa55a9f56e7ca58d56e05d649dd61a72"
+    },
+    {
+      "path": "raw/soundq_ibmplexmono_ofl.txt",
+      "source": "native/macos/Sources/Resources/fonts/ibmplexmono/OFL.txt",
+      "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
+    },
+    {
+      "path": "raw/soundq_font_sources.json",
+      "source": "native/macos/Sources/Resources/fonts/sources.json",
+      "sha256": "b95b845320da6d8709b4c07edc0a16873361d97219a446cf2145457c6e841c49"
+    },
+    {
+      "path": "drawable-nodpi/soundq_logo.png",
+      "source": "native/macos/Sources/Resources/brand/soundq-logo.png",
+      "sha256": "8b8ec5737c39efab15cc513772ee83360bda623c7aaf02aaa0cb4bc0c4e589f8"
+    }
+  ]
+}
