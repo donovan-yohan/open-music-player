@@ -125,6 +125,31 @@ CASES = r'''
    a.table.selectRowIndexes(IndexSet(integer:0),byExtendingSelection:false);a.updateLibraryAvailability()
   }
   if !CommandLine.arguments.contains("compatibility") {
+  // Joined production menu -> ABI/HTTP unlike -> native Load more recovery.
+  for query in ["", "Ω & valid", String(repeating:"Ω",count:256)] {
+   let a=ready();a.search.stringValue=query;await establish(a,true)
+   let tag="favorite-pagination-\(query.utf8.count)",before=a.snapshot!,count=a.bridge.held.count
+   func files()->[String:Data] {
+    let root=URL(fileURLWithPath:a.bridge.root),paths=FileManager.default.enumerator(at:root,includingPropertiesForKeys:nil)!
+    var result=[String:Data]()
+    for case let p as URL in paths where !p.lastPathComponent.hasPrefix("native-") && !p.hasDirectoryPath {result[p.path]=try! Data(contentsOf:p)}
+    return result
+   }
+   let saved=files(),menu=LibraryFavoriteMenu(owner:a);menu.menuNeedsUpdate(menu)
+   check(tag+"-positive-partial-liked-menu",a.libraryLiked && rows(a)==[8] && a.snapshot!.total>1 && menu.items[0].title=="Unlike selected track" && menu.validateMenuItem(menu.items[0]))
+   menu.performFavorite(menu.items[0]);await releaseLast(a)
+   check(tag+"-acknowledged-unlike-no-auto-read",a.bridge.held.count==count+1 && a.bridge.response(count).ok && a.bridge.value(count)["liked"] as? Bool==false && rows(a)==[8] && a.snapshot!.favorite_track_ids==[] && a.snapshot!.position_ms==before.position_ms && a.snapshot!.queue.map{$0.id}==before.queue.map{$0.id} && files()==saved)
+   a.loadMore();let append=a.bridge.held.count-1
+   check(tag+"-actual-stale-append-refused",a.bridge.value(append)["offset"] as? Int==1 && a.bridge.response(append).code=="invalid_query")
+   await releaseLast(a)
+   check(tag+"-truthful-refresh-guidance",a.status.stringValue=="Library changed. Refresh before loading more." && !a.status.stringValue.contains("Shorten") && rows(a)==[8] && a.pendingLibraryRead==nil && a.bridge.held.count==count+2 && files()==saved)
+   a.refresh();check(tag+"-explicit-offset-zero",a.bridge.value(a.bridge.held.count-1)["offset"] as? Int==0);await releaseLast(a)
+   a.loadMore();await releaseLast(a)
+   check(tag+"-explicit-recovery-no-skipped-row",rows(a)==[9,10] && a.libraryLiked && a.libraryReadFailure==nil && a.snapshot!.position_ms==before.position_ms && a.snapshot!.queue.map{$0.id}==before.queue.map{$0.id} && files()==saved && a.bridge.held.count==count+4)
+  }
+  let oversized=ready();await establish(oversized,true);let beforeOversize=oversized.bridge.held.count
+  oversized.search.stringValue=String(repeating:"Ω",count:257);oversized.refresh();await releaseLast(oversized)
+  check("favorite-pagination-514-byte-query-still-shorten",oversized.bridge.response(beforeOversize).code=="invalid_query" && oversized.status.stringValue=="Invalid query. Shorten your search and try again." && oversized.bridge.held.count==beforeOversize+1)
   for reverse in [false,true] {for nextFirst in [false,true] {
    let a=ready();await establish(a,reverse)
    let olderReply=a.bridge.execute(["command":"snapshot"],epoch:a.epoch)
@@ -327,7 +352,7 @@ def main():
     generated = 'import AVFoundation\nimport CryptoKit\nimport SoundQCore\n'+BRIDGE+'\n'+extracted+'\n'+CASES
     src = args.output/'main.swift'
     src.write_text(generated)
-    dependencies = [root/'native/macos/Sources'/f for f in FILES+['LibraryMetadataDisclosure.swift']]
+    dependencies = [root/'native/macos/Sources'/f for f in FILES+['LibraryMetadataDisclosure.swift', 'LibraryFavoriteMenu.swift']]
     lib = args.core_library.resolve()
     argv = ['/usr/bin/swiftc', '-swift-version', '6', '-parse-as-library', '-j', '2', '-num-threads', '2', '-I', str(root/'native/core/include'), *map(str, dependencies), str(src), str(lib), '-Xlinker', '-rpath', '-Xlinker', str(lib.parent), '-o', str(args.output/'probe')]
     built = subprocess.run(argv, capture_output=True, timeout=180)
@@ -341,6 +366,7 @@ def main():
     rotated = set()
 
     def server():
+        unlike_committed = False
         try:
             while not stop.is_set():
                 try:
@@ -361,11 +387,15 @@ def main():
                     if u.path == '/api/v1/auth/refresh':
                         # Synthetic test credential placeholder, never a live secret.
                         body = dict(accessToken='projection-synthetic-access', refreshToken='projection-synthetic-refresh', user=dict(id='projection-synthetic-account'))  # placeholder
+                        unlike_committed = False
                     elif u.path == '/api/v1/auth/logout':
                         body = {}
                     elif u.path.startswith('/api/v1/library/tracks/') and u.path.endswith('/like'):
-                        status = '201 Created'
-                        body = dict(track_id=int(u.path.split('/')[-2]), liked=True)
+                        status = '201 Created' if verb == 'POST' else '204 No Content'
+                        body = dict(track_id=int(u.path.split('/')[-2]), liked=True) if verb == 'POST' else None
+                        if verb == 'DELETE':
+                            assert u.path == '/api/v1/library/tracks/8/like'
+                            unlike_committed = True
                     elif u.path == '/api/v1/library':
                         assert verb == 'GET' and q['limit'] == ['50'] and q['sort'] == ['added_at'] and q['order'] == ['desc']
                         query, offset = q['q'][0], int(q['offset'][0])
@@ -377,13 +407,13 @@ def main():
                         else:
                             ids = [8] if q.get('liked') == ['true'] or query in ['narrow', 'rotate'] else [7, 8]
                             # A second page is genuine append, not an old first-page fixture.
-                            page = ids if offset == 0 else [9]
-                            body = dict(tracks=[dict(id=i, title=f'Track {i}', duration_ms=30000, is_liked=i in [8, 9]) for i in page], total=len(ids)+1, offset=offset)
+                            page = ([9] if offset == 0 else [10]) if unlike_committed else (ids if offset == 0 else [9])
+                            body = dict(tracks=[dict(id=i, title=f'Track {i}', duration_ms=30000, is_liked=i in [8, 9, 10]) for i in page], total=2 if unlike_committed else len(ids)+1, offset=offset)
                     else:
                         assert u.path == '/api/v1/playback/urls', u.path
                         status, body = '503 Service Unavailable', {}
                     seen.append(dict(verb=verb, path=u.path, query=q, status=status))
-                    data = json.dumps(body).encode()
+                    data = b'' if body is None else json.dumps(body).encode()
                     conn.sendall(b'HTTP/1.1 '+status.encode()+b'\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: '+str(len(data)).encode()+b'\r\n\r\n'+data)
         except Exception as exc:
             errors.append(type(exc).__name__+': '+str(exc))
@@ -400,6 +430,21 @@ def main():
         thread.join(timeout=5)
     (args.output/'runtime.log').write_bytes(ran.stdout+ran.stderr if ran else b'NOT RUN')
     lines = ran.stdout.decode().splitlines() if ran else []
+    # Join command counts with actual exchanges: three ordinary unlike cases
+    # have no HTTP for refused append, replay or credential refresh.
+    favorite_exchanges = []
+    if args.suite != 'compatibility' and ran is not None and built.returncode == 0:
+        starts = [i for i, r in enumerate(seen) if r['path'] == '/api/v1/auth/refresh']
+        for case, query in enumerate(['', 'Ω & valid', 'Ω' * 256]):
+            group = seen[starts[case]:starts[case+1]] if len(starts) > case+1 else []
+            expected = [('POST', '/api/v1/auth/refresh', None),
+                        ('GET', '/api/v1/library', '0'), ('GET', '/api/v1/library', '0'),
+                        ('GET', '/api/v1/library', '0'), ('DELETE', '/api/v1/library/tracks/8/like', None),
+                        ('GET', '/api/v1/library', '0'), ('GET', '/api/v1/library', '1')]
+            actual = [(r['verb'], r['path'], r['query'].get('offset', [None])[0]) for r in group]
+            valid = actual == expected and all(r['query']['q'] == [query] for r in group[2:] if r['verb'] == 'GET')
+            favorite_exchanges.append(dict(queryUTF8Bytes=len(query.encode()), exactExchanges=valid, requests=group))
+    favorite_exchanges_ok = all(c['exactExchanges'] for c in favorite_exchanges)
     compatibility = []
     for original in sorted(args.output.glob('case-*/compat-*-original.json')):
         delivered = original.with_name(original.name.replace('-original.json', '-legacy.json'))
@@ -407,11 +452,11 @@ def main():
         revision = expected['snapshot'].pop('library_revision')
         compatibility.append(dict(original=str(original.relative_to(args.output)), delivered=str(delivered.relative_to(args.output)), originalSha256=hashlib.sha256(original.read_bytes()).hexdigest(), deliveredSha256=hashlib.sha256(delivered.read_bytes()).hexdigest(), removedRevision=revision, onlySemanticDifference=json.loads(delivered.read_bytes()) == expected, byteTransformation='JSONSerialization sortedKeys reencoding; remove only snapshot.library_revision'))
     compatibility_ok = all(c['onlySemanticDifference'] for c in compatibility)
-    receipt = dict(suite=args.suite, compatibility=compatibility, compatibilityVerified=compatibility_ok, compileExit=built.returncode, runExit=ran.returncode if ran else None, compileArgv=argv, testSha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), probeSha256=hashlib.sha256(generated.encode()).hexdigest(), coreSha256=hashlib.sha256(lib.read_bytes()).hexdigest(), TMPDIR=os.environ.get('TMPDIR'), productionBlocks={k: hashlib.sha256(v.encode()).hexdigest() for k, v in blocks.items()}, compilerInputs={str(v): hashlib.sha256(v.read_bytes()).hexdigest() for v in dependencies+[src]}, passes=[l[5:] for l in lines if l.startswith('PASS ')], failures=[l[5:] for l in lines if l.startswith('FAIL ')], terminal=[l for l in lines if l.startswith('PROJECTION_RESULT')], abiInputs={str(p.relative_to(args.output)): hashlib.sha256(p.read_bytes()).hexdigest() for p in args.output.glob("case-*/native-*.json")}, requests=seen, serverErrors=errors, threadDrained=not thread.is_alive(), scope='real ABI1 producer + exact native methods; held worker delivery; no decoder/OS storage/GUI')
+    receipt = dict(suite=args.suite, favoriteExchanges=favorite_exchanges, favoriteExchangesVerified=favorite_exchanges_ok, compatibility=compatibility, compatibilityVerified=compatibility_ok, compileExit=built.returncode, runExit=ran.returncode if ran else None, compileArgv=argv, testSha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), probeSha256=hashlib.sha256(generated.encode()).hexdigest(), coreSha256=hashlib.sha256(lib.read_bytes()).hexdigest(), TMPDIR=os.environ.get('TMPDIR'), productionBlocks={k: hashlib.sha256(v.encode()).hexdigest() for k, v in blocks.items()}, compilerInputs={str(v): hashlib.sha256(v.read_bytes()).hexdigest() for v in dependencies+[src]}, passes=[l[5:] for l in lines if l.startswith('PASS ')], failures=[l[5:] for l in lines if l.startswith('FAIL ')], terminal=[l for l in lines if l.startswith('PROJECTION_RESULT')], abiInputs={str(p.relative_to(args.output)): hashlib.sha256(p.read_bytes()).hexdigest() for p in args.output.glob("case-*/native-*.json")}, requests=seen, serverErrors=errors, threadDrained=not thread.is_alive(), scope='real ABI1 producer + exact native methods; held worker delivery; no decoder/OS storage/GUI')
     (args.output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
     print((args.output/'compiler.log').read_text())
     print((args.output/'runtime.log').read_text())
-    return built.returncode or (ran.returncode if ran else 1) or int(bool(errors) or thread.is_alive() or not compatibility_ok)
+    return built.returncode or (ran.returncode if ran else 1) or int(bool(errors) or thread.is_alive() or not compatibility_ok or not favorite_exchanges_ok)
 
 
 if __name__ == '__main__':

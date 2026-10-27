@@ -62,6 +62,12 @@ if let liked=likedControls.first {
  for scale:CGFloat in [1,2] {for width:CGFloat in [760,960,1200,1440] {
   shell.textScale=scale;host.setFrameSize(NSSize(width:width,height:900));shell.frame=host.bounds;shell.needsLayout=true;shell.layoutSubtreeIfNeeded()
   let tag="\(Int(width))-\(Int(scale))",cell=liked.cell!,full=cell.cellSize
+  for button in [shell.controls.refresh,shell.controls.more,shell.controls.select,shell.controls.details,shell.controls.retry,liked] {
+   let native=button.cell!.cellSize,intrinsic=button.intrinsicContentSize
+   let metric:[String:Any] = ["case":tag,"title":button.title,"frame":NSStringFromRect(button.frame),"nativeWidth":native.width,"nativeHeight":native.height,"intrinsicWidth":intrinsic.width,"intrinsicHeight":intrinsic.height,"font":button.font!.pointSize]
+   print("SECONDARY_CELL",String(data:try! JSONSerialization.data(withJSONObject:metric,options:[.sortedKeys]),encoding:.utf8)!)
+   check("secondary-full-native-label-cell-"+button.title+"-"+tag,button.frame.width>=native.width && button.frame.height>=native.height)
+  }
   check("liked-filter-full-native-label-cell-"+tag,liked.frame.width>=full.width && liked.frame.height>=full.height && liked.frame.height>=40*scale)
   check("liked-filter-shares-secondary-height-"+tag,liked.frame.height==shell.controls.refresh.frame.height && liked.font?.pointSize==shell.controls.refresh.font?.pointSize)
   check("liked-filter-inside-document-grid-"+tag,liked.frame.minX>=0 && liked.frame.maxX<=shell.bodyDocument.bounds.width && liked.frame.minY>=0 && abs(liked.frame.minX/4-(liked.frame.minX/4).rounded())<0.01)

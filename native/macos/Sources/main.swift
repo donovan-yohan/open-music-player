@@ -435,7 +435,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
             libraryLiked = intent.identity.liked;acknowledgedLibraryRead = intent.identity;libraryReadFailure = nil
             libraryRevision = value.library_revision;libraryReadInvalid = false
         } else {
-            libraryReadFailure = reply.map {$0.ok ? "Invalid native response":$0.code == "invalid_query" ? "Invalid query. Shorten your search and try again.":$0.code.replacingOccurrences(of:"_",with:" ")} ?? status.stringValue
+            // A valid search can lose append authority after a favorite change.
+            // Recovery is an explicit offset-zero Refresh, never an automatic read.
+            let stalePage = intent.offset > 0 && intent.identity.queryUTF8.count <= 512
+            libraryReadFailure = reply.map {$0.ok ? "Invalid native response":$0.code == "invalid_query" ? (stalePage ? "Library changed. Refresh before loading more.":"Invalid query. Shorten your search and try again."):$0.code.replacingOccurrences(of:"_",with:" ")} ?? status.stringValue
         }
         pendingLibraryRead = nil;updateLibraryReadPresentation();updateLibraryAvailability()
         if let libraryReadFailure {status.stringValue = libraryReadFailure}

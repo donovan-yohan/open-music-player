@@ -735,44 +735,60 @@ impl Core {
                 let method = if liked { "POST" } else { "DELETE" };
                 // No refresh/replay: the server may have committed a mutation
                 // even if the response is lost. Only a read can reconcile it.
-                let response = self
-                    .request_response(
-                        s,
-                        method,
-                        &format!("/library/tracks/{track_id}/like"),
-                        None,
-                        epoch,
-                        false,
-                    )
-                    .map_err(|code| {
-                        if code == "cancelled" {
-                            code
-                        } else {
-                            "favorite_uncertain"
-                        }
-                    })?;
-                let status = response.status().as_u16();
-                if (400..500).contains(&status) {
-                    return Err(Self::api_error(status));
-                }
-                if status != if liked { 201 } else { 204 } {
-                    return Err("favorite_uncertain");
-                }
-                if liked {
-                    let ack = self.read_json(response, epoch).map_err(|code| {
-                        if code == "cancelled" {
-                            code
-                        } else {
-                            "favorite_uncertain"
-                        }
-                    })?;
-                    if ack.get("track_id").and_then(Value::as_i64) != Some(track_id)
-                        || ack.get("liked").and_then(Value::as_bool) != Some(true)
-                    {
+                let mut dispatched = false;
+                let outcome = (|| {
+                    let response = self
+                        .request_response(
+                            s,
+                            method,
+                            &format!("/library/tracks/{track_id}/like"),
+                            None,
+                            epoch,
+                            false,
+                            &mut dispatched,
+                        )
+                        .map_err(|code| {
+                            if code == "cancelled" {
+                                code
+                            } else {
+                                "favorite_uncertain"
+                            }
+                        })?;
+                    let status = response.status().as_u16();
+                    if (400..500).contains(&status) {
+                        return Err(Self::api_error(status));
+                    }
+                    if status != if liked { 201 } else { 204 } {
                         return Err("favorite_uncertain");
                     }
+                    if liked {
+                        let ack = self.read_json(response, epoch).map_err(|code| {
+                            if code == "cancelled" {
+                                code
+                            } else {
+                                "favorite_uncertain"
+                            }
+                        })?;
+                        if ack.get("track_id").and_then(Value::as_i64) != Some(track_id)
+                            || ack.get("liked").and_then(Value::as_bool) != Some(true)
+                        {
+                            return Err("favorite_uncertain");
+                        }
+                    }
+                    self.check(epoch)
+                })();
+                // A changed (or possibly changed) server-filtered set makes its
+                // old offset unsafe. Retain rows/revision/playback, but require
+                // an explicit offset-zero read before any further append.
+                if s.library_query.as_ref().is_some_and(|q| q.liked)
+                    && (outcome == Err("favorite_uncertain")
+                        || dispatched && outcome == Err("cancelled")
+                        || outcome.is_ok()
+                            && (!liked || !s.snapshot.favorite_track_ids.contains(&track_id)))
+                {
+                    s.library_query = None;
                 }
-                self.check(epoch)?;
+                outcome?;
                 let mut favorites: HashSet<i64> =
                     s.snapshot.favorite_track_ids.iter().copied().collect();
                 if liked {
@@ -1289,7 +1305,8 @@ impl Core {
         epoch: u64,
         retry_read: bool,
     ) -> Result<Value> {
-        let response = self.request_response(s, method, path, data, epoch, retry_read)?;
+        let response =
+            self.request_response(s, method, path, data, epoch, retry_read, &mut false)?;
         if !response.status().is_success() {
             return Err(Self::api_error(response.status().as_u16()));
         }
@@ -1316,6 +1333,7 @@ impl Core {
         data: Option<Value>,
         epoch: u64,
         retry_read: bool,
+        dispatched: &mut bool,
     ) -> Result<reqwest::blocking::Response> {
         for attempt in 0..2 {
             self.check(epoch)?;
@@ -1335,6 +1353,10 @@ impl Core {
             if let Some(ref data) = data {
                 request = request.json(data);
             }
+            // Once send begins, cancellation cannot prove the server did not
+            // commit. Pre-dispatch cancellation leaves append authority intact.
+            self.check(epoch)?;
+            *dispatched = true;
             let response = request.send().map_err(|_| "network_unavailable")?;
             self.check(epoch)?;
             if response.status().as_u16() == 401 && attempt == 0 && retry_read {

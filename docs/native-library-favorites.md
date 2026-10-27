@@ -55,7 +55,17 @@ Append with a different identity is refused before HTTP. Failed offset-zero
 reads preserve the acknowledged rows and identity. Successful empty responses
 are valid projections. Account retirement clears identity. Select builds the
 existing queue from loaded rows only, never from the unloaded total. Unlike
-changes favorite truth but retains fetched membership until Refresh.
+changes favorite truth but retains fetched membership until Refresh. A successful
+Unlike invalidates only the Liked pagination identity, so an old nonzero offset
+is refused before HTTP; explicitly read offset zero to reconcile, then append.
+An uncertain favorite outcome also invalidates Liked pagination because the
+server may have changed the filtered set. Cancellation after dispatch likewise
+retires append authority: revoking publication cannot prove no server write.
+Cancellation before dispatch preserves safe pagination. A producer-refused
+mutation retains pagination, and an acknowledged Like of an already-liked loaded
+row does too.
+Plain Library pagination, loaded rows/totals/revision, playback and saved bytes
+are unchanged by this invalidation. No mutation or reconciliation is replayed.
 
 The App commits the selected Liked state only on its current decoded successful
 reply with an authenticated, current, non-`library_unchanged` snapshot. A held
@@ -68,8 +78,10 @@ Search/Refresh use acknowledged mode; Load more restarts at zero if edited query
 bytes differ. Browsing does not revoke the bridge or replace playback.
 
 Pending and refused reads do not show successful no-match copy. A refusal keeps
-the acknowledged rows and places its feedback below the toolbar. An invalid
-query asks the user to shorten the search; the next explicit read can recover.
+the acknowledged rows and places its feedback below the toolbar. An over-limit
+query asks the user to shorten the search. Refused pagination with a valid query
+asks for Refresh before loading more; only explicit user action reads offset zero.
+No automatic recovery read or mutation replay is issued.
 
 Each successful read/page also advances transient `Snapshot.library_revision`.
 Full and scalar replies carry this additive authority marker; it is not written
@@ -104,6 +116,14 @@ queue-command, command, apply and credential-storage-owner methods. It holds
 only delivery and substitutes synthetic HTTP/OS-storage boundaries; no app,
 window, keychain or decoder is opened. It includes post-race real core Select,
 append and paging authority, both modes/delivery orders and failed recovery.
+It also joins the actual favorite menu with HTTP Unlike, stale Load more refusal,
+truthful Refresh guidance, explicit recovery and exact no-replay request counts
+for empty, Unicode and 512-byte searches; oversized UTF-8 queries retain their
+shortening guidance. The Rust favorites suite separately holds a sent Unlike
+across same-account Next revocation, commits the synthetic server membership,
+and requires pre-HTTP stale-append refusal while retaining the canonical Next
+transition and suppression of stale favorite publication. Stale queued and
+pre-dispatch cancellation controls retain safe pagination.
 Native Clients CI runs the combined canonical/compatibility suite against its
 fresh release core alongside the existing macOS feedback checks.
 
@@ -153,7 +173,9 @@ The actual design reviewer accepted the incremental Liked presentation after
 fresh selected/off hover, held/released, compact enlarged free-caret and visible
 query-refusal captures. A separate successor fixture retained all 500 tracks and
 100 likes through its final authenticated read-only scan. Earlier acquisition
-and collector failures remain attributed to their original attempts.
+and collector failures remain attributed to their original attempts. Those
+captures predate the native-cell-aware toolbar width repair; changed wrapping
+and feedback geometry still require fresh affected-runtime/design acceptance.
 
 In-row favorite annotation, Android favorite controls, existing-data migration,
 matched and calibrated performance, broader Library parity, and platform

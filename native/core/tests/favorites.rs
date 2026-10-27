@@ -448,6 +448,511 @@ fn library_projection_tracks_loaded_pages_and_membership_independently() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn liked_filter_favorite_outcomes_preserve_rows_and_fence_shifted_pagination() {
+    // Each public-core case starts with an acknowledged partial page and a live
+    // queue/cursor. Only outcomes that can change the filtered result retire its
+    // append identity. No mutation is refreshed or replayed.
+    for (filtered, liked, status, body, code, invalidated) in [
+        (true, false, "204 No Content", "", "ok", true),
+        (true, false, "", "", "favorite_uncertain", true),
+        (
+            true,
+            false,
+            "401 Unauthorized",
+            "{}",
+            "unauthenticated",
+            false,
+        ),
+        (true, false, "404 Not Found", "{}", "not_found", false),
+        (
+            true,
+            false,
+            "429 Too Many Requests",
+            "{}",
+            "api_refused",
+            false,
+        ),
+        (
+            true,
+            false,
+            "503 Service Unavailable",
+            "{}",
+            "favorite_uncertain",
+            true,
+        ),
+        (true, false, "200 OK", "{}", "favorite_uncertain", true),
+        (true, false, "403 Forbidden", "{}", "api_refused", false),
+        (
+            true,
+            true,
+            "201 Created",
+            r#"{"track_id":2,"liked":true}"#,
+            "ok",
+            false,
+        ),
+        (false, false, "204 No Content", "", "ok", false),
+        (
+            false,
+            true,
+            "201 Created",
+            r#"{"track_id":2,"liked":true}"#,
+            "ok",
+            false,
+        ),
+    ] {
+        let (c, root, l) = fixture();
+        liked_filter_cached_tracks(&root, &l, &[2, 4]);
+        let server = thread::spawn(move || {
+            bootstrap(&l);
+            liked_filter_page(
+                &l,
+                filtered,
+                0,
+                "",
+                "title",
+                "asc",
+                "200 OK",
+                r#"{"tracks":[{"id":2,"title":"Two","duration_ms":30000,"is_liked":true},{"id":4,"title":"Four","is_liked":true}],"offset":0,"total":4}"#,
+            );
+            let mut s = liked_filter_accept(&l);
+            let method = if liked { "POST" } else { "DELETE" };
+            assert!(
+                request(&mut s).starts_with(&format!("{method} /api/v1/library/tracks/2/like "))
+            );
+            if !status.is_empty() {
+                send(&mut s, status, body);
+            }
+            drop(s);
+            l
+        });
+        load(&c);
+        assert!(
+            c.execute(liked_filter_command(filtered, 0, "", "title", "asc"))
+                .ok
+        );
+        let selected = c.execute(Command::Select { track_id: 2 });
+        assert!(selected.ok && selected.audio.as_ref().is_some_and(|e| e.cached));
+        let state = selected.snapshot;
+        assert!(state.selected_occurrence.is_some() && state.queue.len() == 2);
+        assert!(
+            c.execute(Command::AudioReport {
+                epoch: 1,
+                session: state.session,
+                state: AudioState::Playing,
+                position_ms: 4321,
+                duration_ms: 30000
+            })
+            .ok
+        );
+        let before = c.execute(Command::Snapshot {});
+        assert_eq!(before.snapshot.transport, AudioState::Playing);
+        assert_eq!(before.snapshot.position_ms, 4321);
+        assert!(before.snapshot.selected_occurrence.is_some());
+        let files = liked_filter_files(&root);
+        assert!(
+            !files.is_empty(),
+            "establish saved queue bytes before mutation"
+        );
+        let result = c.execute(favorite(2, liked));
+        assert_eq!(result.code, code);
+        assert_eq!(result.ok, code == "ok");
+        assert_eq!(result.snapshot.library, before.snapshot.library);
+        assert_eq!(
+            (
+                result.snapshot.total,
+                result.snapshot.offset,
+                result.snapshot.library_revision
+            ),
+            (
+                before.snapshot.total,
+                before.snapshot.offset,
+                before.snapshot.library_revision
+            )
+        );
+        assert_eq!(
+            liked_filter_playback(&result),
+            liked_filter_playback(&before)
+        );
+        assert_eq!(
+            ids(&result),
+            if code == "ok" && !liked {
+                json!([4])
+            } else {
+                json!([2, 4])
+            }
+        );
+        assert!(result.audio.is_none() && result.credentials.is_none());
+        assert_eq!(liked_filter_files(&root), files);
+        let l = server.join().unwrap();
+        no_extra(&l);
+        // A bounded responder makes a missing guard fail behaviorally rather than
+        // hanging. After unlike the server set is [4,6,8], so stale offset2
+        // returns8 and skips the still-unloaded row6.
+        let server = thread::spawn(move || {
+            l.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_millis(250);
+            let mut dispatched = false;
+            while std::time::Instant::now() < deadline {
+                match l.accept() {
+                    Ok((mut s, _)) => {
+                        s.set_nonblocking(false).unwrap();
+                        let raw = request(&mut s);
+                        assert!(raw.starts_with("GET /api/v1/library?"));
+                        assert!(raw.contains("offset=2"));
+                        dispatched = true;
+                        let page = if invalidated {
+                            // Accepted unlike (or a possibly committed one) shifted
+                            // the server set; retaining offset2 loses row6.
+                            r#"{"tracks":[{"id":8,"title":"Eight","is_liked":true}],"offset":2,"total":3}"#
+                        } else {
+                            r#"{"tracks":[{"id":6,"title":"Six","is_liked":true}],"offset":2,"total":4}"#
+                        };
+                        send(&mut s, "200 OK", page);
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(2))
+                    }
+                    Err(e) => panic!("accept: {e}"),
+                }
+            }
+            (l, dispatched)
+        });
+        let append = c.execute(liked_filter_command(filtered, 2, "", "title", "asc"));
+        let (l, dispatched) = server.join().unwrap();
+        if invalidated && append.ok {
+            assert_eq!(liked_filter_rows(&append), vec![2, 4, 8]);
+            assert!(
+                !liked_filter_rows(&append).contains(&6),
+                "positive skipped-server-row witness"
+            );
+        }
+        assert_eq!(
+            append.code,
+            if invalidated { "invalid_query" } else { "ok" },
+            "filtered={filtered}, liked={liked}, outcome={code}: shifted pagination must require explicit offset-zero read"
+        );
+        assert_eq!(
+            dispatched, !invalidated,
+            "stale append must be refused before HTTP"
+        );
+        if invalidated {
+            assert_eq!(append.snapshot.library, before.snapshot.library);
+            assert_eq!(ids(&append), ids(&result));
+            assert_eq!(
+                append.snapshot.library_revision,
+                before.snapshot.library_revision
+            );
+        } else {
+            assert_eq!(liked_filter_rows(&append), vec![2, 4, 6]);
+        }
+        assert_eq!(
+            liked_filter_playback(&append),
+            liked_filter_playback(&before)
+        );
+        assert_eq!(liked_filter_files(&root), files);
+        // Only the user-issued read reconciles membership; its next append must
+        // include the previously shifted row and the following page in order.
+        let server = thread::spawn(move || {
+            liked_filter_page(
+                &l,
+                filtered,
+                0,
+                "",
+                "title",
+                "asc",
+                "200 OK",
+                r#"{"tracks":[{"id":4,"title":"Four","is_liked":true}],"offset":0,"total":3}"#,
+            );
+            liked_filter_page(
+                &l,
+                filtered,
+                1,
+                "",
+                "title",
+                "asc",
+                "200 OK",
+                r#"{"tracks":[{"id":6,"title":"Six","is_liked":true},{"id":8,"title":"Eight","is_liked":true}],"offset":1,"total":3}"#,
+            );
+            l
+        });
+        let refresh = c.execute(liked_filter_command(filtered, 0, "", "title", "asc"));
+        assert!(refresh.ok);
+        assert_eq!(liked_filter_rows(&refresh), vec![4]);
+        let append = c.execute(liked_filter_command(filtered, 1, "", "title", "asc"));
+        assert!(append.ok);
+        assert_eq!(liked_filter_rows(&append), vec![4, 6, 8]);
+        assert_eq!(
+            liked_filter_playback(&append),
+            liked_filter_playback(&before)
+        );
+        assert_eq!(liked_filter_files(&root), files);
+        let l = server.join().unwrap();
+        no_extra(&l);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn dispatched_cancelled_liked_unlike_retires_append_after_same_account_next() {
+    let (c, root, l) = fixture();
+    liked_filter_cached_tracks(&root, &l, &[2, 4]);
+    let (entered, waiting) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let server = thread::spawn(move || {
+        bootstrap(&l);
+        liked_filter_page(
+            &l,
+            true,
+            0,
+            "",
+            "title",
+            "asc",
+            "200 OK",
+            r#"{"tracks":[{"id":2,"title":"Two","duration_ms":30000,"is_liked":true},{"id":4,"title":"Four","duration_ms":30000,"is_liked":true}],"offset":0,"total":4}"#,
+        );
+        let mut s = liked_filter_accept(&l);
+        assert!(request(&mut s).starts_with("DELETE /api/v1/library/tracks/2/like "));
+        entered.send(()).unwrap();
+        resume.recv_timeout(Duration::from_secs(3)).unwrap();
+        // Commit server membership after local revocation, before acknowledgment.
+        let committed = vec![4, 6, 8];
+        send(&mut s, "204 No Content", "");
+        (l, committed)
+    });
+    load(&c);
+    assert!(
+        c.execute(liked_filter_command(true, 0, "", "title", "asc"))
+            .ok
+    );
+    let selected = c.execute(Command::Select { track_id: 2 });
+    assert!(selected.ok && selected.audio.unwrap().cached);
+    assert!(
+        c.execute(Command::AudioReport {
+            epoch: 1,
+            session: selected.snapshot.session,
+            state: AudioState::Playing,
+            position_ms: 4321,
+            duration_ms: 30000
+        })
+        .ok
+    );
+    let before = c.execute(Command::Snapshot {});
+    let saved = liked_filter_files(&root);
+    assert!(!saved.is_empty());
+    let worker = c.clone();
+    let mutation = thread::spawn(move || worker.execute_scoped_at(favorite(2, false), 1, Some(1)));
+    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+    let epoch = c.revoke();
+    let worker = c.clone();
+    let next = thread::spawn(move || worker.execute_scoped_at(Command::Next {}, epoch, Some(1)));
+    release.send(()).unwrap();
+    let cancelled = mutation.join().unwrap();
+    assert_eq!(cancelled.code, "cancelled");
+    assert!(!cancelled.snapshot.authenticated && cancelled.snapshot.library.is_empty());
+    assert_eq!(ids(&cancelled), json!([]));
+    assert!(cancelled.audio.is_none() && cancelled.credentials.is_none());
+    let next = next.join().unwrap();
+    let (l, committed) = server.join().unwrap();
+    assert_eq!(committed, vec![4, 6, 8]);
+    println!(
+        "R2_WITNESS dispatched DELETE; server committed [4,6,8] after revoke; local favorite publication cancelled"
+    );
+    assert!(
+        next.ok
+            && next
+                .audio
+                .as_ref()
+                .is_some_and(|e| e.cached && e.epoch == epoch)
+    );
+    assert_eq!(next.snapshot.library, before.snapshot.library);
+    assert_eq!(ids(&next), ids(&before));
+    assert_eq!(
+        next.snapshot.library_revision,
+        before.snapshot.library_revision
+    );
+    assert_eq!(
+        serde_json::to_value(&next.snapshot.queue).unwrap(),
+        serde_json::to_value(&before.snapshot.queue).unwrap()
+    );
+    assert_eq!(
+        next.snapshot.selected_occurrence,
+        Some(before.snapshot.queue[1].id)
+    );
+    assert_eq!(next.snapshot.position_ms, 0);
+    assert!(next.snapshot.session > before.snapshot.session);
+    assert!(next.snapshot.authenticated && next.credentials.is_none());
+    let after_next = liked_filter_files(&root);
+    for (path, bytes) in &saved {
+        if path.file_name().unwrap() != "listening-queue-v1.json" {
+            assert_eq!(after_next.get(path), Some(bytes));
+        }
+    }
+    no_extra(&l);
+    let server = thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_millis(250);
+        let mut dispatched = false;
+        while std::time::Instant::now() < deadline {
+            match l.accept() {
+                Ok((mut s, _)) => {
+                    s.set_nonblocking(false).unwrap();
+                    let raw = request(&mut s);
+                    assert!(raw.starts_with("GET /api/v1/library?") && raw.contains("offset=2"));
+                    dispatched = true;
+                    send(
+                        &mut s,
+                        "200 OK",
+                        r#"{"tracks":[{"id":8,"title":"Eight","is_liked":true}],"offset":2,"total":3}"#,
+                    );
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2))
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+        }
+        (l, dispatched)
+    });
+    let append = c.execute_scoped_at(
+        liked_filter_command(true, 2, "", "title", "asc"),
+        epoch,
+        Some(1),
+    );
+    let (l, dispatched) = server.join().unwrap();
+    if append.ok {
+        assert_eq!(liked_filter_rows(&append), vec![2, 4, 8]);
+        assert!(!liked_filter_rows(&append).contains(&6));
+        println!("R2_WITNESS unsafe HTTP offset2 admitted; still-unloaded row6 skipped");
+    }
+    assert_eq!(
+        append.code, "invalid_query",
+        "dispatched cancelled mutation may have committed; require explicit refresh"
+    );
+    assert!(!dispatched, "stale append must be refused before HTTP");
+    assert_eq!(append.snapshot.library, before.snapshot.library);
+    assert_eq!(ids(&append), ids(&before));
+    assert_eq!(liked_filter_playback(&append), liked_filter_playback(&next));
+    assert_eq!(liked_filter_files(&root), after_next);
+    let server = thread::spawn(move || {
+        liked_filter_page(
+            &l,
+            true,
+            0,
+            "",
+            "title",
+            "asc",
+            "200 OK",
+            r#"{"tracks":[{"id":4,"title":"Four","is_liked":true}],"offset":0,"total":3}"#,
+        );
+        liked_filter_page(
+            &l,
+            true,
+            1,
+            "",
+            "title",
+            "asc",
+            "200 OK",
+            r#"{"tracks":[{"id":6,"title":"Six","is_liked":true},{"id":8,"title":"Eight","is_liked":true}],"offset":1,"total":3}"#,
+        );
+        l
+    });
+    assert!(
+        c.execute_scoped_at(
+            liked_filter_command(true, 0, "", "title", "asc"),
+            epoch,
+            Some(1)
+        )
+        .ok
+    );
+    let recovered = c.execute_scoped_at(
+        liked_filter_command(true, 1, "", "title", "asc"),
+        epoch,
+        Some(1),
+    );
+    assert!(recovered.ok);
+    assert_eq!(liked_filter_rows(&recovered), committed);
+    assert_eq!(
+        liked_filter_playback(&recovered),
+        liked_filter_playback(&next)
+    );
+    assert_eq!(liked_filter_files(&root), after_next);
+    let l = server.join().unwrap();
+    no_extra(&l);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cancelled_before_favorite_dispatch_preserves_safe_liked_append() {
+    let (c, root, l) = fixture();
+    liked_filter_cached_tracks(&root, &l, &[2, 4]);
+    let server = thread::spawn(move || {
+        bootstrap(&l);
+        liked_filter_page(
+            &l,
+            true,
+            0,
+            "",
+            "title",
+            "asc",
+            "200 OK",
+            r#"{"tracks":[{"id":2,"title":"Two","is_liked":true},{"id":4,"title":"Four","is_liked":true}],"offset":0,"total":3}"#,
+        );
+        l
+    });
+    load(&c);
+    assert!(
+        c.execute(liked_filter_command(true, 0, "", "title", "asc"))
+            .ok
+    );
+    assert!(c.execute(Command::Select { track_id: 2 }).ok);
+    let epoch = c.revoke();
+    assert_eq!(
+        c.execute_scoped_at(favorite(2, false), 1, Some(1)).code,
+        "cancelled"
+    );
+    // Even a current enqueue epoch cannot admit metadata before transport adopts it.
+    assert_eq!(
+        c.execute_scoped_at(favorite(2, false), epoch, Some(1)).code,
+        "cancelled"
+    );
+    let next = c.execute_scoped_at(Command::Next {}, epoch, Some(1));
+    assert!(next.ok);
+    assert_eq!(
+        c.execute_scoped_at(favorite(2, false), 1, Some(1)).code,
+        "cancelled"
+    );
+    let l = server.join().unwrap();
+    no_extra(&l);
+    let files = liked_filter_files(&root);
+    let server = thread::spawn(move || {
+        liked_filter_page(
+            &l,
+            true,
+            2,
+            "",
+            "title",
+            "asc",
+            "200 OK",
+            r#"{"tracks":[{"id":6,"title":"Six","is_liked":true}],"offset":2,"total":3}"#,
+        );
+        l
+    });
+    let append = c.execute_scoped_at(
+        liked_filter_command(true, 2, "", "title", "asc"),
+        epoch,
+        Some(1),
+    );
+    assert!(append.ok);
+    assert_eq!(liked_filter_rows(&append), vec![2, 4, 6]);
+    assert_eq!(liked_filter_playback(&append), liked_filter_playback(&next));
+    assert_eq!(liked_filter_files(&root), files);
+    let l = server.join().unwrap();
+    no_extra(&l);
+    fs::remove_dir_all(root).unwrap();
+}
+
 // Prepared source-only regressions. Decode the proposed additive command through
 // the real serde contract before creating a server: an unsupported command must
 // fail an assertion, not compilation or a blocked server thread.

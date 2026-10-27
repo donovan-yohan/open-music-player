@@ -226,7 +226,10 @@ final class LibraryDockView: NSView {
         let left: CGFloat = 24, available = max(1,bodyScroll.contentSize.width-48)
         controls.title.frame = NSRect(x:left,y:(masthead-32*s)/2,width:available,height:32*s)
         let secondaryButtons: [NSButton] = [controls.refresh,controls.more,controls.select,controls.details,controls.retry] + (liked.map {[$0]} ?? [])
-        let buttonWidths = secondaryButtons.map {liked == nil ? max(40,$0.intrinsicContentSize.width) : SoundQTokens.grid(max(40,$0.intrinsicContentSize.width))}
+        // The inherited native cell can require more width than our painted
+        // title + padding intrinsic size (linked AppKit treatments differ).
+        // Allocate both contracts before wrapping; keep the shared height/grid.
+        let buttonWidths = secondaryButtons.map {liked == nil ? max(40,$0.intrinsicContentSize.width) : SoundQTokens.grid(max(40,$0.intrinsicContentSize.width,$0.cell?.cellSize.width ?? 0))}
         let actionsWidth = buttonWidths.reduce(0,+)+CGFloat(secondaryButtons.count-1)*8
         let wrap = available < actionsWidth+200
         let headingHeight = masthead
@@ -238,7 +241,8 @@ final class LibraryDockView: NSView {
             if x+width>left+available && x>left {x = left;y += secondary+8}
             button.frame = NSRect(x:x,y:y,width:min(available,width),height:secondary);x += width+8
         }
-        let bodyTop = max(164*s,y+secondary+16)
+        // Keep corrective feedback on the next 8pt track after wrapped actions.
+        let bodyTop = max(164*s,y+secondary+(libraryReadFailed ? 8 : 16))
         bodyDocument.rules = [headingHeight,bodyTop-1];railDocument.rules = [masthead]
         let statusHeight = SoundQTokens.grid(max(32,32*s))
         let documentHeight = max(dockY,bodyTop+112*s+statusHeight+16)
