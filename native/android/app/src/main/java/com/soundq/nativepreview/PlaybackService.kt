@@ -60,6 +60,8 @@ class PlaybackService : Service() {
             field = value
         }
     internal val libraryBrowse = LibraryBrowseState()
+    internal val authForm = AuthFormState()
+    internal fun retireAuthPresentation() { authForm.retire() }
     var snapshot = JSONObject()
         private set(value) {
             field = libraryBrowse.reconcile(field, value, epoch, credentialEpoch)
@@ -130,6 +132,14 @@ class PlaybackService : Service() {
     }
     fun command(value: JSONObject, observe: ((JSONObject) -> Unit)? = null, done: (() -> Unit)? = null) {
         val kind = value.optString("command")
+        // A refused auth mutation never replaces an account or strands its form.
+        if (kind in listOf("login", "register") && busy >= 32) {
+            // Refusal still honors synchronous decoder retirement, not account replacement.
+            transportIntent++;wantsPlayback=false;retireAudio()
+            observe?.invoke(JSONObject().put("ok",false).put("code","command_backpressure"))
+            done?.invoke()
+            return
+        }
         if (kind == "restore") value.remove("version")
         if (kind in listOf("login", "register", "restore", "logout")) {
             credentialEpoch++
@@ -157,6 +167,7 @@ class PlaybackService : Service() {
             } catch (_: RuntimeException) {failPlayback();return}
         }
         val admitted = epoch
+        val authTicket = if(kind in listOf("login","register")) authForm.pending else null
         val admittedAccount = credentialEpoch
         val admittedIntent = transportIntent
         val admittedPlayer = player
@@ -168,9 +179,18 @@ class PlaybackService : Service() {
             main.post {
                 busy--
                 try {
-                    if (admitted != epoch || admittedAccount != credentialEpoch) return@post
+                    if (admitted != epoch || admittedAccount != credentialEpoch) {
+                        if(authTicket != null) {authForm.finish(authTicket,false,"cancelled",epoch,credentialEpoch);done?.invoke()}
+                        return@post
+                    }
                     observe?.invoke(result)
-                    val next = result.optJSONObject("snapshot")
+                    if(authTicket != null && !authForm.owns(authTicket)) {
+                        // Presentation detach cannot discard current-account durability.
+                        result.optJSONObject("credentials")?.let {saveCredentials(it)}
+                        done?.invoke()
+                        return@post
+                    }
+                    val next = result.optJSONObject("snapshot")?.takeUnless {authForm.publicationRetired && it.optBoolean("authenticated")}
                     val effect = result.optJSONObject("audio")
                     // A retired final observation has nothing left to publish.
                     // An accepted nonfinal EOF also owns decoder replacement:
@@ -214,7 +234,10 @@ class PlaybackService : Service() {
                         listener?.invoke(snapshot, if (result.optBoolean("ok")) null else result.optString("code"))
                     } else if (!result.optBoolean("ok")) listener?.invoke(snapshot, result.optString("code"))
                     // Listener callbacks may synchronously change any intent.
-                    if (admitted != epoch || admittedAccount != credentialEpoch) return@post
+                    if (admitted != epoch || admittedAccount != credentialEpoch) {
+                        if(authTicket != null) {authForm.finish(authTicket,false,"cancelled",epoch,credentialEpoch);done?.invoke()}
+                        return@post
+                    }
                     // Command failure and decoder authority are independent only
                     // for a local queue-save fault with a coherent current effect.
                     val retainedPlayback = result.optString("code") in listOf("invalid_saved_queue","queue_storage_failed","cache_io") &&
@@ -231,10 +254,17 @@ class PlaybackService : Service() {
                         // Other effects cannot retire a newer foreground admission.
                         if ((result.optBoolean("ok") || !playbackRequest || retainedPlayback) && it.optLong("epoch") == epoch && (admittedIntent == transportIntent || it.optString("action") == "load")) applyAudio(it)
                     }
+                    // Admit queue_restore before asynchronous credential storage
+                    // can enqueue its ACK. Otherwise that ACK is still busy when
+                    // queue_restore's continuation tries the first Library read.
+                    if (kind == "restore") {
+                        updateSession()
+                        done?.invoke()
+                        if (admitted != epoch || admittedAccount != credentialEpoch) return@post
+                    }
                     // Transport cancellation never revokes account credential delivery.
                     result.optJSONObject("credentials")?.let {saveCredentials(it)}
-                    updateSession()
-                    done?.invoke()
+                    if (kind != "restore") {updateSession();done?.invoke()}
                 } finally {
                     // Cleanup belongs to this request, even after selection/account
                     // retirement. Only one audio report can be pending at a time.
@@ -244,10 +274,34 @@ class PlaybackService : Service() {
         }
     }
     fun login(email: String, password: String) {
-        retireAudio(); epoch = bridge.revoke(core)
-        command(JSONObject().put("command", "login").put("email", email.trim()).put("password", password)) {
-            if (snapshot.optBoolean("authenticated")) library()
+        if (authForm.pending != null) return
+        authForm.changeMode(AuthFormState.Mode.SIGN_IN)
+        submitAuth("",email,password,"")
+    }
+    internal fun submitAuth(username: String, email: String, password: String, confirmation: String) {
+        if (authForm.pending != null) return
+        val registration = authForm.mode == AuthFormState.Mode.REGISTER
+        val invalid = if(registration) AuthFormState.validate(username,email,password,confirmation).isNotEmpty() else email.isEmpty() || password.isEmpty()
+        if (invalid) {authForm.begin(username,email,password,confirmation,epoch,credentialEpoch);listener?.invoke(snapshot,null);return}
+        if (busy >= 32) {
+            val ticket=authForm.begin(username,email,password,confirmation,epoch,credentialEpoch) ?: return
+            authForm.finish(ticket,false,"command_backpressure",epoch,credentialEpoch);listener?.invoke(snapshot,null);return
         }
+        retireAudio(); epoch = bridge.revoke(core)
+        val ticket=authForm.begin(username,email,password,confirmation,epoch,credentialEpoch+1) ?: return
+        var outcome: JSONObject? = null
+        val value=JSONObject().put("command",if(registration) "register" else "login").put("email",AuthFormState.trimmed(email)).put("password",password)
+        if(registration) value.put("username",AuthFormState.trimmed(username))
+        command(value,observe={outcome=it},done={
+            val result=outcome
+            val accepted=authForm.finish(ticket,result?.optBoolean("ok")==true && snapshot.optBoolean("authenticated"),result?.optString("code") ?: "binding_failure",epoch,credentialEpoch)
+            listener?.invoke(snapshot,null)
+            if(accepted) {
+                // No supplied auth-return caller: the existing Library is the destination.
+                if(authForm.succeeded) library()
+            }
+        })
+        listener?.invoke(snapshot,null)
     }
     fun logout() {
         retireAudio(); epoch = bridge.revoke(core)

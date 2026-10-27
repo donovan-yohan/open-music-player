@@ -15,7 +15,7 @@ import tempfile
 from native_review_regressions import swift_block
 
 ROOT = Path(__file__).resolve().parents[2]
-FILES = ['LibraryDockView.swift', 'SoundQControls.swift', 'SoundQTokens.swift', 'NativeAssets.swift']
+FILES = ['LibraryDockView.swift', 'SoundQControls.swift', 'SoundQTokens.swift', 'NativeAssets.swift', 'AuthForm.swift']
 TYPES = ['struct Track:', 'struct Occurrence:', 'struct Snapshot:']
 HARNESS = r'''
 import AppKit
@@ -618,6 +618,9 @@ for scale:CGFloat in [1,2] {for width:CGFloat in [760,960,1200,1440] {
  check("metadata-native-final-suffix-laid-out-\(width)-\(scale)",suffix.width>0 && suffix.maxY<=used.maxY+1 && suffix.maxY>area.contentSize.height)
 }}
 '''
+    if 'AuthFormView()' in source:
+        probe=probe.replace('var loginArea=NSStackView();','var authForm=AuthFormState();var loginArea=AuthFormView();')
+        probe=probe.replace('@objc func signOut(){};', '@objc func changeAuthMode(){};func authEdited(){};@objc func signOut(){};')
     probe = probe.replace('__METADATA_GEOMETRY__',geometry if 'func updateLibraryDetailsAction()' in source else '')
     return probe, blocks
 

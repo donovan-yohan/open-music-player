@@ -53,7 +53,7 @@ class AndroidPresentationTest {
             (field(activity, "login").parent as View).visibility = View.GONE
             field(activity, "library").visibility = View.VISIBLE
             field(activity, "empty").visibility = View.GONE
-            (field(activity, "status") as TextView).text = "1 of 500 tracks"
+            (field(activity, "status") as TextView).apply { text = "1 of 500 tracks"; visibility = View.VISIBLE }
             field(activity, "retry").visibility = View.GONE
             val list = activity.fixtureList!!
             val adapter = MainActivity.Rows(SoundQViews(activity), {}, {}, {})
