@@ -207,6 +207,9 @@ def facade_probe(root, output, native_selection=False):
     base=base.replace(' func revoke()->UInt64', ' @MainActor func revoke()->UInt64').replace(' func send(_ data:', ' @MainActor func send(_ data:')
     types=['struct Track:', 'struct Occurrence:', 'struct Snapshot:', 'struct AudioEffect:', 'struct Credentials:', 'struct Reply:']
     methods=['func makeLibraryMenu()', 'func libraryDetailsMenuAvailable(', '@objc func openLibraryDetailsFromMenu(', 'func validateMenuItem(', 'func updateLibraryDetailsAction()', 'func openLibraryDetails(', 'func closeLibraryDetails()', 'func retireLibraryDetails()', 'func reconcileLibraryDetails(', 'func command(', 'func apply(_ incoming: Snapshot)', '@objc func signIn()', '@objc func signOut()', '@objc func selectTrack()', 'func queueCommand(', 'func applicationWillTerminate(', 'func windowWillClose(', 'func tableViewSelectionDidChange(', 'func updateLibraryAvailability()']
+    if 'struct LibraryReadIntent:' in source:
+        types += ['struct LibraryReadIdentity:', 'struct LibraryReadIntent:']
+        methods += ['func command(_ value: [String:Any], completion:', 'func finishLibraryRead(', 'func retireLibraryRead(']
     if native_selection:
         methods.append('func numberOfRows(in tableView: NSTableView)')
     blocks={s:swift_block(source,s) for s in types+methods}
@@ -239,7 +242,10 @@ def facade_probe(root, output, native_selection=False):
  func closeQueueName(){onCloseQueueName?()};func reconcileQueueName(_ s:Snapshot){};func deleteCredentials(){};func storeCredentials(_ c:Credentials,epoch:UInt64){};func applyAudio(_ effect:AudioEffect){};func loadLibrary(){}
  __METHODS__
 }
-'''.replace('__METHODS__','\n'.join(blocks[s] for s in methods))
+'''.replace('__METHODS__','\n'.join(('@discardableResult\n' if s.startswith('func command(') and '-> Bool' in blocks[s] else '')+blocks[s] for s in methods))
+    if 'struct LibraryReadIntent:' in source:
+        fields='\n'.join(line.strip() for line in source.splitlines() if re.match(r'    var (libraryLiked|libraryReadSerial|libraryReadRetired|pendingLibraryRead|acknowledgedLibraryRead|libraryReadFailure|libraryRevision|libraryReadInvalid)\b',line))
+        app=app.replace(' var libraryDetailsMenuItem:NSMenuItem?',fields+'\n func updateLibraryReadPresentation(){}\n var libraryDetailsMenuItem:NSMenuItem?')
     base=base.replace('func updateProgress(position:UInt64,duration:UInt64){}','func updateProgress(position:UInt64,duration:UInt64){};var selected=false;func setLibraryAvailability(selected:Bool,canLoadMore:Bool){self.selected=selected}')
     # A real NSTableView owns reload/selection/delegate semantics. Only sheet,
     # transport and chrome boundaries stay facades; no production policy is copied.

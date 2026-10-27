@@ -18,10 +18,11 @@ struct Snapshot: Decodable {
     let revision: UInt64
     let authenticated: Bool
     var library: [Track]
+    var library_revision: UInt64? = nil
     let library_unchanged: Bool
     // Library-only user projection. Never added to persisted queue Track v1.
     var favorite_track_ids: [Int64]? = nil
-    let total: UInt64
+    var total: UInt64
     var queue: [Occurrence]
     let queue_unchanged: Bool
     let selected_occurrence: UInt64?
@@ -68,6 +69,21 @@ final class Bridge: @unchecked Sendable {
     deinit { sq_core_close(handle) }
 }
 
+// Transient request ownership, not a second Library/favorite truth store.
+struct LibraryReadIdentity: Equatable {
+    let liked: Bool
+    let queryUTF8: [UInt8]
+    let sort: String
+    let order: String
+}
+struct LibraryReadIntent: Equatable {
+    let serial: UInt64
+    let account: UInt64
+    let epoch: UInt64
+    let identity: LibraryReadIdentity
+    let offset: Int
+}
+
 @MainActor
 final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSMenuItemValidation {
     var window: NSWindow!
@@ -106,6 +122,15 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
     var accountScope: UInt64 = 1
     var storedCredentialVersion: UInt64 = 0
     var queueNameAlert: (alert: NSAlert, id: UInt64)?
+    var libraryLiked = false
+    var libraryReadSerial: UInt64 = 0
+    var libraryReadRetired: Set<UInt64> = []
+    var pendingLibraryRead: LibraryReadIntent?
+    var acknowledgedLibraryRead: LibraryReadIdentity?
+    var libraryReadFailure: String?
+    var libraryRevision: UInt64?
+    var libraryReadInvalid = false
+    var libraryLikedControl = SoundQButton(title:"Liked",target:nil,action:nil)
     var libraryDetails = SoundQButton(title:"Full details",target:nil,action:nil)
     var libraryDetailsMenuItem: NSMenuItem?
     var libraryDetailsAction: LibraryMetadataAction?
@@ -180,7 +205,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         return menu
     }
     func libraryDetailsMenuAvailable(_ item: NSMenuItem) -> Bool {
-        guard item === libraryDetailsMenuItem, let action = libraryDetailsAction,
+        guard pendingLibraryRead == nil, !libraryReadInvalid, item === libraryDetailsMenuItem, let action = libraryDetailsAction,
               !action.consumed, let s = snapshot else {return false}
         return action.matches(s,account:accountScope,epoch:epoch)
     }
@@ -216,45 +241,94 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         libraryDetails.isEnabled = false
         table.nextKeyView = libraryDetails;libraryDetails.nextKeyView = select
         let controls = LibraryDockControls(table:table,scroll:scroll,search:search,slider:slider,play:play,title:titleLabel,identity:transportLabel,status:status,login:loginArea,library:libraryArea,logout:logout,refresh:refresh,more:more,select:select,details:libraryDetails,retry:retry,previous:previous,next:next,queue:queue)
-        let shell = LibraryDockView(controls:controls,assets:assets);shell.frame = host.bounds;shell.autoresizingMask = [.width,.height];host.addSubview(shell);libraryDock = shell
+        libraryLikedControl.target = self;libraryLikedControl.action = #selector(toggleLibraryLiked)
+        libraryLikedControl.setAccessibilityLabel("Liked tracks");libraryLikedControl.setAccessibilityIdentifier("library-liked-filter")
+        let shell = LibraryDockView(controls:controls,assets:assets,liked:libraryLikedControl);shell.frame = host.bounds;shell.autoresizingMask = [.width,.height];host.addSubview(shell);libraryDock = shell
         // App-local accessibility sizing, no global preference writes. Retain a
         // single scale input so runtime QA can qualify the actual mounted fonts.
         shell.textScale = max(1,NSFont.preferredFont(forTextStyle:.body).pointSize/13)
         for field in [endpoint,email,password] {field.font = NativeAssets.font(14,scale:shell.textScale)}
         signIn.font = NativeAssets.font(14,weight:500,scale:shell.textScale)
     }
-    func command(_ value: [String:Any], completion: (@MainActor () -> Void)? = nil) {
+    @discardableResult
+    func command(_ value: [String:Any], result: (@MainActor (Reply) -> Void)?, completion: (@MainActor () -> Void)? = nil) -> Bool {
         let kind = value["command"] as? String ?? ""
+        if (pendingLibraryRead != nil || libraryReadInvalid) && ["select","queue_append","set_favorite"].contains(kind) {return false}
+        if let intent = pendingLibraryRead, intent.epoch != epoch || intent.account != accountScope {retireLibraryRead()}
+        if ["queue_restore","queue_play","next","previous","queue_clear"].contains(kind) {retireLibraryRead()}
+        if ["login","register","restore","logout"].contains(kind) {
+            retireLibraryRead();libraryLiked = false;acknowledgedLibraryRead = nil;libraryReadFailure = nil;libraryRevision = nil;libraryReadInvalid = false;updateLibraryReadPresentation()
+        }
+        let readIntent = ["library","library_liked"].contains(kind) ? pendingLibraryRead : nil
         if ["login","register","restore","logout","select","queue_play","next","previous","queue_clear","queue_restore"].contains(kind) {closeQueueName();retireLibraryDetails()}
         if ["login","register","restore","logout"].contains(kind) {
             accountScope += 1;storedCredentialVersion = 0
             if kind != "restore", ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_FIXTURE_HOME"] == nil {deleteCredentials()}
         }
-        guard busy < 32 else {status.stringValue = "Playback is busy. Try again.";return}
+        guard busy < 32 else {status.stringValue = "Playback is busy. Try again.";return false}
         if ["select","queue_play","next","previous","resume","retry"].contains(kind) || kind == "queue_remove" && (value["occurrence_id"] as? UInt64) == snapshot?.selected_occurrence {wantsPlayback = true}
         if ["pause","queue_clear","queue_restore","logout","login"].contains(kind) {wantsPlayback = false;player?.pause()}
         var scopedValue = value;scopedValue["account_scope_v1"] = accountScope
-        guard let data = try? JSONSerialization.data(withJSONObject:scopedValue) else {return}
+        guard JSONSerialization.isValidJSONObject(scopedValue), let data = try? JSONSerialization.data(withJSONObject:scopedValue) else {status.stringValue = "Invalid native command";return false}
         let admittedEpoch = epoch
         let admittedAccount = accountScope
         busy += 1
         bridge.send(data, epoch: admittedEpoch) { [weak self] data in
             Task { @MainActor in
                 guard let self else{return};self.busy -= 1
+                if let readIntent {self.libraryReadRetired.remove(readIntent.serial)}
                 guard admittedEpoch == self.epoch, admittedAccount == self.accountScope else{self.reportPending = false;return}
-                guard let reply = try? JSONDecoder().decode(Reply.self,from:data) else {self.status.stringValue = "Invalid native response";self.reportPending = false;return}
+                if let readIntent, self.pendingLibraryRead != readIntent {
+                    // A superseded read cannot publish rows/mode, but a committed
+                    // same-account credential rotation still needs durable ACK.
+                    if let reply = try? JSONDecoder().decode(Reply.self,from:data), let credentials = reply.credentials,
+                       ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_FIXTURE_HOME"] == nil {self.storeCredentials(credentials,epoch:admittedEpoch)}
+                    return
+                }
+                guard let reply = try? JSONDecoder().decode(Reply.self,from:data) else {
+                    self.status.stringValue = "Invalid native response";self.reportPending = false
+                    if let readIntent {self.finishLibraryRead(readIntent,reply:nil)}
+                    return
+                }
+                // Only this admitted read may acknowledge a new Library publication.
+                if let readIntent {self.finishLibraryRead(readIntent,reply:reply)}
                 if let snapshot = reply.snapshot, snapshot.epoch == self.epoch {self.apply(snapshot)}
-                if !reply.ok {self.status.stringValue = reply.code.replacingOccurrences(of:"_",with:" ")}
+                if !reply.ok, readIntent == nil || self.libraryReadFailure == nil {self.status.stringValue = reply.code.replacingOccurrences(of:"_",with:" ")}
                 if let effect = reply.audio, effect.epoch == self.epoch {self.applyAudio(effect)}
                 if let credentials = reply.credentials, ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_FIXTURE_HOME"] == nil {self.storeCredentials(credentials,epoch:admittedEpoch)}
+                result?(reply)
                 completion?()
             }
         }
+        return true
+    }
+    // Explicit overload: defaulted result+completion closures would rebind legacy trailing closures.
+    @discardableResult
+    func command(_ value: [String:Any], completion: (@MainActor () -> Void)? = nil) -> Bool {
+        command(value,result:nil,completion:completion)
     }
     func apply(_ incoming: Snapshot) {
         var value = incoming
+        let wasInvalid = libraryReadInvalid
+        let olderLibrary = value.authenticated && value.library_revision != nil && libraryRevision != nil && value.library_revision! < libraryRevision!
+        if !value.authenticated {libraryRevision = nil;libraryReadInvalid = false}
+        else if let revision = value.library_revision {
+            if libraryRevision == nil && !libraryReadInvalid && pendingLibraryRead == nil {libraryRevision = revision}
+            if !olderLibrary {libraryReadInvalid = revision != libraryRevision}
+        } else if libraryRevision != nil {
+            // A missing marker cannot establish current-core row authority.
+            libraryReadInvalid = true
+        }
+        // Revision-less ABI1 replies cannot clear retirement uncertainty either.
+        // A full sibling can inherit a committed but retired read. Preserve the
+        // acknowledged display, not row authority: Select uses the core's rows.
+        if libraryReadInvalid || olderLibrary {
+            value.library = snapshot?.library ?? [];value.total = snapshot?.total ?? 0
+            value.library_revision = snapshot?.library_revision;value.favorite_track_ids = snapshot?.favorite_track_ids
+        }
         if value.library_unchanged {value.library = snapshot?.library ?? []}
         if value.library_unchanged {value.favorite_track_ids = snapshot?.favorite_track_ids}
+        if libraryReadInvalid {value.favorite_track_ids = nil}
         if value.queue_unchanged {value.queue = snapshot?.queue ?? []}
         // Content topics alone pay this comparison; String equality is canonical,
         // not byte equality, so compare UTF8 for exact metadata publications.
@@ -275,7 +349,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
             else {table.selectRowIndexes([],byExtendingSelection:false)}
             libraryDock?.updateContent(empty:value.library.isEmpty)
         }
-        if rowsChanged || prior?.total != value.total || prior?.authenticated != value.authenticated || prior?.epoch != value.epoch || prior?.session != value.session {updateLibraryAvailability()}
+        if wasInvalid != libraryReadInvalid || rowsChanged || prior?.total != value.total || prior?.authenticated != value.authenticated || prior?.epoch != value.epoch || prior?.session != value.session {updateLibraryAvailability()}
         if prior?.authenticated != value.authenticated {titleLabel.stringValue = "Library";libraryDock?.updateAuthentication(value.authenticated)}
         if chromeChanged {
             let chrome = DockChrome(value)
@@ -293,7 +367,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         libraryDock?.updateProgress(position:value.position_ms,duration:value.duration_ms)
         // Local command failures can change the displayed feedback independently
         // of snapshot topics. A successful scalar recovery must publish truth too.
-        let feedback = value.error?.replacingOccurrences(of:"_",with:" ") ?? "\(value.library.count) of \(value.total) tracks"
+        let feedback = libraryReadFailure ?? (libraryReadInvalid ? "Library changed. Refresh before choosing a track.":nil) ?? value.error?.replacingOccurrences(of:"_",with:" ") ?? "\(value.library.count) of \(value.total) tracks"
         if status.stringValue != feedback {status.stringValue = feedback}
     }
     func applyAudio(_ effect: AudioEffect) {
@@ -339,7 +413,51 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         command(["command":"audio_report","epoch":epoch,"session":snapshot.session,"state":nativeState,"position_ms":position,"duration_ms":length]) { [weak self] in self?.reportPending = false }
         MPNowPlayingInfoCenter.default().playbackState = player.rate > 0 ? .playing : .paused
     }
-    func loadLibrary(offset: Int = 0) {command(["command":"library","offset":offset,"query":search.stringValue,"sort":"added_at","order":"desc"])}
+    func loadLibrary(offset: Int = 0) {readLibrary(liked:libraryLiked,offset:offset)}
+    func readLibrary(liked: Bool, offset: Int = 0) {
+        guard let s = snapshot, s.authenticated, s.epoch == epoch, pendingLibraryRead == nil, busy == libraryReadRetired.count else {return}
+        let identity = LibraryReadIdentity(liked:liked,queryUTF8:Array(search.stringValue.utf8),sort:"added_at",order:"desc")
+        let pageOffset = offset > 0 && !libraryReadInvalid && acknowledgedLibraryRead == identity ? offset : 0
+        libraryReadSerial &+= 1
+        let intent = LibraryReadIntent(serial:libraryReadSerial,account:accountScope,epoch:epoch,identity:identity,offset:pageOffset)
+        pendingLibraryRead = intent;libraryReadFailure = nil
+        retireLibraryDetails();updateLibraryReadPresentation();updateLibraryAvailability()
+        let admitted = command(["command":liked ? "library_liked":"library","offset":pageOffset,"query":search.stringValue,"sort":identity.sort,"order":identity.order],result: { [weak self] reply in
+            self?.finishLibraryRead(intent,reply:reply)
+        })
+        if !admitted, pendingLibraryRead == intent {finishLibraryRead(intent,reply:nil)}
+    }
+    func finishLibraryRead(_ intent: LibraryReadIntent, reply: Reply?) {
+        guard pendingLibraryRead == intent, intent.account == accountScope, intent.epoch == epoch else {return}
+        // Legacy reads may acknowledge only before any marker or retirement is known.
+        if let reply, reply.ok, let value = reply.snapshot, value.epoch == epoch, value.authenticated, !value.library_unchanged,
+           value.library_revision != nil || (libraryRevision == nil && !libraryReadInvalid) {
+            libraryLiked = intent.identity.liked;acknowledgedLibraryRead = intent.identity;libraryReadFailure = nil
+            libraryRevision = value.library_revision;libraryReadInvalid = false
+        } else {
+            // A valid search can lose append authority after a favorite change.
+            // Recovery is an explicit offset-zero Refresh, never an automatic read.
+            let stalePage = intent.offset > 0 && intent.identity.queryUTF8.count <= 512
+            libraryReadFailure = reply.map {$0.ok ? "Invalid native response":$0.code == "invalid_query" ? (stalePage ? "Library changed. Refresh before loading more.":"Invalid query. Shorten your search and try again."):$0.code.replacingOccurrences(of:"_",with:" ")} ?? status.stringValue
+        }
+        pendingLibraryRead = nil;updateLibraryReadPresentation();updateLibraryAvailability()
+        if let libraryReadFailure {status.stringValue = libraryReadFailure}
+    }
+    func retireLibraryRead() {
+        if let intent = pendingLibraryRead {libraryReadRetired.insert(intent.serial);libraryReadInvalid = true;snapshot?.favorite_track_ids = nil}
+        pendingLibraryRead = nil;updateLibraryReadPresentation();updateLibraryAvailability()
+    }
+    func updateLibraryReadPresentation() {
+        libraryLikedControl.selected = libraryLiked
+        libraryLikedControl.setAccessibilityValue(libraryLiked ? "Liked":"All")
+        libraryLikedControl.setAccessibilityLabel(libraryLiked ? "Liked tracks, selected":"Liked tracks, not selected")
+        libraryLikedControl.isEnabled = snapshot?.authenticated == true && pendingLibraryRead == nil
+        search.isEnabled = pendingLibraryRead == nil
+        libraryDock?.controls.refresh.isEnabled = snapshot?.authenticated == true && pendingLibraryRead == nil
+        libraryDock?.empty.stringValue = libraryLiked ? "No liked tracks match this search.":"Your library is empty. Refresh to check for tracks."
+        libraryDock?.libraryReadFailed = libraryReadFailure != nil
+        libraryDock?.updateContent(empty:pendingLibraryRead == nil && libraryReadFailure == nil && snapshot?.library.isEmpty == true)
+    }
     @objc func signIn() {
         retireLibraryDetails()
         closeQueueName()
@@ -351,12 +469,13 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         }
     }
     @objc func signOut() {retireLibraryDetails();closeQueueName();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();deleteCredentials();command(["command":"logout"])}
+    @objc func toggleLibraryLiked() {readLibrary(liked:!libraryLiked)}
     @objc func refresh() {loadLibrary()}
     @objc func loadMore() {loadLibrary(offset:snapshot?.library.count ?? 0)}
-    @objc func selectTrack() {let row = table.selectedRow;guard let s = snapshot,row >= 0,row < s.library.count else{return};retireLibraryDetails();closeQueueName();player?.pause();player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();command(["command":"select","track_id":s.library[row].id])}
+    @objc func selectTrack() {let row = table.selectedRow;guard pendingLibraryRead == nil, !libraryReadInvalid, let s = snapshot,s.authenticated,s.epoch == epoch,row >= 0,row < s.library.count else{return};retireLibraryDetails();closeQueueName();player?.pause();player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();command(["command":"select","track_id":s.library[row].id])}
     @objc func toggle() {command(["command":snapshot?.transport == "playing" ? "pause" : "resume"])}
     func queueCommand(_ kind:String,id:UInt64?=nil,index:Int?=nil) {
-        guard let s=snapshot else{return}
+        guard let s=snapshot, kind != "queue_append" || (pendingLibraryRead == nil && !libraryReadInvalid) else{return}
         let selected=s.queue.firstIndex(where:{$0.id==s.selected_occurrence})
         if kind=="next" && (selected==nil || selected!+1>=s.queue.count) {return}
         if kind=="previous" && (selected==nil || selected == 0) {return}
@@ -460,7 +579,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
     }
     func updateLibraryDetailsAction() {
         let row = table.selectedRow
-        guard let s = snapshot, s.authenticated, s.epoch == epoch,
+        guard pendingLibraryRead == nil, !libraryReadInvalid, let s = snapshot, s.authenticated, s.epoch == epoch,
               row >= 0, row < s.library.count else {retireLibraryDetails();return}
         let track = s.library[row]
         if let action = libraryDetailsAction, !action.consumed, action.track.id == track.id,
@@ -471,7 +590,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         libraryDetails.isEnabled = true
     }
     func openLibraryDetails(_ action: LibraryMetadataAction) {
-        guard libraryDetailsAction === action, !action.consumed, let s = snapshot,
+        guard pendingLibraryRead == nil, !libraryReadInvalid, libraryDetailsAction === action, !action.consumed, let s = snapshot,
               action.matches(s,account:accountScope,epoch:epoch) else {return}
         action.consumed = true
         closeLibraryDetails();closeQueueName()
@@ -512,9 +631,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
     @objc func seek() {command(["command":"seek","position_ms":UInt64(slider.doubleValue)])}
     func controlTextDidEndEditing(_ obj: Notification) {if (obj.object as? NSSearchField) === search {loadLibrary()}}
     func updateLibraryAvailability() {
-        let authenticated = snapshot?.authenticated == true
+        let authenticated = snapshot?.authenticated == true && pendingLibraryRead == nil && !libraryReadInvalid
         libraryDock?.setLibraryAvailability(selected:authenticated && table.selectedRow >= 0 && table.selectedRow < (snapshot?.library.count ?? 0),canLoadMore:authenticated && UInt64(snapshot?.library.count ?? 0) < (snapshot?.total ?? 0))
-        updateLibraryDetailsAction()
+        updateLibraryDetailsAction();updateLibraryReadPresentation()
     }
     func tableViewSelectionDidChange(_ notification: Notification) {updateLibraryAvailability()}
     func numberOfRows(in tableView: NSTableView)->Int {snapshot?.library.count ?? 0}

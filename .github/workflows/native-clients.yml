@@ -184,6 +184,7 @@ jobs:
           output = Path(tempfile.mkdtemp(prefix='queue-feedback-', dir=os.environ['RUNNER_TEMP']))
           env = dict(os.environ, SOUNDQ_CORE_LIBRARY=str(library))
           subprocess.run([sys.executable, '-B', 'native/tests/queue_feedback_regressions.py', '--source-root', str(Path.cwd()), '--macos', '--output', str(output / 'macos')], env=env, check=True)
+          subprocess.run([sys.executable, '-B', 'native/tests/library_projection_regressions.py', '--source-root', str(Path.cwd()), '--core-library', str(library), '--suite', 'combined', '--output', str(output / 'library-projection')], env=env, check=True)
           PY
       - uses: actions/upload-artifact@v4
         with:

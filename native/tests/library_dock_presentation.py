@@ -26,6 +26,7 @@ final class CountingTable:NSTableView {var reloads=0;override func reloadData(){
  var email=NSTextField();var password=NSSecureTextField();var endpoint=NSTextField();var search=SoundQSearchField();var slider=NSSlider(value:0,minValue:0,maxValue:1,target:nil,action:nil)
  var loginArea=NSStackView();var libraryArea=NSStackView();var play=SoundQButton(title:"Play",target:nil,action:nil);var logout=SoundQButton(title:"Sign out",target:nil,action:nil);var scroll=NSScrollView()
  var libraryDock:LibraryDockView?;var dockTrackID:Int64?;var snapshot:Snapshot?;var epoch:UInt64=1;var accountScope:UInt64=1
+ var libraryLikedControl=SoundQButton(title:"Liked",target:nil,action:nil)
  var libraryDetailsMenuItem:NSMenuItem?
  var libraryDetails=SoundQButton(title:"Full details",target:nil,action:nil);var libraryDetailsAction:LibraryMetadataAction?;var libraryDetailsAlert:(alert:NSAlert,action:LibraryMetadataAction)?
  var commands=[[String:Any]]();func command(_ value:[String:Any]) {commands.append(value)}
@@ -48,6 +49,32 @@ __METADATA_GEOMETRY__
  return Snapshot(epoch:1,session:1,revision:1,authenticated:true,library:[t],library_unchanged:false,total:1,queue:[Occurrence(id:UInt64.max,track:t)],queue_unchanged:false,selected_occurrence:UInt64.max,transport:"paused",position_ms:0,duration_ms:duration,error:nil)
 }
 a.apply(sample());host.layoutSubtreeIfNeeded();shell.layoutSubtreeIfNeeded()
+
+// Discover the mounted native control through existing AppKit types, rather
+// than compiling against a proposed App method/property that does not exist.
+// This is a mounted-control contract; callback/dispatch ownership needs the
+// separate production-caller cases described in the preparation handoff.
+let likedControls=shell.bodyDocument.subviews.compactMap {$0 as? SoundQButton}.filter {$0.title=="Liked"}
+check("liked-filter-one-mounted-labeled-control",likedControls.count==1)
+if let liked=likedControls.first {
+ check("liked-filter-current-app-target-action",liked.target === a && liked.action != nil && a.responds(to:liked.action!))
+ check("liked-filter-default-acknowledged-all",!liked.selected)
+ for scale:CGFloat in [1,2] {for width:CGFloat in [760,960,1200,1440] {
+  shell.textScale=scale;host.setFrameSize(NSSize(width:width,height:900));shell.frame=host.bounds;shell.needsLayout=true;shell.layoutSubtreeIfNeeded()
+  let tag="\(Int(width))-\(Int(scale))",cell=liked.cell!,full=cell.cellSize
+  for button in [shell.controls.refresh,shell.controls.more,shell.controls.select,shell.controls.details,shell.controls.retry,liked] {
+   let native=button.cell!.cellSize,intrinsic=button.intrinsicContentSize
+   let metric:[String:Any] = ["case":tag,"title":button.title,"frame":NSStringFromRect(button.frame),"nativeWidth":native.width,"nativeHeight":native.height,"intrinsicWidth":intrinsic.width,"intrinsicHeight":intrinsic.height,"font":button.font!.pointSize]
+   print("SECONDARY_CELL",String(data:try! JSONSerialization.data(withJSONObject:metric,options:[.sortedKeys]),encoding:.utf8)!)
+   check("secondary-full-native-label-cell-"+button.title+"-"+tag,button.frame.width>=native.width && button.frame.height>=native.height)
+  }
+  check("liked-filter-full-native-label-cell-"+tag,liked.frame.width>=full.width && liked.frame.height>=full.height && liked.frame.height>=40*scale)
+  check("liked-filter-shares-secondary-height-"+tag,liked.frame.height==shell.controls.refresh.frame.height && liked.font?.pointSize==shell.controls.refresh.font?.pointSize)
+  check("liked-filter-inside-document-grid-"+tag,liked.frame.minX>=0 && liked.frame.maxX<=shell.bodyDocument.bounds.width && liked.frame.minY>=0 && abs(liked.frame.minX/4-(liked.frame.minX/4).rounded())<0.01)
+  check("liked-filter-no-toolbar-overlap-"+tag,![shell.controls.search,shell.controls.refresh,shell.controls.more,shell.controls.select,shell.controls.details,shell.controls.retry].contains {liked.frame.intersects($0.frame)})
+ }}
+}
+shell.textScale=1;host.setFrameSize(NSSize(width:1200,height:700));shell.frame=host.bounds;shell.needsLayout=true;shell.layoutSubtreeIfNeeded()
 
 // Round3 native paint/full-cell/reflow regressions. No window or input synthesis.
 // Native glyph-body regression, not centered-line-rectangle inference.
@@ -556,11 +583,18 @@ def asset_contract(root):
 def production_probe(root, apply_source_file=None):
     source = (root / 'native/macos/Sources/main.swift').read_text()
     signatures = ['func mountLibraryDock(', 'func apply(_ incoming: Snapshot)', 'func updateLibraryAvailability()', '@objc func retry()', 'func tableViewSelectionDidChange(', 'func numberOfRows(', 'func tableView(_ tableView: NSTableView,viewFor', 'func tableView(_ tableView: NSTableView,rowViewForRow']
-    signatures += [s for s in ['func makeLibraryMenu()', 'func libraryDetailsMenuAvailable(', '@objc func openLibraryDetailsFromMenu(', 'func updateLibraryDetailsAction()', 'func openLibraryDetails(', 'func closeLibraryDetails()', 'func retireLibraryDetails()', 'func reconcileLibraryDetails('] if s in source]
-    blocks = {s: swift_block(source, s) for s in TYPES+signatures}
+    signatures += [s for s in ['@objc func toggleLibraryLiked()', 'func loadLibrary(', 'func makeLibraryMenu()', 'func libraryDetailsMenuAvailable(', '@objc func openLibraryDetailsFromMenu(', 'func updateLibraryDetailsAction()', 'func openLibraryDetails(', 'func closeLibraryDetails()', 'func retireLibraryDetails()', 'func reconcileLibraryDetails('] if s in source]
+    signatures += [s for s in ['func readLibrary(', 'func finishLibraryRead(', 'func retireLibraryRead(', 'func updateLibraryReadPresentation()'] if s in source]
+    types = TYPES + [s for s in ['struct Reply:', 'struct AudioEffect:', 'struct Credentials:', 'struct LibraryReadIdentity:', 'struct LibraryReadIntent:'] if s in source]
+    blocks = {s: swift_block(source, s) for s in types+signatures}
     if apply_source_file:
         blocks['func apply(_ incoming: Snapshot)'] = swift_block(apply_source_file.read_text(), 'func apply(_ incoming: Snapshot)')
-    probe = HARNESS.replace('__TYPES__', '\n'.join(blocks[s] for s in TYPES)).replace('__METHODS__', '\n'.join(blocks[s] for s in signatures))
+    probe = HARNESS.replace('__TYPES__', '\n'.join(blocks[s] for s in types)).replace('__METHODS__', '\n'.join(blocks[s] for s in signatures))
+    if 'struct LibraryReadIntent:' in source:
+        import re
+        fields='\n'.join(line.strip() for line in source.splitlines() if re.match(r'    var (libraryLiked|libraryReadSerial|libraryReadRetired|pendingLibraryRead|acknowledgedLibraryRead|libraryReadFailure|libraryRevision|libraryReadInvalid)\b',line))
+        probe=probe.replace(' var libraryDetailsMenuItem:NSMenuItem?', fields+'\n var busy=0\n var libraryDetailsMenuItem:NSMenuItem?')
+        probe=probe.replace('func command(_ value:[String:Any]) {commands.append(value)}','@discardableResult func command(_ value:[String:Any],result:((Reply)->Void)? = nil,completion:(()->Void)? = nil)->Bool {commands.append(value);return false}')
     if 'func makeLibraryMenu()' not in source:
         start=probe.index('if let item=a.makeLibraryMenu()')
         end=probe.index('\n}',start)+2
@@ -586,6 +620,187 @@ for scale:CGFloat in [1,2] {for width:CGFloat in [760,960,1200,1440] {
 '''
     probe = probe.replace('__METADATA_GEOMETRY__',geometry if 'func updateLibraryDetailsAction()' in source else '')
     return probe, blocks
+
+
+
+LF1_CASES = r'''
+ // LF1: exact production read/command/apply with a held wire boundary and real,
+ // window-free AppKit conversions. Native failure and previous projection are
+ // established independently of the desired visible explanation.
+ func lfWire(_ ids:[Int64],code:String="ok",unchanged:Bool=false,auth:Bool=true)->Data {
+  var reply=try! JSONSerialization.jsonObject(with:wire(code=="ok",ids,unchanged:unchanged)) as! [String:Any]
+  reply["ok"]=code=="ok";reply["code"]=code
+  var state=reply["snapshot"] as! [String:Any]
+  state["authenticated"]=auth;state["error"]=code=="ok" ? NSNull():code
+  state["queue"]=[["id":99,"track":["id":9,"title":"Queued","artist":"Artist","duration_ms":30000]]]
+  state["selected_occurrence"]=99;state["queue_unchanged"]=unchanged
+  reply["snapshot"]=state
+  return try! JSONSerialization.data(withJSONObject:reply)
+ }
+ for (width,scale):(CGFloat,CGFloat) in [(1440,2),(960,1)] {for retained in [false,true] {
+  let owner=ready(),dock=owner.libraryDock!,tag="\(Int(width))-\(Int(scale))-\(retained ? "retained":"empty")"
+  let host=NSView(frame:NSRect(x:0,y:0,width:width,height:760));host.addSubview(dock);dock.frame=host.bounds;dock.textScale=scale
+  owner.apply(try! JSONDecoder().decode(Reply.self,from:lfWire([7])).snapshot!)
+  tap(owner);owner.bridge.release(0,lfWire(retained ? [8]:[]));await settle(owner)
+  if retained {owner.table.selectRowIndexes(IndexSet(integer:0),byExtendingSelection:false)}
+  let acknowledged=owner.acknowledgedLibraryRead,priorIDs=owner.snapshot!.library.map {$0.id},priorQueue=owner.snapshot!.queue.map {$0.id},selection=owner.table.selectedRow
+  check("lf1-positive-prior-projection-"+tag,owner.libraryLiked && priorIDs==(retained ? [8]:[]) && priorQueue==[99] && owner.snapshot!.selected_occurrence==99 && owner.snapshot!.transport=="paused")
+  owner.search.stringValue=String(repeating:"Native Fixture 500 ",count:32);owner.refresh()
+  check("lf1-actual-over-limit-read-dispatched-"+tag,owner.search.stringValue.utf8.count>512 && owner.bridge.value(1)["query"] as? String==owner.search.stringValue && owner.bridge.value(1)["command"] as? String=="library_liked")
+  check("lf1-loading-no-successful-empty-claim-"+tag,dock.empty.isHidden || !dock.empty.stringValue.contains("match this search"))
+  owner.bridge.release(1,lfWire([],code:"invalid_query",unchanged:true));await settle(owner)
+  host.layoutSubtreeIfNeeded();dock.needsLayout=true;dock.layoutSubtreeIfNeeded();dock.bodyScroll.layoutSubtreeIfNeeded()
+  check("lf1-failure-owner-established-"+tag,owner.libraryReadFailure != nil && owner.pendingLibraryRead==nil && owner.search.isEnabled)
+  check("lf1-refusal-retains-acknowledged-projection-"+tag,owner.libraryLiked && owner.acknowledgedLibraryRead==acknowledged && owner.snapshot!.library.map {$0.id}==priorIDs && owner.table.selectedRow==selection && owner.snapshot!.queue.map {$0.id}==priorQueue && owner.snapshot!.selected_occurrence==99 && owner.snapshot!.transport=="paused" && owner.bridge.revokes==0)
+  check("lf1-refusal-explains-correction-"+tag,owner.status.stringValue=="Invalid query. Shorten your search and try again.")
+  check("lf1-refusal-no-successful-empty-claim-"+tag,dock.empty.isHidden || !dock.empty.stringValue.contains("match this search"))
+  let statusRect=owner.status.convert(owner.status.bounds,to:dock),viewport=dock.bodyScroll.contentView.convert(dock.bodyScroll.contentView.bounds,to:dock),searchRect=owner.search.convert(owner.search.bounds,to:dock)
+  let natural=owner.status.cell!.cellSize(forBounds:NSRect(x:0,y:0,width:owner.status.bounds.width,height:10000))
+  print("LF1_GEOMETRY",tag,"status",statusRect,"viewport",viewport,"search",searchRect,"nativeText",natural,"allocated",owner.status.bounds)
+  check("lf1-native-coordinate-roundtrip-"+tag,dock.bodyDocument.convert(owner.status.convert(owner.status.bounds,to:dock.bodyDocument),to:dock)==statusRect && viewport.minY>=0 && viewport.maxY<=dock.bounds.height-dock.dockHeight+0.1)
+  check("lf1-refusal-visible-first-viewport-"+tag,!owner.status.isHidden && statusRect.width>0 && viewport.contains(statusRect) && owner.status.visibleRect.contains(owner.status.bounds) && abs(dock.bodyScroll.contentView.bounds.minY)<0.1)
+  check("lf1-full-feedback-native-cell-fits-"+tag,natural.width>0 && natural.height>0 && natural.width<=owner.status.bounds.width && natural.height<=owner.status.bounds.height && owner.status.font!.pointSize==12*scale)
+  let reloads=owner.table.reloads,chrome=dock.chromeEntries,animation=dock.identityAnimations,treatment=dock.rowTreatmentEntries,progress=dock.progressEntries,statusFrame=owner.status.frame
+  for _ in 0..<120 {owner.apply(try! JSONDecoder().decode(Reply.self,from:lfWire([],unchanged:true)).snapshot!)}
+  check("lf1-scalars-preserve-refusal-no-content-chrome-work-"+tag,owner.status.stringValue=="Invalid query. Shorten your search and try again." && owner.table.reloads==reloads && dock.chromeEntries==chrome && dock.identityAnimations==animation && dock.rowTreatmentEntries==treatment && dock.progressEntries==progress+120 && owner.status.frame==statusFrame && !dock.needsLayout)
+  owner.command(["command":"snapshot"]);owner.bridge.release(2,lfWire([],code:"queue_storage_failed",unchanged:true));await settle(owner)
+  check("lf1-unrelated-command-keeps-own-error-"+tag,owner.status.stringValue=="queue storage failed" && owner.libraryReadFailure=="Invalid query. Shorten your search and try again.")
+  owner.search.stringValue="valid missing";owner.refresh();owner.bridge.release(3,lfWire([]));await settle(owner)
+  check("lf1-successful-empty-recovers-"+tag,owner.libraryReadFailure==nil && owner.libraryLiked && owner.snapshot!.library.isEmpty && !dock.empty.isHidden && dock.empty.stringValue=="No liked tracks match this search." && owner.status.stringValue=="0 of 100 tracks")
+  owner.refresh();owner.bridge.release(4,lfWire([],code:"service_unavailable",unchanged:true));await settle(owner)
+  check("lf1-other-read-error-not-empty-success-"+tag,owner.status.stringValue=="service unavailable" && (dock.empty.isHidden || !dock.empty.stringValue.contains("match this search")))
+  owner.command(["command":"logout"]);owner.bridge.release(5,lfWire([],auth:false));await settle(owner)
+  check("lf1-signout-clears-failure-mode-and-empty-"+tag,owner.libraryReadFailure==nil && !owner.libraryLiked && owner.acknowledgedLibraryRead==nil && dock.empty.isHidden && owner.libraryArea.isHidden)
+ }}
+'''
+
+
+def callback_contract(root, output):
+    """Execute exact App methods and decoded replies; only blocking ABI is held."""
+    import re
+    source=(root/'native/macos/Sources/main.swift').read_text()
+    probe,blocks=production_probe(root)
+    header=probe[:probe.index('var failures=[String]')]
+    methods=['func command(', 'func loadLibrary(', '@objc func refresh()', '@objc func loadMore()', 'func controlTextDidEndEditing(', '@objc func selectTrack()', '@objc func toggle()', 'func queueCommand(', '@objc func nextTrack()', '@objc func previousTrack()']
+    methods += [s for s in ['func command(_ value: [String:Any], completion:', 'func readLibrary(', '@objc func toggleLibraryLiked()', 'func finishLibraryRead(', 'func retireLibraryRead(', 'func updateLibraryReadPresentation()'] if s in source]
+    if 'struct LibraryReadIntent:' not in source:
+        methods=[s for s in methods if s != 'func command(_ value: [String:Any], completion:']
+    for name in ['refresh','loadMore','selectTrack','toggle','nextTrack','previousTrack']:
+        header=header.replace('@objc func '+name+'(){};','')
+    for sig in methods:
+        if sig in blocks: header=header.replace(blocks[sig], '')
+    recorder='var commands=[[String:Any]]();'+('@discardableResult func command(_ value:[String:Any],result:((Reply)->Void)? = nil,completion:(()->Void)? = nil)->Bool {commands.append(value);return false}' if 'struct LibraryReadIntent:' in source else 'func command(_ value:[String:Any]) {commands.append(value)}')
+    header=header.replace(recorder, '\n'.join(('@discardableResult\n' if s.startswith('func command(') and '-> Bool' in swift_block(source,s) else '')+swift_block(source,s) for s in methods))
+    header=header.replace(' var busy=0\n', '')
+    header=header.replace(' var window:NSWindow!;', '\n var bridge=Bridge();var busy=0;var storedCredentialVersion:UInt64=0;var wantsPlayback=false;var player:AVPlayer?;var observation:NSKeyValueObservation?;var reportPending=false\n func applyAudio(_ effect:AudioEffect){}\n var stored=[Credentials]();func storeCredentials(_ credentials:Credentials,epoch:UInt64){stored.append(credentials)}\n func deleteCredentials(){}\n var window:NSWindow!;')
+    bridge=r"""
+final class Bridge:@unchecked Sendable {
+ struct Held {let value:Data;let epoch:UInt64;let completion:@Sendable(Data)->Void}
+ var held=[Held]();var revokes=0;var released=0
+ func send(_ data:Data,epoch:UInt64,completion:@escaping @Sendable(Data)->Void){held.append(Held(value:data,epoch:epoch,completion:completion))}
+ func revoke()->UInt64 {revokes+=1;return UInt64(revokes+1)}
+ func value(_ index:Int)->[String:Any] {try! JSONSerialization.jsonObject(with:held[index].value) as! [String:Any]}
+ func release(_ index:Int,_ data:Data) {released+=1;held[index].completion(data)}
+}
+"""
+    cases=r"""
+@MainActor var failures=[String]();@MainActor var passes=[String]()
+@MainActor func check(_ name:String,_ ok:Bool){if ok {passes.append(name);print("PASS",name)} else {failures.append(name);print("FAIL",name)}}
+@MainActor func wire(_ ok:Bool=true,_ ids:[Int64]=[8],unchanged:Bool=false,epoch:UInt64=1,libraryRevision:UInt64=0)->Data {
+ let tracks=ids.map {["id":$0,"title":"Track \($0)","artist":"Artist","duration_ms":30000] as [String:Any]}
+ let s:[String:Any]=["epoch":epoch,"session":1,"revision":2,"authenticated":true,"library":tracks,"library_revision":libraryRevision,"library_unchanged":unchanged,"favorite_track_ids":ids,"total":100,"queue":[],"queue_unchanged":true,"selected_occurrence":NSNull(),"transport":"paused","position_ms":6000,"duration_ms":30000,"error":ok ? NSNull():"service_unavailable"]
+ return try! JSONSerialization.data(withJSONObject:["ok":ok,"code":ok ? "ok":"service_unavailable","snapshot":s])
+}
+@MainActor func settle(_ a:App) async {
+ let deadline=Date().addingTimeInterval(3)
+ while a.busy != a.bridge.held.count-a.bridge.released && Date()<deadline {await Task.yield()}
+ check("accepted-callback-barrier-\(a.bridge.released)",a.busy==a.bridge.held.count-a.bridge.released)
+}
+@main struct CallbackTests {
+ @MainActor static func main() async throws {
+ let assets=try NativeAssets.load(root:URL(fileURLWithPath:CommandLine.arguments[1]))
+ func ready()->App {
+  let a=App();a.mountLibraryDock(in:NSView(frame:NSRect(x:0,y:0,width:960,height:700)),assets:assets)
+  let s=try! JSONDecoder().decode(Reply.self,from:wire(true,[7])).snapshot!;a.apply(s);a.table.selectRowIndexes(IndexSet(integer:0),byExtendingSelection:false);a.updateLibraryAvailability();return a
+ }
+ func liked(_ a:App)->SoundQButton? {a.libraryDock!.bodyDocument.subviews.compactMap {$0 as? SoundQButton}.first {$0.title=="Liked"}}
+ func tap(_ a:App) {if let b=liked(a),let action=b.action {_ = a.perform(action)}}
+ // Existing caller, no new API: edited search must never append to old rows.
+ let query=ready();query.search.stringValue="old";query.refresh();query.bridge.release(0,wire());await settle(query)
+ query.search.stringValue="Ω & new";query.loadMore()
+ check("edited-query-load-more-restarts-zero",query.bridge.value(1)["offset"] as? Int==0 && query.bridge.value(1)["query"] as? String=="Ω & new")
+ query.bridge.release(1,wire());await settle(query)
+ // Real held Refresh is independent of missing-control API discovery.
+ let held=ready();let old=held.libraryDetailsAction;held.refresh()
+ check("held-refresh-retires-row-disclosure",held.libraryDetailsAction==nil && old?.active==false && !held.libraryDetails.isEnabled)
+ check("held-refresh-disables-conflicting-list-controls",!held.search.isEnabled && !held.libraryDock!.controls.refresh.isEnabled && !held.libraryDock!.controls.select.isEnabled)
+ let count=held.bridge.held.count;held.selectTrack();held.queueCommand("queue_append",id:7)
+ check("held-refresh-retained-row-handlers-refused",held.bridge.held.count==count && held.bridge.revokes==0)
+ held.toggle();check("held-refresh-transport-still-dispatches",held.bridge.held.count==count+1 && held.bridge.value(count)["command"] as? String=="resume")
+ held.bridge.release(0,wire(false,[7],unchanged:true));await settle(held)
+ check("failed-refresh-keeps-rows-and-clears-list-pending",held.snapshot?.library.map {$0.id}==[7] && held.search.isEnabled && held.libraryDock!.controls.refresh.isEnabled)
+ // Old trailing no-argument completion must still be ordinary completion.
+ let legacy=ready();var completed=0;legacy.command(["command":"snapshot"]) {completed+=1};legacy.bridge.release(0,wire());await settle(legacy);check("legacy-trailing-noarg-completion",completed==1)
+ let boundary=ready();boundary.busy=1;boundary.refresh();check("list-read-requires-idle-command-boundary",boundary.bridge.held.isEmpty && boundary.search.isEnabled);boundary.busy=0
+ let a=ready();check("callback-mounted-liked-control",liked(a) != nil)
+ if let button=liked(a) {
+  tap(a);check("toggle-held-keeps-acknowledged-mode-rows",!button.selected && a.snapshot?.library.map {$0.id}==[7] && a.bridge.value(0)["command"] as? String=="library_liked" && a.bridge.revokes==0)
+  a.bridge.release(0,wire());await settle(a)
+  check("current-decoded-success-commits-mode-and-rows",button.selected && a.snapshot?.library.map {$0.id}==[8] && button.accessibilityValue() as? String=="Liked")
+  a.search.stringValue="exact Ω & query";a.refresh();check("refresh-uses-acknowledged-liked",a.bridge.value(1)["command"] as? String=="library_liked" && a.bridge.value(1)["offset"] as? Int==0)
+  a.bridge.release(1,wire());await settle(a);a.loadMore();check("more-uses-acknowledged-liked-identity",a.bridge.value(2)["command"] as? String=="library_liked" && a.bridge.value(2)["offset"] as? Int==1 && a.bridge.value(2)["query"] as? String=="exact Ω & query");a.bridge.release(2,wire());await settle(a)
+  a.search.stringValue="search via delegate";a.controlTextDidEndEditing(Notification(name:NSControl.textDidEndEditingNotification,object:a.search));check("search-delegate-uses-liked-zero",a.bridge.value(3)["command"] as? String=="library_liked" && a.bridge.value(3)["offset"] as? Int==0);a.bridge.release(3,wire());await settle(a)
+  tap(a);a.bridge.release(4,wire(false,[8],unchanged:true));await settle(a)
+  check("decoded-failure-keeps-liked-mode-rows-feedback",button.selected && a.snapshot?.library.map {$0.id}==[8] && a.status.stringValue=="service unavailable" && a.search.isEnabled)
+  let scalar=try! JSONDecoder().decode(Reply.self,from:wire(true,[],unchanged:true)).snapshot!;let reloads=a.table.reloads;a.apply(scalar)
+  check("scalar-preserves-failure-and-no-row-reload",a.status.stringValue=="service unavailable" && a.table.reloads==reloads && a.snapshot?.library.map {$0.id}==[8])
+  tap(a);a.bridge.release(5,Data("not json".utf8));await settle(a);check("malformed-clears-only-current-intent",button.selected && a.search.isEnabled && a.status.stringValue=="Invalid native response")
+  a.busy=32;tap(a);check("immediate-busy-does-not-strand-intent",button.selected && a.search.isEnabled && a.bridge.held.count==6);a.busy=0
+  tap(a);a.bridge.release(6,wire(true,[],unchanged:true));await settle(a);check("unchanged-success-does-not-acknowledge-toggle",button.selected && a.search.isEnabled && a.status.stringValue=="Invalid native response")
+  tap(a);a.bridge.release(7,wire(true,[]));await settle(a);check("return-all-success-empty-presentation",!button.selected && a.libraryDock!.empty.stringValue=="Your library is empty. Refresh to check for tracks.")
+  tap(a);a.bridge.release(8,wire(true,[]));await settle(a);check("liked-empty-selected-presentation",button.selected && a.libraryDock!.empty.stringValue=="No liked tracks match this search.")
+  tap(a);a.bridge.release(9,Data(#"{"ok":true,"code":"ok"}"#.utf8));await settle(a)
+  check("missing-snapshot-success-does-not-acknowledge-toggle",button.selected && a.search.isEnabled && a.status.stringValue=="Invalid native response")
+  let before=a.bridge.held.count
+  a.command(["command":"snapshot","invalid":Double.nan])
+  check("serialization-refusal-does-not-dispatch-or-strand", a.bridge.held.count==before && a.search.isEnabled && a.status.stringValue=="Invalid native command")
+ }
+ for kind in ["account","epoch","supersession"] {
+  let a=ready();if liked(a)==nil {continue};tap(a)
+  // Retire through the real command owner (epoch revocation already happened
+  // in the transport handler), then install a newer list intent.
+  if kind=="account" {a.command(["command":"logout"])}
+  else if kind=="epoch" {a.epoch=2;a.command(["command":"next"])}
+  else {a.command(["command":"queue_restore"])}
+  // The current sibling inherits the read already committed in core. It is
+  // not an old-All transport fixture; real ABI composition is also exercised by
+  // library_projection_regressions.py with both callback delivery orders.
+  a.bridge.release(1,wire(true,kind=="account" ? [7]:[8],epoch:a.epoch,libraryRevision:1));await settle(a)
+  check("inherited-"+kind+"-cannot-republish-retired-mode",kind=="account" || (a.snapshot?.library.map {$0.id}==[7] && a.libraryReadInvalid && !a.libraryDock!.controls.select.isEnabled))
+  a.snapshot=try! JSONDecoder().decode(Reply.self,from:wire(true,[7],epoch:a.epoch)).snapshot!
+  a.refresh();let newer=a.bridge.held.count-1
+  var late=try! JSONSerialization.jsonObject(with:wire()) as! [String:Any]
+  late["credentials"]=["access_token":"synthetic-access","refresh_token":"synthetic-refresh","account_id":"test-account","version":1]
+  a.bridge.release(0,try! JSONSerialization.data(withJSONObject:late));await settle(a)
+  check("stale-"+kind+"-credential-policy",a.stored.count==(kind=="supersession" ? 1:0))
+  check("stale-"+kind+"-cannot-commit-or-clear-newer",liked(a)?.selected==false && !a.search.isEnabled && a.snapshot?.library.map {$0.id}==[7])
+  a.bridge.release(newer,wire(true,[9],epoch:a.epoch));await settle(a);check("newer-"+kind+"-settles",a.search.isEnabled && a.snapshot?.library.map {$0.id}==[9])
+ }
+ print("LIBRARY_CALLBACK_PASS \(passes.count) failures=\(failures.count)");exit(failures.isEmpty ? 0:1)
+ }
+}
+"""
+    cases=cases.replace(' print("LIBRARY_CALLBACK_PASS',LF1_CASES+'\n print("LIBRARY_CALLBACK_PASS')
+    generated='import AVFoundation\n'+bridge+'\n'+header+'\n'+cases
+    path=output/'main.swift';path.write_text(generated)
+    dependencies=[root/'native/macos/Sources'/f for f in FILES+['LibraryMetadataDisclosure.swift']]
+    argv=['/usr/bin/swiftc','-swift-version','6','-parse-as-library','-j','2','-num-threads','2',*map(str,dependencies),str(path),'-o',str(output/'probe')]
+    built=subprocess.run(argv,capture_output=True,timeout=180)
+    ran=subprocess.run([str(output/'probe'),str(root/'native/macos/Sources/Resources')],capture_output=True,timeout=30) if built.returncode==0 else None
+    (output/'compiler.log').write_bytes(built.stdout+built.stderr);(output/'runtime.log').write_bytes(ran.stdout+ran.stderr if ran else b'NOT RUN')
+    lines=ran.stdout.decode().splitlines() if ran else []
+    receipt=dict(compileExit=built.returncode,runExit=ran.returncode if ran else None,compileArgv=argv,passNames=[l[5:] for l in lines if l.startswith('PASS ')],failures=[l[5:] for l in lines if l.startswith('FAIL ')],testSha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),productionSha256=hashlib.sha256(source.encode()).hexdigest(),probeSha256=hashlib.sha256(generated.encode()).hexdigest())
+    (output/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt,indent=2));print((output/'compiler.log').read_text());print((output/'runtime.log').read_text());return built.returncode or (ran.returncode if ran else 1)
 
 
 def runtime_asset_contract(root, output):
@@ -636,9 +851,12 @@ def main():
     p.add_argument('--source-root', type=Path, default=ROOT)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--regression', action='store_true', help='compatibility alias; all production tests run')
+    p.add_argument('--callbacks-only', action='store_true', help='Held data-returning Bridge with actual App callers')
     p.add_argument('--apply-source-file', type=Path, help='Explicit predecessor apply replay; presentation builder remains current')
     args = p.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
+    if args.callbacks_only:
+        raise SystemExit(callback_contract(args.source_root,args.output))
     contract = asset_contract(args.source_root)
     (args.output / 'asset-contract.json').write_text(json.dumps(contract,indent=2)+'\n')
     probe, blocks = production_probe(args.source_root,args.apply_source_file)
@@ -662,7 +880,9 @@ def main():
     print(json.dumps({k:v for k,v in receipt.items() if k!='passNames'}, indent=2));print('passCount',sum(l.startswith('PASS ') for l in lines));print((args.output/'compiler.log').read_text());print('\n'.join(l for l in lines if not l.startswith('PASS ')))
     code = built.returncode or (ran.returncode if ran else 1)
     reader_code = runtime_asset_contract(args.source_root,args.output/'runtime-reader')
-    raise SystemExit(code or reader_code)
+    callback_output=args.output/'callbacks';callback_output.mkdir()
+    callback_code=callback_contract(args.source_root,callback_output)
+    raise SystemExit(code or reader_code or callback_code)
 
 # Explicit opt-in mounted search-only pilot. Unlike HARNESS, this creates one
 # native window. Caller supplies real OS input; snapshots distinguish native
