@@ -11,11 +11,12 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from test_toolchain import java_home, android_jar, kotlin_compiler
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = Path(os.environ['SOUNDQ_REPAIR_OUTPUT'])
-WORK = Path(os.environ['TMPDIR']) / 'android-adapter'
+WORK = Path(tempfile.mkdtemp(prefix='android-adapter-', dir=os.environ['TMPDIR']))
 WORK.mkdir(parents=True, exist_ok=True)
 JAVA = java_home()
 SDK = android_jar()
@@ -125,6 +126,7 @@ class Adapter(val prefs:Preferences=Preferences()) {
     var busy=0;var wantsPlayback=false;var playerReady=true;var player:Player?=Player()
     var pendingReports=false;var snapshot=JSONObject();var listener:((JSONObject,String?)->Unit)?=null
     var focusHeld=true;var nativeTerminalState:String?=null;val audio=Audio();val focus=1
+    __TERMINAL_FIELDS__
     var foreground=false;var notificationIdentity="";val session=Session()
     val STOP_FOREGROUND_REMOVE=1;var admissions=0;var notifications=0;var stops=0
     var denyAdmission=false;var denyNotification=false;val reports=mutableListOf<String?>()
@@ -243,8 +245,10 @@ fun main() {
 # Only package qualifier adaptation, identical for RED/GREEN.
 methods = methods.replace('org.json.JSONArray()', 'JSONArray()')
 harness = harness.replace('__CONSTANTS__', '\n'.join(f'const val {k}={v}' for k,v in constants.items())).replace('__FOCUS__',focus).replace('__METHODS__',methods+'\nfun startForTest(){startPlayer()}')
+harness = harness.replace('__TERMINAL_FIELDS__', '\n'.join(line.strip().removeprefix('private ') for line in source.splitlines() if line.strip().startswith('private var endedReportAcknowledged =')))
 kt=WORK/'AdapterInvariants.kt';kt.write_text(harness)
-env={'PATH':os.environ.get('PATH',os.defpath),'HOME':str(WORK),'JAVA_HOME':str(JAVA),'TMPDIR':str(WORK),'JAVA_TOOL_OPTIONS':'-XX:ActiveProcessorCount=2'}
+(OUT/'AdapterInvariants.kt').write_text(harness)
+env={'PATH':os.environ.get('PATH',os.defpath),'HOME':str(WORK),'JAVA_HOME':str(JAVA),'TMPDIR':os.environ['TMPDIR'],'JAVA_TOOL_OPTIONS':'-XX:ActiveProcessorCount=2'}
 for name,argv in [('compile',[kotlin_compiler(),str(kt),'-nowarn','-include-runtime','-d',str(WORK/'adapter.jar')]),('run',[str(JAVA/'bin/java'),'-jar',str(WORK/'adapter.jar')])]:
     p=subprocess.run(argv,cwd=WORK,env=env,capture_output=True,text=True,timeout=120)
     (OUT/f'android-{name}.log').write_text(p.stdout+p.stderr)

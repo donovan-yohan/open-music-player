@@ -1,0 +1,15 @@
+<resources>
+    <!-- Semantic mapping from frozen Flutter app/theme.dart; mobile remains dark. -->
+    <color name="soundq_background">#050505</color>
+    <color name="soundq_background_raised">#0B0A08</color>
+    <color name="soundq_surface">#14110D</color>
+    <color name="soundq_surface_raised">#211A13</color>
+    <color name="soundq_text_primary">#F4EDDC</color>
+    <color name="soundq_text_secondary">#A89F90</color>
+    <color name="soundq_outline">#32281F</color>
+    <color name="soundq_input_outline">#6E6254</color>
+    <color name="soundq_orange">#FF5A00</color>
+    <color name="soundq_orange_pressed">#D84400</color>
+    <color name="soundq_accent">#39C6B6</color>
+    <color name="soundq_error">#FF6B5F</color>
+</resources>

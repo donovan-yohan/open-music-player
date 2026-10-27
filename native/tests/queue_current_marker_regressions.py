@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Device-free queue wording checks through both production disclosure renderers.
 
-Android compiles the whole Activity and reuses all 55 queue-dialog controls.
+Android compiles retained production disclosure with a shell boundary facade,
+reusing every queue-dialog control. The SDK build compiles the whole Activity.
 Swift compiles the exact extracted showQueue, dynamic native validation,
 occurrence action/detail/publication, queueCommand and command methods, plus
 selection/account revocation entries with native/bridge facades and production
@@ -592,7 +593,10 @@ def run_platform(platform, root, output):
             probe = dialog.PROBE.replace(' check(failures==0)', ANDROID_CASES + '\n check(failures==0)')
             assert probe != dialog.PROBE
             sources = []
-            for name, text in {**dialog.FACADES, 'Probe.kt': probe, 'MainActivity.kt': production.decode()}.items():
+            from android_library_regressions import prepare_queue_harness
+            sources_text = prepare_queue_harness(root)
+            sources_text['Probe.kt'] = probe
+            for name, text in sources_text.items():
                 path = work / name
                 path.write_text(text)
                 sources.append(str(path))
@@ -600,7 +604,9 @@ def run_platform(platform, root, output):
             env.update(JAVA_HOME=str(java), JAVA_TOOL_OPTIONS='-XX:ActiveProcessorCount=2')
             compile_argv = [kotlin_compiler(), *sources, '-nowarn', '-include-runtime', '-d', str(work / 'probe.jar')]
             run_argv = [str(java / 'bin/java'), '-jar', str(work / 'probe.jar')]
-            extraction = {'wholeActivity': True, 'dialogTestSha256': sha(Path(dialog.__file__).read_bytes())}
+            extraction = {'wholeActivity': False, 'evidenceClass': 'production-queue-disclosure-with-shell-boundary-facade',
+                          'sourceHashes': {name:sha(text.encode()) for name,text in sources_text.items()},
+                          'dialogTestSha256': sha(Path(dialog.__file__).read_bytes())}
         else:
             production = (root / SWIFT).read_bytes()
             source = production.decode()

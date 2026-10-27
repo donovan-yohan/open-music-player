@@ -55,9 +55,15 @@ class PlaybackService : Service() {
     private var credentialEpoch = 1L
     private var storedCredentialVersion = 0L
     var epoch = 1L
-        private set
+        private set(value) {
+            if (field != value) libraryBrowse.retire()
+            field = value
+        }
+    internal val libraryBrowse = LibraryBrowseState()
     var snapshot = JSONObject()
-        private set
+        private set(value) {
+            field = libraryBrowse.reconcile(field, value, epoch, credentialEpoch)
+        }
     var listener: ((JSONObject, String?) -> Unit)? = null
     val sessionToken get() = session.sessionToken
     var lastEffectCached = false
@@ -122,7 +128,7 @@ class PlaybackService : Service() {
         if (!wantsPlayback) stopPlaybackService()
         return START_NOT_STICKY
     }
-    fun command(value: JSONObject, done: (() -> Unit)? = null) {
+    fun command(value: JSONObject, observe: ((JSONObject) -> Unit)? = null, done: (() -> Unit)? = null) {
         val kind = value.optString("command")
         if (kind == "restore") value.remove("version")
         if (kind in listOf("login", "register", "restore", "logout")) {
@@ -136,7 +142,7 @@ class PlaybackService : Service() {
         if (kind in listOf("pause","queue_clear","queue_restore","logout","login","register","restore")) {transportIntent++;wantsPlayback = false;if (kind != "pause") {nativeTerminalState=null;endedReportAcknowledged=false};if (playerReady) {try {player?.pause()} catch (_: IllegalStateException) {}};abandonFocus();stopPlaybackService()}
         // Local pause is synchronous even under pressure; the next native
         // report reconciles paused state if core command admission is full.
-        if (busy >= 32) {listener?.invoke(snapshot,"command_backpressure");return}
+        if (busy >= 32) {observe?.invoke(JSONObject().put("ok",false).put("code","command_backpressure"));listener?.invoke(snapshot,"command_backpressure");return}
         val playbackRequest = kind in listOf("select","queue_play","next","previous","resume","retry") || kind=="queue_remove" && value.optLong("occurrence_id",-1)==snapshot.optLong("selected_occurrence",-2)
         if (playbackRequest) {
             // This is the explicit UI/MediaSession/notification intent, before
@@ -163,6 +169,7 @@ class PlaybackService : Service() {
                 busy--
                 try {
                     if (admitted != epoch || admittedAccount != credentialEpoch) return@post
+                    observe?.invoke(result)
                     val next = result.optJSONObject("snapshot")
                     val effect = result.optJSONObject("audio")
                     // A retired final observation has nothing left to publish.
@@ -201,6 +208,7 @@ class PlaybackService : Service() {
                             wantsPlayback=false;abandonFocus();stopPlaybackService()
                         }
                         if (next.optBoolean("library_unchanged")) next.put("library",snapshot.optJSONArray("library") ?: org.json.JSONArray())
+                        if (next.optBoolean("library_unchanged")) next.put("favorite_track_ids",snapshot.optJSONArray("favorite_track_ids") ?: org.json.JSONArray())
                         if (next.optBoolean("queue_unchanged")) next.put("queue",snapshot.optJSONArray("queue") ?: org.json.JSONArray())
                         snapshot = next
                         listener?.invoke(snapshot, if (result.optBoolean("ok")) null else result.optString("code"))
@@ -246,7 +254,26 @@ class PlaybackService : Service() {
         command(JSONObject().put("command", "logout"))
     }
     fun library(offset: Int = 0, query: String = "") {
-        command(JSONObject().put("command", "library").put("offset", offset).put("query", query).put("sort", "added_at").put("order", "desc"))
+        browseLibrary(offset,query,false)
+    }
+    fun browseLibrary(offset: Int = 0, query: String = libraryBrowse.query, liked: Boolean = libraryBrowse.liked) {
+        if (busy != 0) {listener?.invoke(snapshot,"command_backpressure");return}
+        val read = libraryBrowse.begin(snapshot, epoch, credentialEpoch, LibraryBrowseState.Identity(liked,query),offset) ?: return
+        listener?.invoke(snapshot,null)
+        command(JSONObject().put("command",if(liked) "library_liked" else "library")
+            .put("offset",read.offset).put("query",query).put("sort",read.identity.sort).put("order",read.identity.order),
+            observe = { result -> libraryBrowse.finish(read,result,epoch,credentialEpoch) })
+    }
+    internal fun favoriteLibraryTrack(id: Long, expectedLiked: Boolean, owner: LibraryBrowseState.RowOwner = libraryBrowse.rowOwner(snapshot)) {
+        if (busy != 0) {listener?.invoke(snapshot,"command_backpressure");return}
+        if (!libraryBrowse.owns(snapshot,owner) || !libraryBrowse.beginFavorite(snapshot,epoch,id,expectedLiked)) return
+        listener?.invoke(snapshot,null)
+        command(JSONObject().put("command","set_favorite").put("track_id",id).put("liked",!expectedLiked),
+            observe = { result -> libraryBrowse.finishFavorite(result) })
+    }
+    internal fun selectLibraryTrack(id: Long, owner: LibraryBrowseState.RowOwner = libraryBrowse.rowOwner(snapshot)) {
+        if (!libraryBrowse.owns(snapshot,owner) || !libraryBrowse.canUseRows(snapshot,epoch) || !LibraryBrowseState.contains(snapshot,id)) return
+        select(id)
     }
     fun select(id: Long) {
         wantsPlayback=false;retireAudio(); epoch = bridge.revoke(core)
