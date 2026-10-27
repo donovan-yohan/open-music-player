@@ -21,6 +21,10 @@ TEST_CLASS = 'com.soundq.nativepreview.AndroidPresentationTest'
 TESTS = {
     'normalAllocationBeforeAndAfterDock', 'compactAllocationBeforeAndAfterDock',
     'rowContentGridAndSeparateCallbacks', 'squareNativeInteractionRasterAllStates',
+    'normalEmptyRecoveryBeforeAndAfterDock', 'compactEmptyRecoveryBeforeAndAfterDock',
+    'realPlayNativePrimaryRasterAllStates',
+    'compactKeyboardConstrainedRecoveryFamily', 'normalKeyboardConstrainedRecoveryFamily',
+    'compactPostRefusalCorrectionAllocation', 'attachedNestedScrollOwnership',
 }
 PACKAGE = Path('app/src/main/java/com/soundq/nativepreview')
 OWNER_ENV = 'SOUNDQ_PRESENTATION_INVOCATION'
@@ -211,6 +215,28 @@ def mutate(project, variant):
             'root.addView(LinearLayout(this).apply {\n            orientation = LinearLayout.HORIZONTAL; background = style.panel(style.background)\n            listOf(libraryNavigation,queueNavigation).forEach { addView(it,LinearLayout.LayoutParams(0,-2,1f)) }\n        })',
             'root.addView(actions(libraryNavigation,queueNavigation).apply { background = style.panel(style.background) })')
         activity.write_text(text)
+    elif variant == 'nested-scroll-owner':
+        activity.write_text(replace_once(activity.read_text(),
+            'init { isNestedScrollingEnabled = true }',
+            'init { isNestedScrollingEnabled = false }'))
+    elif variant == 'refusal-correction-allocation':
+        text = activity.read_text()
+        activity.write_text(replace_once(text,
+            'val constrained = library.visibility != View.GONE && (tools < cell ||\n                    (dock.visibility != View.GONE && dock.measuredHeight < dockCell))',
+            'val constrained = available < cell * 3'))
+    elif variant == 'ime-shell-allocation':
+        text = activity.read_text()
+        activity.write_text(replace_once(text,
+            'maxOf(available, measuredChrome + minimumLibrary)',
+            'if(resources.configuration.fontScale > 1.3f) available else maxOf(available, measuredChrome + minimumLibrary)'))
+    elif variant == 'empty-outside-tools':
+        text = activity.read_text()
+        activity.write_text(replace_once(text, 'tools.addView(empty)', 'library.addView(empty)'))
+    elif variant == 'play-orange-tint':
+        text = activity.read_text()
+        activity.write_text(replace_once(text,
+            'play.background = style.primaryInteraction();',
+            'play.background = style.interaction(); play.backgroundTintList = ColorStateList.valueOf(style.orange);'))
     elif variant == 'row-layout-params':
         activity.write_text(replace_once(activity.read_text(), 'layoutParams = RecyclerView.LayoutParams(-1,-2); ', ''))
     elif variant == 'interaction-radius':
@@ -238,9 +264,14 @@ def run(root, output):
         raise RuntimeError('Existing Gradle installation required for Android presentation')
     expected = {
         'green': None,
+        'nested-scroll-owner': ('attachedNestedScrollOwnership', 'routing: child consumes native vertical drag'),
         'short-allocation': ('compactAllocationBeforeAndAfterDock', 'allocation compact=true selected=true: positive list viewport'),
         'row-layout-params': ('rowContentGridAndSeparateCallbacks', 'grid: row spans RecyclerView content width'),
         'interaction-radius': ('squareNativeInteractionRasterAllStates', 'shape selected=false state=rest'),
+        'empty-outside-tools': ('compactEmptyRecoveryBeforeAndAfterDock', 'recovery compact=true selected=true state=emptyLiked/query: complete height'),
+        'play-orange-tint': ('realPlayNativePrimaryRasterAllStates', 'primary state=focus square state stroke'),
+        'ime-shell-allocation': ('compactKeyboardConstrainedRecoveryFamily', 'keyboard content=311 compact=true selected=true state=populated/query: ancestor admits complete cell'),
+        'refusal-correction-allocation': ('compactPostRefusalCorrectionAllocation', 'correction content=1057 selected=true state=refusal/query: ancestor admits complete native cell'),
     }
     receipt = {'passed': False, 'boundary': 'real production Activity with refused bind; native Android layout and Skia; no service/JNI/device', 'variants': {}}
     primary = None
@@ -255,11 +286,14 @@ def run(root, output):
             mutate(project, variant)
             inputs = inventory(project)
             (work / 'source-inputs.json').write_text(json.dumps(inputs, indent=2) + '\n')
+            # Historical geometry mutations retain their original case inventory;
+            # the attached pointer invariant is causal only for its own repair.
+            variant_tests = TESTS if variant in {'green', 'nested-scroll-owner'} else TESTS - {'attachedNestedScrollOwnership'}
             argv = [gradle, '--no-daemon', '--max-workers=2',
                 '-Dorg.gradle.jvmargs=-Xmx1500m -XX:ActiveProcessorCount=2',
                 '-Pkotlin.compiler.execution.strategy=in-process',
                 *shlex.split(os.environ.get('SOUNDQ_PRESENTATION_GRADLE_ARGS', '')),
-                ':app:testDebugUnitTest', '--tests', TEST_CLASS]
+                ':app:testDebugUnitTest', *[arg for name in sorted(variant_tests) for arg in ('--tests', TEST_CLASS + '.' + name)]]
             (work / 'command.json').write_text(json.dumps({'argv': argv, 'cwd': str(project), 'TMPDIR': os.environ.get('TMPDIR')}, indent=2) + '\n')
             env = dict(os.environ, JAVA_TOOL_OPTIONS='-XX:ActiveProcessorCount=2')
             with (work / 'gradle.log').open('w') as log:
@@ -276,7 +310,7 @@ def run(root, output):
                         'failures': [f.attrib.get('message', '') for f in failures]})
             result = {'exit_code': exit_code, 'xml': [str(p.relative_to(work)) for p in xmls], 'cases': cases, 'source_count': len(inputs)}
             receipt['variants'][variant] = result
-            if len(cases) != len(TESTS) or {c['name'] for c in cases} != TESTS or any(c['skipped'] or c['class'] != TEST_CLASS for c in cases):
+            if len(cases) != len(variant_tests) or {c['name'] for c in cases} != variant_tests or any(c['skipped'] or c['class'] != TEST_CLASS for c in cases):
                 raise AssertionError(variant + ': exact nonempty unskipped requested JUnit inventory required; setup/compiler failure is not RED')
             failed = {c['name']: c['failures'] for c in cases if c['failures']}
             if witness is None:
@@ -288,8 +322,24 @@ def run(root, output):
                 # original normal allocation remains a compatibility control.
                 if exit_code == 0 or name not in failed or not any(message in f for f in failed[name]):
                     raise AssertionError(variant + ': missing named native mutation witness: ' + repr(failed))
-                if set(failed) != {name}:
+                allowed = {name}
+                if variant in {'short-allocation', 'empty-outside-tools'}:
+                    allowed.add('compactKeyboardConstrainedRecoveryFamily')
+                additional = {
+                    'short-allocation': 'correction content=1057 selected=true state=refusal: finite weighted lazy rows',
+                    'empty-outside-tools': 'correction content=1057 selected=true state=refusal/query: ancestor admits complete native cell',
+                    'ime-shell-allocation': 'correction content=1057 selected=true state=refusal/query: ancestor admits complete native cell',
+                }
+                if variant in additional and 'compactPostRefusalCorrectionAllocation' in failed:
+                    if not all(additional[variant] in f for f in failed['compactPostRefusalCorrectionAllocation']):
+                        raise AssertionError(variant + ': unexpected correction-family failure: ' + repr(failed))
+                    allowed.add('compactPostRefusalCorrectionAllocation')
+                if set(failed) - allowed:
                     raise AssertionError(variant + ': unrelated invariant failure: ' + repr(failed))
+                if 'compactKeyboardConstrainedRecoveryFamily' in failed and variant != 'ime-shell-allocation':
+                    prefix = 'keyboard content=1120 compact=true selected=true state=populated: finite row viewport' if variant == 'short-allocation' else 'keyboard content=311 compact=true selected=true state=empty/query: ancestor admits complete cell'
+                    if not all(prefix in f for f in failed['compactKeyboardConstrainedRecoveryFamily']):
+                        raise AssertionError(variant + ': unexpected keyboard-family failure: ' + repr(failed))
                 result['expected_failure'] = {'test': name, 'message_prefix': message}
             result['accepted'] = True
         receipt['passed'] = True

@@ -75,9 +75,55 @@ class MainActivity : Activity() {
         style = SoundQViews(this)
         window.statusBarColor = style.background
         window.navigationBarColor = style.background
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(style.background) }
+        // Let ordinary framework rectangle/focus recovery scroll the complete shell
+        // when OS-resized content cannot contain its native-size chrome. The
+        // RecyclerView remains a finite weighted viewport, never wrap-content.
+        var contentHeight = 0
+        val root = object : LinearLayout(this) {
+            override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+                val available = contentHeight.coerceAtLeast(1)
+                val toolScroll = query.parent.parent as BoundedScroll
+                toolScroll.viewportHeight = available
+                dock.viewportHeight = available
+                // Probe intrinsic native cells without the previous pass's minima.
+                // Otherwise expansion can alternate with its own successful result.
+                toolScroll.minimumHeight = 0
+                dock.minimumHeight = 0
+                super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(available, MeasureSpec.EXACTLY))
+                val cell = listOf(query,all,liked,search,refresh,more).maxOf { it.measuredHeight }
+                val dockCell = listOf(play,seek,previous,next).maxOf { it.measuredHeight }
+                val tools = toolScroll.measuredHeight
+                // A cell must fit its actual clipping viewport, not a nominal
+                // display/IME threshold. Full feedback is independently measured.
+                val constrained = library.visibility != View.GONE && (tools < cell ||
+                    (dock.visibility != View.GONE && dock.measuredHeight < dockCell))
+                toolScroll.minimumHeight = if(constrained) cell else 0
+                dock.minimumHeight = if(constrained) dockCell else 0
+                val toolWeight = (toolScroll.layoutParams as LinearLayout.LayoutParams).weight
+                val totalWeight = (0 until library.childCount).sumOf {
+                    (library.getChildAt(it).layoutParams as LinearLayout.LayoutParams).weight.toDouble()
+                }
+                // LinearLayout apportions the finite Library viewport by these
+                // native child weights; reserve a complete tool cell's share.
+                val minimumLibrary = if(toolWeight > 0f)
+                    kotlin.math.ceil(cell * totalWeight / toolWeight).toInt()
+                    else maxOf(cell * 3, tools + style.dp(72))
+                // Native minimums can enlarge the dock after the probe; use that
+                // actual chrome measurement before granting the library remainder.
+                super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(available, MeasureSpec.EXACTLY))
+                val measuredChrome = (0 until childCount).map { getChildAt(it) }
+                    .filter { it !== library && it.visibility != View.GONE }.sumOf { it.measuredHeight }
+                super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(if(constrained) maxOf(available, measuredChrome + minimumLibrary) else available, MeasureSpec.EXACTLY))
+            }
+        }.apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(style.background) }
+        val shell = object : ScrollView(this) {
+            override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+                contentHeight = MeasureSpec.getSize(heightSpec) - paddingTop - paddingBottom
+                super.onMeasure(widthSpec, heightSpec)
+            }
+        }.apply { isFillViewport = true; addView(root) }
         // Android 15 edge-to-edge, display cutouts and IME are independent of density.
-        root.setOnApplyWindowInsetsListener { view, insets ->
+        shell.setOnApplyWindowInsetsListener { view, insets ->
             if(Build.VERSION.SDK_INT >= 30) {
                 val safe = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
                 view.setPadding(safe.left,safe.top,safe.right,safe.bottom)
@@ -129,7 +175,9 @@ class MainActivity : Activity() {
         empty = style.label("Loading your library…",16f,true).apply {
             setPadding(style.dp(16),style.dp(24),style.dp(16),style.dp(24)); accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        library.addView(empty)
+        // Empty/loading/error copy shares ordinary tools scrolling instead of
+        // consuming the weighted row/control allocation outside its viewport.
+        tools.addView(empty)
         rows = Rows(style, { row -> if(service === row.serviceOwner) service?.selectLibraryTrack(row.id,row.owner) }, { row -> if(service === row.serviceOwner) service?.favoriteLibraryTrack(row.id,row.liked,row.owner) }, { row -> showTrack(row.title,row.artist) })
         val list = RecyclerView(this).apply { layoutManager = LinearLayoutManager(this@MainActivity); adapter = rows; itemAnimator = null; clipToPadding = false }
         fixtureList = list
@@ -165,7 +213,7 @@ class MainActivity : Activity() {
         val controls = LinearLayout(this).apply { gravity = Gravity.CENTER }
         previous = icon(R.drawable.sq_previous,"Previous track") { service?.queueAction("previous") }
         play = icon(R.drawable.sq_play,"Play") { service?.let { it.command(JSONObject().put("command",if(it.snapshot.optString("transport") == "playing") "pause" else "resume")) } }
-        play.backgroundTintList = ColorStateList.valueOf(style.orange); play.imageTintList = ColorStateList.valueOf(style.background)
+        play.background = style.primaryInteraction(); play.imageTintList = ColorStateList.valueOf(style.background)
         next = icon(R.drawable.sq_next,"Next track") { service?.queueAction("next") }
         controls.addView(previous); controls.addView(play); controls.addView(next)
         controls.addView(icon(R.drawable.sq_queue,"Open listening queue") { showQueue() })
@@ -181,8 +229,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL; background = style.panel(style.background)
             listOf(libraryNavigation,queueNavigation).forEach { addView(it,LinearLayout.LayoutParams(0,-2,1f)) }
         })
-        setContentView(root)
-        root.requestApplyInsets()
+        setContentView(shell)
+        shell.requestApplyInsets()
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),1)
         bindService(Intent(this,PlaybackService::class.java),connection,BIND_AUTO_CREATE)
     }
@@ -426,11 +474,15 @@ class MainActivity : Activity() {
     }
     /** Standard ScrollView bounds chrome at short heights; the RecyclerView keeps its own scroll. */
     class BoundedScroll(context: Context, private val fraction: Float) : ScrollView(context) {
+        // Negotiate native vertical ownership before the enclosing shell intercepts MOVE.
+        init { isNestedScrollingEnabled = true }
+        var viewportHeight: Int = 0
         override fun onMeasure(widthSpec: Int,heightSpec: Int) {
-            val rootHeight = rootView.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+            val rootHeight = viewportHeight.takeIf { it > 0 }
+                ?: rootView.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
             val short = resources.configuration.screenHeightDp < 480
             val portion = if(short && fraction < 0.5f) minOf(fraction,0.28f) else fraction
-            val limit = (rootHeight * portion).toInt()
+            val limit = maxOf(minimumHeight, (rootHeight * portion).toInt())
             val available = if(MeasureSpec.getMode(heightSpec) == MeasureSpec.UNSPECIFIED) limit else minOf(MeasureSpec.getSize(heightSpec),limit)
             super.onMeasure(widthSpec,MeasureSpec.makeMeasureSpec(available,MeasureSpec.AT_MOST))
         }

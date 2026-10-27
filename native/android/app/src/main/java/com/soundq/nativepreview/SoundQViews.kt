@@ -41,6 +41,13 @@ internal class SoundQViews(val context: Context) {
         addState(intArrayOf(android.R.attr.state_hovered),panel(raised,cyan))
         addState(intArrayOf(),panel(if(selected) raised else background,if(selected) orange else outline))
     }
+    fun primaryInteraction() = StateListDrawable().apply {
+        addState(intArrayOf(-android.R.attr.state_enabled),panel(orange,orange))
+        addState(intArrayOf(android.R.attr.state_focused),panel(orange,cyan))
+        addState(intArrayOf(android.R.attr.state_hovered),panel(orange,cyan))
+        addState(intArrayOf(android.R.attr.state_pressed),panel(orange,cyan))
+        addState(intArrayOf(),panel(orange,orange))
+    }
     fun button(value: String, action: () -> Unit) = Button(context).apply {
         text = value; textSize = 14f; typeface = medium; isAllCaps = false
         minimumWidth = dp(48); minimumHeight = dp(48)

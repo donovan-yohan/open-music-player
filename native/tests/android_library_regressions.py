@@ -66,6 +66,14 @@ class SourceContracts(unittest.TestCase):
             for kind, name in re.findall(r'(?<!android\.)\bR\.(\w+)\.(\w+)',file.read_text()):
                 self.assertIn((kind,name),resources,f'unresolved {file.name}: R.{kind}.{name}')
 
+    def test_library_output_requires_exact_named_inventory(self):
+        names = library_inventory()
+        complete = '\n'.join('PASS ' + name for name in names)
+        self.assertTrue(admit_library_output(complete))
+        self.assertFalse(admit_library_output(''))  # early exit zero
+        self.assertFalse(admit_library_output('\n'.join(complete.splitlines()[1:])))
+        self.assertFalse(admit_library_output(complete + '\nPASS ' + names[0]))
+
     def test_existing_queue_disclosure_bytes_preserved(self):
         source = (ROOT / PACKAGE / 'MainActivity.kt').read_text()
         start = source.index('    private fun dismissQueueActions()')
@@ -209,6 +217,21 @@ def prepare_harness():
     return harness
 
 
+def library_inventory():
+    import re
+    names = re.findall(r'\btest\("([^"]+)"\)', BEHAVIOR)
+    if not names or len(names) != len(set(names)):
+        raise AssertionError('Library BEHAVIOR must declare unique nonempty names')
+    return ['library-' + name for name in names]
+
+
+def admit_library_output(stdout):
+    from collections import Counter
+    # Baseline controls have their own owner; only admit this named Library seam.
+    actual = [line[5:] for line in stdout.splitlines() if line.startswith('PASS library-')]
+    return Counter(actual) == Counter(library_inventory())
+
+
 def compiled(output):
     """Opt-in only after compiler custody admission; no device/audio/network."""
     from test_toolchain import java_home, kotlin_compiler
@@ -225,7 +248,8 @@ def compiled(output):
         if build.returncode == 0:
             ran = subprocess.run([str(java/'bin/java'),'-jar',str(work/'probe.jar')],env=env,capture_output=True,text=True,timeout=30)
         (output/'behavior.log').write_text(ran.stdout+ran.stderr if ran else 'NOT RUN\n')
-        return {'compile_exit':build.returncode,'exit_code':build.returncode or (ran.returncode if ran else 1),'pass_names':[line[5:] for line in ran.stdout.splitlines() if line.startswith('PASS ')] if ran else [],'failures':[line[5:] for line in ran.stdout.splitlines() if line.startswith('FAIL ')] if ran else []}
+        inventory_ok = ran is not None and admit_library_output(ran.stdout)
+        return {'compile_exit':build.returncode,'exit_code':build.returncode or (ran.returncode if ran else 1) or (0 if inventory_ok else 1),'inventory_admitted':inventory_ok,'expected_library_names':library_inventory(),'pass_names':[line[5:] for line in ran.stdout.splitlines() if line.startswith('PASS ')] if ran else [],'failures':[line[5:] for line in ran.stdout.splitlines() if line.startswith('FAIL ')] if ran else []}
 
 
 def prepare_queue_harness(source_root=None):
