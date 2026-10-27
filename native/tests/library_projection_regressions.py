@@ -407,8 +407,13 @@ def main():
                         else:
                             ids = [8] if q.get('liked') == ['true'] or query in ['narrow', 'rotate'] else [7, 8]
                             # A second page is genuine append, not an old first-page fixture.
-                            page = ([9] if offset == 0 else [10]) if unlike_committed else (ids if offset == 0 else [9])
-                            body = dict(tracks=[dict(id=i, title=f'Track {i}', duration_ms=30000, is_liked=i in [8, 9, 10]) for i in page], total=2 if unlike_committed else len(ids)+1, offset=offset)
+                            if unlike_committed:
+                                liked = q.get('liked') == ['true']
+                                page = ([9] if offset == 0 else [10]) if liked else ([7, 8] if offset == 0 else [9, 10])
+                                total = 2 if liked else 4
+                            else:
+                                page, total = (ids if offset == 0 else [9]), len(ids)+1
+                            body = dict(tracks=[dict(id=i, title=f'Track {i}', duration_ms=30000, is_liked=i in ([9, 10] if unlike_committed else [8, 9, 10])) for i in page], total=total, offset=offset)
                     else:
                         assert u.path == '/api/v1/playback/urls', u.path
                         status, body = '503 Service Unavailable', {}
@@ -437,11 +442,16 @@ def main():
         starts = [i for i, r in enumerate(seen) if r['path'] == '/api/v1/auth/refresh']
         for case, query in enumerate(['', 'Ω & valid', 'Ω' * 256]):
             group = seen[starts[case]:starts[case+1]] if len(starts) > case+1 else []
-            expected = [('POST', '/api/v1/auth/refresh', None),
-                        ('GET', '/api/v1/library', '0'), ('GET', '/api/v1/library', '0'),
-                        ('GET', '/api/v1/library', '0'), ('DELETE', '/api/v1/library/tracks/8/like', None),
-                        ('GET', '/api/v1/library', '0'), ('GET', '/api/v1/library', '1')]
-            actual = [(r['verb'], r['path'], r['query'].get('offset', [None])[0]) for r in group]
+            expected = [('POST', '/api/v1/auth/refresh', None, None),
+                        ('GET', '/api/v1/library', '0', False), ('GET', '/api/v1/library', '0', False),
+                        ('GET', '/api/v1/library', '0', True), ('DELETE', '/api/v1/library/tracks/8/like', None, None),
+                        ('GET', '/api/v1/library', '0', True), ('GET', '/api/v1/library', '1', True)]
+            # Require true only for intended Liked reads, including establishment
+            # and both recovery pages; ordinary All may omit liked or send false.
+            actual = [(r['verb'], r['path'], r['query'].get('offset', [None])[0],
+                       True if r['query'].get('liked') == ['true'] else
+                       False if r['query'].get('liked') in (None, ['false']) else 'invalid')
+                      if r['verb'] == 'GET' else (r['verb'], r['path'], r['query'].get('offset', [None])[0], None) for r in group]
             valid = actual == expected and all(r['query']['q'] == [query] for r in group[2:] if r['verb'] == 'GET')
             favorite_exchanges.append(dict(queryUTF8Bytes=len(query.encode()), exactExchanges=valid, requests=group))
     favorite_exchanges_ok = all(c['exactExchanges'] for c in favorite_exchanges)
