@@ -10,9 +10,9 @@ from unittest.mock import patch
 import queue_restore_cursor_regressions as cursor
 
 ROOT = Path(__file__).resolve().parents[2]
-# Frozen composed Library command observer/favorite-topic publication plus the
+# Frozen composed Library/auth command observer and restore continuation plus
 # unchanged journey/cursor getters. All missing/duplicate anchor controls remain.
-VALID_PROBE_SHA256 = '91e285f7de9f6f53eb5d891e823279ac4bb12accb66f684d1655dcae267a6927'
+VALID_PROBE_SHA256 = '95749a68ba15b71ba00340d8cb56e1f7c824caed82a4c69a2250ef48ccd416f1'
 FACADE_ANCHORS = {
     'decoder_seek': 'fun seekTo(p:Long,m:Int){currentPosition=p.toInt()}',
     'position_facade': 'fun nativePositionMs()=player?.currentPosition?.toLong() ?: 0L',
