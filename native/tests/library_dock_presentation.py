@@ -622,6 +622,8 @@ for scale:CGFloat in [1,2] {for width:CGFloat in [760,960,1200,1440] {
         probe=probe.replace('var loginArea=NSStackView();','var authForm=AuthFormState();var loginArea=AuthFormView();')
         probe=probe.replace('@objc func signOut(){};', '@objc func changeAuthMode(){};func authEdited(){};@objc func signOut(){};')
     probe = probe.replace('__METADATA_GEOMETRY__',geometry if 'func updateLibraryDetailsAction()' in source else '')
+    if '@objc func openLinkImport()' in source:
+        probe=probe.replace('@objc func signOut(){};', '@objc func openLinkImport(){};func retireLinkImport(){};func drainImportLibraryRefresh(){};@objc func signOut(){};')
     return probe, blocks
 
 

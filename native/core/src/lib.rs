@@ -1,3 +1,4 @@
+mod imports;
 mod model;
 pub use model::*;
 use reqwest::blocking::Client;
@@ -35,6 +36,7 @@ struct LibraryQueryIdentity {
 }
 #[derive(Clone)]
 struct State {
+    import_receipt: Option<SubmissionReceipt>,
     library_query: Option<LibraryQueryIdentity>,
     snapshot: Snapshot,
     credentials: Option<Credentials>,
@@ -218,6 +220,7 @@ impl Core {
         Ok(Self {
             epoch: AtomicU64::new(1),
             state: Mutex::new(State {
+                import_receipt: None,
                 library_query: None,
                 snapshot: Snapshot {
                     abi: 1,
@@ -280,6 +283,10 @@ impl Core {
     // Additive adapter envelope v1. Account intent must retire the previous
     // account even if a later selection already cancelled its playback epoch.
     pub fn execute_scoped_at(&self, command: Command, epoch: u64, scope: Option<u64>) -> Reply {
+        let import_command = matches!(
+            &command,
+            Command::ImportLink { .. } | Command::ImportJobs {} | Command::ImportJob { .. }
+        );
         let mut transport_only = matches!(
             &command,
             Command::AudioReport { .. }
@@ -322,6 +329,7 @@ impl Core {
         }
         if stale_account || self.check(epoch).is_err() {
             return Reply {
+                import_result: None,
                 ok: false,
                 code: "cancelled".into(),
                 snapshot: Snapshot {
@@ -340,12 +348,13 @@ impl Core {
         }
         // Favorite metadata intent cannot acquire a new playback epoch or reset
         // its session/cursor. The adapter must admit it in the loaded epoch.
-        let admission =
-            if matches!(&command, Command::SetFavorite { .. }) && state.snapshot.epoch != epoch {
-                Err("cancelled")
-            } else {
-                self.validate_queue_command(&state, &command)
-            };
+        let admission = if (matches!(&command, Command::SetFavorite { .. }) || import_command)
+            && state.snapshot.epoch != epoch
+        {
+            Err("cancelled")
+        } else {
+            self.validate_queue_command(&state, &command)
+        };
         if state.snapshot.epoch != epoch && admission.is_ok() {
             state.snapshot.epoch = epoch;
             state.snapshot.session += 1;
@@ -370,7 +379,19 @@ impl Core {
         let checkpoint = can_replace.then(|| state.clone());
         // Validate the complete durable candidate before queue/decoder admission.
         // Local IO faults remain independent of an otherwise valid audio effect.
-        let result = admission.and_then(|()| self.apply(&mut state, command, epoch));
+        // Read projections live only in this reply, never in shared State.
+        let mut import_result = ImportResult::default();
+        let result = admission.and_then(|()| match command {
+            Command::ImportJobs {} => {
+                import_result.jobs = Some(self.read_import_jobs(&mut state, epoch)?);
+                Ok((None, None))
+            }
+            Command::ImportJob { job_id } => {
+                import_result.job = Some(self.read_import_job(&mut state, &job_id, epoch)?);
+                Ok((None, None))
+            }
+            command => self.apply(&mut state, command, epoch),
+        });
         let cancelled_before_persistence = self.check(epoch).is_err();
         if matches!(&result, Ok((Some(effect), _)) if effect.action == "load") {
             transport_only = false;
@@ -470,11 +491,16 @@ impl Core {
                 ok: false,
                 code: "cancelled".into(),
                 snapshot,
+                import_result: None,
                 audio: None,
                 credentials: None,
             };
         }
         Reply {
+            import_result: import_command.then(|| {
+                import_result.receipt = state.import_receipt.clone();
+                import_result
+            }),
             ok,
             code: code.into(),
             snapshot,
@@ -1012,6 +1038,10 @@ impl Core {
                     Some((s.snapshot.selected_occurrence, s.snapshot.position_ms));
                 return Ok((Some(self.effect(s, "stop", None, false)), None));
             }
+            Command::ImportLink { operation_id, url } => {
+                self.submit_import(s, operation_id, &url, epoch)?
+            }
+            Command::ImportJobs {} | Command::ImportJob { .. } => return Err("import_unavailable"),
             Command::ClearCache {} => {
                 let dir = self.account_dir(s)?;
                 for entry in fs::read_dir(dir).map_err(|_| "cache_io")? {
@@ -1250,6 +1280,7 @@ impl Core {
         Ok(result)
     }
     fn retire_account(&self, s: &mut State) {
+        s.import_receipt = None;
         s.library_query = None;
         s.snapshot.library_revision = 0;
         s.credentials = None;
@@ -1278,6 +1309,7 @@ impl Core {
             s.library_query = None;
             s.snapshot.library_revision = 0;
             s.snapshot.library.clear();
+            s.import_receipt = None;
             s.snapshot.favorite_track_ids.clear();
             s.snapshot.queue.clear();
             s.snapshot.selected_occurrence = None;

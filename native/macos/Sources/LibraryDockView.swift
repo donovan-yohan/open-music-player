@@ -51,6 +51,7 @@ struct LibraryDockControls {
 final class LibraryDockView: NSView {
     let controls: LibraryDockControls
     let liked: SoundQButton?
+    let addLink: SoundQButton?
     let emblem = NSImageView()
     let wordmark = NSTextField(labelWithString:"SoundQ")
     let navigation = SoundQButton(title:"Library",target:nil,action:nil)
@@ -79,8 +80,8 @@ final class LibraryDockView: NSView {
     override var isFlipped: Bool {true}
     override var intrinsicContentSize: NSSize {NSSize(width:NSView.noIntrinsicMetric,height:NSView.noIntrinsicMetric)}
     override var fittingSize: NSSize {NSSize(width:760,height:540)}
-    init(controls: LibraryDockControls, assets: NativeAssets, liked: SoundQButton? = nil) {
-        self.controls = controls;self.liked = liked
+    init(controls: LibraryDockControls, assets: NativeAssets, liked: SoundQButton? = nil, addLink: SoundQButton? = nil) {
+        self.controls = controls;self.liked = liked;self.addLink = addLink
         super.init(frame:.zero)
         wantsLayer = true
         addSubview(bodyScroll);bodyScroll.documentView = bodyDocument;bodyScroll.hasVerticalScroller = true;bodyScroll.autohidesScrollers = true;bodyScroll.drawsBackground = false
@@ -88,6 +89,7 @@ final class LibraryDockView: NSView {
         for view in [emblem,wordmark,navigation,controls.logout] {railDocument.addSubview(view)}
         for view in [controls.title,controls.search,controls.refresh,controls.more,controls.select,controls.details,controls.retry,controls.login,controls.library,controls.status,empty] {bodyDocument.addSubview(view)}
         if let liked {bodyDocument.addSubview(liked)}
+        if let addLink {bodyDocument.addSubview(addLink)}
         for view in [controls.identity,artist,dockNote,controls.previous,controls.play,controls.next,controls.queue,controls.slider,elapsed,duration,outgoing] {addSubview(view)}
         dockNote.image = NSImage(systemSymbolName:"music.note",accessibilityDescription:"No artwork available")
         emblem.image = assets.logo;emblem.imageScaling = .scaleProportionallyUpOrDown
@@ -125,6 +127,7 @@ final class LibraryDockView: NSView {
             (button as? SoundQButton)?.textScale = textScale
         }
         liked?.font = controls.refresh.font;liked?.textScale = textScale
+        addLink?.font = controls.refresh.font;addLink?.textScale = textScale
         controls.table.rowHeight = SoundQTokens.grid(56*textScale)
         controls.table.noteHeightOfRows(withIndexesChanged:IndexSet(integersIn:0..<controls.table.numberOfRows))
         // Native availability includes retained/in-flight rows outside visibleRect.
@@ -171,6 +174,7 @@ final class LibraryDockView: NSView {
     func updateAuthentication(_ authenticated: Bool) {
         for view in [controls.search,controls.refresh,controls.more,controls.select,controls.details] {view.isHidden = !authenticated}
         liked?.isHidden = !authenticated
+        addLink?.isHidden = !authenticated
         empty.isHidden = !authenticated || controls.table.numberOfRows != 0
     }
     func updateCurrent(old: Int64?, new: Int64?) {
@@ -225,7 +229,7 @@ final class LibraryDockView: NSView {
         railScroll.frame = NSRect(x:0,y:0,width:railWidth,height:dockY)
         let left: CGFloat = 24, available = max(1,bodyScroll.contentSize.width-48)
         controls.title.frame = NSRect(x:left,y:(masthead-32*s)/2,width:available,height:32*s)
-        let secondaryButtons: [NSButton] = [controls.refresh,controls.more,controls.select,controls.details,controls.retry] + (liked.map {[$0]} ?? [])
+        let secondaryButtons: [NSButton] = [controls.refresh,controls.more,controls.select,controls.details,controls.retry] + (liked.map {[$0]} ?? []) + (addLink.map {[$0]} ?? [])
         // The inherited native cell can require more width than our painted
         // title + padding intrinsic size (linked AppKit treatments differ).
         // Allocate both contracts before wrapping; keep the shared height/grid.

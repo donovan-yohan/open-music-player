@@ -44,7 +44,14 @@ struct AudioEffect: Decodable {
     let cached: Bool
 }
 struct Credentials: Codable { let access_token: String; let refresh_token: String; let account_id: String; let version: UInt64? }
-struct Reply: Decodable { let ok: Bool; let code: String; let snapshot: Snapshot?; let audio: AudioEffect?; let credentials: Credentials? }
+struct Reply: Decodable {
+    let ok: Bool; let code: String; let snapshot: Snapshot?; let audio: AudioEffect?; let credentials: Credentials?
+    var import_result: ImportResult? = nil
+    struct ImportResult: Decodable {let receipt: Receipt?;let jobs:[ImportJob]?;let job:ImportJob?}
+    struct Receipt: Decodable {let operation_id:UInt64;let outcome:String;let ack: Ack?}
+    struct Ack: Decodable {let job_id:String;let status:String;let sourceDecisionId:String}
+    struct ImportJob: Decodable {let job_id:String;let status:String;let progress:Int;let error:String?;let url:String;let source_type:String;let track_id:Int64?;let created_at:String}
+}
 
 // Only this serial non-UI executor crosses the blocking core boundary. Immutable
 // Data is transferred back to the main actor, never untyped Sendable dictionaries.
@@ -136,6 +143,127 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
     var libraryDetailsMenuItem: NSMenuItem?
     var libraryDetailsAction: LibraryMetadataAction?
     var libraryDetailsAlert: (alert: NSAlert, action: LibraryMetadataAction)?
+    var linkImport = LinkImportState()
+    var linkImportSheet: NSWindow?
+    var linkImportView: LinkImportView?
+
+    @objc func openLinkImport() {
+        guard snapshot?.authenticated == true, linkImportSheet == nil, window.attachedSheet == nil else {return}
+        let view=LinkImportView(target:self,scale:libraryDock?.textScale ?? 1)
+        view.onEdit = { [weak self] text in self?.linkImport.draft=text }
+        let area=NSScrollView(frame:NSRect(x:0,y:0,width:min(640,window.frame.width-48),height:min(view.frame.height,max(240,window.frame.height-100))))
+        area.hasVerticalScroller=true;area.autohidesScrollers=true;area.documentView=view
+        view.frame.size.width=area.contentSize.width
+        let sheet=NSWindow(contentRect:area.frame,styleMask:[.titled],backing:.buffered,defer:false)
+        sheet.title="Add link";sheet.contentView=area;linkImportSheet=sheet;linkImportView=view
+        updateLinkImport();window.beginSheet(sheet);sheet.makeFirstResponder(view.url)
+        if linkImport.pending == nil {checkLinkImport()}
+    }
+    @objc func closeLinkImport() {
+        if let sheet=linkImportSheet {window.endSheet(sheet);sheet.orderOut(nil)}
+        linkImportSheet=nil;linkImportView=nil
+    }
+    func retireLinkImport() {closeLinkImport();linkImport=LinkImportState()}
+    func updateLinkImport() {
+        linkImportView?.update(linkImport,canOpen:linkImport.job?.status == "complete" && linkImport.job?.track_id != nil)
+    }
+    enum LinkImportRequest {
+        case submission(operation:UInt64)
+        case statusRead
+    }
+    @objc func submitLink() {
+        guard snapshot?.authenticated == true, snapshot?.epoch == epoch, linkImport.pending == nil, linkImport.reading == nil, !["accepted","uncertain"].contains(linkImport.outcome) else {return}
+        linkImport.serial &+= 1;linkImport.operation &+= 1
+        let ticket=linkImport.serial,account=accountScope,operation=linkImport.operation
+        // A new operation owns its ACK, not a previously chosen recovery job.
+        linkImport.jobID=nil;linkImport.job=nil
+        linkImport.pending=ticket;linkImport.outcome="pending";linkImport.feedback="Submitting link…";updateLinkImport()
+        let admitted=command(["command":"import_link","operation_id":operation,"url":linkImport.draft],result:{ [weak self] reply in
+            guard let self,self.accountScope == account,self.linkImport.pending == ticket else {return}
+            self.linkImport.pending=nil;self.receiveLinkImport(reply,request:.submission(operation:operation))
+        },presentation:{false})
+        if !admitted {linkImport.pending=nil;linkImport.outcome="not_sent";linkImport.feedback="Import was not sent. Try again.";updateLinkImport()}
+    }
+    @objc func checkLinkImport() {readLinkImport(recent:false)}
+    @objc func newLinkImport() {
+        guard linkImport.pending == nil,linkImport.reading == nil else {return}
+        linkImport.retiredOperation=max(linkImport.retiredOperation,linkImport.operation)
+        linkImport.draft="";linkImport.jobID=nil;linkImport.job=nil;linkImport.outcome="draft"
+        linkImport.feedback="Import one YouTube video or SoundCloud track.";updateLinkImport()
+        linkImportSheet?.makeFirstResponder(linkImportView?.url)
+    }
+    @objc func recentLinkImports() {readLinkImport(recent:true)}
+    func readLinkImport(recent:Bool) {
+        guard snapshot?.authenticated == true,snapshot?.epoch == epoch,linkImport.pending == nil,linkImport.reading == nil else {return}
+        linkImport.serial &+= 1;let ticket=linkImport.serial,account=accountScope
+        linkImport.reading=ticket;linkImport.feedback="Checking imports…";updateLinkImport()
+        let value:[String:Any] = !recent && linkImport.jobID != nil ? ["command":"import_job","job_id":linkImport.jobID!]:["command":"import_jobs"]
+        let admitted=command(value,result:{ [weak self] reply in
+            guard let self,self.accountScope == account,self.linkImport.reading == ticket else {return}
+            self.linkImport.reading=nil;self.receiveLinkImport(reply,request:.statusRead)
+        },presentation:{false})
+        if !admitted {linkImport.reading=nil;linkImport.feedback="Could not check imports. Try again.";updateLinkImport()}
+    }
+    func receiveLinkImport(_ reply:Reply,request:LinkImportRequest) {
+        let receipt:Reply.Receipt?
+        let submission:Bool
+        switch request {
+        case .submission(let operation):
+            submission=true
+            // Only evidence for this dispatched operation diagnoses its submission.
+            receipt=reply.import_result?.receipt.flatMap {$0.operation_id == operation ? $0:nil}
+        case .statusRead:
+            submission=false
+            // Failed reads can carry old receipts; they are not new submission results.
+            receipt=reply.ok ? reply.import_result?.receipt:nil
+        }
+        if let receipt {
+            linkImport.operation=max(linkImport.operation,receipt.operation_id)
+            if receipt.operation_id > linkImport.retiredOperation {
+                linkImport.outcome=receipt.outcome
+                if let ack=receipt.ack,linkImport.jobID == nil {linkImport.jobID=ack.job_id}
+            }
+        } else if submission {linkImport.outcome="uncertain"}
+        if reply.ok,let result=reply.import_result {
+            if let jobs=result.jobs {linkImport.jobs=jobs}
+            if let job=result.job {linkImport.job=job;linkImport.jobID=job.job_id}
+        }
+        if let job=linkImport.job,reply.ok {
+            linkImport.feedback = job.status == "complete" ? (job.track_id == nil ? "Import complete. Track is not available yet. Check status again.":"Import complete. Open in Library to choose the track.") : job.status == "failed" ? "Import failed. \(job.error ?? "Check the source link.")" : "\(job.status.capitalized) · \(job.progress)%"
+            if job.status == "complete",let track=job.track_id {
+                let key="\(accountScope)/\(job.job_id)/\(track)"
+                if linkImport.completed.insert(key).inserted {linkImport.deferredLibrary=key}
+            }
+        } else if !reply.ok && !submission {linkImport.feedback = "Could not confirm import status. Check status or recent jobs."}
+        else if linkImport.outcome == "accepted" {linkImport.feedback="Link accepted. Check status to follow the import."}
+        else if linkImport.outcome == "uncertain" {linkImport.feedback="Submission is unconfirmed. Check recent jobs and choose an import; a matching link is not a confirmed match."}
+        else if linkImport.outcome == "rejected" {linkImport.feedback="Link was not accepted. Check the link or sign in, then try again."}
+        else if linkImport.outcome == "not_sent" {linkImport.feedback="Link was not sent. Use an HTTPS YouTube video or SoundCloud track link."}
+        else {linkImport.feedback=linkImport.jobs.isEmpty ? "No recent imports found.":"Choose a recent import, then check status."}
+        updateLinkImport()
+    }
+    @objc func chooseLinkImport(_ sender:NSPopUpButton) {
+        let i=sender.indexOfSelectedItem
+        guard linkImport.pending == nil,linkImport.reading == nil,linkImport.jobs.indices.contains(i) else {return}
+        linkImport.job=linkImport.jobs[i];linkImport.jobID=linkImport.jobs[i].job_id;checkLinkImport()
+    }
+    @objc func openImportLibrary() {
+        guard linkImport.job?.status == "complete",linkImport.job?.track_id != nil else {return}
+        linkImport.openLibrary=true;linkImport.deferredLibrary="open";closeLinkImport();drainImportLibraryRefresh()
+    }
+    func drainImportLibraryRefresh() {
+        if let track=linkImport.focusTrack,pendingLibraryRead == nil,!libraryReadInvalid,
+           acknowledgedLibraryRead?.liked == false,acknowledgedLibraryRead?.queryUTF8.isEmpty == true,
+           let row=snapshot?.library.firstIndex(where:{$0.id==track}) {
+            table.selectRowIndexes(IndexSet(integer:row),byExtendingSelection:false);table.scrollRowToVisible(row)
+            linkImport.focusTrack=nil;updateLibraryAvailability()
+        }
+        guard linkImport.deferredLibrary != nil,pendingLibraryRead == nil,busy == libraryReadRetired.count,snapshot?.authenticated == true,snapshot?.epoch == epoch else {return}
+        if linkImport.openLibrary {search.stringValue="";linkImport.focusTrack=linkImport.job?.track_id}
+        let open=linkImport.openLibrary
+        readLibrary(liked:open ? false:libraryLiked,offset:0)
+        if pendingLibraryRead != nil {linkImport.deferredLibrary=nil;linkImport.openLibrary=false}
+    }
 
     func fixtureCacheRoot() -> URL? {
         guard endpoint.stringValue == "http://127.0.0.1:54761/api/v1",
@@ -221,6 +349,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         loginArea.onEdit = { [weak self] in self?.authEdited() }
         search.placeholderString = "Search your library";search.delegate = self
         let refresh = SoundQButton(title:"Refresh",target:self,action:#selector(refresh))
+        let addLink = SoundQButton(title:"Add link",target:self,action:#selector(openLinkImport))
+        addLink.setAccessibilityIdentifier("library-add-link")
         let more = SoundQButton(title:"Load more",target:self,action:#selector(loadMore))
         let select = SoundQButton(title:"Play selected",target:self,action:#selector(selectTrack));select.setAccessibilityIdentifier("play-selected")
         let retry = SoundQButton(title:"Retry playback",target:self,action:#selector(retry));retry.isEnabled = false
@@ -243,7 +373,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         let controls = LibraryDockControls(table:table,scroll:scroll,search:search,slider:slider,play:play,title:titleLabel,identity:transportLabel,status:status,login:loginArea,library:libraryArea,logout:logout,refresh:refresh,more:more,select:select,details:libraryDetails,retry:retry,previous:previous,next:next,queue:queue)
         libraryLikedControl.target = self;libraryLikedControl.action = #selector(toggleLibraryLiked)
         libraryLikedControl.setAccessibilityLabel("Liked tracks");libraryLikedControl.setAccessibilityIdentifier("library-liked-filter")
-        let shell = LibraryDockView(controls:controls,assets:assets,liked:libraryLikedControl);shell.frame = host.bounds;shell.autoresizingMask = [.width,.height];host.addSubview(shell);libraryDock = shell
+        let shell = LibraryDockView(controls:controls,assets:assets,liked:libraryLikedControl,addLink:addLink);shell.frame = host.bounds;shell.autoresizingMask = [.width,.height];host.addSubview(shell);libraryDock = shell
         // App-local accessibility sizing, no global preference writes. Retain a
         // single scale input so runtime QA can qualify the actual mounted fonts.
         shell.textScale = max(1,NSFont.preferredFont(forTextStyle:.body).pointSize/13)
@@ -261,6 +391,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         if let intent = pendingLibraryRead, intent.epoch != epoch || intent.account != accountScope {retireLibraryRead()}
         if ["queue_restore","queue_play","next","previous","queue_clear"].contains(kind) {retireLibraryRead()}
         if ["login","register","restore","logout"].contains(kind) {
+            retireLinkImport()
             retireLibraryRead();libraryLiked = false;acknowledgedLibraryRead = nil;libraryReadFailure = nil;libraryRevision = nil;libraryReadInvalid = false;updateLibraryReadPresentation()
         }
         let readIntent = ["library","library_liked"].contains(kind) ? pendingLibraryRead : nil
@@ -280,9 +411,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         bridge.send(data, epoch: admittedEpoch) { [weak self] data in
             Task { @MainActor in
                 guard let self else{return};self.busy -= 1
+                defer {self.drainImportLibraryRefresh()}
                 if let readIntent {self.libraryReadRetired.remove(readIntent.serial)}
                 guard admittedEpoch == self.epoch, admittedAccount == self.accountScope else {
-                    if ["login","register"].contains(kind) {
+                    if ["login","register","import_link","import_jobs","import_job"].contains(kind) {
                         result?(Reply(ok:false,code:"cancelled",snapshot:nil,audio:nil,credentials:nil));completion?()
                     }
                     self.reportPending = false;return
@@ -306,7 +438,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
                     if let readIntent {self.finishLibraryRead(readIntent,reply:nil)}
                     // Auth forms need one terminal outcome even when decoding fails.
                     // Keep unrelated legacy callback semantics unchanged.
-                    if ["login","register"].contains(kind) {
+                    if ["login","register","import_link","import_jobs","import_job"].contains(kind) {
                         result?(Reply(ok:false,code:"binding_failure",snapshot:nil,audio:nil,credentials:nil))
                         completion?()
                     }
