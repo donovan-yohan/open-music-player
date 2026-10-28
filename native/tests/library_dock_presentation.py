@@ -426,6 +426,18 @@ for scale:CGFloat in [1,2] {for width:CGFloat in [400,600,1000] {for duration:UI
  check("duration-native-glyph-fits-\(Int(scale))-\(Int(width))-\(duration)",cell.duration.frame.width>=glyph.width && cell.duration.frame.height>=glyph.height && cell.duration.frame.maxX<=width-8 && cell.name.frame.maxX<cell.duration.frame.minX)
 }}}
 
+// Publications above can invalidate native layout, but a normal toolbar reflow
+// is not a stale frame: older AppKit cells need more width for the same labels.
+// Keep the 1200pt case and its native allocation/clearance contract, then prove
+// the exact 164pt reference on a positively observed single-track toolbar.
+host.layoutSubtreeIfNeeded();shell.layoutSubtreeIfNeeded()
+let referenceActions=shell.bodyDocument.subviews.compactMap {$0 as? SoundQButton}
+check("reference-1200-native-toolbar-precondition",host.bounds.size==NSSize(width:1200,height:700) && shell.textScale==1 && !referenceActions.isEmpty && referenceActions.allSatisfy {$0.frame.width >= $0.cell!.cellSize.width && $0.frame.height==40})
+check("reference-1200-first-row-clears-toolbar",a.libraryArea.frame.minY==max(164,referenceActions.map {$0.frame.maxY+16}.max()!) && a.libraryArea.frame.minY.truncatingRemainder(dividingBy:4)==0)
+print("REFERENCE_LIBRARY_GEOMETRY","1200","shell",shell.bounds,"scale",shell.textScale,"library",a.libraryArea.frame,"clip",shell.bodyScroll.contentView.bounds,"document",shell.bodyDocument.frame,"rules",shell.bodyDocument.rules,"search",a.search.frame,"actions",referenceActions.map {"\($0.title):\($0.frame):native=\($0.cell!.cellSize)"})
+host.setFrameSize(NSSize(width:1440,height:700));shell.frame=host.bounds;shell.needsLayout=true
+host.layoutSubtreeIfNeeded();shell.layoutSubtreeIfNeeded()
+check("reference-wide-native-single-track-precondition",host.bounds.size==NSSize(width:1440,height:700) && !shell.needsLayout && referenceActions.allSatisfy {$0.frame.minY==a.search.frame.minY && $0.frame.width >= $0.cell!.cellSize.width} && a.search.frame.width>=200)
 let b=[shell.controls.previous,shell.controls.play,shell.controls.next]
 check("equal-painted-48-transport-cells",b.allSatisfy {$0.frame.size==NSSize(width:48,height:48)})
 check("transport-physically-centered",abs(a.play.convert(a.play.bounds,to:host).midX-host.bounds.midX)<0.1)
