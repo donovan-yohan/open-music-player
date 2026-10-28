@@ -156,6 +156,8 @@ jobs:
           subprocess.run([sys.executable, '-B', 'native/tests/library_favorites_regressions.py', '--output', str(output / 'library-favorites')], check=True)
           subprocess.run([sys.executable, '-B', 'native/tests/registration_regressions.py', '--platform', 'macos', '--output', str(output / 'registration')], check=True)
           subprocess.run([sys.executable, '-B', 'native/tests/registration_layout.py', '--output', str(output / 'registration-layout')], check=True)
+          subprocess.run([sys.executable, '-B', 'native/tests/link_import_layout.py', '--output', str(output / 'link-import-layout')], check=True)
+          subprocess.run([sys.executable, '-B', 'native/tests/link_import_regressions.py', '--output', str(output / 'link-import-terminal')], check=True)
           PY
       - name: Preserve macOS layout diagnostics
         if: always() && steps.macos-layout.outputs.evidence != ''
@@ -187,6 +189,7 @@ jobs:
           env = dict(os.environ, SOUNDQ_CORE_LIBRARY=str(library))
           subprocess.run([sys.executable, '-B', 'native/tests/queue_feedback_regressions.py', '--source-root', str(Path.cwd()), '--macos', '--output', str(output / 'macos')], env=env, check=True)
           subprocess.run([sys.executable, '-B', 'native/tests/library_projection_regressions.py', '--source-root', str(Path.cwd()), '--core-library', str(library), '--suite', 'combined', '--output', str(output / 'library-projection')], env=env, check=True)
+          subprocess.run([sys.executable, '-B', 'native/tests/link_import_regressions.py', '--source-root', str(Path.cwd()), '--core-library', str(library), '--output', str(output / 'link-import-composition')], env=env, check=True)
           PY
       - uses: actions/upload-artifact@v4
         with:

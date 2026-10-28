@@ -88,6 +88,8 @@ final class Bridge:@unchecked Sendable {
 '''
     helper=root/'native/macos/Sources/AuthForm.swift'
     extra=''
+    if 'func retireLinkImport()' in source:
+        facade=facade.replace('func deleteCredentials(){};', 'func retireLinkImport(){};func drainImportLibraryRefresh(){};func deleteCredentials(){};')
     if helper.exists():
         extra=swift_block(helper.read_text(),'struct AuthFormState')
         facade=facade.replace('var email=Label();','var authForm=AuthFormState();var loginArea=Form();var email=Label();')
