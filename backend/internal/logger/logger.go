@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	apperrors "github.com/openmusicplayer/backend/internal/errors"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Level represents log severity levels
@@ -61,24 +64,30 @@ type Entry struct {
 	RequestID string                 `json:"request_id,omitempty"`
 	UserID    string                 `json:"user_id,omitempty"`
 	TraceID   string                 `json:"trace_id,omitempty"`
+	SpanID    string                 `json:"span_id,omitempty"`
+	Resource  map[string]string      `json:"resource,omitempty"`
 	Fields    map[string]interface{} `json:"fields,omitempty"`
 	Error     string                 `json:"error,omitempty"`
 }
 
 // Logger is the structured JSON logger
 type Logger struct {
-	mu        sync.Mutex
-	out       io.Writer
-	minLevel  Level
-	redactor  *Redactor
-	component string
+	mu           sync.Mutex
+	out          io.Writer
+	minLevel     Level
+	redactor     *Redactor
+	component    string
+	resource     map[string]string
+	httpObserver func(context.Context, HTTPCompletion)
 }
 
 // Config for logger initialization
 type Config struct {
-	Output   io.Writer
-	Level    Level
-	Redactor *Redactor
+	Output       io.Writer
+	Level        Level
+	Redactor     *Redactor
+	Resource     map[string]string
+	HTTPObserver func(context.Context, HTTPCompletion)
 }
 
 // New creates a new Logger instance
@@ -92,9 +101,11 @@ func New(cfg *Config) *Logger {
 		redactor = DefaultRedactor()
 	}
 	return &Logger{
-		out:      out,
-		minLevel: cfg.Level,
-		redactor: redactor,
+		out:          out,
+		minLevel:     cfg.Level,
+		redactor:     redactor,
+		resource:     cfg.Resource,
+		httpObserver: cfg.HTTPObserver,
 	}
 }
 
@@ -110,10 +121,12 @@ func Default() *Logger {
 // WithComponent returns a new logger with the component field set
 func (l *Logger) WithComponent(component string) *Logger {
 	return &Logger{
-		out:       l.out,
-		minLevel:  l.minLevel,
-		redactor:  l.redactor,
-		component: component,
+		out:          l.out,
+		minLevel:     l.minLevel,
+		redactor:     l.redactor,
+		component:    component,
+		resource:     l.resource,
+		httpObserver: l.httpObserver,
 	}
 }
 
@@ -128,15 +141,12 @@ const (
 
 // WithRequestID adds a request ID to the context
 func WithRequestID(ctx context.Context, requestID string) context.Context {
-	return context.WithValue(ctx, requestIDKey, requestID)
+	return apperrors.WithRequestID(ctx, requestID)
 }
 
 // GetRequestID retrieves the request ID from context
 func GetRequestID(ctx context.Context) string {
-	if v := ctx.Value(requestIDKey); v != nil {
-		return v.(string)
-	}
-	return ""
+	return apperrors.GetRequestID(ctx)
 }
 
 // WithUserID adds a user ID to the context
@@ -159,6 +169,9 @@ func WithTraceID(ctx context.Context, traceID string) context.Context {
 
 // GetTraceID retrieves the trace ID from context
 func GetTraceID(ctx context.Context) string {
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		return sc.TraceID().String()
+	}
 	if v := ctx.Value(traceIDKey); v != nil {
 		return v.(string)
 	}
@@ -179,8 +192,12 @@ func (l *Logger) log(ctx context.Context, level Level, msg string, fields map[st
 		RequestID: GetRequestID(ctx),
 		UserID:    GetUserID(ctx),
 		TraceID:   GetTraceID(ctx),
+		Resource:  l.resource,
 	}
 
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		entry.SpanID = sc.SpanID().String()
+	}
 	if len(fields) > 0 {
 		entry.Fields = l.redactor.RedactFields(fields)
 	}

@@ -6,68 +6,77 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/felixge/httpsnoop"
 )
 
-// gzipResponseWriter wraps http.ResponseWriter to provide gzip compression
-type gzipResponseWriter struct {
-	io.Writer
-	http.ResponseWriter
-	wroteHeader bool
-}
+var gzipWriterPool = sync.Pool{New: func() interface{} { return gzip.NewWriter(io.Discard) }}
 
-func (w *gzipResponseWriter) Write(b []byte) (int, error) {
-	return w.Writer.Write(b)
-}
-
-func (w *gzipResponseWriter) WriteHeader(code int) {
-	if !w.wroteHeader {
-		w.Header().Del("Content-Length")
-		w.wroteHeader = true
-	}
-	w.ResponseWriter.WriteHeader(code)
-}
-
-// Pool for gzip writers to reduce allocations
-var gzipWriterPool = sync.Pool{
-	New: func() interface{} {
-		return gzip.NewWriter(io.Discard)
-	},
-}
-
-// Gzip returns a middleware that compresses response bodies using gzip
-// for clients that support it.
+// Gzip selects encoding lazily so response-declared streaming is not compressed.
+// Flush/ReaderFrom retain their semantics and optional interfaces are preserved.
 func Gzip(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check if client supports gzip encoding
-		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") || r.Header.Get("Upgrade") != "" || strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 			next.ServeHTTP(w, r)
 			return
 		}
-
-		// Skip compression for WebSocket upgrades
-		if r.Header.Get("Upgrade") == "websocket" {
-			next.ServeHTTP(w, r)
-			return
+		var gz *gzip.Writer
+		decided := false
+		selectEncoding := func(code int) {
+			if decided {
+				return
+			}
+			decided = true
+			if strings.HasPrefix(w.Header().Get("Content-Type"), "text/event-stream") || code == http.StatusNoContent || code == http.StatusNotModified || r.Method == "HEAD" {
+				return
+			}
+			gz = gzipWriterPool.Get().(*gzip.Writer)
+			gz.Reset(w)
+			w.Header().Del("Content-Length")
+			w.Header().Set("Content-Encoding", "gzip")
+			w.Header().Add("Vary", "Accept-Encoding")
 		}
-
-		// Get a gzip writer from the pool
-		gz := gzipWriterPool.Get().(*gzip.Writer)
-		gz.Reset(w)
 		defer func() {
-			gz.Close()
-			gzipWriterPool.Put(gz)
+			if gz != nil {
+				_ = gz.Close()
+				gzipWriterPool.Put(gz)
+			}
 		}()
-
-		// Set appropriate headers
-		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Set("Vary", "Accept-Encoding")
-
-		// Wrap the response writer
-		gzw := &gzipResponseWriter{
-			Writer:         gz,
-			ResponseWriter: w,
-		}
-
-		next.ServeHTTP(gzw, r)
+		var wrapped http.ResponseWriter
+		wrapped = httpsnoop.Wrap(w, httpsnoop.Hooks{
+			WriteHeader: func(next httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
+				return func(code int) {
+					if code >= 200 {
+						selectEncoding(code)
+					}
+					next(code)
+				}
+			},
+			Write: func(next httpsnoop.WriteFunc) httpsnoop.WriteFunc {
+				return func(data []byte) (int, error) {
+					if !decided && w.Header().Get("Content-Type") == "" {
+						w.Header().Set("Content-Type", http.DetectContentType(data))
+					}
+					selectEncoding(http.StatusOK)
+					if gz != nil {
+						return gz.Write(data)
+					}
+					return next(data)
+				}
+			},
+			Flush: func(next httpsnoop.FlushFunc) httpsnoop.FlushFunc {
+				return func() {
+					selectEncoding(http.StatusOK)
+					if gz != nil {
+						_ = gz.Flush()
+					}
+					next()
+				}
+			},
+			ReadFrom: func(_ httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
+				return func(src io.Reader) (int64, error) { return io.Copy(struct{ io.Writer }{wrapped}, src) }
+			},
+		})
+		next.ServeHTTP(wrapped, r)
 	})
 }
