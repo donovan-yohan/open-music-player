@@ -30,6 +30,9 @@ jobs:
       - name: Plan exact-head dev cycle
         run: scripts/agentic-cycle --committed-only --base origin/main
 
+      - name: Test production release qualification
+        run: python3 scripts/test_release_receipt.py
+
       - name: Test release audit classifier
         run: scripts/release-audit --self-test
 
