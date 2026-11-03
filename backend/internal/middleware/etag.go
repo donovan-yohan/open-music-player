@@ -63,6 +63,11 @@ func ETag(next http.Handler) http.Handler {
 					if streaming {
 						return next(data)
 					}
+					// Detect from uncompressed bytes before any buffered/streaming
+					// path commits headers through the outer Gzip writer.
+					if w.Header().Get("Content-Type") == "" {
+						w.Header().Set("Content-Type", http.DetectContentType(data))
+					}
 					committed = true
 					if strings.HasPrefix(w.Header().Get("Content-Type"), "text/event-stream") || buf.Len()+len(data) > 1<<20 {
 						startStream()

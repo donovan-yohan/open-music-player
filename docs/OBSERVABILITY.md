@@ -24,10 +24,10 @@ Python 3 and Docker Compose are required. Run from the repository root. Do not
 reuse a private production password for a preview.
 
 ```sh
-python3 deploy/observability/bootstrap.py --env-file "$TMPDIR/soundq-observability-private/local.env"
-python3 deploy/observability/stack.py --env-file "$TMPDIR/soundq-observability-private/local.env" validate
-python3 deploy/observability/stack.py --env-file "$TMPDIR/soundq-observability-private/local.env" up
-python3 deploy/observability/check.py --env-file "$TMPDIR/soundq-observability-private/local.env" fixtures
+python3 deploy/observability/bootstrap.py --env-file "${TMPDIR:-/tmp}/soundq-observability-private/local.env"
+python3 deploy/observability/stack.py --env-file "${TMPDIR:-/tmp}/soundq-observability-private/local.env" validate
+python3 deploy/observability/stack.py --env-file "${TMPDIR:-/tmp}/soundq-observability-private/local.env" up
+python3 deploy/observability/check.py --env-file "${TMPDIR:-/tmp}/soundq-observability-private/local.env" fixtures
 ```
 
 The bootstrap writes a new mode-0600 file outside the repository, refuses to
@@ -183,7 +183,7 @@ paths, query strings, headers and bodies.
 ```sh
 python3 deploy/observability/backend_smoke.py \
   --env-file /absolute/private/local.env \
-  --output "$TMPDIR/soundq-backend-telemetry-e2e"
+  --output "${TMPDIR:-/tmp}/soundq-backend-telemetry-e2e"
 ```
 
 The output directory must not already exist. This checker uses DB-free synthetic

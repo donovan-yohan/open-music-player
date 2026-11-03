@@ -39,7 +39,7 @@ func run() error {
 		method, path string
 		status       int
 	}{{"GET", "/health", 200}, {"PUT", "/api/v1/tracks/" + canary + "/metadata-override?url=https://signed.invalid?X-Amz-Signature=" + canary, 401}, {"GET", "/" + canary, 404}} {
-		req, _ := http.NewRequest(input.method, server.URL+input.path, strings.NewReader(canary))
+		req, _ := http.NewRequestWithContext(context.Background(), input.method, server.URL+input.path, strings.NewReader(canary))
 		req.Header.Set("X-Request-ID", canary)
 		req.Header.Set("X-Trace-ID", canary)
 		req.Header.Set("Authorization", canary)

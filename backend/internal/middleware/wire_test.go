@@ -21,7 +21,11 @@ func TestTimingHeaderExistsOnWire(t *testing.T) {
 				io.WriteString(w, "response")
 			})))
 			defer server.Close()
-			res, err := server.Client().Get(server.URL)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := server.Client().Do(req)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -49,7 +53,11 @@ func TestETagLargeResponseDeliversBeforeCompletion(t *testing.T) {
 	})))
 	defer server.Close()
 	client := &http.Client{Timeout: 2 * time.Second}
-	res, err := client.Get(server.URL)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

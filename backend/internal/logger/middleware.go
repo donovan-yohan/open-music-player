@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/felixge/httpsnoop"
+
 	apperrors "github.com/openmusicplayer/backend/internal/errors"
 )
 

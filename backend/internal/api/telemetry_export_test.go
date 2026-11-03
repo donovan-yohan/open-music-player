@@ -13,12 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openmusicplayer/backend/internal/logger"
-	"github.com/openmusicplayer/backend/internal/observability"
 	logpb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	metricpb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/openmusicplayer/backend/internal/logger"
+	"github.com/openmusicplayer/backend/internal/observability"
 )
 
 func TestRouterOTLPExportPrivacyAndCorrelation(t *testing.T) {
@@ -52,7 +53,7 @@ func TestRouterOTLPExportPrivacyAndCorrelation(t *testing.T) {
 			server := httptest.NewServer(router)
 			defer server.Close()
 			canary := "PRIVACY_CANARY_do_not_export"
-			req, _ := http.NewRequest("PUT", server.URL+"/api/v1/tracks/"+canary+"/metadata-override?url=https://signed.invalid/?X-Amz-Signature="+canary, strings.NewReader(canary))
+			req, _ := http.NewRequestWithContext(t.Context(), "PUT", server.URL+"/api/v1/tracks/"+canary+"/metadata-override?url=https://signed.invalid/?X-Amz-Signature="+canary, strings.NewReader(canary))
 			req.Header.Set("Authorization", canary)
 			req.Header.Set("Cookie", canary)
 			req.Header.Set("User-Agent", canary)

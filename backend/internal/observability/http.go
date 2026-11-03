@@ -10,13 +10,14 @@ import (
 
 	"github.com/felixge/httpsnoop"
 	"github.com/google/uuid"
-	apperrors "github.com/openmusicplayer/backend/internal/errors"
-	"github.com/openmusicplayer/backend/internal/logger"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+
+	apperrors "github.com/openmusicplayer/backend/internal/errors"
+	"github.com/openmusicplayer/backend/internal/logger"
 )
 
 type observationKey struct{}

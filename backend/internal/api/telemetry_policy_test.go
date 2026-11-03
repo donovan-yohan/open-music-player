@@ -12,11 +12,12 @@ import (
 	"testing"
 	"time"
 
+	logpb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	"google.golang.org/protobuf/proto"
+
 	apperrors "github.com/openmusicplayer/backend/internal/errors"
 	"github.com/openmusicplayer/backend/internal/logger"
 	"github.com/openmusicplayer/backend/internal/observability"
-	logpb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
-	"google.golang.org/protobuf/proto"
 )
 
 func TestRouterCanonicalRequestIDAndRecovery(t *testing.T) {

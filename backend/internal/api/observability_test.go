@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
 	"github.com/openmusicplayer/backend/internal/logger"
 	"github.com/openmusicplayer/backend/internal/observability"
 
@@ -91,7 +92,7 @@ func TestComposedRouterWebSocketAndStreaming(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { defer close(done); router.ServeHTTP(w, r) }))
 		defer server.Close()
 		client := &http.Client{Timeout: 2 * time.Second}
-		req, _ := http.NewRequest("GET", server.URL+"/internal/agent-tools/v1/stream", nil)
+		req, _ := http.NewRequestWithContext(t.Context(), "GET", server.URL+"/internal/agent-tools/v1/stream", nil)
 		// Do not announce SSE in Accept: response Flush must still work.
 		req.Header.Set("Accept-Encoding", "gzip")
 		res, err := client.Do(req)

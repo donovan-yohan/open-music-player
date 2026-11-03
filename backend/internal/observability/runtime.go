@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/openmusicplayer/backend/internal/logger"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -18,6 +17,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/openmusicplayer/backend/internal/logger"
 )
 
 // Runtime owns all three SDK providers, bounded queues and cleanup. Construct

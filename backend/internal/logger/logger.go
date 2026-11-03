@@ -10,8 +10,9 @@ import (
 	"sync"
 	"time"
 
-	apperrors "github.com/openmusicplayer/backend/internal/errors"
 	"go.opentelemetry.io/otel/trace"
+
+	apperrors "github.com/openmusicplayer/backend/internal/errors"
 )
 
 // Level represents log severity levels
