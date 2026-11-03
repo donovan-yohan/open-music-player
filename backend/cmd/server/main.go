@@ -31,8 +31,8 @@ import (
 	"github.com/openmusicplayer/backend/internal/logger"
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/metrics"
-	"github.com/openmusicplayer/backend/internal/middleware"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
+	"github.com/openmusicplayer/backend/internal/observability"
 	"github.com/openmusicplayer/backend/internal/playlistimport"
 	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/queue"
@@ -484,7 +484,9 @@ func queueAnalyzerRepairBatch(ctx context.Context, repairs analyzerMaintenancePr
 	return queued, skipped, failures
 }
 
-func main() {
+func main() { os.Exit(runServer()) }
+
+func runServer() int {
 	// Initialize structured logger
 	log := logger.Default()
 	ctx := context.Background()
@@ -493,15 +495,34 @@ func main() {
 		"version": version,
 	})
 
+	telemetryConfig, err := observability.ConfigFromEnv()
+	if err != nil {
+		log.Error(ctx, "Invalid telemetry configuration", nil, err)
+		return 1
+	}
+	if telemetryConfig.ServiceVersion == "unknown" {
+		telemetryConfig.ServiceVersion = version
+	}
+	telemetry, err := observability.New(ctx, telemetryConfig)
+	if err != nil {
+		log.Error(ctx, "Telemetry initialization failed", nil, err)
+		return 1
+	}
+	log = telemetry.Logger(&logger.Config{Level: logger.ParseLevel(os.Getenv("LOG_LEVEL"))})
+	defer func() {
+		if err := telemetry.Shutdown(context.Background()); err != nil {
+			log.Error(ctx, "Telemetry shutdown failed", nil, err)
+		}
+	}()
 	cfg := config.Load()
 	maintenanceConfig, err := maintenanceStartupConfig(cfg)
 	if err != nil {
 		log.Error(ctx, "Invalid maintenance configuration", nil, err)
-		os.Exit(1)
+		return 1
 	}
 	if err := validateResearchStartup(cfg); err != nil {
 		log.Error(ctx, "Invalid research rollout configuration", nil, err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Initialize metrics before the research handlers so their aggregate,
@@ -512,7 +533,7 @@ func main() {
 	database, err := db.New(cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName)
 	if err != nil {
 		log.Error(ctx, "Failed to connect to database", nil, err)
-		os.Exit(1)
+		return 1
 	}
 	defer database.Close()
 	log.Info(ctx, "Connected to database", map[string]interface{}{
@@ -523,7 +544,7 @@ func main() {
 
 	if err := database.Migrate(); err != nil {
 		log.Error(ctx, "Failed to run migrations", nil, err)
-		os.Exit(1)
+		return 1
 	}
 	log.Info(ctx, "Database migrations completed", nil)
 
@@ -535,7 +556,7 @@ func main() {
 			log.Error(ctx, "Failed to connect to Redis", map[string]interface{}{
 				"addr": cfg.RedisAddr,
 			}, err)
-			os.Exit(1)
+			return 1
 		}
 		defer redisCache.Close()
 		log.Info(ctx, "Connected to Redis", map[string]interface{}{
@@ -581,7 +602,7 @@ func main() {
 	researchRuntime, err := newResearchRuntime(cfg, database, discoveryService, appMetrics)
 	if err != nil {
 		log.Error(ctx, "Failed to initialize durable research", nil, err)
-		os.Exit(1)
+		return 1
 	}
 	// Start research worker only when both RESEARCH_ENABLED and RESEARCH_WORKER_ENABLED are true.
 	// This ensures the worker respects the production configuration boundary.
@@ -662,7 +683,7 @@ func main() {
 	})
 	if err != nil {
 		log.Error(ctx, "Failed to initialize storage client", nil, err)
-		os.Exit(1)
+		return 1
 	}
 	log.Info(ctx, "Initialized storage client", map[string]interface{}{
 		"endpoint":        cfg.MinioEndpoint,
@@ -705,7 +726,7 @@ func main() {
 		log.Error(ctx, "Failed to initialize analyzer client", map[string]interface{}{
 			"base_url": cfg.AnalyzerBaseURL,
 		}, err)
-		os.Exit(1)
+		return 1
 	}
 	var analyzerClient analyzer.Client
 	if serviceAnalyzerClient != nil {
@@ -866,12 +887,12 @@ func main() {
 		}, jobProcessor.Process, sourceSelectionLifecycle)
 		if err != nil {
 			log.Error(ctx, "Failed to initialize download service", nil, err)
-			os.Exit(1)
+			return 1
 		}
 		queueService, err := queue.NewService(cfg.RedisURL)
 		if err != nil {
 			log.Error(ctx, "Failed to initialize queue service", nil, err)
-			os.Exit(1)
+			return 1
 		}
 		defer queueService.Close()
 		// Recovery happens before workers start. It restores only durable,
@@ -928,6 +949,9 @@ func main() {
 
 	// Create router with all handlers
 	router := api.NewRouterWithConfig(&api.RouterConfig{
+		Telemetry:               telemetry,
+		Logger:                  log,
+		ResponseTransforms:      true,
 		JamHandlers:             jamHandlers,
 		ConnectHandlers:         newConnectHandlers(redisCache),
 		AuthHandlers:            authHandlers,
@@ -966,31 +990,29 @@ func main() {
 		CORSAllowedOrigins:      cfg.CORSAllowedOrigins,
 	})
 
-	// Apply middleware chain
-	handler := middleware.Chain(
-		router,
-		middleware.Recoverer(log),
-		middleware.Logging(log),
-		middleware.RequestID,
-		metrics.MetricsMiddleware(appMetrics),
-	)
-
-	// Apply middleware chain (order: timing -> gzip -> etag -> handler)
-	// Note: ETag is after gzip so it calculates hash on compressed content
-	handler = middleware.Timing(middleware.Gzip(middleware.ETag(handler)))
+	// Router owns the single request/recovery/logging chain and records both
+	// OTel HTTP metrics and the existing Prometheus request aggregates.
 
 	server := &http.Server{
 		Addr:    cfg.ServerAddr,
-		Handler: handler,
+		Handler: router,
 	}
 
 	// Graceful shutdown handling
 	shutdownComplete := make(chan struct{})
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
+	abortSignalWait := make(chan struct{})
+	defer close(abortSignalWait)
 	go func() {
 		defer close(shutdownComplete)
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		sig := <-sigChan
+		var sig os.Signal
+		select {
+		case sig = <-sigChan:
+		case <-abortSignalWait:
+			return
+		}
 
 		log.Info(ctx, "Received shutdown signal", map[string]interface{}{
 			"signal": sig.String(),
@@ -1041,9 +1063,10 @@ func main() {
 	serveErr := server.ListenAndServe()
 	if serveErr != nil && serveErr != http.ErrServerClosed {
 		log.Error(ctx, "Server failed to start", nil, serveErr)
-		os.Exit(1)
+		return 1
 	}
 	if serveErr == http.ErrServerClosed {
 		<-shutdownComplete
 	}
+	return 0
 }

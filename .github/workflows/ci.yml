@@ -24,6 +24,9 @@ jobs:
       - name: Run agentic delivery harness
         run: scripts/lint delivery
 
+      - name: Test observability operator diagnostics
+        run: python3 -m unittest discover -s deploy/observability -p 'test_*.py' -v
+
       - name: Plan exact-head dev cycle
         run: scripts/agentic-cycle --committed-only --base origin/main
 

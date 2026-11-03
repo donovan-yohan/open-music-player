@@ -4,17 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/discovery"
-	apperrors "github.com/openmusicplayer/backend/internal/errors"
 	"github.com/openmusicplayer/backend/internal/health"
 	"github.com/openmusicplayer/backend/internal/logger"
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/metrics"
 	"github.com/openmusicplayer/backend/internal/middleware"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
+	"github.com/openmusicplayer/backend/internal/observability"
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/search"
 	"github.com/openmusicplayer/backend/internal/validators"
@@ -60,6 +61,7 @@ type Router struct {
 	healthHandler           *health.Handler
 	metricsHandler          http.HandlerFunc
 	corsAllowedOrigins      []string
+	handler                 http.Handler
 }
 
 var defaultCORSAllowedOrigins = []string{
@@ -69,6 +71,10 @@ var defaultCORSAllowedOrigins = []string{
 
 // RouterConfig holds configuration for creating a new router
 type RouterConfig struct {
+	Telemetry *observability.Runtime
+	// ResponseTransforms enables production timing/gzip/ETag inside telemetry.
+	ResponseTransforms      bool
+	Logger                  *logger.Logger
 	JamHandlers             *JamHandlers
 	ConnectHandlers         *ConnectHandlers
 	AuthHandlers            *auth.Handlers
@@ -177,19 +183,35 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		corsAllowedOrigins:      corsAllowedOrigins,
 	}
 	r.setupRoutes()
+	telemetry := cfg.Telemetry
+	if telemetry == nil {
+		telemetry, _ = observability.New(context.Background(), observability.DefaultConfig())
+	}
+	log := cfg.Logger
+	if log == nil {
+		log = telemetry.Logger(&logger.Config{Level: logger.ParseLevel(os.Getenv("LOG_LEVEL"))})
+	}
+	routes := middleware.CORS(r.corsAllowedOrigins)(logger.RecoveryMiddlewareWithLogger(log, r.mux))
+	// Transformations remain inside the single observer so status/bytes describe
+	// the response actually sent (including conditional 304 and compression).
+	var response http.Handler = routes
+	if cfg.ResponseTransforms {
+		response = middleware.Timing(middleware.Gzip(middleware.ETag(routes)))
+	}
+	r.handler = telemetry.HTTPWithLogger(response, log, func(event logger.HTTPCompletion) {
+		if cfg.Metrics != nil {
+			cfg.Metrics.RecordRequest(event.Method, event.Route, event.Status, event.Duration)
+		}
+	})
 	return r
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// Apply middleware chain: CORS -> Recovery -> RequestID -> Logging -> Routes
-	handler := middleware.CORS(r.corsAllowedOrigins)(
-		logger.RecoveryMiddleware(
-			apperrors.RequestIDMiddleware(
-				logger.LoggingMiddleware(r.mux),
-			),
-		),
-	)
-	handler.ServeHTTP(w, req)
+	// Resolve only trusted registration text, not raw request paths. ServeMux
+	// still owns dispatch, path values, redirect behavior and method handling.
+	_, pattern := r.mux.Handler(req)
+	req.Pattern = pattern
+	r.handler.ServeHTTP(w, req)
 }
 
 func (r *Router) setupRoutes() {
