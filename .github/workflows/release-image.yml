@@ -17,6 +17,10 @@ jobs:
   qualify:
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     outputs:
       sha: ${{ steps.source.outputs.sha }}
       tree: ${{ steps.source.outputs.tree }}
