@@ -26,7 +26,7 @@ jobs:
       tree: ${{ steps.source.outputs.tree }}
       pr: ${{ steps.source.outputs.pr }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
@@ -55,18 +55,18 @@ jobs:
           - component: stems
             target: stems-runtime
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.qualify.outputs.sha }}
           persist-credentials: false
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: backend
           target: ${{ matrix.target }}
@@ -90,7 +90,7 @@ jobs:
           assert re.fullmatch('sha256:[0-9a-f]{64}', digest)
           pathlib.Path('image.json').write_text(json.dumps({component: 'ghcr.io/' + os.environ['GITHUB_REPOSITORY'] + '/' + component + '@' + digest}))
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-image-${{ matrix.component }}
           path: image.json
@@ -105,7 +105,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-image-*
           path: images
@@ -133,7 +133,7 @@ jobs:
           pathlib.Path('release.json').write_text(json.dumps(receipt, sort_keys=True) + '\n')
           PY
       - id: attest
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: release.json
       - name: Publish signed receipt

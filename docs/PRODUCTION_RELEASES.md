@@ -12,9 +12,13 @@ The owner merge is approval, not an independent review claim.
 
 `.github/workflows/release-image.yml` is triggered only after main CI completes.
 `scripts/release_receipt.py` verifies the exact successful push CI run, current
-main commit, unique merged PR and owner merger. Direct pushes and superseded
-revisions cannot publish. All three linux/amd64 images (backend, analyzer, stems)
-are built from that source with their Dockerfile acceptance checks. The existing
+main commit, unique merged PR and owner merger. Direct pushes cannot publish.
+Superseded revisions are refused at qualification and immediately before release
+creation, but those checks are not atomic with a new main merge. The guest must
+recheck current-main identity and forward ancestry immediately before deployment.
+All three linux/amd64 images (backend, analyzer, stems) are built from that source.
+Analyzer and stems execute Dockerfile acceptance checks; the backend relies on
+source CI and subsequent guest rehearsal, not a build-time runtime smoke. The existing
 backend-only `Container Image` workflow is not a production release authority.
 
 The final job assembles `release.json` with exact immutable image digests and
