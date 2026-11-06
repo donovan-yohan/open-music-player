@@ -328,6 +328,11 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/tracks/{id}/confirm-match", r.withAuth(r.matcherHandlers.HandleConfirmMatch))
 	r.mux.HandleFunc("POST /api/v1/tracks/{id}/link-mb", r.withAuth(r.matcherHandlers.HandleLinkMB))
 
+	// Exact stored recording identity/current-account membership; not playback grants.
+	r.mux.HandleFunc("GET /api/v1/catalog/recordings/{mb_id}/resolution", r.withAuth(r.libraryHandlers.ResolveCatalogRecording))
+	// Conditional stored-membership surface; legacy numeric Add stays unchanged.
+	r.mux.HandleFunc("POST /api/v1/catalog/recordings/{mb_id}/membership", r.withAuth(r.libraryHandlers.AddCatalogMembership))
+
 	// Library routes (auth required)
 	r.mux.HandleFunc("GET /api/v1/library", r.withAuth(r.libraryHandlers.GetLibrary))
 	r.mux.HandleFunc("POST /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.AddTrackToLibrary))

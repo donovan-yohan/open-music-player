@@ -47,6 +47,153 @@ security:
   - BearerAuth: []
 
 paths:
+  /catalog/recordings/{mb_id}/membership:
+    post:
+      tags: [Library]
+      operationId: addCatalogStoredMembership
+      summary: Conditionally ensure exact stored-recording Library membership
+      description: |
+        No acquisition, metadata edit or playback grant. Requires one exact
+        verified numeric candidate; no fallback. Selected track is locked FOR UPDATE
+        through membership commit. Other matching evidence is checked at the following
+        READ COMMITTED statement snapshot; concurrent new competing rows after that
+        snapshot are not excluded. Success acknowledges commit-time membership, not
+        a lease against later metadata edits or removal. Repeat preserves addedAt.
+        No query parameters; JSON body maximum 1024 bytes; exact field name once only.
+      parameters:
+        - in: path
+          name: mb_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+            minLength: 36
+            maxLength: 36
+            pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          description: Canonical lowercase non-nil recording UUID on the router-decoded segment; never normalized.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [trackId]
+              properties:
+                trackId:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                  maximum: 9223372036854775807
+      responses:
+        '200':
+          description: Committed exact account-bound membership; private, no-store. Same response for already owned.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [recordingMbid, userId, trackId, status, addedAt]
+                properties:
+                  recordingMbid:
+                    type: string
+                    format: uuid
+                  userId:
+                    type: string
+                    format: uuid
+                  trackId:
+                    type: integer
+                    format: int64
+                  status:
+                    type: string
+                    enum: [member]
+                  addedAt:
+                    type: string
+                    format: date-time
+        '400':
+          description: VALIDATION_ERROR; strict body, identifiers, content type or query rejected before DB admission.
+        '401':
+          description: Invalid/missing authentication or nil authenticated account.
+        '404':
+          description: TARGET_UNAVAILABLE means selected numeric ID absent. Older unsupported servers may instead return generic route 404.
+        '409':
+          description: TARGET_MISMATCH (selected MBID differs) or NEEDS_REVIEW (unverified or multiple evidence). No write.
+        '500':
+          description: INTERNAL_ERROR; no success acknowledgement. Reconcile exact resolver and Library before retry.
+        '503':
+          description: SERVICE_DISABLED; producer not wired. Never fall back to legacy numeric Add.
+  /catalog/recordings/{mb_id}/resolution:
+    get:
+      tags: [Browse]
+      operationId: resolveCatalogRecording
+      summary: Resolve exact stored recording identity and current-user membership
+      description: |
+        Read-only, no acquisition, membership mutation, provider/model calls or playback grants.
+        Stored means a database record, not verified media availability. No query parameters accepted.
+        Multiple rows (including unverified metadata) remain ambiguous without automatic selection.
+        Only a single verified row can be owned or stored_unowned. Membership never grants playback.
+      parameters:
+        - in: path
+          name: mb_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+            minLength: 36
+            maxLength: 36
+            pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          description: Exact lowercase canonical non-nil MusicBrainz recording UUID; malformed input is not repaired.
+      responses:
+        '200':
+          description: Account-bound snapshot, never a playback authorization. Cache-Control private, no-store.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [recordingMbid, userId, status, candidates, limit, truncated]
+                properties:
+                  recordingMbid:
+                    type: string
+                    format: uuid
+                  userId:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [owned, stored_unowned, missing, needs_review, ambiguous]
+                  candidates:
+                    type: array
+                    maxItems: 20
+                    description: Ascending numeric identity; no row is selected. Unverified rows are metadata evidence only.
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [trackId, mbVerified, inLibrary]
+                      properties:
+                        trackId:
+                          type: integer
+                          format: int64
+                          minimum: 1
+                        mbVerified:
+                          type: boolean
+                        inLibrary:
+                          type: boolean
+                          description: Membership of authenticated user only.
+                  limit:
+                    type: integer
+                    enum: [20]
+                  truncated:
+                    type: boolean
+                    description: More than 20 matches exist; no total or completeness is implied.
+        '400':
+          description: Invalid/noncanonical/nil MBID or any query parameters; no lookup performed.
+        '401':
+          description: Authentication required, including non-nil user identity.
+        '500':
+          description: Lookup failed; never interpret as missing.
+        '503':
+          description: Resolver not wired; capability unavailable, not missing.
   # ============================================================================
   # Auth Endpoints
   # ============================================================================
