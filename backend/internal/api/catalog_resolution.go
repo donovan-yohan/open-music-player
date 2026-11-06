@@ -6,6 +6,7 @@ import (
 	"regexp"
 
 	"github.com/google/uuid"
+
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
 )
@@ -27,13 +28,13 @@ func (h *LibraryHandlers) ResolveCatalogRecording(w http.ResponseWriter, r *http
 	w.Header().Set("Cache-Control", "private, no-store")
 	user := auth.GetUserFromContext(r.Context())
 	if user == nil || user.UserID == uuid.Nil {
-		http.Error(w, `{"code":"UNAUTHORIZED","message":"authentication required"}`, http.StatusUnauthorized)
+		writeLibraryError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 		return
 	}
 	raw := r.PathValue("mb_id")
 	id, err := uuid.Parse(raw)
 	if !canonicalRecordingMBID.MatchString(raw) || err != nil || id == uuid.Nil || r.URL.RawQuery != "" {
-		http.Error(w, `{"code":"VALIDATION_ERROR","message":"a canonical non-nil recording MBID and no query parameters are required"}`, http.StatusBadRequest)
+		writeLibraryError(w, http.StatusBadRequest, "VALIDATION_ERROR", "a canonical non-nil recording MBID and no query parameters are required")
 		return
 	}
 	if h == nil || h.trackRepo == nil {
@@ -42,7 +43,7 @@ func (h *LibraryHandlers) ResolveCatalogRecording(w http.ResponseWriter, r *http
 	}
 	candidates, truncated, err := h.trackRepo.ResolveCatalogRecording(r.Context(), id, user.UserID)
 	if err != nil {
-		http.Error(w, `{"code":"INTERNAL_ERROR","message":"failed to resolve catalog recording"}`, http.StatusInternalServerError)
+		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to resolve catalog recording")
 		return
 	}
 	status := "missing"

@@ -67,14 +67,11 @@ func (r *LibraryRepository) AddCatalogMembership(ctx context.Context, userID, re
 	if ambiguous {
 		return CatalogMembership{}, CatalogNeedsReview
 	}
-	// DO NOTHING preserves added_at and any existing membership state. The selected
-	// track lock serializes identical requests. Lock the resulting membership too,
-	// so a concurrent ordinary removal cannot retire it before this commit.
-	if _, err = tx.ExecContext(ctx, `INSERT INTO user_library(user_id,track_id) VALUES ($1,$2) ON CONFLICT (user_id,track_id) DO NOTHING`, userID, trackID); err != nil {
+	// Atomically retain and lock an existing membership through commit. Only
+	// added_at is assigned to itself: all existing membership fields are preserved.
+	// Ordinary removal waits for this commit, but may remove the membership after it.
+	if err = tx.QueryRowContext(ctx, `INSERT INTO user_library(user_id,track_id) VALUES ($1,$2) ON CONFLICT (user_id,track_id) DO UPDATE SET added_at=user_library.added_at RETURNING added_at`, userID, trackID).Scan(&result.AddedAt); err != nil {
 		return CatalogMembership{}, fmt.Errorf("insert catalog membership: %w", err)
-	}
-	if err = tx.QueryRowContext(ctx, `SELECT added_at FROM user_library WHERE user_id=$1 AND track_id=$2 FOR UPDATE`, userID, trackID).Scan(&result.AddedAt); err != nil {
-		return CatalogMembership{}, fmt.Errorf("read catalog membership: %w", err)
 	}
 	if err = tx.Commit(); err != nil {
 		return CatalogMembership{}, fmt.Errorf("commit catalog membership: %w", err)

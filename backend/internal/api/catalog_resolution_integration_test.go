@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/lib/pq"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -15,6 +14,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
+
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/search"
@@ -83,6 +84,7 @@ func TestCatalogResolutionMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer rows.Close()
 		var names []string
 		for rows.Next() {
 			var s string
@@ -94,7 +96,7 @@ func TestCatalogResolutionMatrix(t *testing.T) {
 		if err := rows.Err(); err != nil {
 			t.Fatal(err)
 		}
-		rows.Close()
+
 		result := map[string]string{}
 		for _, name := range names {
 			var s string

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/lib/pq"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -14,6 +13,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
+
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
 )
@@ -99,6 +100,7 @@ func membershipSnapshot(t *testing.T, database *db.DB) map[string]string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	var names []string
 	for rows.Next() {
 		var s string
@@ -110,7 +112,7 @@ func membershipSnapshot(t *testing.T, database *db.DB) map[string]string {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	rows.Close()
+
 	result := map[string]string{}
 	for _, name := range names {
 		var value string
@@ -141,7 +143,10 @@ func TestCatalogMembershipRetryAccountsAndNoSideEffects(t *testing.T) {
 		_ = conn.Close()
 	}))
 	defer server.Close()
-	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/catalog/recordings/"+f.recording.String()+"/membership", strings.NewReader(fmt.Sprintf(`{"trackId":%d}`, f.track)))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL+"/api/v1/catalog/recordings/"+f.recording.String()+"/membership", strings.NewReader(fmt.Sprintf(`{"trackId":%d}`, f.track)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	req.Header.Set("Authorization", "Bearer "+f.token(f.user))
 	req.Header.Set("Content-Type", "application/json")
 	response, err := server.Client().Do(req)
@@ -422,7 +427,7 @@ func TestCatalogMembershipCancellationRollsBack(t *testing.T) {
 	select {
 	case w := <-done:
 		if w.Code == 200 {
-			t.Fatal("cancelled transaction acknowledged")
+			t.Fatal("canceled transaction acknowledged")
 		}
 	case <-time.After(4 * time.Second):
 		t.Fatal("cancel did not retire write")
@@ -430,10 +435,10 @@ func TestCatalogMembershipCancellationRollsBack(t *testing.T) {
 	release()
 	var count int
 	if err := f.database.QueryRow(`SELECT count(*) FROM user_library`).Scan(&count); err != nil || count != 0 {
-		t.Fatal("cancelled membership persisted", err)
+		t.Fatal("canceled membership persisted", err)
 	}
 	if _, err := f.database.Exec(`UPDATE tracks SET mb_verified=false WHERE id=$1`, f.track); err != nil {
-		t.Fatal("cancelled transaction retained track lock", err)
+		t.Fatal("canceled transaction retained track lock", err)
 	}
 }
 func TestCatalogMembershipPreAdmissionRelink(t *testing.T) {
