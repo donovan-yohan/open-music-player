@@ -2,10 +2,12 @@ package api
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"testing"
 
@@ -127,4 +129,100 @@ func TestPlaylistOrdinaryManagementIntegration(t *testing.T) {
 		request(owner.AccessToken, "DELETE", path, "", 204)
 		request(owner.AccessToken, "GET", path, "", 404)
 	}
+}
+
+// Keep the playlist fixture alive while an independent client performs the
+// migrate/TRUNCATE setup used by package-db. The outer fixture is a disposable
+// sandbox so this regression itself cannot empty another package's database.
+func TestPlaylistFixtureIsolation(t *testing.T) {
+	sandbox, ctx := newPlaylistMixTestDB(t)
+	var sandboxName string
+	if err := sandbox.QueryRowContext(ctx, "SELECT current_database()").Scan(&sandboxName); err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(playlistMixTestDSN())
+	if err != nil {
+		t.Fatal("isolation regression requires a PostgreSQL URL")
+	}
+	u.Path = "/" + sandboxName
+	t.Setenv("OMP_POSTGRES_TEST_DSN", u.String())
+
+	var fixtureName, siblingName string
+	t.Run("overlapping_fixtures", func(t *testing.T) {
+		fixture, ctx := newPlaylistMixTestDB(t)
+		owner := seedMixUser(t, fixture, "isolation@example.test")
+		sharedOwner := seedMixUser(t, sandbox, "shared-sibling@example.test")
+		if err := fixture.QueryRowContext(ctx, "SELECT current_database()").Scan(&fixtureName); err != nil {
+			t.Fatal(err)
+		}
+		assertOwner := func(t *testing.T) {
+			t.Helper()
+			var exists bool
+			if err := fixture.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM users WHERE id=$1)", owner).Scan(&exists); err != nil {
+				t.Fatal(err)
+			}
+			if !exists {
+				t.Fatal("sibling destructive setup removed the playlist fixture's owner")
+			}
+		}
+
+		// This is deliberately not another isolation-aware helper: unrelated
+		// packages are free to TRUNCATE the configured shared database.
+		if err := db.CheckDSNNotProtected(playlistMixTestDSN()); err != nil {
+			t.Fatal(err)
+		}
+		shared, err := sql.Open("postgres", playlistMixTestDSN())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer shared.Close()
+		sibling := &db.DB{DB: shared}
+		if err := sibling.CheckDatabaseNotProtected(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := sibling.Migrate(); err != nil {
+			t.Fatal(err)
+		}
+		if err := sibling.CheckDatabaseNotProtected(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sibling.ExecContext(ctx, "TRUNCATE TABLE mix_plans, playlist_tracks, playlists, user_library, tracks, users RESTART IDENTITY CASCADE"); err != nil {
+			t.Fatal(err)
+		}
+		assertOwner(t)
+		var sharedOwnerExists bool
+		if err := sibling.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM users WHERE id=$1)", sharedOwner).Scan(&sharedOwnerExists); err != nil {
+			t.Fatal(err)
+		}
+		if sharedOwnerExists {
+			t.Fatal("sibling setup did not truncate its own target")
+		}
+
+		t.Run("independent_playlist_setup", func(t *testing.T) {
+			other, ctx := newPlaylistMixTestDB(t)
+			seedMixUser(t, other, "isolation@example.test")
+			if err := other.QueryRowContext(ctx, "SELECT current_database()").Scan(&siblingName); err != nil {
+				t.Fatal(err)
+			}
+			assertOwner(t)
+		})
+		assertOwner(t)
+		if fixtureName == sandboxName || siblingName == sandboxName || fixtureName == siblingName {
+			t.Fatal("fixtures did not receive distinct databases")
+		}
+	})
+	if t.Failed() {
+		return
+	}
+	for _, name := range []string{fixtureName, siblingName} {
+		var exists bool
+		if err := sandbox.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname=$1)", name).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if exists {
+			t.Fatalf("fixture cleanup left its database %s", name)
+		}
+	}
+	// The sandbox must remain usable: cleanup may drop only its own database.
+	seedMixUser(t, sandbox, "surviving-sandbox@example.test")
 }
