@@ -14,10 +14,12 @@ jobs:
   delivery-harness:
     name: Delivery Harness
     runs-on: ubuntu-latest
-    env:
-      TMPDIR: ${{ runner.temp }}
 
     steps:
+      - name: Prepare temporary root
+        run: |
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:

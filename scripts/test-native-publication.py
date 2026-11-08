@@ -252,10 +252,38 @@ print(prefix + " certificate SHA-256 digest: " + cert)
                     self.assertEqual(2, sum(call[0] == "pull" for call in calls))
                     self.assertIn("APK SHA256", (root / "receipts/evidence.md").read_text())
 
+    def test_runner_context_is_not_used_in_job_environment(self):
+        import re
+        for name in ("ci.yml", "native-clients.yml", "nightly-apk.yml"):
+            workflow = (ROOT / ".github/workflows" / name).read_text()
+            for block in re.findall(r"(?m)^    env:\n((?:      .*\n|\n)*)", workflow):
+                self.assertNotRegex(block, r"\$\{\{\s*runner\.", name)
+
     def test_delivery_ci_supplies_explicit_temporary_root(self):
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        delivery = workflow.split("  delivery-harness:", 1)[1].split("  backend:", 1)[0]
-        self.assertIn("TMPDIR: ${{ runner.temp }}", delivery)
+        import re
+        import subprocess
+        import textwrap
+        for name in ("ci.yml", "native-clients.yml", "nightly-apk.yml"):
+            workflow = (ROOT / ".github/workflows" / name).read_text()
+            setup = re.search(r"(?m)^      - name: Prepare (?:temporary root|private build directories)\n"
+                              r"        run: \|\n((?:          .*\n)+)", workflow)
+            self.assertIsNotNone(setup, name)
+            assert setup is not None
+            with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as directory:
+                root = Path(directory)
+                runner = root / "runner"
+                runner.mkdir()
+                exported = root / "github-env"
+                env = {"PATH": os.environ["PATH"], "RUNNER_TEMP": str(runner), "GITHUB_ENV": str(exported)}
+                result = subprocess.run(["bash", "-eu", "-c", textwrap.dedent(setup[1])],
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(0, result.returncode, result.stderr)
+                values = dict(line.split("=", 1) for line in exported.read_text().splitlines())
+                self.assertEqual(str(runner if name == "ci.yml" else runner / "compose-tmp"), values["TMPDIR"])
+                self.assertTrue(Path(values["TMPDIR"]).is_dir())
+                if name != "ci.yml":
+                    self.assertEqual(str(runner / "compose-gradle"), values["GRADLE_USER_HOME"])
+                    self.assertTrue(Path(values["GRADLE_USER_HOME"]).is_dir())
 
     def test_vendored_source_pins_and_distributed_notices(self):
         pins = {

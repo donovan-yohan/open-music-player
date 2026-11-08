@@ -16,15 +16,15 @@ jobs:
       OMP_API_BASE_URL: https://fixture.invalid/api/v1
       OMP_SOURCE_REF: ${{ github.sha }}
       OMP_BUILD_ID: native-compose-${{ github.run_id }}-${{ github.run_attempt }}
-      GRADLE_USER_HOME: ${{ runner.temp }}/compose-gradle
-      TMPDIR: ${{ runner.temp }}/compose-tmp
       CMAKE_BUILD_PARALLEL_LEVEL: '1'
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Prepare private build directories
-        run: mkdir -p "$TMPDIR" "$GRADLE_USER_HOME"
+        run: |
+          mkdir -p "$RUNNER_TEMP/compose-tmp" "$RUNNER_TEMP/compose-gradle"
+          printf 'TMPDIR=%s\nGRADLE_USER_HOME=%s\n' "$RUNNER_TEMP/compose-tmp" "$RUNNER_TEMP/compose-gradle" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
