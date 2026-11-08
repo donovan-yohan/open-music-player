@@ -1,13 +1,81 @@
 name: Native Clients
 on:
   pull_request:
-    paths: ['native/**', 'scripts/native-client', '.github/workflows/native-clients.yml']
+    paths: ['native/**', 'android/**', 'client/native/**', 'scripts/native-client', 'scripts/android-product', 'scripts/test-android-product.py', 'scripts/test-native-publication.py', 'scripts/check-native-payload.py', 'scripts/test', 'scripts/lint', 'scripts/build', 'scripts/agentic-cycle', 'scripts/agentic-harness', 'scripts/dogfood-android', '.github/workflows/ci.yml', '.github/workflows/nightly-apk.yml', '.github/workflows/native-clients.yml']
   push:
     branches: [main]
-    paths: ['native/**', 'scripts/native-client', '.github/workflows/native-clients.yml']
+    paths: ['native/**', 'android/**', 'client/native/**', 'scripts/native-client', 'scripts/android-product', 'scripts/test-android-product.py', 'scripts/test-native-publication.py', 'scripts/check-native-payload.py', 'scripts/test', 'scripts/lint', 'scripts/build', 'scripts/agentic-cycle', 'scripts/agentic-harness', 'scripts/dogfood-android', '.github/workflows/ci.yml', '.github/workflows/nightly-apk.yml', '.github/workflows/native-clients.yml']
 permissions:
   contents: read
 jobs:
+  android-product:
+    name: Android Compose product
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      OMP_API_BASE_URL: https://fixture.invalid/api/v1
+      OMP_SOURCE_REF: ${{ github.sha }}
+      OMP_BUILD_ID: native-compose-${{ github.run_id }}-${{ github.run_attempt }}
+      GRADLE_USER_HOME: ${{ runner.temp }}/compose-gradle
+      TMPDIR: ${{ runner.temp }}/compose-tmp
+      CMAKE_BUILD_PARALLEL_LEVEL: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare private build directories
+        run: mkdir -p "$TMPDIR" "$GRADLE_USER_HOME"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+        with:
+          # The action's default also requests the retired "tools" package.
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Install pinned SDK and host fixture tools
+        run: |
+          mkdir -p "$TMPDIR" "$GRADLE_USER_HOME"
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build ffmpeg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Check native publication tooling
+        run: |
+          python3 -B scripts/test-android-product.py
+          python3 -B scripts/test-native-publication.py
+          python3 -B scripts/check-native-payload.py
+          python3 scripts/android-product preflight
+      - name: Test, assemble and lint the Compose product
+        run: |
+          export PATH="$ANDROID_HOME/cmake/3.22.1/bin:$PATH"
+          python3 scripts/android-product check -Pkotlin.compiler.execution.strategy=in-process '-Dorg.gradle.jvmargs=-Xmx3g -XX:ActiveProcessorCount=2'
+      - name: Upload Compose debug APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: soundq-android-compose-${{ github.sha }}-debug
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7
+      - name: Preserve Compose test and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soundq-android-compose-${{ github.sha }}-checks
+          path: |
+            android/app/build/test-results/testDebugUnitTest/TEST-*.xml
+            android/designsystem/build/test-results/testDebugUnitTest/TEST-*.xml
+            android/app/build/reports/lint-results-debug.*
+            android/designsystem/build/reports/lint-results-debug.*
+          if-no-files-found: warn
+          include-hidden-files: false
+          retention-days: 7
   core:
     name: Native Rust core
     runs-on: ubuntu-latest

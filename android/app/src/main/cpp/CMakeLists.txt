@@ -1,0 +1,25 @@
+cmake_minimum_required(VERSION 3.22)
+project(soundq_android_mix LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(ANDROID)
+  # NDK r27 defaults to 4 KiB. Apply both flags to every packaged native target.
+  add_link_options("-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")
+endif()
+# AGP invokes Ninja directly. This job pool also fences its builds to one compiler.
+set_property(GLOBAL PROPERTY JOB_POOLS soundq_lane=1)
+set(CMAKE_JOB_POOL_COMPILE soundq_lane)
+set(CMAKE_JOB_POOL_LINK soundq_lane)
+set(SQ_DEVICE_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../../../../client/native/device_host" device_host)
+add_library(soundq_mix_android SHARED mix_bridge.cpp)
+target_link_libraries(soundq_mix_android PRIVATE soundq_device)
+target_include_directories(soundq_mix_android PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../client/native/opus_decoder/include")
+target_compile_options(soundq_mix_android PRIVATE -Wall -Wextra -Wpedantic -Werror)
+if(NOT ANDROID)
+  find_package(JNI REQUIRED)
+  target_include_directories(soundq_mix_android PRIVATE ${JNI_INCLUDE_DIRS})
+endif()
+# Production callback host is independent of the retained inactive legacy mixer.
+add_subdirectory(nativeengine)

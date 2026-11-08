@@ -14,6 +14,8 @@ jobs:
   delivery-harness:
     name: Delivery Harness
     runs-on: ubuntu-latest
+    env:
+      TMPDIR: ${{ runner.temp }}
 
     steps:
       - name: Checkout code
@@ -203,28 +205,8 @@ jobs:
       - name: Test opted-in fixture refusal and credential-session isolation
         run: flutter test --no-pub --concurrency=1 --dart-define=SOUNDQ_PERFORMANCE_FIXTURE=true test/performance_fixture_test.dart test/performance_fixture_source_test.dart test/performance_fixture_export_test.dart
 
-      - name: Tune Gradle for CI APK build
-        if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          cat >> android/gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx3g -Xms512m -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
-          org.gradle.workers.max=2
-          kotlin.daemon.jvmargs=-Xmx1g -XX:MaxMetaspaceSize=512m
-          EOF
-
-      - name: Build debug APK
-        if: ${{ github.event_name == 'pull_request' }}
-        timeout-minutes: 30
-        run: ../scripts/build client
-
-      - name: Upload debug APK artifact
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: open-music-player-pr-${{ github.event.pull_request.number }}-debug-apk
-          path: client/build/app/outputs/flutter-apk/app-debug.apk
-          if-no-files-found: error
-          retention-days: 7
+      - name: Build Flutter web
+        run: ../scripts/build client-web
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4

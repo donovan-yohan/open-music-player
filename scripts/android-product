@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Build/check the Compose product without installing or starting Android.
+
+The older native/android preview remains a separate target. Host tests compile
+this product's actual JNI bridge and generate synthetic codec fixtures first.
+"""
+import argparse
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+from urllib.parse import urlsplit
+
+ROOT = Path(__file__).resolve().parents[1]
+ANDROID = ROOT / "android"
+
+
+def run(argv, env):
+    subprocess.run(list(map(str, argv)), cwd=ANDROID, env=env, check=True)
+
+
+def checked_temp_directory(value):
+    path = Path(value)
+    if not path.is_absolute() or not path.is_dir() or path.resolve() != path:
+        raise ValueError("TMPDIR must be an existing canonical directory; set a caller-owned test directory explicitly")
+    if any(part.is_symlink() for part in (path, *path.parents)):
+        raise ValueError("TMPDIR must not have symlink ancestors")
+    return str(path)
+
+
+def gradle_options(extra):
+    # Gradle rejects duplicate value options, including an identical worker cap.
+    defaults = []
+    if not any(arg == "--max-workers" or arg.startswith("--max-workers=") for arg in extra):
+        defaults.append("--max-workers=1")
+    if "--no-daemon" not in extra and "--daemon" not in extra:
+        defaults.append("--no-daemon")
+    return [*defaults, *extra]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("build", "test", "lint", "check", "preflight"))
+    args, extra = parser.parse_known_args()
+    env = os.environ.copy()
+    required = ("JAVA_HOME", "ANDROID_HOME", "GRADLE_USER_HOME", "TMPDIR", "OMP_API_BASE_URL", "OMP_SOURCE_REF", "OMP_BUILD_ID")
+    missing = [key for key in required if not env.get(key)]
+    if missing:
+        parser.error("Set explicitly: " + ", ".join(missing))
+    try:
+        env["TMPDIR"] = checked_temp_directory(env["TMPDIR"])
+    except ValueError as error:
+        parser.error(str(error))
+    for name in ("JAVA_HOME", "ANDROID_HOME", "GRADLE_USER_HOME"):
+        if not Path(env[name]).is_absolute() or not Path(env[name]).is_dir():
+            parser.error(name + " must be an existing absolute directory")
+    api = urlsplit(env["OMP_API_BASE_URL"])
+    if (api.scheme != "https" or not api.hostname or api.username or api.password
+            or api.query or api.fragment or not api.path.endswith("/api/v1")
+            or any(c.isspace() or ord(c) < 32 or c in '\"\\' for c in env["OMP_API_BASE_URL"])):
+        parser.error("OMP_API_BASE_URL must be a credential-free HTTPS API base ending in /api/v1")
+    tools = ["cmake", "ffmpeg", "ffprobe"] if args.action in ("test", "check", "preflight") else []
+    for tool in tools:
+        if shutil.which(tool) is None:
+            parser.error("Missing required tool on PATH: " + tool)
+    env["SOUNDQ_PYTHON"] = sys.executable
+    env.setdefault("CMAKE_BUILD_PARALLEL_LEVEL", "1")
+    run([sys.executable, "-B", "scripts/check-design.py"], env)
+    subprocess.run([sys.executable, "-B", str(ROOT / "scripts/check-native-payload.py")], cwd=ROOT, env=env, check=True)
+    if args.action == "preflight":
+        jdk = Path(env.get("SOUNDQ_HOST_JAVA_HOME", env["JAVA_HOME"]))
+        for path in (jdk / "include/jni.h", Path(env["JAVA_HOME"]) / "bin/java",
+                     Path(env["ANDROID_HOME"]) / "platforms/android-37.0/android.jar",
+                     Path(env["ANDROID_HOME"]) / "ndk/27.1.12297006/source.properties",
+                     Path(env["ANDROID_HOME"]) / "cmake/3.22.1/bin/cmake"):
+            if not path.is_file():
+                parser.error("Missing toolchain input: " + str(path))
+        print("Android product preflight passed. No compilation or device claim.")
+        return
+    tasks = []
+    if args.action in ("test", "check"):
+        host = ANDROID / "build/native-host"
+        fixture = ANDROID / "build/native-fixtures/mix"
+        listening = ANDROID / "build/native-fixtures/listening"
+        output = ANDROID / "build/native-fixtures/listening-output"
+        listening.mkdir(parents=True, exist_ok=True)
+        output.mkdir(parents=True, exist_ok=True)
+        host_env = dict(env, JAVA_HOME=env.get("SOUNDQ_HOST_JAVA_HOME", env["JAVA_HOME"]))
+        if not (Path(host_env["JAVA_HOME"]) / "include/jni.h").is_file():
+            parser.error("JNI headers missing; set SOUNDQ_HOST_JAVA_HOME to a full JDK")
+        run(["cmake", "-S", "app/src/main/cpp", "-B", host, "-DCMAKE_BUILD_TYPE=Debug"], host_env)
+        run(["cmake", "--build", host, "--parallel", env["CMAKE_BUILD_PARALLEL_LEVEL"]], host_env)
+        run([sys.executable, "scripts/test-native-mix.py", host, fixture], env)
+        arrangement = fixture / "arrangement.opus"
+        shutil.copyfile(ANDROID / "app/src/androidTest/assets/arrangement.opus", arrangement)
+        run(["ffmpeg", "-v", "error", "-y", "-i", arrangement, "-f", "f32le",
+             fixture / "arrangement.decoded"], env)
+        for name, frequency in (("a", 223), ("b", 557)):
+            source = listening / (name + ".opus")
+            run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                 f"sine=frequency={frequency}:sample_rate=48000:duration=10",
+                 "-ac", "2", "-c:a", "libopus", source], env)
+            run(["ffmpeg", "-v", "error", "-y", "-i", source, "-f", "f32le",
+                 listening / (name + ".decoded")], env)
+        suffix = "dylib" if sys.platform == "darwin" else "so"
+        env["SOUNDQ_MIX_HOST_LIBRARY"] = str(host / ("libsoundq_mix_android." + suffix))
+        env["SOUNDQ_MIX_FIXTURE"] = str(fixture)
+        env["SOUNDQ_LISTENING_FIXTURE"] = str(listening)
+        env["SOUNDQ_LISTENING_OUTPUT"] = str(output)
+        tasks += [":app:testDebugUnitTest", ":designsystem:testDebugUnitTest"]
+    if args.action in ("build", "check"):
+        tasks += [":app:assembleDebug", ":app:assembleDebugAndroidTest"]
+    if args.action in ("lint", "check"):
+        tasks += [":app:lintDebug", ":designsystem:lintDebug"]
+    run(["./gradlew", *tasks, *gradle_options(extra)], env)
+
+
+if __name__ == "__main__":
+    main()

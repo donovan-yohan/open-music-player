@@ -378,14 +378,26 @@ test('preflight fails closed until opt-in and Anko verified inputs, writes local
 
 test('dogfood refuses a missing or invalid API value before creating evidence or building', () => {
   const bin = path.join(scratch, 'bin'); fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, 'flutter'), '#!/bin/sh\nexit 97\n', { mode: 0o755 });
+  const launched = path.join(scratch, 'dogfood-build-launched');
+  for (const name of ['flutter', 'java', 'cmake', 'ffmpeg', 'ffprobe', 'ninja', 'gradle', 'adb']) {
+    fs.writeFileSync(path.join(bin, name), `#!${process.execPath}\n` +
+      `require('node:fs').writeFileSync(${JSON.stringify(launched)}, ${JSON.stringify(name)}); process.exit(97);\n`, { mode: 0o755 });
+  }
+  // Reach URL validation without depending on an installed Android toolchain.
+  const prerequisites = Object.fromEntries(['JAVA_HOME', 'ANDROID_HOME', 'GRADLE_USER_HOME'].map(key => {
+    const directory = path.join(scratch, key); fs.mkdirSync(directory);
+    return [key, directory];
+  }));
   for (const value of ['', 'ftp://host.test/api', 'https://host.test/api?x=1']) {
     const evidence = path.join(scratch, 'dogfood-' + value.length);
     const result = spawnSync('bash', [path.join(root, 'scripts/dogfood-android'), 'build'], {
-      encoding: 'utf8', env: { ...process.env, PATH: bin + ':' + process.env.PATH, OMP_API_BASE_URL: value, OMP_DOGFOOD_EVIDENCE_DIR: evidence },
+      encoding: 'utf8', env: { ...process.env, ...prerequisites, PATH: bin + ':' + process.env.PATH,
+        OMP_SOURCE_REF: '1'.repeat(40), OMP_BUILD_ID: 'fixture-only',
+        OMP_API_BASE_URL: value, OMP_DOGFOOD_EVIDENCE_DIR: evidence },
     });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /OMP_API_BASE_URL/);
     assert(!fs.existsSync(evidence));
+    assert(!fs.existsSync(launched), 'invalid API must not launch build or device tools');
   }
 });
