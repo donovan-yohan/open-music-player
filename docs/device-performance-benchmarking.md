@@ -45,7 +45,9 @@ Two things follow, and the first is much larger than the second:
 1. **Build mode dominates.** A Flutter debug build runs Dart under the JIT with
    assertions on. It roughly doubles UI-thread cost and doubles the late-frame
    rate. Dogfooding a debug APK reports jank the shipped app does not have,
-   which is why `scripts/dogfood-android` now defaults to `--profile`.
+   which is why the historical Flutter dogfood path used `--profile`.
+   Android dogfood now selects native Compose; these historical Flutter numbers
+   are not native performance evidence.
 2. **The notification-storm fix is real but secondary on this device.** It
    removed genuine waste — 4 `PlaybackState` notifications per tick down to 1,
    and 1293 widgets rebuilt per notification down to 1, both gated by

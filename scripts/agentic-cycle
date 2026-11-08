@@ -132,7 +132,9 @@ def is_test_path(path: str) -> bool:
 def components_for(files: Iterable[str]) -> set[str]:
     components: set[str] = set()
     for path in files:
-        if path.startswith("native/"):
+        if path.startswith("android/") or path in {"scripts/android-product", "scripts/test-android-product.py", "scripts/check-native-payload.py", "scripts/test-native-publication.py"}:
+            components.add("android-product")
+        elif path.startswith("native/"):
             components.add("native")
         elif path.startswith("backend/"):
             components.add("backend")
@@ -140,6 +142,8 @@ def components_for(files: Iterable[str]) -> set[str]:
                 components.add("analyzer")
         elif path.startswith("client/"):
             components.add("client")
+            if path.startswith("client/native/"):
+                components.add("android-product")
         elif path.startswith("extension/"):
             components.add("extension")
         elif path.startswith("docker-compose"):
@@ -159,6 +163,8 @@ def components_for(files: Iterable[str]) -> set[str]:
 def needs_mobile_audio_device(files: Iterable[str]) -> bool:
     markers = (
         "native/",
+        "android/",
+        "client/native/",
         "client/android/",
         "client/lib/core/audio/",
         "client/lib/core/engine/",
@@ -270,6 +276,15 @@ def plan_gates(
                 )
             )
 
+    if "android-product" in components:
+        gates.extend([
+            Gate("Android Compose tests", ("scripts/test", "android-product"), "Host JNI fixtures and Compose product unit tests"),
+            Gate("Android Compose lint", ("scripts/lint", "android-product"), "Product and design-system Android lint"),
+        ])
+        if include_build:
+            gates.append(Gate("Android Compose APKs", ("scripts/build", "android-product"), "Product and instrumentation assembly, never installation"))
+        manual.append(Gate("Android Compose runtime", ("scripts/dogfood-android", "all"), "Separately authorized exact native target/artifact and compatible signer required; --include-device alone never grants installation. See android/README.md"))
+
     if "native" in components:
         gates.append(Gate("native core tests", ("scripts/test", "native"), "Rust ABI/lifecycle regression suite"))
         manual.append(Gate("native platform qualification", ("python3", "scripts/native-client", "all"), "Native build/test only; separate Mac and explicitly selected emulator runtime/performance receipts required; never installs automatically"))
@@ -283,7 +298,7 @@ def plan_gates(
         )
         if include_build:
             gates.append(
-                Gate("client build", ("scripts/build", "client"), "debug APK build")
+                Gate("client build", ("scripts/build", "client-web"), "supported Flutter web build")
             )
 
     if "extension" in components:
@@ -298,22 +313,11 @@ def plan_gates(
                 Gate("extension build", ("scripts/build", "extension"), "extension package build")
             )
 
-    if include_device and ("client" in components or "native" not in components):
-        gates.append(
-            Gate(
-                "android dogfood",
-                ("scripts/dogfood-android", "all"),
-                "physical Android playback/device evidence",
-            )
-        )
-    elif requires_android_dogfood and ("client" in components or "native" not in components):
-        manual.append(
-            Gate(
-                "android dogfood",
-                ("scripts/dogfood-android", "all"),
-                "required when the central claim depends on Android/audio/device behavior",
-            )
-        )
+    if requires_android_dogfood and "client" in components:
+        manual.append(Gate(
+            "Flutter supported-platform runtime", ("scripts/build", "client-web"),
+            "Shared Flutter changes require supported web/desktop runtime evidence; native Android dogfood cannot certify Flutter behavior",
+        ))
 
     seen: set[tuple[str, ...]] = set()
     deduped: list[Gate] = []
@@ -426,6 +430,8 @@ def build_payload(args: argparse.Namespace) -> tuple[dict, list[Gate], list[Gate
 
 def self_test() -> int:
     cases = [
+        (["android/app/src/main/kotlin/com/soundq/android/product/ProductApp.kt"], "mobile-audio-device", {"android-product"}, True),
+        (["client/native/transport/src/soundq_transport.cpp"], "mobile-audio-device", {"client", "android-product"}, True),
         (["native/core/src/lib.rs"], "mobile-audio-device", {"native"}, True),
         (["native/macos/Sources/main.swift"], "mobile-audio-device", {"native"}, True),
         (["native/android/app/src/main/java/MainActivity.kt"], "mobile-audio-device", {"native"}, True),
@@ -487,44 +493,20 @@ def self_test() -> int:
         if got_android != expected_android:
             failures.append(f"{files}: android {got_android!r} != {expected_android!r}")
 
-    gates, manual = plan_gates(
-        {"client"},
-        include_build=False,
-        include_smoke=False,
-        include_device=False,
-        requires_android_dogfood=True,
-    )
-    if ("scripts/dogfood-android", "all") in {gate.command for gate in gates}:
-        failures.append("android dogfood should be manual unless --include-device is set")
-    if ("scripts/dogfood-android", "all") not in {gate.command for gate in manual}:
-        failures.append("mobile/audio plan must list android dogfood as manual evidence")
-
-    gates, manual = plan_gates(
-        {"client"},
-        include_build=False,
-        include_smoke=False,
-        include_device=True,
-        requires_android_dogfood=True,
-    )
-    if manual:
-        failures.append("android dogfood manual gate should be empty when --include-device is set")
-    if ("scripts/dogfood-android", "all") not in {gate.command for gate in gates}:
-        failures.append("mobile/audio plan must run android dogfood with --include-device")
-
-    for components in ({"native"}, {"client"}, {"native", "client"}):
+    for components in ({"native"}, {"client"}, {"android-product"}, {"native", "client"}, {"android-product", "client"}):
         for include_device in (False, True):
             gates, manual = plan_gates(
-                components,
-                include_build=False,
-                include_smoke=False,
-                include_device=include_device,
-                requires_android_dogfood=True,
+                components, include_build=False, include_smoke=False,
+                include_device=include_device, requires_android_dogfood=True,
             )
             dogfood = ("scripts/dogfood-android", "all")
-            if (dogfood in {g.command for g in gates}) != ("client" in components and include_device):
-                failures.append(f"{components}: explicit device gate lost or misrouted")
-            if (dogfood in {g.command for g in manual}) != ("client" in components and not include_device):
-                failures.append(f"{components}: manual device gate lost or misrouted")
+            if dogfood in {g.command for g in gates}:
+                failures.append(f"{components}: native install must remain separately authorized")
+            if (dogfood in {g.command for g in manual}) != ("android-product" in components):
+                failures.append(f"{components}: native runtime evidence lost or misrouted")
+            flutter = ("scripts/build", "client-web")
+            if (flutter in {g.command for g in manual}) != ("client" in components):
+                failures.append(f"{components}: supported Flutter runtime evidence lost or misrouted")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         path = Path(temp_dir) / "evidence.json"
@@ -584,7 +566,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--include-device",
         action="store_true",
-        help="run Android dogfood instead of listing it as manual evidence",
+        help="retained compatibility flag; native installation remains separately authorized manual evidence",
     )
     parser.add_argument(
         "--evidence",

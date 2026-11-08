@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import re
@@ -53,6 +54,14 @@ TEXT_SUFFIXES = {
     ".js",
     ".json",
     ".lock",
+    ".kt",
+    ".kts",
+    ".cpp",
+    ".hpp",
+    ".c",
+    ".h",
+    ".toml",
+    ".cmake",
     ".md",
     ".py",
     ".sh",
@@ -277,6 +286,17 @@ def check_agent_docs() -> None:
 
 
 def check_ci_wires_harness() -> None:
+    native = ROOT / ".github/workflows/native-clients.yml"
+    if not native.is_file():
+        fail(".github/workflows/native-clients.yml: missing native validation workflow")
+    else:
+        text = native.read_text()
+        for phrase in ("android/**", "client/native/**", "Android Compose product", "scripts/android-product check", "android/app/build/outputs/apk/debug/app-debug.apk"):
+            if phrase not in text:
+                fail(".github/workflows/native-clients.yml: missing Compose contract " + phrase)
+    for name in ("AGENTS.md", "docs/context-map.md", "android/README.md"):
+        if "android-product" not in (ROOT / name).read_text():
+            fail(name + ": missing explicit android-product target")
     path = ROOT / ".github/workflows/ci.yml"
     if not path.exists():
         return
@@ -290,7 +310,7 @@ def check_ci_wires_harness() -> None:
         "scripts/build backend",
         "scripts/lint client",
         "scripts/test client",
-        "scripts/build client",
+        "scripts/build client-web",
         "scripts/lint extension",
         "scripts/test extension",
         "scripts/build extension",
@@ -298,7 +318,7 @@ def check_ci_wires_harness() -> None:
         "scripts/smoke isolated",
         "scripts/smoke playback-isolated",
         "fetch-depth: 0",
-        "Upload debug APK artifact",
+        "Build Flutter web",
     ]
     for phrase in required_phrases:
         if phrase not in text:
@@ -477,6 +497,7 @@ def check_python_syntax(files: list[Path]) -> None:
             "scripts/agentic-harness",
             "scripts/agentic-cycle",
             "scripts/release-audit",
+            "scripts/android-product",
         }:
             continue
         try:
@@ -514,6 +535,20 @@ def check_bash_syntax(files: list[Path]) -> None:
             fail(f"{rel(path)}: bash syntax error: {result.stderr.strip()}")
 
 
+# Exact malformed-URL negative controls, not credentials. Bind exceptions to both
+# source path and complete line digest; any added or changed value is scanned.
+SECRET_SCAN_FIXTURES = {
+    "android/app/src/test/kotlin/com/soundq/android/data/EndpointTest.kt":
+        "8ce497abc4159586244f30a7a9f3c66b1ca9fe72205b584f31e630d28516fcf7",
+    "android/scripts/test-library-artwork.py":
+        "2ad8c60f5bbdf6613be16b1b6b2aa752f793a4385d66b7dd7f03fdffb9f45813",
+}
+
+
+def secret_scan_fixture(path: str, line: str) -> bool:
+    return SECRET_SCAN_FIXTURES.get(path) == hashlib.sha256(line.encode()).hexdigest()
+
+
 def check_secret_scan(files: list[Path]) -> None:
     for path in files:
         text = read_text(path)
@@ -521,6 +556,8 @@ def check_secret_scan(files: list[Path]) -> None:
             continue
         for line_no, line in enumerate(text.splitlines(), 1):
             low = line.lower()
+            if secret_scan_fixture(rel(path), line):
+                continue
             if any(hint in low for hint in PLACEHOLDER_HINTS):
                 continue
             if any(pattern.search(line) for pattern in SECRET_PATTERNS):
@@ -695,7 +732,7 @@ def check_agentic_cycle_contracts() -> None:
         "OMP_SOURCE_REF",
         "OMP_BUILD_ID",
         "APK SHA256",
-        "adb devices -l",
+        'adb -s "$ANDROID_SERIAL" devices -l',
         "ADB_SERVER_SOCKET",
     ]:
         if phrase not in dogfood_text:

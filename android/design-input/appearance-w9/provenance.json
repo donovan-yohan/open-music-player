@@ -1,0 +1,25 @@
+{
+  "kind": "consumed-subset-not-full-release",
+  "archiveSha256": "18167cb99f3ec2e1c1259b56b1c70a5c4559f851dbaee65cb44207dab421098d",
+  "releaseManifestSha256": "82c7cc37d81b80842d360fbeb1f6abda02cca4d1e696f36b7eebc37106dc9131",
+  "publicationTransforms": {
+    "INPUTS.json": {
+      "sourceSha256": "55c913b7f113ad22caa23f4306e865f20c3bbbb11f041dc317d72e1bbe243507",
+      "operation": "Replace the author workstation prefix with a logical repository-relative design input identifier. Input digests and canonical token bytes are unchanged. Source MANIFEST.json remains the historical release manifest, not a checksum of transformed publication metadata."
+    }
+  },
+  "files": {
+    "MANIFEST.json": "82c7cc37d81b80842d360fbeb1f6abda02cca4d1e696f36b7eebc37106dc9131",
+    "INPUTS.json": "39de6edc58e0b3c89e12a9094972bf05f8f865baec17a12733c8224a04905a43",
+    "CONTRACT.json": "8b9c245292cf53443f6d14ddd19bad8325fa78063ddb9efb297f8e7669153358",
+    "HANDOFF.md": "9bec7bbc4bb2b03cd13cd8991e04434bd31a7384eba44bcf212e9a6a0a5703c5",
+    "build.py": "480502f8358e41c868dcf227d721e5ceae1f43c495a54ba7cb99298b76b22011",
+    "canonical/tokens/soundq.tokens.json": "68015c1afa0bd52efee6df854be0e9d9c64d6a339d2430f95201830390e0487c",
+    "tools/build_tokens.py": "913b24c7c988792da6a4466d0a2e172ea5b374d621c0d8dcf1cf9c8b2b2b2f8c",
+    "tokens/shared.roles.json": "6f7685ecb0033a96f07814c57eed86a52afb6991a71dc76ced8d48c5e957280b",
+    "tokens/light.overlay.json": "367607472dcf73e4ba867deea0aa57a1e2f994f70bb6c52fc3a6994873e6ae28",
+    "generated/dark.SoundQComposeTokens.kt": "dec88f814f8d429ffe78a8d92ec51caefe947f3834521c8798caff7f4fd9e9e3",
+    "generated/light.SoundQComposeTokens.kt": "905f535f1f3bdb13c3efe48b1a660fdc2e1eeb50e80660d28bcc70ac1792cb54",
+    "generated/SoundQAppearanceMapping.kt": "92f70507581f3a25a6500073d65fefddf3d17737228445bd8f36947c9ecc2373"
+  }
+}

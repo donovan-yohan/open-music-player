@@ -4,7 +4,9 @@ A self-hosted music library management system that allows you to save, organize,
 
 ## Architecture
 
-Open Music Player consists of three main components:
+Open Music Player has a Go backend, native Android product, supported Flutter
+web/desktop client and browser extension. The diagram below shows the shared
+backend/infrastructure; native Android also consumes this Go API.
 
 ```
 ┌─────────────────┐     ┌─────────────────┐
@@ -32,7 +34,10 @@ Open Music Player consists of three main components:
 **Components:**
 
 - **Backend (Go)**: REST API server handling authentication, track management, playlists, downloads, and signed audio URL issuance
-- **Client (Flutter)**: Cross-platform client for iOS, Android, macOS, Windows, Linux, and web
+- **Android (Kotlin/Compose)**: Supported Android product in `android/`. See
+  [native setup/checks](android/README.md) and [PR/nightly artifacts and recovery](docs/ANDROID_PR_ARTIFACTS.md).
+- **Client (Flutter)**: Supported web/desktop/shared code. Flutter Android is
+  deprecated, retained for explicit recovery without removing installed apps/data.
 - **Extension (TypeScript)**: Browser extension for Chrome/Firefox to save tracks from YouTube and SoundCloud
 
 **Infrastructure:**
@@ -174,7 +179,8 @@ flutter run -d macos    # macOS
 flutter run -d windows  # Windows
 flutter run -d linux    # Linux
 flutter run -d chrome   # Web
-flutter run             # Connected mobile device
+
+# Android uses android/ and scripts/android-product instead of Flutter.
 ```
 
 Configure the API endpoint in the client settings to point to your backend (default: `http://localhost:8080`).
@@ -397,7 +403,10 @@ Use [`docs/MAINTENANCE_REPAIR.md`](docs/MAINTENANCE_REPAIR.md) to safely re-run 
 
 ### Android PR artifacts
 
-Pull request CI builds a debug Android APK after Flutter analyze and tests pass. See [`docs/ANDROID_PR_ARTIFACTS.md`](docs/ANDROID_PR_ARTIFACTS.md) for download, install, and real-device smoke steps.
+Native Clients CI checks and assembles the Kotlin/Compose Android product.
+Flutter Android is deprecated; required Flutter shared checks remain. See
+[`docs/ANDROID_PR_ARTIFACTS.md`](docs/ANDROID_PR_ARTIFACTS.md) for artifacts,
+explicit private endpoint builds, compatible updates and legacy recovery.
 
 ### Client Distribution
 
@@ -406,8 +415,8 @@ Build release versions of the Flutter client:
 ```bash
 cd client
 
-# Android APK
-flutter build apk --release
+# Android is native. From the repository root, follow android/README.md.
+# Explicit legacy recovery only: scripts/build client-flutter-android-legacy
 
 # iOS (requires macOS and Xcode)
 flutter build ios --release
@@ -424,56 +433,18 @@ flutter build web --release
 
 ## Nightly Android APK
 
-Every push to `main` builds a debug APK automatically via the
-[`nightly-apk`](.github/workflows/nightly-apk.yml) workflow. There are no
-formal releases — just one rolling artifact, overwritten on each build
-(7-day retention).
+Every push to `main` validates and assembles the native Compose Android product
+through [`nightly-apk`](.github/workflows/nightly-apk.yml). Download `soundq-nightly`
+from that run's **Artifacts** section (seven-day retention). Older runs expire by
+retention; the workflow does not delete artifacts from other runs.
 
-**To download the latest nightly:**
-
-1. Go to the repo's [Actions tab](../../actions) and open the most recent
-   **nightly-apk** run.
-2. Download the `soundq-nightly` artifact from the run's **Artifacts**
-   section (you must be signed in to GitHub).
-3. Install the APK on an Android device ("install unknown apps" permission
-   may be required).
-
-**What the nightly needs to connect to a backend:**
-
-The APK is built with an API base URL baked in at compile time. Which URL
-depends on how the repo is configured:
-
-- **Default (no configuration):** the emulator loopback address
-  `http://10.0.2.2:8080/api/v1` — this only works from an Android emulator
-  running the stack on the same host.
-- **With the `OMP_NIGHTLY_API_BASE_URL` repository variable set:** that URL
-  is baked in instead. Point it at your backend, e.g.
-  `http://your-host:8080/api/v1`, reachable from the device's network.
-
-To set or change it: repo **Settings → Secrets and variables → Actions →
-Variables →** new variable `OMP_NIGHTLY_API_BASE_URL`. The next nightly
-build picks it up; the current value is printed in each run's summary.
-
-**Self-hosting checklist for your own device:**
-
-1. Run the backend somewhere the phone can reach (see
-   [Deployment](#deployment) or the low-memory local stack above).
-2. Ensure the queue/download endpoints you need are enabled (Redis +
-   downloads profile) — see `scripts/local-low-memory.sh`.
-3. Set `OMP_NIGHTLY_API_BASE_URL` to your backend's `/api/v1` root and let
-   the workflow rebuild, or build locally:
-
-   ```bash
-   cd client
-   flutter build apk --debug \
-     --dart-define=OMP_API_BASE_URL=http://your-host:8080/api/v1
-   ```
-
-4. Register a user against that backend (`POST /api/v1/auth/register`) and
-   sign in from the app.
-
-Note: debug builds sign with the default debug keystore and are intended for
-development/personal use only.
+Public PR/nightly APKs use the synthetic `https://fixture.invalid/api/v1` endpoint.
+They do not connect to a real account, and no repository endpoint variable is
+consumed. For a private usable build, follow [native setup](android/README.md)
+and explicitly supply the approved HTTPS backend, source reference and build ID.
+See [artifact and recovery boundaries](docs/ANDROID_PR_ARTIFACTS.md) before any
+installation. No incompatible update, automatic Flutter data migration or full
+native parity is promised.
 
 ## Development Notes
 
