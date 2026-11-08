@@ -165,7 +165,8 @@ extern "C" JNIEXPORT jlong JNICALL Java_com_soundq_android_playback_mix_NativeMi
   std::vector<jlong> clips(cn),events(en);std::vector<jfloat> gains(gn),eg(egn);
   env->GetLongArrayRegion(clip_array,0,cn,clips.data());env->GetFloatArrayRegion(gain_array,0,gn,gains.data());env->GetLongArrayRegion(event_array,0,en,events.data());env->GetFloatArrayRegion(event_gain_array,0,egn,eg.data());
   auto h=sq_android_open(paths.data(),n,reinterpret_cast<const int64_t*>(clips.data()),gn,gains.data(),reinterpret_cast<const int64_t*>(events.data()),eg.data(),egn);
-  if(!h)fail(env);return reinterpret_cast<jlong>(h);
+  if(!h)fail(env);
+  return reinterpret_cast<jlong>(h);
  }catch(...){fail(env);return 0;}
 }
 extern "C" JNIEXPORT void JNICALL Java_com_soundq_android_playback_mix_NativeMix_render(JNIEnv* env,jobject,jlong h,jlong start,jint count,jbyteArray bytes) {
