@@ -18,7 +18,7 @@ internal class AdmissionHistory(private val file:File?=null,private val binding:
     private val approvals=linkedMapOf<String,ApprovalIntent>()
     private var accepted:ByteArray?=null
     private var retainedDirectoryKey:Any?=null
-    private var retainedFileKey:Any?=null
+    private var retainedFileIdentity:Any?=null
     init {
         require((file==null)==(binding==null))
         if(file!=null) {
@@ -26,7 +26,7 @@ internal class AdmissionHistory(private val file:File?=null,private val binding:
             safePath();require(Files.isDirectory(file.parentFile!!.toPath(),NOFOLLOW_LINKS))
             retainedDirectoryKey=identity(file.parentFile!!)
             accepted=read()
-            if(accepted!=null)retainedFileKey=identity(file)
+            if(accepted!=null)retainedFileIdentity=journalIdentity(file)
             accepted?.let {raw ->
                 val body=Json.parseToJsonElement(raw.toString(Charsets.UTF_8)).jsonObject
                 val version=number(body,"version");require(version in 1L..2L)
@@ -110,10 +110,15 @@ internal class AdmissionHistory(private val file:File?=null,private val binding:
         return file.readBytes().also {require(it.size in 1..65536)}
     }
     private fun identity(file:File)=Files.readAttributes(file.toPath(),BasicFileAttributes::class.java,NOFOLLOW_LINKS).fileKey().also {require(it!=null)}
+    // Linux may reuse a deleted inode. Retain the journal's full-precision time
+    // evidence too, never directory mtime (our own stage changes it).
+    private fun journalIdentity(file:File)=Files.readAttributes(file.toPath(),BasicFileAttributes::class.java,NOFOLLOW_LINKS).let {
+        Triple(requireNotNull(it.fileKey()),it.creationTime(),it.lastModifiedTime())
+    }
     private fun unchanged() {
         safePath();check(identity(file!!.parentFile!!)==retainedDirectoryKey)
         val current=read()
-        check(if(current==null)retainedFileKey==null else identity(file)==retainedFileKey)
+        check(if(current==null)retainedFileIdentity==null else journalIdentity(file)==retainedFileIdentity)
         check(if(current==null)accepted==null else accepted?.contentEquals(current)==true)
     }
     private fun commit(next:LinkedHashMap<String,Attempt>,nextApprovals:LinkedHashMap<String,ApprovalIntent> = LinkedHashMap(approvals)) {
@@ -140,8 +145,9 @@ internal class AdmissionHistory(private val file:File?=null,private val binding:
             FileOutputStream(stage).use {it.write(bytes);it.fd.sync()}
             unchanged();check(owned())
             Files.move(stage.toPath(),file.toPath(),ATOMIC_MOVE,REPLACE_EXISTING)
-            check(identity(parent)==retainedDirectoryKey&&identity(file)==stageKey)
-            accepted=bytes;retainedFileKey=stageKey;attempts.clear();attempts.putAll(next);approvals.clear();approvals.putAll(nextApprovals)
+            val published=journalIdentity(file)
+            check(identity(parent)==retainedDirectoryKey&&published.first==stageKey)
+            accepted=bytes;retainedFileIdentity=published;attempts.clear();attempts.putAll(next);approvals.clear();approvals.putAll(nextApprovals)
         }finally {if(owned())stage.delete()}
     }
 }

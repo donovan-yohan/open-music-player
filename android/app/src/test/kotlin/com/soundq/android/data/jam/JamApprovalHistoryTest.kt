@@ -4,6 +4,8 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.StandardCopyOption.*
+import java.nio.file.attribute.FileTime
 import java.util.UUID
 
 /** Durable consent journal semantics, not backend or canonical queue proof. */
@@ -60,6 +62,40 @@ class JamApprovalHistoryTest {
         val request=id();val history=AdmissionHistory(file,binding);history.beginApproval(request,ApprovalIntent(fingerprint,1,"fixture-service:1",id()))
         val bytes=file.readBytes();check(file.delete());file.writeBytes(bytes)
         assertTrue(runCatching {history.confirmApproval(request,key)}.isFailure)
+        assertArrayEquals(bytes,file.readBytes());assertFalse(history.approval(request)!!.confirmed)
+        assertFalse(AdmissionHistory(file,binding).approval(request)!!.confirmed)
+    }
+    @Test fun staleJournalOwnerCannotConfirmAfterDistinctIdenticalByteAtomicReplacement()=fixture {file ->
+        val request=id();val history=AdmissionHistory(file,binding);history.beginApproval(request,ApprovalIntent(fingerprint,1,"fixture-service:1",id()))
+        val bytes=file.readBytes();val replacement=File(file.parentFile,"replacement.new").apply {writeBytes(bytes)}
+        Files.move(replacement.toPath(),file.toPath(),ATOMIC_MOVE,REPLACE_EXISTING)
+        assertTrue(runCatching {history.confirmApproval(request,key)}.isFailure)
+        assertArrayEquals(bytes,file.readBytes());assertFalse(history.approval(request)!!.confirmed)
+        assertFalse(AdmissionHistory(file,binding).approval(request)!!.confirmed)
+    }
+    @Test fun changedJournalTimestampCannotRenewRetainedWriterEvenWithIdenticalBytes()=fixture {file ->
+        val request=id();val history=AdmissionHistory(file,binding);history.beginApproval(request,ApprovalIntent(fingerprint,1,"fixture-service:1",id()))
+        val bytes=file.readBytes();val changed=FileTime.fromMillis(0)
+        assertNotEquals(changed,Files.getLastModifiedTime(file.toPath()))
+        Files.setLastModifiedTime(file.toPath(),changed)
+        assertTrue(runCatching {history.confirmApproval(request,key)}.isFailure)
+        assertArrayEquals(bytes,file.readBytes());assertFalse(history.approval(request)!!.confirmed)
+        assertFalse(AdmissionHistory(file,binding).approval(request)!!.confirmed)
+    }
+    @Test fun sameOwnerCanCommitAgainAndReopenedOwnerCanConfirmDespiteSiblingDirectoryWrites()=fixture {file ->
+        val request=id();val history=AdmissionHistory(file,binding);val intent=ApprovalIntent(fingerprint,1,"fixture-service:1",id())
+        history.beginApproval(request,intent)
+        File(file.parentFile,"unrelated").writeText("unrelated")
+        history.confirmApproval(request,key)
+        val reopened=AdmissionHistory(file,binding);assertTrue(reopened.approval(request)!!.confirmed)
+        val next=id();reopened.beginApproval(next,intent);reopened.confirmApproval(next,key)
+        assertTrue(AdmissionHistory(file,binding).approval(next)!!.confirmed)
+    }
+    @Test fun changedJournalBytesRefuseWithoutDiscardingReplacementEvidence()=fixture {file ->
+        val request=id();val history=AdmissionHistory(file,binding);history.beginApproval(request,ApprovalIntent(fingerprint,1,"fixture-service:1",id()))
+        file.appendText(" ");val bytes=file.readBytes()
+        assertTrue(runCatching {history.confirmApproval(request,key)}.isFailure)
+        assertArrayEquals(bytes,file.readBytes());assertFalse(history.approval(request)!!.confirmed)
         assertFalse(AdmissionHistory(file,binding).approval(request)!!.confirmed)
     }
     @Test fun boundedApprovalsRefuseEvictionOrSilentOverwrite()=fixture {file ->
