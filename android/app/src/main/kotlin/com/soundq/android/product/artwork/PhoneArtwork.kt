@@ -23,8 +23,13 @@ private val phoneArtworkReaders=Semaphore(2)
     val alive=remember(ref,version){AtomicBoolean(true)}
     val latest by rememberUpdatedState(current)
     val valid={alive.get()&&latest()&&graph.phoneAudio.current(version)&&graph.phoneAudio.observed(ref)!=null}
+    val lifecycle by androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    val readable=lifecycle.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)&&valid()
     DisposableEffect(alive){onDispose {alive.set(false);pixels.value=null}}
-    LaunchedEffect(ref,version) {
+    // Rows remain composed behind sheets and before Resume. A refused first read
+    // is not a permanent artwork miss; retry only when this caller becomes current.
+    LaunchedEffect(ref,version,readable) {
+        if(!readable)return@LaunchedEffect
         val bitmap=withContext(Dispatchers.IO){phoneArtworkReaders.withPermit {
             if(!valid())return@withPermit null
             val row=graph.phoneAudio.observed(ref) ?: return@withPermit null

@@ -1,7 +1,11 @@
 package com.soundq.designsystem
 
 /** A read-only visual snapshot. No transport, clock or media dependency. */
-data class CompactSongIdentity(val account:Long,val session:String,val queue:String,val incarnation:Long,val occurrence:String,val track:Long)
+sealed interface CompactSongSource {
+    data class Server(val track:Long):CompactSongSource
+    data class Device(val id:String,val sha256:String,val bytes:Long,val incarnation:Long):CompactSongSource
+}
+data class CompactSongIdentity(val account:Long,val session:String,val queue:String,val incarnation:Long,val occurrence:String,val source:CompactSongSource)
 enum class CompactPlaybackState { None,Preparing,Playing,Paused,Ended,Failed }
 data class CompactSongTiming(val identity:CompactSongIdentity?=null,val elapsedMs:Long?=null,val totalMs:Long?=null,val state:CompactPlaybackState=CompactPlaybackState.None,val selected:Boolean=identity!=null) {
     val total:Long? get()=totalMs?.takeIf {it>0}

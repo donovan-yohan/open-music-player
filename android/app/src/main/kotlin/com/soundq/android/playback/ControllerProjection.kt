@@ -172,7 +172,13 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
         val result=c.sendCustomCommand(SessionCommand(SoundQLibraryService.JAM_ADMIT,Bundle.EMPTY),Bundle().apply {putString("ticket",ticket)})
         result.addListener({try {if(result.get().resultCode!=SessionResult.RESULT_SUCCESS)onRefused()}catch(_:Exception){onRefused()}},Executor {handler.post(it)})
     }}
-    fun toggle(){retireScratch();controller?.let {if(it.isPlaying || it.playWhenReady)it.pause() else {if(it.playbackState==Player.STATE_IDLE || it.playerError!=null)it.prepare();it.play()}}}
+    fun toggle(){retireScratch();controller?.let {
+        // Media3 retains playWhenReady at natural end. The visible Play action is
+        // replay, not Pause, and play() alone can be a no-op for that retained intent.
+        if(it.playbackState==Player.STATE_ENDED){it.seekTo(0);it.play()}
+        else if(it.isPlaying || it.playWhenReady)it.pause()
+        else {if(it.playbackState==Player.STATE_IDLE || it.playerError!=null)it.prepare();it.play()}
+    }}
     fun pause(){contextIntent++;retireScratch();controller?.pause()}
     fun seek(position:Long){retireScratch();controller?.let {it.seekTo(position.coerceIn(0,it.duration.coerceAtLeast(0)))}}
     private var clockRequest=0L

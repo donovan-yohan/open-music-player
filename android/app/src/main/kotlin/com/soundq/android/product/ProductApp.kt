@@ -360,7 +360,7 @@ import com.soundq.android.product.imports.ImportsScreen
                     "Account"->SoundQSheet("Account",{panel=null}) {
                         if(auth !is AuthState.SignedIn) {
                             if(auth is AuthState.DeviceOnly)deviceScope?.let {scope->SoundQButton("Go online",{model.goOnline(scope);panel=null})}
-                            else AuthScreen(auth,model)
+                            else AuthScreen(auth,model,scrollable=false)
                             SoundQButton("Settings",{panel="Settings"},variant=SoundQButtonVariant.Secondary)
                             SoundQButton("Back to Library",{panel=null},variant=SoundQButtonVariant.Quiet)
                         } else {
@@ -546,7 +546,7 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
     Box(Modifier.fillMaxWidth().padding(horizontal=SoundQ.spacing.gutter),contentAlignment=Alignment.CenterStart) {content()}
 }
 
-@Composable private fun AuthScreen(state:AuthState,model:ProductViewModel) {
+@Composable private fun AuthScreen(state:AuthState,model:ProductViewModel,scrollable:Boolean=true) {
     var register by rememberSaveable {mutableStateOf(false)}
     var email by rememberSaveable(stateSaver=TextFieldValue.Saver) {mutableStateOf(TextFieldValue(""))}
     var username by rememberSaveable(stateSaver=TextFieldValue.Saver) {mutableStateOf(TextFieldValue(""))}
@@ -579,7 +579,12 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
             else->null }
         if(error==null){focus.clearFocus();model.submit(email.text,password.text,username.text.takeIf {register})}
     }
-    Column(Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxSize().verticalScroll(rememberScrollState()).padding(SoundQ.spacing.gutter),verticalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium)) {
+    // The standalone route owns a viewport. Account's sheet already owns scrolling
+    // and measures its body unbounded, so auth fields there must be ordinary content.
+    val scroll=rememberScrollState()
+    val bodyModifier=if(scrollable)Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxSize().verticalScroll(scroll)
+        else Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxWidth()
+    Column(bodyModifier.padding(SoundQ.spacing.gutter),verticalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium)) {
         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium)) {
             Image(painterResource(R.drawable.soundq_logo),null,Modifier.size(SoundQ.sizes.target))
             Text("SoundQ",style=SoundQ.typography.title)
