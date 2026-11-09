@@ -9,6 +9,12 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.CompletableFuture
 
+/** Evidence, not a bookmark mutation. Revalidate the captured service/occurrence
+ * and seek intent at journal admission; a queued snapshot can be superseded. */
+internal data class NativeNaturalEndReceipt(
+    val count: Long, val generation: Long, val identity: Long, val traversalRevision: Long,
+)
+
 internal data class NativeCallbackDeck(
     val identity: Long, val generation: Long, val positionMs: Long, val durationMs: Long,
     val sourceRate: Int, val sourceFrames: Long, val ready: Boolean, val preparing: Boolean,
@@ -22,6 +28,8 @@ internal data class NativeCallbackDeck(
     val pitchPreserved: Boolean = false, val processingEpoch: Long = 0,
     val effectiveBpm: Double = Double.NaN, val tempoGeneration: Long = 0,
     val boundaryGain: Double = 1.0,
+    val traversalRevision: Long = 0,
+    val naturalEnd: NativeNaturalEndReceipt? = null,
 )
 
 internal data class NativeCallbackSnapshot(
@@ -31,8 +39,24 @@ internal data class NativeCallbackSnapshot(
     val scheduleReady: Boolean = false, val schedulePlaying: Boolean = false,
     val scheduleEnded: Boolean = false, val scheduleError: Int = 0,
     val tempoApplied: Long = 0, val tempoRefused: Long = 0, val sampleRate: Int = 0,
+    val naturalEndVersion: Int = 0,
 ) {
     companion object {
+        private fun naturalEnd(root: JSONObject, deck: JSONObject): NativeNaturalEndReceipt? {
+            // Old/future producers cannot accidentally upgrade generic EOF into
+            // bookmark authority. Schedule completion remains its own contract.
+            if (root.optInt("naturalEndVersion") != 1 || !root.optBoolean("coherent") ||
+                root.optLong("scheduleRevision") != 0L || root.getInt("error") != 0 ||
+                deck.getInt("error") != 0 || !deck.getBoolean("ready") || deck.getBoolean("preparing")) return null
+            val count = deck.optLong("naturalEndCount")
+            val generation = deck.optLong("naturalEndGeneration")
+            val identity = deck.optLong("naturalEndIdentity")
+            val revision = deck.optLong("naturalEndTraversalRevision")
+            if (count <= 0 || generation <= 0 || identity <= 0 || revision <= 0 ||
+                generation != deck.getLong("generation") || identity != deck.getLong("identity") ||
+                revision != deck.optLong("traversalRevision")) return null
+            return NativeNaturalEndReceipt(count, generation, identity, revision)
+        }
         fun parse(json: String): NativeCallbackSnapshot {
             val root = JSONObject(json)
             val array = root.getJSONArray("decks")
@@ -48,12 +72,13 @@ internal data class NativeCallbackSnapshot(
                 deck.optLong("syncReference"), deck.optInt("syncBeats"), deck.optInt("syncState"), deck.optDouble("syncPhaseErrorFrames", 0.0),
                 deck.optBoolean("pitchPreserved"), deck.optLong("processingEpoch"), deck.optDouble("effectiveBpm",Double.NaN), deck.optLong("tempoGeneration"),
                 deck.optDouble("boundaryGain", 1.0),
+                deck.optLong("traversalRevision"), naturalEnd(root, deck),
             ) }
             val rate = root.optInt("sampleRate", 0)
             return NativeCallbackSnapshot(json, root.getInt("error"), decks.first(), decks,
                 root.optLong("scheduleRevision"), if (rate > 0) root.optLong("globalFrame") * 1000 / rate else 0,
                 if (rate > 0) root.optLong("durationFrames") * 1000 / rate else 0,
-                root.optBoolean("scheduleReady"), root.optBoolean("schedulePlaying"), root.optBoolean("scheduleEnded"), root.optInt("scheduleError"), root.optLong("tempoApplied"), root.optLong("tempoRefused"), rate)
+                root.optBoolean("scheduleReady"), root.optBoolean("schedulePlaying"), root.optBoolean("scheduleEnded"), root.optInt("scheduleError"), root.optLong("tempoApplied"), root.optLong("tempoRefused"), rate, root.optInt("naturalEndVersion"))
         }
     }
 }

@@ -32,9 +32,10 @@ internal class QueueClearCapture(private val captured:PlaybackProjection) {
 /** Route and account incarnation are captured before gesture/animation work can delay a command. */
 @Composable internal fun QueuePanel(model:ProductViewModel,playback:PlaybackProjection,accountEpoch:Long,onDismiss:()->Unit,onPlayer:()->Unit,onSave:()->Unit) {
     val scope=remember(model,accountEpoch) {model.graph.session.capture()}
+    val hasPhone=playback.queue.any {it.ref is com.soundq.android.playback.PlaybackRef.Device}
     val mixed=playback.source!=com.soundq.android.playback.PlaybackSource.Queue
     val route=remember(model,scope,playback.queueRevision,playback.connection,mixed) {
-        if(mixed)null else model.controller.captureReorder {scope!=null&&model.graph.session.current(scope)}
+        if(mixed)null else model.controller.captureReorder {(scope?.let(model.graph.session::current)==true||model.graph.phoneAudio.current(accountEpoch))}
     }
     DisposableEffect(route) {onDispose {route?.close()}}
     var editorSelection by remember {mutableStateOf<String?>(null)}
@@ -56,7 +57,7 @@ internal class QueueClearCapture(private val captured:PlaybackProjection) {
     var editorReturnView by remember {mutableStateOf(false)}
     val alive=remember {java.util.concurrent.atomic.AtomicBoolean(true)}
     DisposableEffect(Unit){onDispose{alive.set(false)}}
-    val valid:()->Boolean={alive.get()&&scope!=null&&model.graph.session.current(scope)}
+    val valid:()->Boolean={alive.get()&&(scope?.let(model.graph.session::current)==true||model.graph.phoneAudio.current(accountEpoch))}
     val gesture=remember {QueueGestureState()}
     val timelineAdmission=remember {java.util.concurrent.atomic.AtomicReference<()->Boolean>({false})}
     var auditionRequest by remember {mutableStateOf<String?>(null)}
@@ -120,21 +121,23 @@ internal class QueueClearCapture(private val captured:PlaybackProjection) {
         if(!showTimeline&&(sourceContext||timeline.context!=TimelineContext.Supported)&&!mixed)
             Text("Listening queue",Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=4.dp),style=SoundQ.typography.caption,color=SoundQ.colors.muted)
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if(showTimeline)com.soundq.android.product.timeline.TimelinePanel(model,editorSelection,{editorSelection=it},valid,onAdmission={timelineAdmission.set(it)},modifier=Modifier.fillMaxSize(),
+            if(showTimeline&&!hasPhone)com.soundq.android.product.timeline.TimelinePanel(model,editorSelection,{editorSelection=it},valid,onAdmission={timelineAdmission.set(it)},modifier=Modifier.fillMaxSize(),
                 presentation=presentation,viewport=timelineViewport,overview=timelineOverview,snapState=timelineSnap,listState=timelineList,expanded=expanded.toMap(),onExpanded={id,value->expanded[id]=value},onPreviewDocument={base,candidate,owner->
                     if(model.timeline.value.document===base) {
                         if(candidate!=null&&valid()) {previewOwner=owner;preview=chronologicalTimeline(base,candidate)}
                         else if(previewOwner===owner) {preview=null;previewOwner=null}
                     }
                 })
-            else if(mixed||(!sourceContext&&timeline.context==TimelineContext.Supported))ArrangementQueueList(model,playback,presentation,scope,valid,{editorSelection=it;showTimeline=true;sourceContext=false},arrangementList)
+            else if(mixed||(!hasPhone&&!sourceContext&&timeline.context==TimelineContext.Supported))ArrangementQueueList(model,playback,presentation,scope,valid,{editorSelection=it;showTimeline=true;sourceContext=false},arrangementList)
             else SoundQOccurrenceQueue(rows,
                 model.controller::select,{_,_->},model.controller::remove,modifier=Modifier.fillMaxSize(),revision=route ?: playback.connection,gestureState=gesture,
                 onReorder={intent -> route?.move(intent.occurrence,intent.originalOrder,intent.to)==true},bounded=true,
                 metadata={row->LibraryMetadataContent(memberDurationMetadata(row.durationMs))},artwork={occurrence->
                     val item=playback.queue.singleOrNull {it.occurrenceId==occurrence}
                     val rowValid={valid()&&model.playback.value.let {now->now.connection==playback.connection&&now.source==playback.source&&now.accountEpoch==playback.accountEpoch&&now.sessionIdentity==playback.sessionIdentity&&now.sourceQueueIncarnation==playback.sourceQueueIncarnation&&now.queue.singleOrNull {it.occurrenceId==occurrence}==item}}
-                    com.soundq.android.product.artwork.TrackArtwork(model.graph,scope,item?.trackId?.let {model.graph.track(com.soundq.android.data.TrackId(it))},rowValid,
+                    val device=item?.ref as? com.soundq.android.playback.PlaybackRef.Device
+                    if(device!=null)com.soundq.android.product.artwork.PhoneArtwork(model.graph,device,72.dp,rowValid)
+                    else com.soundq.android.product.artwork.TrackArtwork(model.graph,scope,item?.trackId?.takeIf {it>0}?.let {model.graph.track(com.soundq.android.data.TrackId(it))},rowValid,
                         sourceOwner=listOf(playback.connection,playback.source,playback.accountEpoch,playback.sessionIdentity,playback.sourceQueueIncarnation,item))
                 })
         }

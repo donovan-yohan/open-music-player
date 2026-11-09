@@ -15,7 +15,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.concurrent.Executor
 
-@kotlinx.serialization.Serializable data class QueueOccurrence(val occurrenceId:String,val trackId:Long,val title:String,val artist:String,val manual:Boolean,val durationMs:Long=0,val origin:QueueOrigin=if(manual)QueueOrigin.Manual else QueueOrigin.Context)
+@kotlinx.serialization.Serializable data class QueueOccurrence(val occurrenceId:String,val trackId:Long,val title:String,val artist:String,val manual:Boolean,val durationMs:Long=0,val origin:QueueOrigin=if(manual)QueueOrigin.Manual else QueueOrigin.Context,val ref:PlaybackRef?=null)
 enum class PlaybackSource {Queue,Arrangement,SavedMix}
 data class PlaybackProjection(val connection:Connection=Connection.Connecting,val title:String?=null,val isPlaying:Boolean=false,val canPlay:Boolean=false,
     val artist:String="",val queue:List<QueueOccurrence> = emptyList(),val selectedOccurrence:String?=null,val positionMs:Long=0,val durationMs:Long=0,
@@ -141,6 +141,20 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
             }
         }
     }
+    fun playDevice(ref:PlaybackRef.Device,valid:()->Boolean) {
+        contextIntent++;contextError=null
+        val c=controller ?: return
+        if(!valid()||!connection.accepts(c))return
+        c.setMediaItems(listOf(deviceRequest(ref,false)),0,0);c.prepare();c.play()
+    }
+    fun enqueueDevice(ref:PlaybackRef.Device,next:Boolean,valid:()->Boolean) {
+        contextIntent++;val c=controller ?: return
+        if(!valid()||!connection.accepts(c)||!QueuePolicy.acceptsAppend(c.mediaItemCount,1))return
+        val origins=(0 until c.mediaItemCount).map {c.getMediaItemAt(it).mediaMetadata.extras?.getBoolean("manual")==true}
+        val index=if(next)(c.currentMediaItemIndex+1).coerceIn(0,c.mediaItemCount)else QueuePolicy.manualInsert(origins,c.currentMediaItemIndex)
+        c.addMediaItem(index,deviceRequest(ref,true))
+    }
+    private fun deviceRequest(ref:PlaybackRef.Device,manual:Boolean)=MediaItem.Builder().setMediaId("device:${ref.id}").setRequestMetadata(MediaItem.RequestMetadata.Builder().setExtras(Bundle().apply {putString("playbackRef",ref.wire());putBoolean("manual",manual);putBoolean("localOnly",true)}).build()).build()
     fun enqueue(track:Track,next:Boolean,localOnly:Boolean=false) {
         contextIntent++
         val c=controller ?: return
@@ -410,7 +424,7 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
         val c=controller ?: return
         if(!connection.accepts(c)) return
         if(projectedRevision!=queueRevision) {
-            projectedQueue=(0 until c.mediaItemCount).map {i -> val m=c.getMediaItemAt(i);QueueOccurrence(m.mediaId,m.mediaMetadata.extras?.getLong("trackId") ?: 0,m.mediaMetadata.title?.toString().orEmpty(),m.mediaMetadata.artist?.toString().orEmpty(),m.mediaMetadata.extras?.getBoolean("manual")==true,m.mediaMetadata.extras?.getLong("durationMs") ?: 0,QueueOrigin.read(m.mediaMetadata.extras?.getString("origin"),m.mediaMetadata.extras?.getBoolean("manual")==true))}
+            projectedQueue=(0 until c.mediaItemCount).map {i -> val m=c.getMediaItemAt(i);QueueOccurrence(m.mediaId,m.mediaMetadata.extras?.getLong("trackId") ?: 0,m.mediaMetadata.title?.toString().orEmpty(),m.mediaMetadata.artist?.toString().orEmpty(),m.mediaMetadata.extras?.getBoolean("manual")==true,m.mediaMetadata.extras?.getLong("durationMs") ?: 0,QueueOrigin.read(m.mediaMetadata.extras?.getString("origin"),m.mediaMetadata.extras?.getBoolean("manual")==true),PlaybackRef.read(m.mediaMetadata.extras?.getString("playbackRef")))}
             projectedRevision=queueRevision
         }
         val accepted=c.sessionExtras.getString("acceptedArrangement")?.let {runCatching {Json.decodeFromString<AcceptedArrangement>(it).withProjectedDocument()}.getOrNull()}?.takeIf {

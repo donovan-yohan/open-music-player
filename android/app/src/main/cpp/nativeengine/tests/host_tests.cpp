@@ -80,6 +80,9 @@ int main(int argc, char** argv) {
     assert(deck(json).find("\"sourceFrames\":320000") != std::string::npos);
     assert(deck(json).find("\"durationMs\":10000") != std::string::npos);
     assert(deck(json).find("\"playing\":true") != std::string::npos);
+    // The actual ordinary-deck producer must supply journal qualification evidence.
+    assert(deck(json).find("\"rate\":1") != std::string::npos);
+    assert(deck(json).find("\"scratching\":false") != std::string::npos);
     assert(out->lastSample == 0.03125f); // real Engine PCM reflects deferred 0.25 gain
     assert(json.find("\"nonSilentCallbacks\":0") == std::string::npos);
     assert(json.find("\"nonSilentCallbacks\":") != std::string::npos);
@@ -98,11 +101,41 @@ int main(int argc, char** argv) {
     assert(deck(json).find("\"positionMs\":10000") != std::string::npos);
     assert(deck(json).find("\"playing\":false") != std::string::npos);
     // Exact-endpoint seeks also complete through the real Engine/host seam.
+    assert(json.find("\"naturalEndVersion\":1") != std::string::npos);
+    assert(deck(json).find("\"naturalEndCount\":1") != std::string::npos);
+    assert(deck(json).find("\"naturalEndGeneration\":1") != std::string::npos);
+    assert(deck(json).find("\"naturalEndIdentity\":11") != std::string::npos);
+    if (argc == 2 && std::string(argv[1]) == "--natural-json") {
+        std::cout << json << '\n'; assert(registry.close(handle)); return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--error-json") {
+        out->callback->outputError(-899);
+        json = registry.state(handle);
+        assert(deck(json).find("\"naturalEndCount\":0") != std::string::npos);
+        std::cout << json << '\n'; assert(registry.close(handle)); return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--retiring-json") {
+        assert(registry.control(handle, 8, 0, 0, 0));
+        json = registry.state(handle); // intentionally before callback unassign ACK
+        assert(deck(json).find("\"naturalEndCount\":0") != std::string::npos);
+        std::cout << json << '\n'; assert(registry.close(handle)); return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--replacement-json") {
+        assert(registry.load(handle, 0, "/fake/replacement", 22, 2, 0));
+        json = registry.state(handle); // old callback deck, new control identity
+        assert(deck(json).find("\"identity\":22") != std::string::npos);
+        assert(deck(json).find("\"naturalEndCount\":0") != std::string::npos);
+        std::cout << json << '\n'; assert(registry.close(handle)); return 0;
+    }
     assert(registry.control(handle, 3, 0, 0, 0)); out->block();
     assert(registry.control(handle, 1, 0, 0, 0)); out->block();
     assert(registry.control(handle, 3, 0, 10000, 0)); out->block();
     json = registry.state(handle);
     assert(deck(json).find("\"eofCount\":2") != std::string::npos);
+    assert(deck(json).find("\"naturalEndCount\":1") != std::string::npos);
+    if (argc == 2 && std::string(argv[1]) == "--sought-json") {
+        std::cout << json << '\n'; assert(registry.close(handle)); return 0;
+    }
     assert(deck(json).find("\"playing\":false") != std::string::npos);
     assert(registry.load(handle, 0, "/fake/second", 22, 2, 0));
     // Play issued during turnover must target the intended, not retired gen.
@@ -110,6 +143,7 @@ int main(int argc, char** argv) {
     until(registry, handle, *out, "\"ready\":true"); out->block();
     assert(deck(registry.state(handle)).find("\"playing\":true") != std::string::npos);
     assert(!registry.load(handle, 0, "/fake/first", 11, 1, 0));
+    assert(deck(registry.state(handle)).find("\"naturalEndCount\":0") != std::string::npos);
     assert(registry.control(handle, 8, 0, 0, 0));
     json = registry.state(handle);
     assert(deck(json).find("\"identity\":22") != std::string::npos); // no render ACK, still owned
@@ -152,6 +186,7 @@ int main(int argc, char** argv) {
     assert(json.find("\"openDecoders\":0") != std::string::npos);
     assert(registry.load(handle, 0, "/fake/invalid", 77, 6, 0));
     until(registry, handle, *out, "\"error\":-3");
+    assert(deck(registry.state(handle)).find("\"naturalEndCount\":0") != std::string::npos);
     assert(testDecoders == 0);
     // Decoder-local failure never invalidates root or a fresh intended generation.
     assert(registry.load(handle, 0, "/fake/route", 66, 7, 1500));

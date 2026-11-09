@@ -22,12 +22,16 @@ typedef enum sq_file_status {
   SQ_FILE_DECODE = -6,
   SQ_FILE_OUT_OF_MEMORY = -7
 } sq_file_status;
-#define SQ_FILE_MAX_FILE_BYTES UINT64_C(134217728)
+#define SQ_FILE_MAX_FILE_BYTES UINT64_C(17179869216)
+#define SQ_FILE_MAX_ENCODED_BYTES UINT64_C(134217728)
 #define SQ_FILE_MAX_WINDOW_FRAMES UINT32_C(48000)
 
 /* Worker-only, single owner, non-concurrent, non-reentrant; never call from an
  * audio callback. No renderer/output. Byte-sniffed MP3 Layer III, PCM16/float32
- * RIFF WAVE (mono/stereo), or existing single-link 48k stereo Ogg Opus.
+ * RIFF WAVE (mono/stereo), existing single-link 48k stereo Ogg Opus, or SQP1
+ * immutable platform-decoded stereo float PCM with exact 64-bit frame extent.
+ * Encoded formats retain the 128MiB portable limit. SQP1 admits up to 16GiB PCM
+ * plus its 32-byte header. All reads/seeks remain bounded worker operations.
  * Caller holds an immutable regular-file/cache lease through destroy, verifies
  * expected hash/timeline, and owns parent-directory trust. Absolute local path;
  * O_NOFOLLOW rejects final-component symlinks, not ancestor symlinks.

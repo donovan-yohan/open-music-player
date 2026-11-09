@@ -73,6 +73,7 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     val catalog=com.soundq.android.data.catalog.CatalogRepository(api,com.soundq.android.data.catalog.CatalogMembershipJournal(File(directory,"catalog-membership.v1.json")))
     val discovery=com.soundq.android.data.discovery.DiscoveryRepository(session,api,historyDirectory=File(directory,"discover-history"))
     val io=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+    internal val phoneAudio=com.soundq.android.data.device.PhoneAudioRepository(this)
     private val controllerOwner=lazy {com.soundq.android.playback.ControllerProjection(context)}
     internal val controller by controllerOwner
     private val playerArtworkOwner=lazy {com.soundq.android.product.artwork.SelectedPlayerArtwork(session,mediaClient,controller.state,::track,libraryArtwork,false)}
@@ -84,7 +85,7 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     val jam by jamOwner
     private val known=java.util.concurrent.ConcurrentHashMap<TrackId,Pair<AccountScope,Track>>()
     init {localUnlock.loadBeforeRestore()}
-    fun start() {presence.start();jam.start();io.launch {appearancePreferences.load();djModePreferences.load();keyNotationPreferences.load();queueSettings.load();storagePreferences.load();listeningPreferences.load();crossfadePreferences.load();swipeQueuePreferences.load();if(session.state.value !is AuthState.LocalLocked)api.restore()};io.launch {session.state.collect {if(it !is AuthState.SignedIn){presence.retire();jam.retire()}}}}
+    fun start() {phoneAudio.start();presence.start();jam.start();io.launch {appearancePreferences.load();djModePreferences.load();keyNotationPreferences.load();queueSettings.load();storagePreferences.load();listeningPreferences.load();crossfadePreferences.load();swipeQueuePreferences.load();if(session.state.value !is AuthState.LocalLocked)api.restore()};io.launch {session.state.collect {if(it !is AuthState.SignedIn){presence.retire();jam.retire()}}}}
     fun rememberTracks(tracks:List<Track>) {val scope=session.capture() ?: return;tracks.forEach {known[it.id]=scope to it}}
     /** Read existing account-bound acknowledgements only. Restored queue metadata needs no new API fetch. */
     fun track(id:TrackId):Track? {
@@ -98,7 +99,7 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     fun retireCatalog() {retireCatalog(false)}
     internal fun retireCatalogAfterPlaybackAccount() {retireCatalog(true)}
     private fun retireCatalog(preserveCurrentLibrary:Boolean) {contextStarts.retire();harmonic.retire();playlistBlend.retireAccount();timeline.retire();known.clear();trackDetails.retire();downloads.retire();if(preserveCurrentLibrary)library.retireObsolete()else library.retire();playlists.retire();playlistDetail.retire();playlistManagement.retire();playlistOrder.retire();queuePlaylist.retire();playlistMembership.retire();home.retire();imports.retire();discovery.retire();catalog.retire();acquisition.retire()}
-    override fun close() {if(playerArtworkOwner.isInitialized())playerArtwork.close();libraryArtwork.close();if(presenceOwner.isInitialized())presence.close();if(jamOwner.isInitialized())jam.close();if(controllerOwner.isInitialized())controller.close();io.cancel();retireCatalog()}
+    override fun close() {phoneAudio.close();if(playerArtworkOwner.isInitialized())playerArtwork.close();libraryArtwork.close();if(presenceOwner.isInitialized())presence.close();if(jamOwner.isInitialized())jam.close();if(controllerOwner.isInitialized())controller.close();io.cancel();retireCatalog()}
     private fun keystoreKey():SecretKey {
         val store=KeyStore.getInstance("AndroidKeyStore").apply {load(null)}
         val alias="soundq.session.aes.v1"

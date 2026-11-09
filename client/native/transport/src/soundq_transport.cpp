@@ -26,7 +26,7 @@ void barrier(unsigned stage) noexcept {
 #endif
 namespace {
 constexpr uint64_t queueCapacity = 64;
-constexpr std::size_t deckWords = 25;
+constexpr std::size_t deckWords = 30;
 constexpr std::size_t snapshotWords = 5 + 4 * deckWords + 10 + 64 * 3;
 static_assert(std::atomic<uint64_t>::is_always_lock_free,
               "Transport requires lock-free 64-bit atomics");
@@ -136,6 +136,9 @@ struct Deck {
     uint64_t gesture = 0;
     uint64_t moveSequence = 0;
     uint64_t eofCount = 0;
+    uint64_t traversalRevision = 0;
+    uint64_t naturalEndCount = 0, naturalEndGeneration = 0, naturalEndIdentity = 0;
+    uint64_t naturalEndTraversalRevision = 0;
     bool atEnd = false;
     bool performance = false;
     double nominal = 0;
@@ -244,6 +247,9 @@ struct Engine::Impl {
             data[at+21]=c && c->tempo.preserve?schedule->revision:0; data[at+22]=bits(c && c->tempo.preserve?tempoRate(*c,globalFrame)*c->tempo.sourceBpm:(c && tempoInstances[i]==c->instance?tempoSourceBpms[i]:0));
             data[at+23]=tempoInstances[i]==d.source.identity?tempoGenerations[i]:0;
             data[at+24]=bits(boundaryGain(static_cast<uint32_t>(i)));
+            data[at+25]=d.traversalRevision; data[at+26]=d.naturalEndCount;
+            data[at+27]=d.naturalEndGeneration; data[at+28]=d.naturalEndIdentity;
+            data[at+29]=d.naturalEndTraversalRevision;
         }
         constexpr auto at=5+4*deckWords;
         data[at] = schedule ? schedule->revision : 0;
@@ -258,6 +264,7 @@ struct Engine::Impl {
         auto& d = decks[c.deck];
         if (c.operation == Operation::Assign) {
             d = Deck{}; d.source = c.source; d.generation = c.generation;
+            d.traversalRevision = c.sequence;
         } else if (c.generation != d.generation) {
             refused.fetch_add(1, std::memory_order_relaxed); return;
         } else if (c.operation == Operation::Play) {
@@ -268,12 +275,15 @@ struct Engine::Impl {
             // Seeking positions the cursor. Completion belongs to admitted forward
             // motion, including Play after a paused seek to the exact endpoint.
             d.cursor = c.value; d.atEnd = false;
+            d.traversalRevision = c.sequence;
         } else if (c.operation == Operation::SetRate) {
+            d.traversalRevision = c.sequence;
             d.rate.set(c.value);
             d.moveSequence = std::max(d.moveSequence, c.sequence);
         } else if (c.operation == Operation::SetGain) {
             d.gain.set(c.value);
         } else if (c.operation == Operation::BeginScratch) {
+            d.traversalRevision = c.sequence;
             d.savedPlaying = d.playing; d.savedRate = d.rate.target;
             d.scratching = true; d.gesture = c.gesture; d.moveSequence = c.sequence;
             d.playing = true;
@@ -382,6 +392,7 @@ struct Engine::Impl {
             auto& d = decks[c.deck];
             if (envelope.kind == EnvelopeKind::AssignPaged) {
                 d = Deck{}; d.source = c.source; d.generation = c.generation;
+                d.traversalRevision = c.sequence;
                 d.paged = true; d.window = envelope.window;
             } else if (envelope.kind == EnvelopeKind::Window) {
                 d.window = envelope.window;
@@ -993,6 +1004,15 @@ void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
             d.cursor = position + d.rate.value * d.source.sourceRate / p.outputRate;
             if (d.cursor >= static_cast<double>(d.source.frames)) {
                 d.cursor = static_cast<double>(d.source.frames);
+                // Both resident taps were consumed from before true decoded EOF.
+                // Do not reuse generic EOF: it also marks sought endpoints and
+                // scratch crossings. Capture this source, never overlap dominance.
+                if (!d.atEnd && !d.scratching && d.rate.value > 0) {
+                    ++d.naturalEndCount;
+                    d.naturalEndGeneration = d.generation;
+                    d.naturalEndIdentity = d.source.identity;
+                    d.naturalEndTraversalRevision = d.traversalRevision;
+                }
                 if (!d.atEnd) { ++d.eofCount; d.atEnd = true; }
                 if (!d.scratching) d.playing = false;
             } else {
@@ -1037,6 +1057,9 @@ bool Engine::snapshot(Snapshot& destination) const noexcept {
         d.sourceFrame = number(data[at + 2]); d.rate = number(data[at + 3]);
         d.playing = data[at + 4] != 0; d.scratching = data[at + 5] != 0;
         d.gesture = data[at + 6]; d.eofCount = data[at + 7];
+        d.traversalRevision=data[at+25]; d.naturalEndCount=data[at+26];
+        d.naturalEndGeneration=data[at+27]; d.naturalEndIdentity=data[at+28];
+        d.naturalEndTraversalRevision=data[at+29];
         d.missingPcmFrames = data[at + 8]; d.residentPages = static_cast<uint32_t>(data[at + 9]);
         d.nominalSourceFrame=number(data[at+10]);d.lastMoveEventNanos=data[at+11];d.lastMoveAppliedNanos=data[at+12];d.lastMoveSequence=data[at+13];d.heldZero=data[at+14]!=0;
         d.syncReference=data[at+15];d.syncBeats=static_cast<uint32_t>(data[at+16]);d.syncState=static_cast<uint32_t>(data[at+17]);d.syncPhaseErrorFrames=number(data[at+18]);d.demandSourceFrame=number(data[at+19]);d.syncBoundaryFrame=data[at+20];d.processingEpoch=data[at+21];d.effectiveBpm=number(data[at+22]);d.tempoGeneration=data[at+23];

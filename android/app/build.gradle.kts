@@ -310,6 +310,19 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
     if(name=="compileDebugUnitTestKotlin"){source(playerClockProbe);dependsOn(generatePlayerClockProbe)}
 }
 tasks.matching {it.name in setOf("generateDebugUnitTestLintModel","lintAnalyzeDebugUnitTest")}.configureEach {dependsOn(generatePlayerClockProbe)}
+// Canonical phone/service/native preparation bodies with declared hardware facades.
+val phoneConsumersProbe=layout.buildDirectory.dir("generated/phone-consumers-test")
+val generatePhoneConsumersProbe=tasks.register<Exec>("generatePhoneConsumersProbe") {
+    inputs.files(rootProject.file("scripts/test-phone-consumers.py"),rootProject.file("scripts/test-local-media-mutations.py"))
+    inputs.files(fileTree("src/main/kotlin") {include("**/SoundQLibraryService.kt","**/SignedAudioDataSource.kt","**/NativeCallbackSource.kt","**/NativeCallbackPlayer.kt","**/NativeListeningJournal.kt")})
+    outputs.dir(phoneConsumersProbe)
+    commandLine(providers.environmentVariable("SOUNDQ_PYTHON").orElse("python3").get(),rootProject.file("scripts/test-phone-consumers.py"),"--generate",phoneConsumersProbe.get().asFile)
+}
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    if(name=="compileDebugUnitTestKotlin"){source(phoneConsumersProbe);dependsOn(generatePhoneConsumersProbe)}
+}
+tasks.matching {it.name in setOf("generateDebugUnitTestLintModel","lintAnalyzeDebugUnitTest")}.configureEach {dependsOn(generatePhoneConsumersProbe)}
+
 dependencies {
     implementation(project(":designsystem"))
     implementation(platform(libs.compose.bom))

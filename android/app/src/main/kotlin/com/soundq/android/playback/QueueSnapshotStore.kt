@@ -50,7 +50,7 @@ internal class QueueSnapshotStore(private val file:File) {
         }
         saved.items.chunked(PAGE_ITEMS).forEach(::page)
         val root=buildJsonObject {
-            put("version",2);put("endpoint",saved.endpoint);put("account",saved.account)
+            put("version",4);put("endpoint",saved.endpoint);put("account",saved.account)
             put("count",saved.items.size);put("selected",saved.selected);put("position",saved.position)
             put("shuffleEnabled",saved.shuffleEnabled);put("loopMode",saved.loopMode.wireValue)
             put("pages",buildJsonArray {descriptors.forEach {(hash,count)->add(buildJsonObject {put("sha256",hash);put("count",count)})}})
@@ -65,8 +65,8 @@ internal class QueueSnapshotStore(private val file:File) {
         require(file.length()<=PAGE_BYTES)
         val raw=file.readText(Charsets.UTF_8)
         val root=Json.parseToJsonElement(raw).jsonObject
-        if(root["version"]?.jsonPrimitive?.int==1)return@synchronized requireNotNull(QueueSnapshot.decode(raw,endpoint,account))
-        require(root.getValue("version").jsonPrimitive.int==2 && root.getValue("endpoint").jsonPrimitive.content==endpoint && root.getValue("account").jsonPrimitive.content==account)
+        if(root["version"]?.jsonPrimitive?.int in setOf(1,3))return@synchronized requireNotNull(QueueSnapshot.decode(raw,endpoint,account))
+        require(root.getValue("version").jsonPrimitive.int in setOf(2,4) && root.getValue("endpoint").jsonPrimitive.content==endpoint && root.getValue("account").jsonPrimitive.content==account)
         val count=root.getValue("count").jsonPrimitive.int.also {require(it in 0..MAX_ITEMS)}
         val descriptors=root.getValue("pages").jsonArray.also {require(it.size<=MAX_ITEMS)}
         val rows=ArrayList<SavedOccurrence>(count)

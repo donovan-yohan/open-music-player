@@ -66,7 +66,7 @@ class TransportFacade(private val player:PlayerFacade) {fun selectionCommitted()
 class SaveJob {fun cancel(){}}
 class Graph(val session:AccountSession,val timeline:TimelineRepository) {val contextStarts=ContextStartsBoundary()}
 class ContextStartsBoundary {fun retire(){}}
-class Service(val graph:Graph) {
+class Service(val graph:Graph) {fun renewPhoneGrants(){};fun localAccess()=false;var undoVersion=-1L;fun resolveDevice(item:MediaItem):MediaItem=error("Phone source separately tested");private fun grantFor(item:MediaItem,scope:AccountScope?):MediaGrant=error("Phone/Undo grant construction outside arrangement facade");
  private val continuation=object {fun command(){};fun ended(state:Int){if(state!=Player.STATE_READY)error("Continuation outside arrangement READY fixture")}}
  val liveQualifications=mutableMapOf<String,Any>();val retiringLiveQualifications=mutableSetOf<String>()
  val player=PlayerFacade();val transport=TransportFacade(player);val serviceIncarnation=UUID.randomUUID().toString();var sourceQueueIncarnation="ordinary-1";var selectionEpoch=0L;var transportGeneration=0L;var account=graph.session.capture();val interruptions=Interruption();var saveJob:SaveJob?=null;var undo:Any?=null;var undoScope:AccountScope?=null;var undoIndex=0;var undoPosition=0L

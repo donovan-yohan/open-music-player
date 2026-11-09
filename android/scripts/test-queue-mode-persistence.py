@@ -89,12 +89,13 @@ private object Dispatchers {
   fun release(){hold=false;while(true){val p=pending.poll() ?: return;kotlinx.coroutines.Dispatchers.IO.dispatch(p.first,p.second)}}
  }
 }
-private class Graph(val session:AccountSession,val directory:java.io.File){val endpoint=session.endpoint}
+private class Graph(val session:AccountSession,val directory:java.io.File){val endpoint=session.endpoint;val phoneAudio=PhoneBoundary()}
+private class PhoneBoundary {val authorityVersion=0L}
 private class Continuation {fun repeatChanged(){};fun shuffleChanged(){}}
 '''
 fixture='''
 private class ExtractedService(val graph:Graph,val jobs:CoroutineScope) {
- var clockRevision=0L
+ fun scheduleGuestSave(){error("Guest queue covered by phone consumer test")};var clockRevision=0L
  val player=Player();var account=graph.session.capture();val transport=ServiceTransportPlayer(player){account?.let(graph.session::current)==true}
  val grants=ConcurrentHashMap<String,MediaGrant>();var selectionEpoch=0L;var saveJob:Job?=null;var restoring=false;var rejectedQueue=false
  private val queueFileLock=Any();@Volatile private var queueSaveEpoch=0L
@@ -129,6 +130,21 @@ private class Harness:AutoCloseable {
  override fun close(){Dispatchers.IO.release();runBlocking{jobs.coroutineContext[Job]!!.cancelAndJoin()};main.close();directory.deleteRecursively()}
 }
 class QueueModePersistenceExtractedTest {
+ @Test fun mixedServerAndPhoneRestoreKeepsTypedDeviceGrantAndNeverConstructsPhoneTrackId(){Harness().use {h->
+ val ref=PlaybackRef.Device("12345678-1234-1234-1234-123456789013","a".repeat(64),100,1)
+ val rows=listOf(SavedOccurrence("server",7,"Server","Artist",false,durationMs=6000),SavedOccurrence("phone",0,"Phone","Original artist",true,true,601000,ref=ref))
+ val expected=QueueSnapshot(h.session.endpoint.identity,"A",rows,1,43000,true,SavedRepeatMode.All)
+ QueueSnapshotStore(h.service.file()).write(expected)
+ h.onMain{h.service.start()};h.settled()
+ val phone=h.service.player.items[1];assertEquals("soundqdevice",phone.localConfiguration!!.uri.scheme)
+ val grant=h.service.grants[phone.localConfiguration!!.uri.toString()]!!;assertEquals(ref,grant.device)
+ assertTrue(runCatching {grant.track}.isFailure);assertEquals(43000L,h.service.player.currentPosition)
+ assertFalse(h.service.player.playing);assertEquals(0,h.service.player.prepares);assertEquals(0,h.service.player.plays)
+ h.onMain {h.service.save()};h.settled()
+ val reopened=QueueSnapshotStore(h.service.file()).read(h.session.endpoint.identity,"A")!!
+ assertEquals(expected,reopened);assertEquals(7L,(reopened.reference(reopened.items[0]) as PlaybackRef.Server).trackId.value)
+ }}
+
  @Test fun heldDelayedSaveCannotDropAcknowledgedCanonicalJamMetadata(){Harness().use {h->
  h.seed();h.onMain{h.service.start()};h.settled()
  Dispatchers.IO.hold=true;h.onMain{h.service.save()};assertTrue(Dispatchers.IO.entered.await(5,TimeUnit.SECONDS))

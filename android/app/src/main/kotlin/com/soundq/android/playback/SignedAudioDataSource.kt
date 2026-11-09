@@ -8,7 +8,14 @@ import com.soundq.android.AppGraph
 import com.soundq.android.data.*
 import java.util.concurrent.ConcurrentHashMap
 
-internal class MediaGrant(val scope:AccountScope,val track:TrackId,val localOnly:Boolean=false)
+internal class MediaGrant private constructor(private val serverScope:AccountScope?,private val serverTrack:TrackId?,val localOnly:Boolean,val device:PlaybackRef.Device?,val version:Long,val audioRevision:Long) {
+    constructor(scope:AccountScope,track:TrackId,localOnly:Boolean=false):this(scope,track,localOnly,null,scope.owner.version(),0)
+    constructor(device:PlaybackRef.Device,version:Long,audioRevision:Long):this(null,null,true,device,version,audioRevision)
+    @Volatile var phoneAdmission:com.soundq.android.data.device.PhoneSourceAdmission?=null
+    val scope:AccountScope get()=requireNotNull(serverScope) { "Phone audio has no server scope" }
+    val track:TrackId get()=requireNotNull(serverTrack) { "Phone audio has no server TrackId" }
+    fun current(graph:AppGraph):Boolean=if(device==null)graph.session.current(scope) else graph.phoneAudio.current(version)&&graph.phoneAudio.authorityVersion==audioRevision&&graph.phoneAudio.observed(device)!=null
+}
 /** Runs on ExoPlayer's loader, not its application looper. Internal URIs never reach the network. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal class SignedAudioDataSource(private val graph:AppGraph,private val grants:ConcurrentHashMap<String,MediaGrant>) : DataSource {

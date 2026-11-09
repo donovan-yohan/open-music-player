@@ -18,17 +18,18 @@ action=block('product/ProductViewModel.kt','    fun playDownload(')
 controller=block('playback/ControllerProjection.kt','    fun playContext(')
 resolve=block('playback/SoundQLibraryService.kt','    private fun resolve(').replace('private fun resolve','fun resolve')
 source=block('playback/SignedAudioDataSource.kt','    override fun open(').replace('override fun open','fun open')
-grant=(base/'playback/SignedAudioDataSource.kt').read_text().split('internal class MediaGrant',1)[1].split('\n',1)[0]
+grant = '(val scope:AccountScope,val track:TrackId,val localOnly:Boolean=false)' # Server-only legacy boundary declaration; phone consumer is tested separately.
 prelude=r'''
+import com.soundq.android.playback.PlaybackRef
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 object C {const val LENGTH_UNSET=-1}
 class SafeFailure(val reason:Reason):java.io.IOException(reason.message) {enum class Reason(val message:String){Retired("Session changed. Sign in again."),AudioUnavailable("Audio is unavailable for this track.")}}
 data class TrackId(val value:Long)
 data class Track(val id:TrackId,val title:String,val artist:String="",val album:String="",val artwork:String?=null,val durationMs:Long=0)
-class AccountScope
+class AccountScope {val accountId="fixture"}
 class Session {val scope=AccountScope();var remote=true;fun capture()=scope;fun current(s:AccountScope)=s===scope;fun remoteCurrent(s:AccountScope)=current(s)&&remote;fun checkScope(s:AccountScope){if(!current(s))throw SafeFailure(SafeFailure.Reason.Retired)};fun checkRemote(s:AccountScope){if(!remoteCurrent(s))throw SafeFailure(SafeFailure.Reason.Retired)}}
-class Bundle {private val fields=mutableMapOf<String,Any>();fun putLong(k:String,v:Long){fields[k]=v};fun getLong(k:String)=fields[k] as Long;fun putString(k:String,v:String){fields[k]=v};fun putBoolean(k:String,v:Boolean){fields[k]=v};fun getBoolean(k:String)=fields[k] as? Boolean ?: false}
+class Bundle {fun getString(k:String):String?=fields[k] as? String;private val fields=mutableMapOf<String,Any>();fun putLong(k:String,v:Long){fields[k]=v};fun getLong(k:String)=fields[k] as Long;fun putString(k:String,v:String){fields[k]=v};fun putBoolean(k:String,v:Boolean){fields[k]=v};fun getBoolean(k:String)=fields[k] as? Boolean ?: false}
 class Uri private constructor(val value:String){val scheme get()=value.substringBefore(':');override fun toString()=value;companion object {fun parse(v:String)=Uri(v)}}
 class MediaMetadata {var title="";var artist="";var album="";var artwork:Uri?=null;var extras:Bundle?=null
  class Builder {val m=MediaMetadata();fun setTitle(v:String)=apply{m.title=v};fun setArtist(v:String)=apply{m.artist=v};fun setAlbumTitle(v:String)=apply{m.album=v};fun setArtworkUri(v:Uri?)=apply{m.artwork=v};fun setIsPlayable(v:Boolean)=this;fun setIsBrowsable(v:Boolean)=this;fun setExtras(v:Bundle)=apply{m.extras=v};fun build()=m}}
@@ -54,10 +55,10 @@ object HttpDataSource {class InvalidResponseCodeException(val responseCode:Int):
 class TemporaryCache {fun acquire(s:AccountScope,t:TrackId):Lease?=null;fun begin(s:AccountScope,t:TrackId,n:Long):CacheWrite?=null}
 class CacheWrite
 class StoragePreferences {class State {val temporaryAudioEnabled=false};class Value {val value=State()};val state=Value()}
-class Graph {val temporaryAudio=TemporaryCache();val storagePreferences=StoragePreferences();val session=Session();val downloads=Downloads();val api=Api();val mediaClient=Client();val known=mutableMapOf<TrackId,Track>();fun rememberTracks(t:List<Track>){t.forEach{known[it.id]=it}};fun track(id:TrackId)=known[id]}
+class Graph {val endpoint=objectEndpoint();class objectEndpoint {val identity="fixture"};val temporaryAudio=TemporaryCache();val storagePreferences=StoragePreferences();val session=Session();val downloads=Downloads();val api=Api();val mediaClient=Client();val known=mutableMapOf<TrackId,Track>();fun rememberTracks(t:List<Track>){t.forEach{known[it.id]=it}};fun track(id:TrackId)=known[id]}
 object QueuePolicy {const val MAX_CONTEXT_TRACKS=500;const val CONTEXT_LIMIT_MESSAGE="context budget";fun acceptsContext(n:Int)=com.soundq.android.playback.QueuePolicy.acceptsContext(n);fun acceptsAppend(n:Int,a:Int)=com.soundq.android.playback.QueuePolicy.acceptsAppend(n,a)}
 '''
-classes='class MediaGrant'+grant+'\nclass Source(val graph:Graph,val grants:ConcurrentHashMap<String,MediaGrant>){var grant:MediaGrant?=null;var internalUri:Uri?=null;var upstream:DataSource?=null;var local:Lease?=null;var remaining=0L;var writing:CacheWrite?=null;var expectedCacheBytes=0L;var readCacheBytes=0L;val listeners=mutableListOf<TransferListener>()\n'+source+'\n}\nclass Service(val graph:Graph){fun validateSelection(items:List<MediaItem>,index:Int,position:Long){};fun supportsSourceActions()=true;val grants=ConcurrentHashMap<String,MediaGrant>()\n'+resolve+'\n}\nclass Controller(val graph:Graph,val service:Service){var contextIntent=0L;var contextError:String?=null;fun refuseContext(message:String){error(message)};fun startLargeContext(t:List<Track>,i:Int,l:Boolean,v:()->Boolean){error("Large context outside single-device fixture")};var controller:Facade?=Facade(graph,service)\n'+controller+'\n}\nclass Model(val graph:Graph,val controller:Controller){val downloads get()=graph.downloads.state\n'+action+'\n}\n'
+classes='class MediaGrant'+grant+'\nclass Source(val graph:Graph,val grants:ConcurrentHashMap<String,MediaGrant>){var grant:MediaGrant?=null;var internalUri:Uri?=null;var upstream:DataSource?=null;var local:Lease?=null;var remaining=0L;var writing:CacheWrite?=null;var expectedCacheBytes=0L;var readCacheBytes=0L;val listeners=mutableListOf<TransferListener>()\n'+source+'\n}\nclass Service(val graph:Graph){fun localAccess()=false;fun resolveDevice(item:MediaItem):MediaItem=error("Phone branch has a separate consuming test");fun grantFor(item:MediaItem,scope:AccountScope?)=MediaGrant(requireNotNull(scope),TrackId(item.mediaMetadata.extras!!.getLong("trackId")),item.mediaMetadata.extras!!.getBoolean("localOnly"));fun validateSelection(items:List<MediaItem>,index:Int,position:Long){};fun supportsSourceActions()=true;val grants=ConcurrentHashMap<String,MediaGrant>()\n'+resolve+'\n}\nclass Controller(val graph:Graph,val service:Service){var contextIntent=0L;var contextError:String?=null;fun refuseContext(message:String){error(message)};fun startLargeContext(t:List<Track>,i:Int,l:Boolean,v:()->Boolean){error("Large context outside single-device fixture")};var controller:Facade?=Facade(graph,service)\n'+controller+'\n}\nclass Model(val graph:Graph,val controller:Controller){val downloads get()=graph.downloads.state\n'+action+'\n}\n'
 fixture=r'''
 class Facade(val graph:Graph,val service:Service) {var resolved=listOf<MediaItem>();var failure:Exception?=null;var opened:Source?=null
  fun setMediaItems(items:List<MediaItem>,index:Int,position:Long){resolved=service.resolve(items)}

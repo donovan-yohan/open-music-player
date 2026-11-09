@@ -16,6 +16,8 @@ import java.util.concurrent.atomic.AtomicBoolean
     current:()->Boolean,
     modifier:Modifier=Modifier,
 ) {
+    val device=observed.queue.singleOrNull {it.occurrenceId==observed.selectedOccurrence}?.ref as? com.soundq.android.playback.PlaybackRef.Device
+    if(device!=null){PhoneArtwork(graph,device,size,current,modifier);return}
     val loader=graph.playerArtwork
     val scopeRevision by graph.session.scopeRevision.collectAsState()
     val source=selectedArtworkSource(observed)

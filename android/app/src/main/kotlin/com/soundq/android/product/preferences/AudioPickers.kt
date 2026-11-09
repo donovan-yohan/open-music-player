@@ -1,0 +1,98 @@
+package com.soundq.android.product.preferences
+
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.*
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.soundq.android.AppGraph
+import com.soundq.android.MainActivity
+import com.soundq.android.data.AuthState
+
+internal data class AudioPickerActions(val permission: () -> Unit, val file: () -> Unit, val folder: () -> Unit)
+
+/** One captured user request. A replacement account, lock, close or stale callback cannot enroll a grant. */
+@Composable internal fun rememberAudioPickers(
+    graph: AppGraph,
+    onFile: (Uri, Int, () -> Boolean) -> Unit,
+    onFolder: (Uri, Int, () -> Boolean) -> Unit,
+    onAccessChanged: () -> Unit,
+): AudioPickerActions {
+    val activity = androidx.activity.compose.LocalActivity.current as? MainActivity
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val alive = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
+    class Capture(val version: Long, val serial: Long)
+    var sequence by remember { mutableLongStateOf(0) }
+    var fileRequest by remember { mutableStateOf<Capture?>(null) }
+    var folderRequest by remember { mutableStateOf<Capture?>(null) }
+    var permissionRequest by remember { mutableStateOf<Capture?>(null) }
+    val currentFile by rememberUpdatedState(onFile)
+    val currentFolder by rememberUpdatedState(onFolder)
+    val currentAccess by rememberUpdatedState(onAccessChanged)
+    fun valid(captured: Capture) = alive.get() && sequence == captured.serial && graph.session.owns(captured.version) && graph.session.state.value !is AuthState.LocalLocked
+    fun capture(): Capture? {
+        if (!alive.get() || graph.session.state.value is AuthState.LocalLocked || fileRequest != null || folderRequest != null || permissionRequest != null) return null
+        return Capture(graph.session.version(), ++sequence)
+    }
+    val file = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val captured = fileRequest; fileRequest = null; activity?.localAudioPickerPending = false
+        val data = result.data; val uri = data?.data
+        if (captured != null && valid(captured) && result.resultCode == Activity.RESULT_OK && uri != null && uri.scheme == "content")
+            currentFile(uri, data.flags) { valid(captured) }
+    }
+    val folder = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val captured = folderRequest; folderRequest = null; activity?.localAudioPickerPending = false
+        val data = result.data; val uri = data?.data
+        if (captured != null && valid(captured) && result.resultCode == Activity.RESULT_OK && uri != null && uri.scheme == "content")
+            currentFolder(uri, data.flags) { valid(captured) }
+    }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        val captured = permissionRequest; permissionRequest = null
+        if (captured != null && valid(captured)) currentAccess()
+    }
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME && alive.get() && graph.session.state.value !is AuthState.LocalLocked) currentAccess() }
+        lifecycle.addObserver(observer)
+        onDispose { alive.set(false); sequence++; activity?.localAudioPickerPending = false; lifecycle.removeObserver(observer) }
+    }
+    val permissionName = graph.applicationContext.let { if (android.os.Build.VERSION.SDK_INT >= 33) android.Manifest.permission.READ_MEDIA_AUDIO else android.Manifest.permission.READ_EXTERNAL_STORAGE }
+    return AudioPickerActions(
+        permission = {
+            val captured = capture()
+            if (captured != null) {
+                // After an actual permanent denial, the OS settings page is the recovery, not a prompt loop.
+                val asked = context.getSharedPreferences("audio-permission", android.content.Context.MODE_PRIVATE).getBoolean(permissionName, false)
+                if (asked && activity?.shouldShowRequestPermissionRationale(permissionName) == false) {
+                    context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
+                } else {
+                    permissionRequest = captured
+                    context.getSharedPreferences("audio-permission", android.content.Context.MODE_PRIVATE).edit().putBoolean(permissionName, true).apply()
+                    permission.launch(permissionName)
+                }
+            }
+        },
+        file = {
+            capture()?.let { captured ->
+                fileRequest = captured; activity?.localAudioPickerPending = true
+                try { file.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE); type = "audio/*"
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                }) } catch (_: Exception) { fileRequest = null; activity?.localAudioPickerPending = false }
+            }
+        },
+        folder = {
+            capture()?.let { captured ->
+                folderRequest = captured; activity?.localAudioPickerPending = true
+                try { folder.launch(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+                }) } catch (_: Exception) { folderRequest = null; activity?.localAudioPickerPending = false }
+            }
+        },
+    )
+}
