@@ -40,6 +40,7 @@ internal class QueueClearCapture(private val captured:PlaybackProjection) {
     DisposableEffect(route) {onDispose {route?.close()}}
     var editorSelection by remember {mutableStateOf<String?>(null)}
     var showTimeline by remember {mutableStateOf(false)}
+    val timelineVisible=showTimeline&&!hasPhone
     var sourceContext by remember {mutableStateOf(false)}
     val timeline by model.timeline.collectAsState()
     var preview by remember(model,accountEpoch) {mutableStateOf<ChronologicalTimeline?>(null)}
@@ -72,7 +73,7 @@ internal class QueueClearCapture(private val captured:PlaybackProjection) {
         // custom-command receipt clears auditionRequest. That is Cancel, not a
         // Play toggle: playWhenReady may still be false during BUFFERING.
         if(playback.preparing) {model.controller.pause();return}
-        if(!showTimeline||playback.isPlaying) {model.controller.toggle();return}
+        if(!timelineVisible||playback.isPlaying) {model.controller.toggle();return}
         val document=model.timeline.value.document
         if(playback.arrangement?.document==document) {model.controller.toggle();return}
         val admission=timelineAdmission.get()
@@ -111,17 +112,17 @@ internal class QueueClearCapture(private val captured:PlaybackProjection) {
     }) {
         Row(Modifier.fillMaxWidth()) {
             listOf("List","Waveforms").forEachIndexed {index,label ->
-                Box(Modifier.weight(1f).heightIn(min=48.dp).semantics {selected=showTimeline==(index==1)}
+                Box(Modifier.weight(1f).heightIn(min=48.dp).semantics {selected=timelineVisible==(index==1)}
                     .clickable {gesture.cancel();preview=null;showTimeline=index==1;if(index==1)sourceContext=false},contentAlignment=Alignment.Center) {
-                    Text(label,style=SoundQ.typography.caption,color=if(showTimeline==(index==1))SoundQ.colors.primary else SoundQ.colors.muted)
+                    Text(label,style=SoundQ.typography.caption,color=if(timelineVisible==(index==1))SoundQ.colors.primary else SoundQ.colors.muted)
                 }
             }
         }
         SoundQDivider()
-        if(!showTimeline&&(sourceContext||timeline.context!=TimelineContext.Supported)&&!mixed)
+        if(!timelineVisible&&(sourceContext||timeline.context!=TimelineContext.Supported)&&!mixed)
             Text("Listening queue",Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=4.dp),style=SoundQ.typography.caption,color=SoundQ.colors.muted)
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if(showTimeline&&!hasPhone)com.soundq.android.product.timeline.TimelinePanel(model,editorSelection,{editorSelection=it},valid,onAdmission={timelineAdmission.set(it)},modifier=Modifier.fillMaxSize(),
+            if(timelineVisible)com.soundq.android.product.timeline.TimelinePanel(model,editorSelection,{editorSelection=it},valid,onAdmission={timelineAdmission.set(it)},modifier=Modifier.fillMaxSize(),
                 presentation=presentation,viewport=timelineViewport,overview=timelineOverview,snapState=timelineSnap,listState=timelineList,expanded=expanded.toMap(),onExpanded={id,value->expanded[id]=value},onPreviewDocument={base,candidate,owner->
                     if(model.timeline.value.document===base) {
                         if(candidate!=null&&valid()) {previewOwner=owner;preview=chronologicalTimeline(base,candidate)}
@@ -145,7 +146,7 @@ internal class QueueClearCapture(private val captured:PlaybackProjection) {
         auditionMessage?.let {Text(it,Modifier.padding(horizontal=20.dp),style=SoundQ.typography.caption,color=SoundQ.colors.error)}
         queueMessage?.let {Text(it,Modifier.padding(horizontal=20.dp),style=SoundQ.typography.caption,color=SoundQ.colors.error)}
         SoundQCompactPlayer(playback.title ?: "Queue empty",playback.artist,playback.isPlaying,
-            if(showTimeline)playback.canAuditionArrangement||playback.isPlaying||playback.preparing else playback.canPlay,
+            if(timelineVisible)playback.canAuditionArrangement||playback.isPlaying||playback.preparing else playback.canPlay,
             playback.preparing||auditionRequest!=null,onPlayer,::primaryAction,{gesture.cancel();preview=null;editorReturnView=showTimeline;showTimeline=false;sourceContext=true},
             timing=compactSongTiming(playback),artwork={com.soundq.android.product.artwork.PlayerArtwork(model.graph,playback,72.dp,valid)})
     }

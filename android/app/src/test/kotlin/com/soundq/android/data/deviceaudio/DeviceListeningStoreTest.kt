@@ -7,6 +7,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DeviceListeningStoreTest {
+    @Test fun realisticTwentyThousandRowIndexCommitsAndReopens() {
+        val path=target()
+        var ids=emptyList<DeviceFileId>()
+        DeviceListeningStore(path).use {store->
+            val access=store.unlock();val g=grant()
+            assertEquals(Mutation.APPLIED,store.putGrant(access,g))
+            val rows=(1..DomainFile.MAX_RECORDS).map {i->
+                val uri="content://media/external/audio/media/$i"
+                DiscoveredAudio(ProviderObjectId("android-content","media::$uri::$i"),ProviderLocator("media",uri),ContentRevision("a".repeat(64),12345678),OriginalMetadata("Recording-$i-long-original-name.flac","Original recording $i","Original artist","Original album",uri),601000)
+            }
+            assertEquals(Mutation.APPLIED,store.publishScan(store.beginScan(access,g.id)!!,rows))
+            ids=store.snapshot(access)!!.files.map {it.id}
+            assertEquals(20000,ids.size)
+        }
+        assertTrue(path.length()>8L*1024*1024)
+        DeviceListeningStore(path).use {store->assertEquals(ids,store.snapshot(store.unlock())!!.files.map {it.id})}
+    }
     private fun target(): File {
         val base = System.getProperty("device.domain.fixtures") ?: System.getProperty("java.io.tmpdir")
         return File(Files.createTempDirectory(File(requireNotNull(base)).toPath(), "device-domain-case-").toFile(), "domain.json")

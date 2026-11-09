@@ -13,7 +13,10 @@ internal class NativeListeningBinding(
     private val occurrence:UUID, private val generation:Long, val deck:Int,
     val resumeMs:Long, private val durationMs:Long, private val current:()->Boolean,
 ) {
+    // Pause/Play revokes completion intent, not genuine source-cursor evidence.
+    // Only seek/retirement invalidates queued observations of this traversal.
     private val fence=AtomicLong(0)
+    private val intentFence=AtomicLong(0)
     private var observedFence=0L
     private var traversal=store.beginTraversal(source,occurrence,generation,1,0,durationMs)
     private var nativeRevision=0L
@@ -27,10 +30,11 @@ internal class NativeListeningBinding(
     @Volatile private var seeking=false
     @Volatile private var retired=false
     fun stamp()=fence.get()
-    fun fenceIntent()=fence.incrementAndGet()
-    fun adoptIntent(stamp:Long,playing:Boolean) {if(!retired&&fence.get()==stamp&&!seeking){observedFence=stamp;previous=null;if(playing)started=false}}
-    fun fenceSeek():Long {seeking=true;return fence.incrementAndGet()}
-    fun fenceRetirement() {retired=true;fence.incrementAndGet()}
+    fun intentStamp()=intentFence.get()
+    fun fenceIntent()=intentFence.incrementAndGet()
+    fun adoptIntent(stamp:Long,playing:Boolean) {if(!retired&&intentFence.get()==stamp&&!seeking&&playing)started=false}
+    fun fenceSeek():Long {seeking=true;intentFence.incrementAndGet();return fence.incrementAndGet()}
+    fun fenceRetirement() {retired=true;intentFence.incrementAndGet();fence.incrementAndGet()}
     fun consumedCount()=consumed
     fun beginSeek(identity:Long,baseline:Long):Boolean {
         if(retired||!current())return false
@@ -64,7 +68,7 @@ internal class NativeListeningBinding(
         val end=value.naturalEnd
         if(allowNatural&&played&&end!=null&&end.generation==generation&&end.identity==generation&&end.traversalRevision==nativeRevision&&end.count>consumed) {
             if(store.complete(QualifiedNaturalEnd(t,++sequence,occurrence,generation,t.seekIdentity,end.count))!=Mutation.REFUSED){completed=true;consumed=end.count}
-        } else if(played&&(checkpoint<0||kotlin.math.abs(value.positionMs-checkpoint)>=5000||old?.playing==true&&!value.playing)) {
+        } else if(played&&durationMs>600000&&(checkpoint<0||kotlin.math.abs(value.positionMs-checkpoint)>=5000||old?.playing==true&&!value.playing)) {
             if(store.checkpoint(SourcePositionCheckpoint(t,++sequence,value.positionMs.coerceIn(0,durationMs)))!=Mutation.REFUSED)checkpoint=value.positionMs
         }
         if(!value.playing)started=false

@@ -19,7 +19,7 @@ internal class NativeListeningJournal(private val graph:AppGraph,private val job
     private var tail:Job?=null
     private var lastPublication=0L
     suspend fun bind(item:MediaItem,grant:MediaGrant,file:File,deck:NativeCallbackDeck,slot:Int,current:()->Boolean):Long {
-        val revision=withContext(Dispatchers.IO) {
+        val revision=if(grant.device!=null)null else withContext(Dispatchers.IO) {
             val digest=MessageDigest.getInstance("SHA-256")
             file.inputStream().use {input->val buffer=ByteArray(65536);while(true){check(current());val n=input.read(buffer);if(n<0)break;digest.update(buffer,0,n)}}
             ContentRevision(digest.digest().joinToString(""){"%02x".format(it)},file.length())
@@ -30,7 +30,7 @@ internal class NativeListeningJournal(private val graph:AppGraph,private val job
             check(current())
             val source=if(grant.device!=null)requireNotNull(grant.phoneAdmission).source else {
                 val key=HistoryKey.Server(ServerAccount(graph.endpoint.identity,grant.scope.accountId),ServerAudioId(grant.track.value))
-                requireNotNull(store.bindServerContent(access,key,revision,deck.durationMs))
+                requireNotNull(store.bindServerContent(access,key,requireNotNull(revision),deck.durationMs))
             }
             // A simultaneous duplicate is a replay, not a paused-source restoration. Never cache
             // the outgoing cursor in a prepared deck: its completion may reset the source meanwhile.
@@ -42,10 +42,15 @@ internal class NativeListeningJournal(private val graph:AppGraph,private val job
     }
     fun observe(snapshot:NativeCallbackSnapshot,allowNatural:Boolean=true) {
         if(snapshot.scheduleRevision!=0L||snapshot.error!=0)return
-        val captured=bindings.toMap().filterValues {it.current()}.mapNotNull {(slot,b)->snapshot.decks.getOrNull(slot)?.let {Triple(b,it,b.binding.stamp())}}
+        val captured=bindings.toMap().filterValues {it.current()}.mapNotNull {(slot,b)->snapshot.decks.getOrNull(slot)?.let {Triple(b,it,b.binding.stamp() to b.binding.intentStamp())}}
         val at=System.currentTimeMillis();val before=tail
         val publish=at-lastPublication>=1000;if(publish)lastPublication=at
-        tail=jobs.launch {before?.join();graph.phoneAudio.journal(publish) {_,_->captured.forEach {(b,d,stamp)->b.binding.observe(d,at,stamp,allowNatural)}}}
+        tail=jobs.launch {before?.join();graph.phoneAudio.journal(publish) {_,_->captured.forEach {(b,d,stamp)->
+            val natural=allowNatural&&stamp.second==b.binding.intentStamp()
+            // A revoked terminal cannot become an endpoint checkpoint instead of completion.
+            // Nonterminal native advancement still belongs to the retained cursor traversal.
+            if(d.naturalEnd==null||natural)b.binding.observe(d,at,stamp.first,natural)
+        }}}
     }
     fun transportIntent(playing:Boolean) {
         val captured=bindings.values.map {it to it.binding.fenceIntent()};val before=tail
@@ -59,10 +64,10 @@ internal class NativeListeningJournal(private val graph:AppGraph,private val job
         val b=bindings[slot] ?: return current()
         val stamp=expectedStamp;val before=tail
         before?.join()
-        if(!current()||bindings[slot]!==b||b.binding.stamp()!=stamp)return false
+        if(!current()||bindings[slot]!==b||b.binding.intentStamp()!=stamp)return false
         b.binding.fenceSeek();return true
     }
-    fun stamp(slot:Int)=bindings[slot]?.binding?.stamp() ?: -1L
+    fun stamp(slot:Int)=bindings[slot]?.binding?.intentStamp() ?: -1L
     fun fenceSeek(slot:Int) {bindings[slot]?.binding?.fenceSeek()}
     suspend fun beginSeek(slot:Int,identity:Long,baseline:Long):Boolean {
         val b=bindings[slot] ?: return true

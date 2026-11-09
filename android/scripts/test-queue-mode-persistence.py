@@ -16,9 +16,11 @@ def block(text,marker):
   depth+=(text[i]=='{')-(text[i]=='}');i+=1
  return text[s:i]
 markers=['    private fun queueFile(','    private fun queueObservation(','    private fun writeQueueObservation(','    private fun saveJamQueue(','    private fun scheduleSave(','    private fun restoreQueue(','    private suspend fun readSavedQueue(','    private fun savedItems(','    private fun <T> future(']
+markers+=['    private fun scheduleGuestSave(','    private fun restoreGuestQueue(']
 if '    private fun restoreModes(' in service:markers.append('    private fun restoreModes(')
 if '    private fun savedCompatible(' in service:markers.append('    private fun savedCompatible(')
 methods='\n'.join(block(service,m) for m in markers).replace('com.soundq.android.playback.listening.ListeningServicePlayer','ListeningServicePlayer')
+methods+='\n'+next(line for line in service.splitlines() if 'private fun guestFile()' in line)
 resume=block(service,'        override fun onPlaybackResumption(').replace('override fun','fun',1)
 repeat=block(service,'            override fun onRepeatModeChanged(').replace('override fun','fun',1)
 shuffle=block(service,'            override fun onShuffleModeEnabledChanged(').replace('override fun','fun',1)
@@ -45,14 +47,14 @@ private class MediaItem {class LocalConfiguration(val uri:Uri);var mediaId="";va
 private class ListeningServicePlayer:Player() {fun validateMetadata(sources:List<TimelineSource>,index:Int,position:Long){error("Bounded adapter covered by real ServiceAdmissionTest")}}
 private open class Player {
  companion object {const val REPEAT_MODE_OFF=0;const val REPEAT_MODE_ONE=1;const val REPEAT_MODE_ALL=2}
- var items=listOf<MediaItem>();var currentMediaItemIndex=0;var currentPosition=0L;var prepares=0;var plays=0;var playing=false
+ var items=listOf<MediaItem>();var currentMediaItemIndex=0;var currentPosition=0L;var prepares=0;var plays=0;var playing=false;var failInstall=false
  // Traversal policy executes with real ServiceQueuePlayer in ShuffleRestoreCompositionTest.
  fun <T> restoringShuffle(enabled:Boolean,action:()->T):T=action()
  var repeatChanged:()->Unit={};var shuffleChanged:()->Unit={};var timelineChanged:()->Unit={}
  var shuffleModeEnabled=false;set(v){if(field!=v){field=v;shuffleChanged()}}
  var repeatMode=REPEAT_MODE_OFF;set(v){if(field!=v){field=v;repeatChanged()}}
  val mediaItemCount get()=items.size;fun getMediaItemAt(i:Int)=items[i]
- open fun setMediaItems(v:List<MediaItem>,index:Int,position:Long){items=v;currentMediaItemIndex=index;currentPosition=position;timelineChanged()}
+ open fun setMediaItems(v:List<MediaItem>,index:Int,position:Long){check(!failInstall);items=v;currentMediaItemIndex=index;currentPosition=position;timelineChanged()}
  open fun setMediaItems(v:List<MediaItem>,reset:Boolean)=setMediaItems(v,0,0)
  open fun setMediaItems(v:List<MediaItem>)=setMediaItems(v,true)
  open fun setMediaItem(v:MediaItem)=setMediaItems(listOf(v))
@@ -95,7 +97,10 @@ private class Continuation {fun repeatChanged(){};fun shuffleChanged(){}}
 '''
 fixture='''
 private class ExtractedService(val graph:Graph,val jobs:CoroutineScope) {
- fun scheduleGuestSave(){error("Guest queue covered by phone consumer test")};var clockRevision=0L
+ var clockRevision=0L;var guestRestoredVersion=-1L;var guestRejectedQueue=false
+ fun localAccess()=account==null
+
+ fun guestStart(){restoreGuestQueue()};fun guestFileBytes()=guestFile()
  val player=Player();var account=graph.session.capture();val transport=ServiceTransportPlayer(player){account?.let(graph.session::current)==true}
  val grants=ConcurrentHashMap<String,MediaGrant>();var selectionEpoch=0L;var saveJob:Job?=null;var restoring=false;var rejectedQueue=false
  private val queueFileLock=Any();@Volatile private var queueSaveEpoch=0L
@@ -130,6 +135,22 @@ private class Harness:AutoCloseable {
  override fun close(){Dispatchers.IO.release();runBlocking{jobs.coroutineContext[Job]!!.cancelAndJoin()};main.close();directory.deleteRecursively()}
 }
 class QueueModePersistenceExtractedTest {
+ @Test fun failedGuestRestoreCannotPoisonAccountSaveOrJamAndPreservesGuestBytes(){Harness().use {h->
+ val ref=PlaybackRef.Device("12345678-1234-1234-1234-123456789013","a".repeat(64),100,1)
+ val guest=QueueSnapshot(h.session.endpoint.identity,"guest",listOf(SavedOccurrence("phone",0,"Phone","Artist",true,true,601000,ref=ref)),0,42000)
+ val file=h.service.guestFileBytes();QueueSnapshotStore(file).write(guest);val bytes=file.readBytes()
+ h.onMain{h.service.account=null;h.service.player.failInstall=true;h.service.guestStart()};h.settled();h.onMain{h.service.player.failInstall=false}
+ h.onMain{h.service.save()};h.settled();assertArrayEquals(bytes,file.readBytes())
+ h.onMain{h.service.account=h.session.capture()};h.seed();h.onMain{h.service.start()};h.settled()
+ assertFalse(h.service.rejectedQueue)
+ h.onMain{h.service.player.currentPosition=3210;h.service.save()};h.settled()
+ assertEquals(3210L,QueueSnapshotStore(h.service.file()).read(h.session.endpoint.identity,"A")!!.position)
+ h.onMain{h.service.acknowledgeJam()};assertArrayEquals(bytes,file.readBytes())
+ // Successful acknowledged guest restoration on a fresh session releases only its own hold.
+ h.onMain{h.service.account=null;h.service.player.clearMediaItems();h.service.saveJob?.cancel();h.session.retire();h.service.guestStart()};h.settled()
+ h.onMain{h.service.player.currentPosition=1234;h.service.save()};h.settled()
+ assertEquals(1234L,QueueSnapshotStore(file).read(h.session.endpoint.identity,"guest")!!.position)
+ }}
  @Test fun mixedServerAndPhoneRestoreKeepsTypedDeviceGrantAndNeverConstructsPhoneTrackId(){Harness().use {h->
  val ref=PlaybackRef.Device("12345678-1234-1234-1234-123456789013","a".repeat(64),100,1)
  val rows=listOf(SavedOccurrence("server",7,"Server","Artist",false,durationMs=6000),SavedOccurrence("phone",0,"Phone","Original artist",true,true,601000,ref=ref))

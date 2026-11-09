@@ -311,6 +311,16 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 }
 tasks.matching {it.name in setOf("generateDebugUnitTestLintModel","lintAnalyzeDebugUnitTest")}.configureEach {dependsOn(generatePlayerClockProbe)}
 // Canonical phone/service/native preparation bodies with declared hardware facades.
+val phoneRefreshProbe=layout.buildDirectory.dir("generated/phone-refresh-test")
+val generatePhoneRefreshProbe=tasks.register<Exec>("generatePhoneRefreshProbe") {
+    inputs.files(rootProject.file("scripts/test-phone-refresh.py"),file("src/main/kotlin/com/soundq/android/data/device/PhoneAudioRepository.kt"))
+    outputs.dir(phoneRefreshProbe)
+    commandLine(providers.environmentVariable("SOUNDQ_PYTHON").orElse("python3").get(),rootProject.file("scripts/test-phone-refresh.py"),"--generate",phoneRefreshProbe.get().asFile)
+}
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    if(name=="compileDebugUnitTestKotlin"){source(phoneRefreshProbe);dependsOn(generatePhoneRefreshProbe)}
+}
+tasks.matching {it.name in setOf("generateDebugUnitTestLintModel","lintAnalyzeDebugUnitTest")}.configureEach {dependsOn(generatePhoneRefreshProbe)}
 val phoneConsumersProbe=layout.buildDirectory.dir("generated/phone-consumers-test")
 val generatePhoneConsumersProbe=tasks.register<Exec>("generatePhoneConsumersProbe") {
     inputs.files(rootProject.file("scripts/test-phone-consumers.py"),rootProject.file("scripts/test-local-media-mutations.py"))

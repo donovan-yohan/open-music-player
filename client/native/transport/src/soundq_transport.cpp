@@ -277,7 +277,9 @@ struct Engine::Impl {
             d.cursor = c.value; d.atEnd = false;
             d.traversalRevision = c.sequence;
         } else if (c.operation == Operation::SetRate) {
-            d.traversalRevision = c.sequence;
+            // Quiescence reasserts ordinary rate after Pause. An unchanged rate
+            // is not a new traversal and must not strand the listening journal.
+            if (c.value != d.rate.target) d.traversalRevision = c.sequence;
             d.rate.set(c.value);
             d.moveSequence = std::max(d.moveSequence, c.sequence);
         } else if (c.operation == Operation::SetGain) {

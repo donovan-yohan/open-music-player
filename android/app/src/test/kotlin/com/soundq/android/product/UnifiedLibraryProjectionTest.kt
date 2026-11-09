@@ -8,6 +8,15 @@ import org.junit.Test
 import java.util.UUID
 
 class UnifiedLibraryProjectionTest {
+    @Test fun serverSearchMatchesSurviveOverridesAndMultiwordDisplayFields() {
+        val overridden=Track(TrackId(1),"Custom title",artist="Custom artist")
+        val multiword=Track(TrackId(2),"Blue",artist="Miles")
+        val download=Track(TrackId(3),"Unrelated")
+        for(query in listOf("Canonical recording","Blue Miles")) {
+            val rows=unifiedLibraryRows("e","a",listOf(overridden,multiword),listOf(overridden,download),null,LibraryQuery(text=query),false,false)
+            assertEquals(listOf(1L,2L),rows.map {(it.ref as PlaybackRef.Server).id})
+        }
+    }
     private fun file(id:Int,title:String,available:Boolean=true)=DeviceAudio(DeviceFileId(UUID(0,id.toLong())),ProviderObjectId("fixture","$id"),ContentRevision("a".repeat(64),40),1,OriginalMetadata("$id.wav",title,"Artist","Album"),601000,listOf(LocatorAccess(ScanGrantId(UUID(1,id.toLong())),ProviderLocator("fixture","$id"),if(available)AccessState.AVAILABLE else AccessState.REVOKED)))
     @Test fun inclusiveLocalAndSubmittedQueryRetainTypedSourcesAndPersistedRecencyTies() {
         val phone=file(1,"Beta");val unavailable=file(2,"Unavailable",false)

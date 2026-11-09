@@ -15,7 +15,7 @@ internal fun unifiedLibraryRows(endpoint:String,account:String?,server:List<Trac
     val downloaded=downloads.associateBy {it.id}
     val acknowledged=server.associateBy {it.id}
     val remote=if(account==null)emptyList() else (server+downloads.filter {it.id !in acknowledged}).distinctBy {it.id}.filter {
-        matches(it.title,it.artist,it.album)&&(!query.liked||it.liked==true)&&query.collection?.contains(it)!=false&&((query.genre.isBlank()&&query.verified==null)||it.id in acknowledged)
+        (it.id in acknowledged||matches(it.title,it.artist,it.album))&&(!query.liked||it.liked==true)&&query.collection?.contains(it)!=false&&((query.genre.isBlank()&&query.verified==null)||it.id in acknowledged)
     }.map {track->UnifiedLibraryRow(PlaybackRef.Server(endpoint,account,track.id.value),track.title,track.artist,track.album,track.durationMs,track.id in downloaded,server=track)}
     val device=if(query.liked||query.verified!=null||query.genre.isNotBlank())emptyList() else phone?.files.orEmpty().filter {
         matches(it.metadata.displayTitle,it.metadata.artist.orEmpty(),it.metadata.album.orEmpty(),it.metadata.filename)&&query.collection?.let {c->(c.artist==null||c.artist==it.metadata.artist)&&(c.album==null||c.album==it.metadata.album)}!=false

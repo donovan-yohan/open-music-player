@@ -55,15 +55,16 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
         scanSequence = Math.addExact(scanSequence, 1); scans[grant] = scanSequence
         return ScanCapture(access, grant, scanSequence)
     }
-    /** Complete acknowledged enumeration of ONE grant. Omitted known aliases become MISSING, not deleted.
-     * Cancelled/partial/denied scans must not call this. Repeated identical input is idempotent. */
-    @Synchronized fun publishScan(capture: ScanCapture, audio: List<DiscoveredAudio>): Mutation {
+    /** Acknowledged proofs from ONE grant. Only complete coverage retires omitted aliases.
+     * Use complete=false for isolated row-proof failures after enumeration, never a cancelled prefix.
+     * Cancelled/denied enumerations must not call this. Repeated identical input is idempotent. */
+    @Synchronized fun publishScan(capture: ScanCapture, audio: List<DiscoveredAudio>, complete: Boolean = true): Mutation {
         if (!current(capture.access) || scans[capture.grantId] != capture.sequence || state.grants.none { it.id == capture.grantId && it.state == AccessState.AVAILABLE }) return Mutation.REFUSED
         if (audio.size > DomainFile.MAX_RECORDS || audio.distinctBy { it.locator }.size != audio.size) return Mutation.REFUSED
         if (audio.groupBy { it.objectId }.values.any { rows -> rows.any { it.copy(locator = rows[0].locator, state = rows[0].state) != rows[0] } }) return Mutation.REFUSED
         var files = state.files.map { f -> f.copy(aliases = f.aliases.map { a ->
             val movedTo = audio.find { it.locator == a.locator }
-            if ((a.grantId == capture.grantId && audio.none { it.objectId == f.objectId && it.locator == a.locator }) || (movedTo != null && movedTo.objectId != f.objectId)) a.copy(state = AccessState.MISSING) else a
+            if ((complete && a.grantId == capture.grantId && audio.none { it.objectId == f.objectId && it.locator == a.locator }) || (movedTo != null && movedTo.objectId != f.objectId)) a.copy(state = AccessState.MISSING) else a
         }) }.toMutableList()
         for (d in audio) {
             val at = files.indexOfFirst { it.objectId == d.objectId }

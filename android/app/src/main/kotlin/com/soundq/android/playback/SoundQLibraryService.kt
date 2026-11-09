@@ -494,9 +494,10 @@ class SoundQLibraryService : MediaLibraryService() {
         }
     })}
     private var guestRestoredVersion=-1L
+    private var guestRejectedQueue=false
     private fun guestFile()=java.io.File(graph.directory,"phone-queue-guest.json")
     private fun scheduleGuestSave() {
-        if(restoring||rejectedQueue||!localAccess())return
+        if(restoring||guestRejectedQueue||!localAccess())return
         val version=graph.session.version()
         val rows=(0 until player.mediaItemCount).map {i->player.getMediaItemAt(i)}
         if(rows.any {PlaybackRef.read(it.mediaMetadata.extras?.getString("playbackRef")) !is PlaybackRef.Device})return
@@ -516,7 +517,9 @@ class SoundQLibraryService : MediaLibraryService() {
                     val e=Bundle().apply {putString("playbackRef",ref.wire());putBoolean("localOnly",true);putBoolean("manual",i.manual);putString("origin",i.origin.name);putLong("durationMs",i.durationMs)}
                     MediaItem.Builder().setMediaId(i.occurrence).setUri(uri).setMediaMetadata(MediaMetadata.Builder().setTitle(i.title).setArtist(i.artist).setExtras(e).setIsPlayable(true).setIsBrowsable(false).build()).build()}
                 player.pause();player.restoringShuffle(saved.shuffleEnabled){player.setMediaItems(rows,saved.selected,saved.position)};restoreModes(saved);transport.selectionCommitted()
-            }catch(_:Exception){rejectedQueue=true;transport.rejectSelection()}finally{restoring=false}
+                // Release only the guest hold after this exact snapshot is admitted successfully.
+                guestRejectedQueue=false
+            }catch(_:Exception){guestRejectedQueue=true;transport.rejectSelection()}finally{restoring=false}
         }
     }
     private fun renewPhoneGrants() {

@@ -191,6 +191,8 @@ int main(int argc, char** argv) {
     // Decoder-local failure never invalidates root or a fresh intended generation.
     assert(registry.load(handle, 0, "/fake/route", 66, 7, 1500));
     until(registry, handle, *out, "\"ready\":true");
+    const auto traversal = [](const std::string& d) { const auto at=d.find("\"traversalRevision\":"); assert(at!=std::string::npos); return d.substr(at,d.find(',',at)-at); };
+    const auto admittedTraversal=traversal(deck(registry.state(handle)));
     out->callback->outputError(-899);
     assert(!registry.control(handle, 1, 0, 0, 0));
     assert(registry.state(handle).find("\"error\":-899") != std::string::npos);
@@ -203,6 +205,8 @@ int main(int argc, char** argv) {
     assert(testDecoders == 1);
     assert(out->opens == opensBefore + 1);
     const auto afterRecovery = deck(registry.state(handle));
+    // Ordinary output recovery is not a source seek or a new journal traversal.
+    assert(traversal(afterRecovery) == admittedTraversal);
     const auto cursor = [](const std::string& d) { const auto at=d.find("\"sourceFrame\":"); return d.substr(at,d.find(',',at)-at); };
     assert(cursor(afterRecovery) == cursor(beforeRecovery));
     assert(registry.control(handle, 9, 0, 0, 0));

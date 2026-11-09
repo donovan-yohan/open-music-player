@@ -7,6 +7,21 @@ import java.nio.file.Files
 import java.util.UUID
 
 class NativeListeningJournalTest {
+    @Test fun ineligiblePollNeverReadsCheckpointStorageButEligiblePollStillFencesForeignBytes() {
+        for(duration in listOf(600000L,601000L)) {
+            val root=Files.createTempDirectory("journal-short-io-").toFile();val path=java.io.File(root,"journal.json")
+            try {DeviceListeningStore(path).use {store->
+                val access=store.unlock();val grant=ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.FILE,"Source",ProviderLocator("fixture","one"),true)
+                store.putGrant(access,grant);store.publishScan(store.beginScan(access,grant.id)!!,listOf(DiscoveredAudio(ProviderObjectId("fixture","one"),grant.locator,ContentRevision("a".repeat(64),32),OriginalMetadata("source.wav"),duration)))
+                val row=store.snapshot(access)!!.files.single();val source=store.captureSource(access,row.id)!!
+                val journal=NativeListeningBinding(store,source,UUID.randomUUID(),51,0,0,duration){true}
+                journal.observe(deck(0,true),10);journal.observe(deck(100,true),11)
+                path.appendText("foreign")
+                journal.observe(deck(6000,true),12)
+                assertEquals(if(duration>600000)LoadState.REJECTED else LoadState.READY,store.loadState)
+            }}finally{root.deleteRecursively()}
+        }
+    }
     @Test fun acknowledgedAdvanceCheckpointSeekFenceAndConsumedEnd() {
         val root=Files.createTempDirectory("service-journal-").toFile()
         try {DeviceListeningStore(java.io.File(root,"journal.json")).use {store->

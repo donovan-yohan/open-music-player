@@ -224,8 +224,8 @@ import com.soundq.android.product.imports.ImportsScreen
                 else Column(Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxSize()) {
                     incomingShare?.takeIf {it.account==null||it.account==(auth as? AuthState.SignedIn)?.accountId}?.let {
                         Row(Modifier.fillMaxWidth().heightIn(min=48.dp).padding(start=SoundQ.spacing.gutter),verticalAlignment=Alignment.CenterVertically) {
-                            Text("Shared link ready",Modifier.weight(1f),style=SoundQ.typography.caption)
-                            LibraryIconCell(SoundQIcon.Info,"Review shared link",{panel="SharedLink"})
+                            Text(if(auth is AuthState.SignedIn)"Shared link ready" else "Shared music link retained. Sign in, then confirm the import.",Modifier.weight(1f),style=SoundQ.typography.caption)
+                            LibraryIconCell(SoundQIcon.Info,"Review shared link",{panel=if(auth is AuthState.SignedIn)"SharedLink" else "Account"})
                         }
                         SoundQDivider()
                     }
@@ -305,7 +305,7 @@ import com.soundq.android.product.imports.ImportsScreen
                             onLoadMore={expected,current->model.loadMore(expected,current)})
                         LazyColumn(Modifier.weight(1f).fillMaxWidth().semantics {contentDescription=library.total?.let {"Library, $it tracks"} ?: "Library tracks"},state=libraryScroll) {
                         if(library.loading) item {LibraryStateCell {SoundQFeedback(if(library.rows.isEmpty())"Loading library" else "Loading more tracks",FeedbackKind.Loading)}}
-                        if(!library.loading&&library.error==null&&mixedRows.isEmpty())item {LibraryStateCell {SoundQFeedback(if(library.query==LibraryQuery())"No tracks yet" else "No matching tracks",FeedbackKind.Empty,action="Clear refinement",onAction={model.refine(LibraryQuery())})}}
+                        if(!library.loading&&library.error==null&&mixedRows.isEmpty())item {LibraryStateCell {SoundQFeedback(if(mixedQuery==LibraryQuery()&&!localFiles)"No tracks yet" else "No matching tracks",FeedbackKind.Empty,action="Clear refinement",onAction={if(auth is AuthState.SignedIn)model.refine(LibraryQuery())else localQuery=LibraryQuery();localFiles=false;recentOrder=false})}}
                         itemsIndexed(if(mixedNeeded)mixedRows else mixedRows.filter {it.server!=null},key={_,row -> row.stable}) {_,mixedRow ->
                             val phoneRow=mixedRow.phone
                             if(phoneRow!=null) {

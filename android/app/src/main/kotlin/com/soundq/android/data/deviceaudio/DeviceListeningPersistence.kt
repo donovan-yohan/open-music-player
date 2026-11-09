@@ -23,7 +23,8 @@ internal data class DomainState(
  * No recovery-by-empty on rejected data. Publication is fsynced stage + atomic replacement + directory
  * force. Unsupported atomic/force or ambiguous IO fails closed until close/reopen. */
 internal class DomainFile(private val file: File, private val commitFault: (String) -> Unit = {}) : AutoCloseable {
-    companion object { const val MAX_BYTES = 8 * 1024 * 1024; const val MAX_RECORDS = 20000 }
+    // Room for 20k ordinary locator/metadata/alias rows, still a bounded local document.
+    companion object { const val MAX_BYTES = 32 * 1024 * 1024; const val MAX_RECORDS = 20000 }
     private val channel: FileChannel
     private val lock: java.nio.channels.FileLock
     private var expected: ByteArray? = null

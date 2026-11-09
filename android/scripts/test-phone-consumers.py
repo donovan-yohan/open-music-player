@@ -90,13 +90,69 @@ private class CanonicalPrepare(val graph:Graph,val grants:ConcurrentHashMap<Stri
  fun retrySeek(target:Long){seekNative(target)}
  fun automaticRepeat(){val successor=0;val index=0;REPEAT}
  fun dispatchIntent(generation:Long=epoch,recoverOutput:Boolean=false){if(generation==epoch&&selectedLoaded&&activeGrant!!.current(graph))owner.plays++}
- fun retireSelection(){epoch++;selectedLoaded=false};fun fail(m:String){error=m};fun currentScope()=graph.phoneAudio.current(graph.session.version());fun invalidateState(){};fun done():ListenableFuture<*> = Futures.immediateVoidFuture()
+ fun retireSelection(){epoch++;selectedLoaded=false};fun fail(m:String){error=m};fun currentScope()=if(queueScope!=null)queueScope?.let(graph.session::current)==true else graph.phoneAudio.current(graph.session.version());fun invalidateState(){};fun done():ListenableFuture<*> = Futures.immediateVoidFuture()
 PREPARE
 BIND
 SEEK
  suspend fun settled(){tail?.join()}
 }
 class PhoneCanonicalConsumersTest {
+ @Test fun queuedNativeAdvanceSurvivesPauseButNeverSeekRetirementOrNewOwner()=runBlocking {
+  for(terminal in listOf("pause","seek","retire","owner")) {
+   val dir=java.nio.file.Files.createTempDirectory("queued-recency-").toFile();val graph=Graph(dir);val scope=CoroutineScope(SupervisorJob()+Dispatchers.Default);val release=java.util.concurrent.CountDownLatch(1)
+   try {
+    val service=Service(graph);val native=CanonicalPrepare(graph,service.grants,service.resolve(listOf(request(graph))),scope)
+    native.handlePrepare();native.settled()
+    graph.phoneAudio.journalGate=release
+    native.journal.observe(NativeCallbackSnapshot("",0,native.owner.deck()))
+    assertTrue(graph.phoneAudio.journalEntered.await(5,java.util.concurrent.TimeUnit.SECONDS))
+    native.journal.observe(NativeCallbackSnapshot("",0,native.owner.deck().copy(positionMs=200)))
+    when(terminal){"pause"->native.journal.transportIntent(false);"seek"->native.journal.fenceSeek(0);"retire"->native.journal.freeze();else->graph.phoneAudio.authorityVersion++}
+    release.countDown();withTimeout(5000){while(scope.coroutineContext[Job]!!.children.any {it.isActive})delay(1)}
+    val history=graph.phoneAudio.store.snapshot(graph.phoneAudio.access)!!.history
+    if(terminal=="pause")assertNotNull("Genuine native advancement queued before Pause must retain recency",history.singleOrNull()?.playedAtEpochMs)
+    else assertTrue("Retired cursor/source evidence must stay refused: $terminal",history.isEmpty())
+    native.owner.loaded?.delete()
+   }finally{release.countDown();scope.cancel();graph.phoneAudio.store.close();dir.deleteRecursively()}
+  }
+ }
+ @Test fun advancingFinalNativePauseQualifiesWithoutAnotherPlayingPoll()=runBlocking {
+  val dir=java.nio.file.Files.createTempDirectory("final-pause-recency-").toFile();val graph=Graph(dir);val scope=CoroutineScope(SupervisorJob()+Dispatchers.Default)
+  try {
+   val service=Service(graph);val native=CanonicalPrepare(graph,service.grants,service.resolve(listOf(request(graph))),scope)
+   native.handlePrepare();native.settled();native.journal.observe(NativeCallbackSnapshot("",0,native.owner.deck()))
+   withTimeout(5000){while(scope.coroutineContext[Job]!!.children.any {it.isActive})delay(1)}
+   native.journal.transportIntent(false)
+   native.journal.observe(NativeCallbackSnapshot("",0,native.owner.deck().copy(positionMs=200,playing=false)),allowNatural=false)
+   withTimeout(5000){while(scope.coroutineContext[Job]!!.children.any {it.isActive})delay(1)}
+   assertNotNull("Final native pause cursor proves advancement after the playing observation",graph.phoneAudio.store.snapshot(graph.phoneAudio.access)!!.history.singleOrNull()?.playedAtEpochMs)
+   native.owner.loaded?.delete();Unit
+  }finally{scope.cancel();graph.phoneAudio.store.close();dir.deleteRecursively()}
+ }
+ @Test fun deviceJournalDoesNotReadPreparedPcmButServerStillRequiresExactContent()=runBlocking {
+  val dir=java.nio.file.Files.createTempDirectory("journal-no-rehash-").toFile();val graph=Graph(dir);val scope=CoroutineScope(SupervisorJob()+Dispatchers.Default)
+  try {
+   val service=Service(graph);val item=service.resolve(listOf(request(graph))).single();val grant=service.grants.getValue(item.localConfiguration!!.uri.toString())
+   grant.phoneAdmission=graph.phoneAudio.admit(graph.phoneAudio.row)
+   val journal=NativeListeningJournal(graph,scope);val deck=Hardware().deck().copy(identity=51,generation=51)
+   assertEquals(0L,journal.bind(item,grant,File(dir,"absent-decoded-pcm"),deck,0){true})
+   assertTrue(graph.session.accept(graph.session.beginIntent(),SecretTokens("fixture-access","fixture-refresh","fixture-account")))
+   val server=MediaGrant(graph.session.capture()!!,TrackId(1))
+   try {journal.bind(item,server,File(dir,"absent-server-content"),deck,1){true};fail("Server must hash validated content")}
+   catch(expected:java.io.FileNotFoundException){}
+  }finally{scope.cancel();graph.phoneAudio.store.close();dir.deleteRecursively()}
+ }
+ @Test fun serverPreparationFailureNeverSuggestsPhoneAccessRecovery()=runBlocking {
+  val dir=java.nio.file.Files.createTempDirectory("server-prepare-error-").toFile();val graph=Graph(dir);val scope=CoroutineScope(SupervisorJob()+Dispatchers.Default)
+  try {
+   assertTrue(graph.session.accept(graph.session.beginIntent(),SecretTokens("fixture-access","fixture-refresh","fixture-account")))
+   val service=Service(graph);val uri=Uri("soundq:server");service.grants[uri.toString()]=MediaGrant(graph.session.capture()!!,TrackId(1))
+   val item=MediaItem.Builder().setMediaId(UUID.randomUUID().toString()).setUri(uri).build();val native=CanonicalPrepare(graph,service.grants,listOf(item),scope)
+   native.handlePrepare();native.settled()
+   assertEquals("Audio source could not be prepared. Try again when the server is available.",native.error)
+   assertFalse(native.selectedLoaded);assertEquals(0,native.owner.plays)
+  }finally{scope.cancel();graph.phoneAudio.store.close();dir.deleteRecursively()}
+ }
  @Test fun repeatedServerContentPreloadStartsAtZeroButFreshRestorationRetainsResume()=runBlocking {
   val dir=java.nio.file.Files.createTempDirectory("duplicate-replay-server-").toFile();val graph=Graph(dir);val scope=CoroutineScope(SupervisorJob()+Dispatchers.Default)
   try {

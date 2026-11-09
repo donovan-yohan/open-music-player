@@ -943,7 +943,7 @@ internal class NativeCallbackPlayer(
             } catch (_: CancellationException) {
                 // Superseded work cannot change the successor's error or play intent.
             } catch (_: Exception) {
-                if (generation==epoch&&currentScope()&&grants[uri]===grant) { fail("Audio source could not be prepared. Check Local audio access or choose the file again."); retireSelection() }
+                if (generation==epoch&&currentScope()&&grants[uri]===grant) { fail(if(grant.device!=null)"Audio source could not be prepared. Check Local audio access or choose the file again." else "Audio source could not be prepared. Try again when the server is available."); retireSelection() }
             } finally {
                 if (!transferred) withContext(NonCancellable + Dispatchers.IO) { file?.delete() }
                 if (generation == epoch) {
