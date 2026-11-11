@@ -18,6 +18,9 @@ using namespace transport;
 constexpr uint64_t fixedPoolBytes = uint64_t{4} * 8 * maxPcmPageFrames * 2 * sizeof(float);
 constexpr int32_t internalError = -10001;
 constexpr int32_t closedError = -10002;
+// Product-qualified ordinary listening range (engine envelope is wider).
+constexpr double minSpeed = 0.5, maxSpeed = 2.0;
+bool admittedSpeed(double value) noexcept { return std::isfinite(value) && value >= minSpeed && value <= maxSpeed; }
 uint64_t nanos() noexcept {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -31,7 +34,7 @@ int64_t milliseconds(long double frame, uint32_t rate) noexcept {
 struct Intent {
     uint64_t generation = 0, identity = 0, positionMs = 0, gesture = 0;
     std::string path;
-    double gain = 1;
+    double gain = 1, speed = 1;
     bool play = false, gainDirty = false, playDirty = false, unloading = false;
 };
 struct Host final : Callbacks {
@@ -120,9 +123,11 @@ struct Host final : Callbacks {
                 intent.gesture = 0; intent.play = false; intent.playDirty = false;
                 if (deck.identity) {
                     // Cancel may restore pre-gesture play/rate. Pause and the
-                    // ordinary rate follow it, including any queued Move.
-                    if (!submit(Operation::Pause) || !submit(Operation::SetRate, 1)) return false;
-                    settleRate = settleRate || deck.rate != 1;
+                    // ordinary listening rate follow it, including any queued
+                    // Move. The rate is the one matching the submitted pages.
+                    const double rate = workers[i] ? workers[i]->appliedSpeed() : 1;
+                    if (!submit(Operation::Pause) || !submit(Operation::SetRate, rate)) return false;
+                    settleRate = settleRate || deck.rate != rate;
                 }
             }
         }
@@ -415,16 +420,16 @@ struct Host final : Callbacks {
         const auto seq=next();if(!engine->scheduleTransport(seq,schedule->revision,static_cast<uint32_t>(op),frame))return false;
         scheduleReceipt=seq;if(op==3)scheduleReady=false;return true;
     }
-    bool load(int deck, const std::string& path, uint64_t identity, uint64_t generation, uint64_t position) {
+    bool load(int deck, const std::string& path, uint64_t identity, uint64_t generation, uint64_t position, double speed = 1) {
         if (schedule || scheduleRetiring || deck < 0 || deck >= 4 || error.load() != 0 || identity == 0 || generation == 0 ||
-            path.empty() || path[0] != '/' || path.find('\0') != std::string::npos) return false;
+            path.empty() || path[0] != '/' || path.find('\0') != std::string::npos || !admittedSpeed(speed)) return false;
         auto& intent = intents[deck];
         if (!workers[deck] || intent.unloading || generation < intent.generation) return false;
         if (generation == intent.generation)
-            return identity == intent.identity && path == intent.path && position == intent.positionMs;
+            return identity == intent.identity && path == intent.path && position == intent.positionMs && speed == intent.speed;
         // Preallocate/copy all throwing state before the worker accepts turnover.
-        Intent accepted{generation, identity, position, 0, path, intent.gain, false, true, true, false};
-        if (!workers[deck]->replace(path, identity, generation, position)) return false;
+        Intent accepted{generation, identity, position, 0, path, intent.gain, speed, false, true, true, false};
+        if (!workers[deck]->replace(path, identity, generation, position, speed)) return false;
         intent = std::move(accepted);
         return true;
     }
@@ -452,6 +457,13 @@ struct Host final : Callbacks {
         if (operation == 9) return deck == 0 && value == 0 && recoverOutput();
         if(schedule || scheduleRetiring)return false;
         auto& w = workers[deck]; auto& intent = intents[deck];
+        if (operation == 10) {
+            // Ordinary listening speed for this exact assignment. Admission is
+            // not acceptance: the snapshot's engine rate is the receipt.
+            if (!w || !admittedSpeed(value) || error.load(std::memory_order_acquire) != 0 || intent.unloading ||
+                intent.identity == 0 || intent.gesture != 0 || !w->setSpeed(value)) return false;
+            intent.speed = value; pump(); return true;
+        }
         if (!w) return operation == 8;
         // Cleanup remains available after a route error, but no new motion/load.
         if (operation == 8) {
@@ -511,6 +523,7 @@ struct Host final : Callbacks {
         std::ostringstream out; out.imbue(std::locale::classic()); out << std::setprecision(17);
         out << "{\"error\":" << error.load() << ",\"sampleRate\":" << sampleRate
             << ",\"naturalEndVersion\":1"
+            << ",\"speedMin\":" << minSpeed << ",\"speedMax\":" << maxSpeed
             << ",\"renderedFrames\":" << snap.renderedFrames << ",\"xRuns\":" << output->xRuns()
             << ",\"callbackOverruns\":" << overruns.load()
             << ",\"nonSilentCallbacks\":" << nonSilentCallbacks.load() << ",\"pcmPoolBytes\":" << fixedPoolBytes
@@ -566,6 +579,7 @@ struct Host final : Callbacks {
                 << ",\"sourceFrames\":" << extent << ",\"positionMs\":" << milliseconds(frame, rate)
                 << ",\"durationMs\":" << milliseconds(extent, rate)
                 << ",\"playing\":" << (matching && d.playing ? "true" : "false")
+                << ",\"speed\":" << intent.speed
                 << ",\"rate\":" << d.rate << ",\"scratching\":" << (d.scratching ? "true" : "false")
                 << ",\"ready\":" << (ready ? "true" : "false")
                 << ",\"preparing\":" << (stats.preparing || intent.unloading ? "true" : "false")
@@ -620,6 +634,10 @@ uint64_t Registry::open(std::unique_ptr<Output> output) {
 bool Registry::load(uint64_t h, int d, const std::string& p, uint64_t id, uint64_t g, uint64_t ms) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->valid(h) && impl_->host->load(d, p, id, g, ms);
+}
+bool Registry::loadSpeed(uint64_t h, int d, const std::string& p, uint64_t id, uint64_t g, uint64_t ms, double speed) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->valid(h) && impl_->host->load(d, p, id, g, ms, speed);
 }
 bool Registry::control(uint64_t h, int op, int d, double v, uint64_t t) {
     std::lock_guard<std::mutex> lock(impl_->mutex);

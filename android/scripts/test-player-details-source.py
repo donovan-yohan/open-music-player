@@ -140,11 +140,14 @@ fun SoundQFullPlayer(
  shuffle:Boolean=false,repeat:Int=0,onShuffle:(()->Unit)?=null,onRepeat:(()->Unit)?=null,
  onDevices:(()->Unit)?=null,onInfo:(()->Unit)?=null,artwork:(()->Unit)?=null,error:String?=null,
  returnFocus:FocusRequester?=null,clockContent:(()->Unit)?=null,
+ speedCell:Any?=null,speedContent:(()->Unit)?=null,
 ) {if(onInfo!=null)icons["Song details"]=onInfo}
+class DetailCallerSpeed {val cell:Any?=null;val content:(()->Unit)?=null}
+fun rememberFullPlayerSpeed(p:PlaybackProjection,request:(PlaybackProjection,Double,()->Boolean,(Boolean)->Unit)->Unit)=DetailCallerSpeed()
 class DetailCallerPhone {internal fun observed(ref:PlaybackRef.Device):com.soundq.android.data.deviceaudio.DeviceAudio?=null}
 class DetailCallerGraph(val session:AccountSession,val trackDetails:TrackDetailsRepository){val phoneAudio=DetailCallerPhone()}
 fun FullPlayerClock(p:PlaybackProjection,seek:(PlaybackProjection,com.soundq.android.playback.PlayerClockMode,Long,()->Boolean,(Boolean)->Unit)->Unit){}
-class DetailCallerController {var commands=0;fun toggle(){commands++};fun seek(p:Long){commands++};fun previous(){commands++};fun next(){commands++};fun shuffle(){commands++};fun repeat(){commands++};fun seekClock(p:PlaybackProjection,m:com.soundq.android.playback.PlayerClockMode,t:Long,v:()->Boolean,d:(Boolean)->Unit){error("Out of scope clock")}}
+class DetailCallerController {var commands=0;fun toggle(){commands++};fun seek(p:Long){commands++};fun previous(){commands++};fun next(){commands++};fun shuffle(){commands++};fun repeat(){commands++};fun seekClock(p:PlaybackProjection,m:com.soundq.android.playback.PlayerClockMode,t:Long,v:()->Boolean,d:(Boolean)->Unit){error("Out of scope clock")};fun setListeningSpeed(p:PlaybackProjection,s:Double,v:()->Boolean,d:(Boolean)->Unit){error("Out of scope speed")}}
 class DetailCallerModel(val graph:DetailCallerGraph,p:PlaybackProjection) {val playback=MutableStateFlow(p);val controller=DetailCallerController();var scheduled:DetailsRoute?=null;fun loadTrackDetails(r:DetailsRoute){scheduled=r}}
 class DetailCaller(val model:DetailCallerModel) {internal var selectedPhone:com.soundq.android.data.deviceaudio.DeviceAudio?=null;
  var panel:String?="Player";var detailsRoute:DetailsRoute?=null

@@ -8,7 +8,8 @@ constexpr uint32_t tempoPageFrames=8192;
 // pages. PCM rate is the original decoder rate, not the device output rate.
 class TempoProcessor {
 public:
-    TempoProcessor(const transport::ScheduleClip& clip,uint32_t outputRate);
+    // transpose != 1 only for ordinary listening speed (identity time map).
+    TempoProcessor(const transport::ScheduleClip& clip,uint32_t outputRate,double transpose=1);
     ~TempoProcessor();
     int window(sq_file_decoder* decoder,uint64_t first,float* firstPage,uint32_t& firstCount,
                float* secondPage,uint32_t& secondCount);

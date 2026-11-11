@@ -70,6 +70,9 @@ prelude+='''
  // Clock transport is outside the Like fixture and must fail closed if entered.
  val CLOCK_SEEK="soundq.clock.seek.v1"
  fun seekClock(args:Bundle):ListenableFuture<SessionResult> = error("Clock outside Like fixture")
+ // Listening speed is outside the Like fixture and must fail closed if entered.
+ val SET_LISTENING_SPEED="soundq.listening.speed.v1"
+ fun setListeningSpeed(args:Bundle):ListenableFuture<SessionResult> = error("Speed outside Like fixture")
  var pendingArrangement:Pair<AcceptedArrangement,Long>?=null
  var acceptedArrangement:AcceptedArrangement?=null
  var arrangementItems:List<MediaItem>?=null

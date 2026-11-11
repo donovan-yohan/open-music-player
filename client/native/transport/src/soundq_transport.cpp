@@ -73,7 +73,7 @@ struct Ramp {
         else if (remaining != 0) value += step;
     }
 };
-enum class EnvelopeKind { Command, AssignPaged, Window, Unassign, ScheduleInstall, ScheduleBind, ScheduleTransport, Scratch, Sync, TempoHandoff, TempoUnchanged, Crossfade };
+enum class EnvelopeKind { Command, AssignPaged, Window, WindowRate, Unassign, ScheduleInstall, ScheduleBind, ScheduleTransport, Scratch, Sync, TempoHandoff, TempoUnchanged, Crossfade };
 struct Envelope {
     EnvelopeKind kind = EnvelopeKind::Command;
     Command command{};
@@ -306,11 +306,14 @@ struct Engine::Impl {
                 if(!envelope.frame) {decks[in].playing=false;boundary={};}
                 else {
                     auto& a=decks[out];auto& b=decks[in];
-                    const auto remaining=static_cast<uint64_t>(std::ceil((a.source.frames-a.cursor)*outputRate/a.source.sourceRate));
-                    const auto incoming=static_cast<uint64_t>(std::floor(b.source.frames*double(outputRate)/b.source.sourceRate/2));
+                    // Ordinary listening speed changes wall-clock pace, not source
+                    // coordinates: the fade spans output frames and ends at EOF.
+                    const double ar=a.rate.target>0?a.rate.target:1,br=b.rate.target>0?b.rate.target:1;
+                    const auto remaining=static_cast<uint64_t>(std::ceil((a.source.frames-a.cursor)*outputRate/(a.source.sourceRate*ar)));
+                    const auto incoming=static_cast<uint64_t>(std::floor(b.source.frames*double(outputRate)/(b.source.sourceRate*br)/2));
                     const auto length=std::min({envelope.frame,remaining,incoming});
                     if(length && !b.playing && b.cursor==0 && !a.scratching && !b.scratching) {
-                        boundary={out,in,c.generation,c.gesture,length,0,a.source.frames-double(length)*a.source.sourceRate/outputRate,false};
+                        boundary={out,in,c.generation,c.gesture,length,0,a.source.frames-double(length)*ar*a.source.sourceRate/outputRate,false};
                     }
                 }
             }
@@ -396,8 +399,17 @@ struct Engine::Impl {
                 d = Deck{}; d.source = c.source; d.generation = c.generation;
                 d.traversalRevision = c.sequence;
                 d.paged = true; d.window = envelope.window;
+                d.rate.value = d.rate.target = c.value; d.rate.remaining = 0;
             } else if (envelope.kind == EnvelopeKind::Window) {
                 d.window = envelope.window;
+            } else if (envelope.kind == EnvelopeKind::WindowRate) {
+                // Pages and pace change in this one block. Generation is fenced
+                // by the producer; a scratch admitted later in FIFO order owns
+                // rate afterwards. Not a traversal: cursor/EOF evidence remain.
+                if (d.generation == c.generation && !d.scratching) {
+                    d.window = envelope.window;
+                    d.rate.value = d.rate.target = c.value; d.rate.remaining = 0;
+                } else refused.fetch_add(1, std::memory_order_relaxed);
             } else {
                 d = Deck{}; d.generation = c.generation;
             }
@@ -674,12 +686,14 @@ bool Engine::assignPaged(uint32_t deck, uint64_t sequence, uint64_t generation,
     if (p.producerSchedule || deck >= 4 || sequence == 0 || sequence <= p.admittedSequence || generation == 0 ||
         generation <= p.producerDecks[deck].generation ||
         !validExtent(source.frames, source.sourceRate, source.identity) ||
+        !std::isfinite(source.speed) || source.speed < minListeningSpeed || source.speed > maxListeningSpeed ||
         !validWindow(window, source.frames)) return p.reject();
     Envelope envelope;
     envelope.kind = EnvelopeKind::AssignPaged;
     auto& c = envelope.command;
     c.deck = deck; c.sequence = sequence; c.generation = generation;
     c.source = {nullptr, source.frames, source.sourceRate, source.identity};
+    c.value = source.speed;
     envelope.window = window;
     ProducerDeck next;
     next.generation = generation; next.frames = source.frames; next.paged = true;
@@ -697,6 +711,21 @@ bool Engine::publishWindow(uint32_t deck, uint64_t sequence, uint64_t generation
     envelope.kind = EnvelopeKind::Window;
     envelope.command.deck = deck; envelope.command.sequence = sequence;
     envelope.command.generation = generation; envelope.window = window;
+    return p.enqueue(envelope, current);
+}
+bool Engine::publishWindowRate(uint32_t deck, uint64_t sequence, uint64_t generation,
+                               const PcmWindow& window, double rate) noexcept {
+    auto& p = *impl_;
+    if (p.producerSchedule || deck >= 4 || sequence == 0 || sequence <= p.admittedSequence || generation == 0 ||
+        !std::isfinite(rate) || rate < minListeningSpeed || rate > maxListeningSpeed)
+        return p.reject();
+    const auto& current = p.producerDecks[deck];
+    if (generation != current.generation || current.frames == 0 || !current.paged || current.gesture != 0 ||
+        !validWindow(window, current.frames)) return p.reject();
+    Envelope envelope;
+    envelope.kind = EnvelopeKind::WindowRate;
+    envelope.command.deck = deck; envelope.command.sequence = sequence;
+    envelope.command.generation = generation; envelope.command.value = rate; envelope.window = window;
     return p.enqueue(envelope, current);
 }
 bool Engine::unassign(uint32_t deck, uint64_t sequence, uint64_t generation) noexcept {

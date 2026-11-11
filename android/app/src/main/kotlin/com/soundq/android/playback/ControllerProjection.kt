@@ -21,7 +21,9 @@ data class PlaybackProjection(val connection:Connection=Connection.Connecting,va
     val artist:String="",val queue:List<QueueOccurrence> = emptyList(),val selectedOccurrence:String?=null,val positionMs:Long=0,val durationMs:Long=0,
     val canNext:Boolean=false,val canPrevious:Boolean=false,val shuffle:Boolean=false,val repeat:Int=Player.REPEAT_MODE_OFF,val error:String?=null,val preparing:Boolean=false,val canUndo:Boolean=false,val queueRevision:Long=0,val localOnly:Boolean=false,val sessionIdentity:String="redacted",internal val accountEpoch:Long=-1,val source:PlaybackSource=PlaybackSource.Queue,val arrangement:AcceptedArrangement?=null,val arrangementService:String="",val sourceQueueIncarnation:String="",val selectionIncarnation:Long=0,
     val canPlayMix:Boolean=false,val canAuditionArrangement:Boolean=false,
-    val performanceDecks:Map<String,PerformanceDeck> = emptyMap(),val canPerformArrangement:Boolean=false,val tempoPreview:TempoPreviewState?=null,val clockAuthority:PlaybackClockAuthority?=null) {
+    val performanceDecks:Map<String,PerformanceDeck> = emptyMap(),val canPerformArrangement:Boolean=false,val tempoPreview:TempoPreviewState?=null,val clockAuthority:PlaybackClockAuthority?=null,
+    /** Accepted ordinary listening speed of [selectedOccurrence]; null when the playback owner has no speed capability. */
+    val listeningSpeed:ListeningSpeedState?=null) {
     enum class Connection {Connecting,Connected,Disconnected,Unavailable}
 }
 /** Disposable immutable projection and standard controller-command adapter; no playlist ownership. */
@@ -198,6 +200,23 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
             val current=state.value
             done(!closed&&connection.accepts(c)&&valid()&&request==clockRequest&&current.accountEpoch==captured.accountEpoch&&
                 current.arrangementService==captured.arrangementService&&current.sourceQueueIncarnation==captured.sourceQueueIncarnation&&
+                runCatching {future.get().resultCode==SessionResult.RESULT_SUCCESS}.getOrDefault(false))
+        },Executor {handler.post(it)})
+    }
+    private var speedRequest=0L
+    /** One receipted request for the captured occurrence. Success means the service observed
+     * the native applied rate; a later request or selection change makes this result stale. */
+    fun setListeningSpeed(captured:PlaybackProjection,speed:Double,valid:()->Boolean,done:(Boolean)->Unit) {
+        val c=controller ?: return done(false)
+        val state=captured.listeningSpeed ?: return done(false)
+        val command=SessionCommand(SET_LISTENING_SPEED,Bundle.EMPTY)
+        if(closed||!connection.accepts(c)||!valid()||state.occurrence!=captured.selectedOccurrence||
+            this.state.value.selectionIncarnation!=captured.selectionIncarnation||!c.isSessionCommandAvailable(command))return done(false)
+        val request=++speedRequest
+        val future=c.sendCustomCommand(command,Bundle().apply {putString("occurrence",state.occurrence);putDouble("speed",speed)})
+        future.addListener({
+            publish()
+            done(!closed&&connection.accepts(c)&&valid()&&request==speedRequest&&this.state.value.selectionIncarnation==captured.selectionIncarnation&&
                 runCatching {future.get().resultCode==SessionResult.RESULT_SUCCESS}.getOrDefault(false))
         },Executor {handler.post(it)})
     }
@@ -455,6 +474,8 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
             tempoPreview=PerformanceCommands.read<TempoPreviewState>(c.sessionExtras,PerformanceCommands.TEMPO_STATE),
             clockAuthority=c.sessionExtras.getString("playbackClock")?.takeIf {it.length<=96*1024}?.let {runCatching {Json.decodeFromString<PlaybackClockAuthority>(it)}.getOrNull()},
             performanceDecks=decks,
+            listeningSpeed=c.sessionExtras.getString(LISTENING_SPEED_STATE)?.takeIf {it.length<=4096&&c.isSessionCommandAvailable(SessionCommand(SET_LISTENING_SPEED,Bundle.EMPTY))}
+                ?.let {runCatching {Json.decodeFromString<ListeningSpeedState>(it)}.getOrNull()}?.takeIf {it.occurrence==c.currentMediaItem?.mediaId},
             canPerformArrangement=accepted!=null&&c.sessionExtras.getBoolean("canPerformArrangement")&&c.isSessionCommandAvailable(SessionCommand(PerformanceCommands.BEGIN,Bundle.EMPTY)))
         completedUnlinks.forEach {(admission,observed)->admission.completeUnlink(observed)}
     }

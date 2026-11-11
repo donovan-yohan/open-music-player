@@ -39,6 +39,10 @@ public:
     uint64_t open(std::unique_ptr<Output> output);
     bool load(uint64_t handle, int deck, const std::string& path,
               uint64_t identity, uint64_t generation, uint64_t positionMs);
+    // Same assignment, prepared and applied at an ordinary listening speed from
+    // its first window. Operation 10 changes an assigned ordinary deck's speed.
+    bool loadSpeed(uint64_t handle, int deck, const std::string& path,
+                   uint64_t identity, uint64_t generation, uint64_t positionMs, double speed);
     // Operation 9 reopens failed output paused, preserving engine/cursor/custody.
     // Explicit user intent only. A changed actual output rate is refused.
     bool control(uint64_t handle, int operation, int deck, double value, uint64_t eventNanos);

@@ -152,6 +152,16 @@ Java_com_soundq_android_playback_nativeengine_NativeCallbackBridge_load(
     } catch (...) { return JNI_FALSE; }
 }
 extern "C" JNIEXPORT jboolean JNICALL
+Java_com_soundq_android_playback_nativeengine_NativeCallbackBridge_loadSpeed(
+    JNIEnv* env, jclass, jlong handle, jint deck, jstring input, jlong identity, jlong generation, jlong positionMs, jdouble speed) {
+    try {
+        if (handle <= 0 || identity <= 0 || generation <= 0 || positionMs < 0) return JNI_FALSE;
+        std::string source;
+        return path(env, input, source) && registry().loadSpeed(static_cast<uint64_t>(handle), deck, source,
+            static_cast<uint64_t>(identity), static_cast<uint64_t>(generation), static_cast<uint64_t>(positionMs), speed) ? JNI_TRUE : JNI_FALSE;
+    } catch (...) { return JNI_FALSE; }
+}
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_soundq_android_playback_nativeengine_NativeCallbackBridge_control(
     JNIEnv*, jclass, jlong handle, jint operation, jint deck, jdouble value, jlong eventNanos) {
     try {

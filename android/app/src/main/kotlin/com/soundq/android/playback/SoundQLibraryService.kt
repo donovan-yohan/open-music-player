@@ -159,6 +159,8 @@ class SoundQLibraryService : MediaLibraryService() {
         }
         player = try { (application as SoundQApplication).createCallbackLibraryPlayer(grants, jobs) }
             catch (failure: Throwable) { jobs.cancel(); throw failure }
+        speeds=ListeningSpeedPreferences(java.io.File(graph.directory,"listening-speed.json"))
+        (player as? com.soundq.android.playback.nativeengine.NativeCallbackPlayer)?.speedFor={item->speedKey(item)?.let(speeds::speed) ?: 1.0}
         if (checkSelfPermission(android.Manifest.permission.WAKE_LOCK) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
             playbackWakeLock = getSystemService(android.os.PowerManager::class.java)
                 .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "SoundQ:native-playback")
@@ -181,6 +183,7 @@ class SoundQLibraryService : MediaLibraryService() {
         val activity=android.app.PendingIntent.getActivity(this,0,android.content.Intent(this,MainActivity::class.java),android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT)
         session=MediaLibrarySession.Builder(this,transport,Callback()).setBitmapLoader(artwork).setSessionActivity(activity).build()
         (player as? com.soundq.android.playback.nativeengine.NativeCallbackPlayer)?.onPerformanceChanged={validateLiveQualifications();publishSessionExtras()}
+        (player as? com.soundq.android.playback.nativeengine.NativeCallbackPlayer)?.onSpeedChanged={publishSessionExtras()}
         publishSessionExtras()
         player.addListener(object:Player.Listener {
             override fun onEvents(player: Player, events: Player.Events) {
@@ -271,6 +274,33 @@ class SoundQLibraryService : MediaLibraryService() {
         }
     }
     private fun own(controller:MediaSession.ControllerInfo)=controller.uid==applicationInfo.uid
+    private lateinit var speeds:ListeningSpeedPreferences
+    /** Stable track identity only; occurrence IDs, URIs and grants never key a preference. */
+    private fun speedKey(item:MediaItem):ListeningSpeedKey? {
+        val grant=item.localConfiguration?.uri?.toString()?.let(grants::get) ?: return null
+        grant.device?.let {return ListeningSpeedKey.device(it)}
+        return runCatching {ListeningSpeedKey.server(graph.endpoint.identity,grant.scope.accountId,grant.track.value)}.getOrNull()
+    }
+    /** Receipted per-track listening speed. Persisted only after native acceptance (or, with no
+     * assigned source, as the preference for its next load). Never an arrangement/BPM edit. */
+    private fun setListeningSpeed(args:Bundle):ListenableFuture<SessionResult> {
+        fun refused(code:Int=SessionError.ERROR_INVALID_STATE)=Futures.immediateFuture(SessionResult(code))
+        val native=player as? com.soundq.android.playback.nativeengine.NativeCallbackPlayer ?: return refused(SessionError.ERROR_NOT_SUPPORTED)
+        val occurrence=args.getString("occurrence") ?: return refused()
+        val state=native.listeningSpeed()?.takeIf {it.occurrence==occurrence} ?: return refused()
+        if(state.unavailable!=null)return refused(SessionError.ERROR_NOT_SUPPORTED)
+        val speed=ListeningSpeedPolicy.quantise(args.getDouble("speed",Double.NaN),state.min,state.max) ?: return refused()
+        val item=player.currentMediaItem?.takeIf {it.mediaId==occurrence} ?: return refused()
+        val key=speedKey(item) ?: return refused()
+        val result=SettableFuture.create<SessionResult>()
+        native.requestSpeed(occurrence,speed) {ok->
+            val accepted=ok&&player.currentMediaItem?.mediaId==occurrence
+            if(accepted){speeds.set(key,speed);native.speedPreferenceChanged()}
+            publishSessionExtras()
+            result.set(SessionResult(if(accepted)SessionResult.RESULT_SUCCESS else SessionError.ERROR_INVALID_STATE))
+        }
+        return result
+    }
     private fun admitted(controller:MediaSession.ControllerInfo):Boolean {
         // Legacy MediaSession only marks package verification from API 33 onward.
         val verified=controller.isPackageNameVerified || (android.os.Build.VERSION.SDK_INT<33 &&
@@ -420,7 +450,7 @@ class SoundQLibraryService : MediaLibraryService() {
         if(own(controller)) {
             if(player is com.soundq.android.playback.nativeengine.NativeCallbackPlayer && account?.let(graph.session::current)==true)builder.add(SessionCommand(CLOCK_SEEK,Bundle.EMPTY))
             builder.add(SessionCommand(UNDO,Bundle.EMPTY))
-            if(player is com.soundq.android.playback.nativeengine.NativeCallbackPlayer)builder.add(SessionCommand(START_CONTEXT,Bundle.EMPTY))
+            if(player is com.soundq.android.playback.nativeengine.NativeCallbackPlayer)builder.add(SessionCommand(START_CONTEXT,Bundle.EMPTY)).add(SessionCommand(SET_LISTENING_SPEED,Bundle.EMPTY))
             if (supportsSourceActions()) builder.add(SessionCommand(JAM_ADMIT, Bundle.EMPTY))
             if (player is com.soundq.android.playback.nativeengine.NativeCallbackPlayer && account?.let(graph.session::current)==true)PerformanceCommands.all.forEach {builder.add(SessionCommand(it,Bundle.EMPTY))}
             if (supportsMixActions()) builder.add(SessionCommand(PLAY_MIX, Bundle.EMPTY))
@@ -479,6 +509,7 @@ class SoundQLibraryService : MediaLibraryService() {
         }
         putBoolean("canUndo",undo!=null);putString("incarnation",graph.jamAdmission.incarnation);putLong("accountEpoch",account?.takeIf {graph.session.current(it)}?.epoch ?: -1)
         putString("arrangementService",serviceIncarnation);putString("sourceQueueIncarnation",sourceQueueIncarnation)
+        (player as? com.soundq.android.playback.nativeengine.NativeCallbackPlayer)?.listeningSpeed()?.let {putString(LISTENING_SPEED_STATE,Json.encodeToString(it))}
         (player as? com.soundq.android.playback.nativeengine.NativeCallbackPlayer)?.tempoPreviewState?.let {
             putString(PerformanceCommands.TEMPO_STATE, Json.encodeToString(it))
         }
@@ -895,6 +926,7 @@ class SoundQLibraryService : MediaLibraryService() {
             if(!own(controller))return Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
             if(customCommand.customAction==START_CONTEXT)return startContext(args)
             if(customCommand.customAction==CLOCK_SEEK)return seekClock(args)
+            if(customCommand.customAction==SET_LISTENING_SPEED)return setListeningSpeed(args)
             graph.contextStarts.retire()
             if(customCommand.customAction in PerformanceCommands.all)return performanceCommand(controller,customCommand.customAction,args)
             // Preflight before any preparation, grant creation or queue mutation.
