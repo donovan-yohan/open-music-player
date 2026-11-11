@@ -100,6 +100,10 @@ run_extension() {
 }
 
 case "$TARGET" in
+  android-product)
+    python3 "$ROOT/scripts/test-android-product.py"
+    python3 "$ROOT/scripts/android-product" test "${@:2}"
+    ;;
   private-vm)
     node --test "$ROOT/scripts/test-private-vm.cjs"
     ;;
@@ -138,7 +142,7 @@ case "$TARGET" in
     run_extension
     ;;
   *)
-    echo "usage: scripts/test [native|private-vm|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
+    echo "usage: scripts/test [android-product|native|private-vm|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
     exit 2
     ;;
 esac

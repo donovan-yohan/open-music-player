@@ -1,0 +1,152 @@
+name: Qualified Production Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soundq-production-publication
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      tree: ${{ steps.source.outputs.tree }}
+      pr: ${{ steps.source.outputs.pr }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - run: python3 scripts/test_release_receipt.py
+      - id: source
+        run: python3 scripts/release_receipt.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  images:
+    needs: qualify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - component: backend
+            target: server-runtime
+          - component: analyzer
+            target: analyzer-runtime
+          - component: stems
+            target: stems-runtime
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.qualify.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: backend
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository }}/${{ matrix.component }}:${{ needs.qualify.outputs.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.qualify.outputs.sha }}
+          cache-from: type=gha,scope=production-${{ matrix.component }}
+          cache-to: type=gha,scope=production-${{ matrix.component }},mode=max
+      - name: Record immutable image
+        env:
+          COMPONENT: ${{ matrix.component }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          component, digest = os.environ['COMPONENT'], os.environ['DIGEST']
+          assert component in ('backend', 'analyzer', 'stems')
+          assert re.fullmatch('sha256:[0-9a-f]{64}', digest)
+          pathlib.Path('image.json').write_text(json.dumps({component: 'ghcr.io/' + os.environ['GITHUB_REPOSITORY'] + '/' + component + '@' + digest}))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-image-${{ matrix.component }}
+          path: image.json
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    needs: [qualify, images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-image-*
+          path: images
+      - name: Assemble release receipt
+        env:
+          SOURCE_SHA: ${{ needs.qualify.outputs.sha }}
+          SOURCE_TREE: ${{ needs.qualify.outputs.tree }}
+          SOURCE_PR: ${{ needs.qualify.outputs.pr }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          images = {}
+          for path in pathlib.Path('images').glob('release-image-*/image.json'):
+              entry = json.loads(path.read_text())
+              assert not images.keys() & entry.keys()
+              images.update(entry)
+          assert set(images) == {'backend', 'analyzer', 'stems'}
+          repo = os.environ['GITHUB_REPOSITORY']
+          for component, image in images.items():
+              assert re.fullmatch(re.escape('ghcr.io/' + repo + '/' + component + '@sha256:') + '[0-9a-f]{64}', image)
+          receipt = dict(schema=1, repository=repo, source_commit=os.environ['SOURCE_SHA'],
+                         source_tree=os.environ['SOURCE_TREE'], platform='linux/amd64', images=images,
+                         run_id=int(os.environ['GITHUB_RUN_ID']), run_attempt=int(os.environ['GITHUB_RUN_ATTEMPT']),
+                         pr=int(os.environ['SOURCE_PR']), policy='owner_merge_and_successful_main_ci')
+          pathlib.Path('release.json').write_text(json.dumps(receipt, sort_keys=True) + '\n')
+          PY
+      - id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: release.json
+      - name: Publish signed receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.qualify.outputs.sha }}
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -eu
+          cp "$BUNDLE_PATH" release.sigstore.json
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          test "$current" = "$SOURCE_SHA"
+          gh release create "deploy-$SOURCE_SHA" release.json release.sigstore.json \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" --latest \
+            --title "Qualified production release $SOURCE_SHA" \
+            --notes 'Exact-main CI and owner-merged PR qualified. Immutable backend, analyzer and stems images. Guest-side migration rehearsal, backup and health gates are still required; publication does not prove deployment.'

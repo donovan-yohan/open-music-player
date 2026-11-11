@@ -1,73 +1,46 @@
 package middleware
 
 import (
-	"log"
+	"io"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/felixge/httpsnoop"
 )
 
-// Timing returns a middleware that logs request timing and adds Server-Timing headers.
-// This enables performance monitoring in browser DevTools and server logs.
+// Timing measures time to the first response operation, not total handler or
+// transfer time. Total duration belongs to the canonical request observation.
 func Timing(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-
-		// Create a response writer wrapper to capture status code
-		wrapped := &statusResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-
-		// Handle the request
-		next.ServeHTTP(wrapped, r)
-
-		// Calculate duration
-		duration := time.Since(start)
-
-		// Add Server-Timing header for browser DevTools
-		w.Header().Set("Server-Timing", formatServerTiming(duration))
-
-		// Log slow requests (>500ms)
-		if duration > 500*time.Millisecond {
-			log.Printf("[SLOW] %s %s took %v (status: %d)",
-				r.Method, r.URL.Path, duration, wrapped.statusCode)
+		set := false
+		setTiming := func() {
+			if !set {
+				set = true
+				w.Header().Set("Server-Timing", formatServerTiming(time.Since(start)))
+			}
 		}
+		wrapped := httpsnoop.Wrap(w, httpsnoop.Hooks{
+			WriteHeader: func(next httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
+				return func(code int) {
+					if code >= 200 && code <= 999 {
+						setTiming()
+					}
+					next(code)
+				}
+			},
+			Write: func(next httpsnoop.WriteFunc) httpsnoop.WriteFunc {
+				return func(data []byte) (int, error) { setTiming(); return next(data) }
+			},
+			Flush: func(next httpsnoop.FlushFunc) httpsnoop.FlushFunc { return func() { setTiming(); next() } },
+			ReadFrom: func(next httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
+				return func(src io.Reader) (int64, error) { setTiming(); return next(src) }
+			},
+		})
+		next.ServeHTTP(wrapped, r)
 	})
 }
-
-// statusResponseWriter wraps http.ResponseWriter to capture the status code
-type statusResponseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (w *statusResponseWriter) WriteHeader(code int) {
-	w.statusCode = code
-	w.ResponseWriter.WriteHeader(code)
-}
-
 func formatServerTiming(d time.Duration) string {
-	ms := float64(d.Nanoseconds()) / 1e6
-	return "total;dur=" + formatFloat(ms)
-}
-
-func formatFloat(f float64) string {
-	// Simple float formatting without importing strconv
-	intPart := int(f)
-	fracPart := int((f - float64(intPart)) * 100)
-
-	result := itoa(intPart)
-	if fracPart > 0 {
-		result += "." + itoa(fracPart)
-	}
-	return result
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var result []byte
-	for n > 0 {
-		result = append([]byte{byte('0' + n%10)}, result...)
-		n /= 10
-	}
-	return string(result)
+	return "first_response;dur=" + strconv.FormatFloat(float64(d)/float64(time.Millisecond), 'f', 2, 64)
 }

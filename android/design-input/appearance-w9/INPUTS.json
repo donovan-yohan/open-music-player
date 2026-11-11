@@ -1,0 +1,21 @@
+{
+  "owner": "Hotate / hotate-design",
+  "readOnlyInputs": {
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/generated/tokens.css": "ed2d7fe65521153d03dc724b9136885aaae1feca5483be43c5bb1fc1e1929157",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/generated/icons.runtime.js": "b453e6d58a8050be293147c2453e43cc1c7f96328dbf670d011dd4b78e450004",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/assets/covers/blue.svg": "ba98c411904f39c18ddbe1637f003a58452b7b49b93582395d1672e8b5febd37",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/assets/covers/cream.svg": "09f2e8d3f7194fe06bbe3417d24c12e8635c0fa3d2bf18b9b0ba69f322ea0abc",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/assets/covers/orange.svg": "e7eed12c7fe37f937f28262a3a6154020469eee85fb01d0b3dd16e855774b6d3",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/assets/brand/soundq-logo.png": "8b8ec5737c39efab15cc513772ee83360bda623c7aaf02aaa0cb4bc0c4e589f8",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/assets/brand/soundq-brand-assets.json": "329ce46e57b3d69746aa9408df98d847f000e894210be0b2cd1210e7b3c4615d",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/assets/fonts/sources.json": "b95b845320da6d8709b4c07edc0a16873361d97219a446cf2145457c6e841c49",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/assets/fonts/ibmplexmono/IBMPlexMono-Regular.ttf": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/assets/fonts/ibmplexmono/OFL.txt": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/assets/fonts/spacegrotesk/SpaceGrotesk-Regular.ttf": "28af0332e262e4953efdf5159fb8426f8218a84ab2f22453f85d258c62773fcd",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/assets/fonts/spacegrotesk/SpaceGrotesk-SemiBold.ttf": "a3916fb4a0f1362c88e0918eda2e1fc5bab2fde1ad3e102a5e3c89713c2b09bb",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/assets/fonts/spacegrotesk/OFL.txt": "564ce565c371c5e5bbf286006565a7c9aa55a9f56e7ca58d56e05d649dd61a72",
+    "design/mobile-2026-10-28/hotate/playlist-mixed-w8/canonical/tokens/soundq.tokens.json": "68015c1afa0bd52efee6df854be0e9d9c64d6a339d2430f95201830390e0487c",
+    "design/mobile-2026-10-28/hotate/scripts/build_tokens.py": "913b24c7c988792da6a4466d0a2e172ea5b374d621c0d8dcf1cf9c8b2b2b2f8c"
+  },
+  "canonicalCopyByteExact": true
+}

@@ -35,7 +35,8 @@ struct AuthFormState {
     @discardableResult mutating func finish(_ ticket: Ticket, ok: Bool, code: String, epoch: UInt64, account: UInt64) -> Bool {
         guard pending == ticket else {return false}
         let current = owns(ticket) && ticket.epoch == epoch && ticket.account == account
-        pending = nil
+        // Retirement suppresses only this held ticket's publication.
+        pending = nil;publicationRetired = false
         guard current else {return false}
         succeeded = ok;failure = ok ? nil : Self.feedback(code,mode:mode)
         return true

@@ -25,11 +25,20 @@ run_analyzer() {
     "$ROOT/backend"
 }
 
-run_client() {
+run_flutter_android_legacy() {
+  # Deliberate recovery only. Never select a historical backend by omission.
+  : "${OMP_API_BASE_URL:?Set an explicit approved legacy API base}"
+  : "${OMP_SOURCE_REF:?Set the legacy recovery source marker}"
+  : "${OMP_BUILD_ID:?Set the legacy recovery build marker}"
+  node -e 'require(process.argv[1]).validateUrl(process.env.OMP_API_BASE_URL)' \
+    "$ROOT/extension/config/endpoints.cjs"
   (
     cd "$ROOT/client"
     flutter pub get
-    flutter build apk --debug --no-pub --target-platform android-arm64
+    flutter build apk --debug --no-pub --target-platform android-arm64 \
+      --dart-define=OMP_API_BASE_URL="$OMP_API_BASE_URL" \
+      --dart-define=OMP_SOURCE_REF="$OMP_SOURCE_REF" \
+      --dart-define=OMP_BUILD_ID="$OMP_BUILD_ID"
   )
 }
 
@@ -52,6 +61,9 @@ run_extension() {
 }
 
 case "$TARGET" in
+  android-product)
+    python3 "$ROOT/scripts/android-product" build "${@:2}"
+    ;;
   native-macos)
     python3 "$ROOT/scripts/native-client" macos
     ;;
@@ -65,7 +77,11 @@ case "$TARGET" in
     run_analyzer
     ;;
   client)
-    run_client
+    # Android now means the Compose product. Flutter shared checks remain separate.
+    python3 "$ROOT/scripts/android-product" build "${@:2}"
+    ;;
+  client-flutter-android-legacy)
+    run_flutter_android_legacy
     ;;
   client-macos)
     (
@@ -87,11 +103,12 @@ case "$TARGET" in
   all)
     run_backend
     run_analyzer
-    run_client
+    python3 "$ROOT/scripts/android-product" build
+    run_client_web
     run_extension
     ;;
   *)
-    echo "usage: scripts/build [native-macos|native-android|backend|analyzer|client|client-macos|client-web|extension|all]" >&2
+    echo "usage: scripts/build [android-product|native-macos|native-android|backend|analyzer|client|client-macos|client-web|client-flutter-android-legacy|extension|all]" >&2
     exit 2
     ;;
 esac

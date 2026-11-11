@@ -27,19 +27,16 @@ func generateRequestID() string {
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get or generate request ID
-		requestID := r.Header.Get(RequestIDHeader)
+		requestID := logger.GetRequestID(r.Context())
+		if requestID == "" {
+			requestID = r.Header.Get(RequestIDHeader)
+		}
 		if requestID == "" {
 			requestID = generateRequestID()
 		}
 
-		// Get trace ID if provided (for distributed tracing)
-		traceID := r.Header.Get(TraceIDHeader)
-
-		// Add to context
+		// W3C span context is owned by telemetry. X-Trace-ID is not a trace.
 		ctx := logger.WithRequestID(r.Context(), requestID)
-		if traceID != "" {
-			ctx = logger.WithTraceID(ctx, traceID)
-		}
 
 		// Add request ID to response headers
 		w.Header().Set(RequestIDHeader, requestID)
@@ -142,7 +139,7 @@ func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 			if allowed {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key, X-Request-ID, X-Trace-ID")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key, X-Request-ID, X-Trace-ID, Traceparent, Tracestate")
 				w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
 			}
 

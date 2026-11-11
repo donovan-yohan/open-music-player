@@ -136,15 +136,12 @@ In the browser, verify:
 
 ## Android PR APK artifact flow
 
-Every PR client CI run uploads a debug APK artifact after Flutter analyze/tests pass. See [`ANDROID_PR_ARTIFACTS.md`](ANDROID_PR_ARTIFACTS.md) for screenshots-free download/install steps.
-
-Compact install checklist:
-
-1. Open the PR's latest **Client (Flutter)** check.
-2. Download `open-music-player-pr-<number>-debug-apk` from **Artifacts**.
-3. Unzip it and open `app-debug.apk` on the Android device.
-4. Allow installs from the browser/file manager if prompted.
-5. Confirm the app is pointed at the intended Tailnet backend/API base URL.
+Android artifacts now come from **Native Clients / Android Compose product**,
+not **Client (Flutter)**. Flutter Android is deprecated; Flutter web/desktop/shared
+checks remain supported. See [`ANDROID_PR_ARTIFACTS.md`](ANDROID_PR_ARTIFACTS.md)
+for native PR/nightly names, synthetic public endpoints, explicitly configured
+private builds and signer-preserving installation. Tailnet web smoke does not
+qualify the native Android artifact.
 
 ## Real-device smoke checklist
 
