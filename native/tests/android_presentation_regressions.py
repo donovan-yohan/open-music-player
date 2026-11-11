@@ -158,7 +158,12 @@ def run_invocation(argv, project, env, log, work):
             state['identities'] = list(seen.values())
         observe()
         if not any(row['pid'] == proc.pid for row in state['identities']) and proc.poll() is None:
-            raise RuntimeError('Live launcher ownership unavailable')
+            # ps is not atomic with spawn/exec or waitpid. Reconcile a missing
+            # launcher once against a fresh snapshot before refusing ownership;
+            # persistent invisibility must still fail closed.
+            observe()
+            if not any(row['pid'] == proc.pid for row in state['identities']) and proc.poll() is None:
+                raise RuntimeError('Live launcher ownership unavailable')
         (work / 'process.json').write_text(json.dumps({'pid': proc.pid,
             'pgid': proc.pid, 'owner': owner}) + '\n')
         deadline = time.monotonic() + WAIT_SECONDS

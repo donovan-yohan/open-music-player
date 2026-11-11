@@ -246,6 +246,8 @@ def facade_probe(root, output, native_selection=False):
     if 'struct LibraryReadIntent:' in source:
         fields='\n'.join(line.strip() for line in source.splitlines() if re.match(r'    var (libraryLiked|libraryReadSerial|libraryReadRetired|pendingLibraryRead|acknowledgedLibraryRead|libraryReadFailure|libraryRevision|libraryReadInvalid)\b',line))
         app=app.replace(' var libraryDetailsMenuItem:NSMenuItem?',fields+'\n func updateLibraryReadPresentation(){}\n var libraryDetailsMenuItem:NSMenuItem?')
+    if 'func retireLinkImport()' in source:
+        app=app.replace('func deleteCredentials(){};', 'func retireLinkImport(){};func drainImportLibraryRefresh(){};func deleteCredentials(){};')
     base=base.replace('func updateProgress(position:UInt64,duration:UInt64){}','func updateProgress(position:UInt64,duration:UInt64){};var selected=false;func setLibraryAvailability(selected:Bool,canLoadMore:Bool){self.selected=selected}')
     # A real NSTableView owns reload/selection/delegate semantics. Only sheet,
     # transport and chrome boundaries stay facades; no production policy is copied.

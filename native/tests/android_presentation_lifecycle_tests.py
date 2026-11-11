@@ -76,6 +76,7 @@ class LifecycleTests(unittest.TestCase):
         self.runner = load_runner()
         self.real_popen = subprocess.Popen
         self.processes = []
+        self.boundary_events = []
         self.addCleanup(self.rescue)
 
     def rows(self):
@@ -107,9 +108,13 @@ class LifecycleTests(unittest.TestCase):
         if evidence:
             destination = Path(evidence)
             destination.mkdir(parents=True, exist_ok=True)
-            releases = [json.loads(p.read_text()) for p in (self.work / 'output').glob('*/release.json')]
+            release_paths = list((self.work / 'output').glob('*/release.json'))
+            if (self.work / 'release.json').exists():
+                release_paths.append(self.work / 'release.json')
+            releases = [json.loads(p.read_text()) for p in release_paths]
             (destination / (self._testMethodName + '.json')).write_text(json.dumps({
-                'helpers': self.rows(), 'runner_releases': releases,
+                'helpers': self.rows(), 'boundary_events': self.boundary_events,
+                'runner_releases': releases,
                 'remaining_after_fixture_rescue': [r for r in self.rows() if alive(r['pid'])]}, indent=2)+'\n')
 
     def invoke(self, event='timeout', mode='hold'):
@@ -136,6 +141,193 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(len(rows), 3)
         self.assertEqual(len({r['pgid'] for r in rows}), 3, 'daemon and worker really detach')
         self.assertEqual([r['role'] for r in rows if alive(r['pid'])], [], 'owned detached processes must be absent synchronously')
+
+    def test_transient_launcher_snapshot_omission_is_reobserved(self):
+        # A launcher exec publishes a fresh environment, independently of a
+        # process-list snapshot. Hold that real publication at the first ps
+        # boundary; never synthesize a process row or a liveness result.
+        real_owned = self.runner.owned_processes
+        snapshots = []
+        def spawn(argv, **kwargs):
+            if argv[0] != 'lifecycle-gradle':
+                return self.real_popen(argv, **kwargs)
+            env = dict(kwargs['env'])
+            owner = env.pop(self.runner.OWNER_ENV)
+            kwargs['env'] = env
+            code = '''import os, pathlib, sys, time
+release=pathlib.Path(sys.argv[1])
+release.with_suffix('.ready').touch()
+while not release.exists(): time.sleep(.005)
+env=dict(os.environ);env[sys.argv[2]]=sys.argv[3]
+os.execve(sys.executable,[sys.executable,*sys.argv[4:]],env)
+'''
+            release = self.work / 'exec-release'
+            proc = self.real_popen([sys.executable, '-c', code, str(release),
+                self.runner.OWNER_ENV, owner, str(self.helper), 'launcher', str(self.record), 'hold'], **kwargs)
+            self.processes.append(proc)
+            deadline = time.monotonic() + 3
+            while not release.with_suffix('.ready').exists() and time.monotonic() < deadline:
+                time.sleep(.005)
+            self.assertTrue(release.with_suffix('.ready').exists())
+            return proc
+        def observe(owner):
+            rows = real_owned(owner)
+            if not snapshots:
+                self.assertIsNone(self.processes[0].poll(), 'unpublished launcher really lives')
+                self.assertNotIn(self.processes[0].pid, [r['pid'] for r in rows])
+                (self.work / 'exec-release').touch()
+                self.ready()
+            snapshots.append(rows)
+            self.boundary_events.append({'phase': 'ownership-snapshot', 'rows': rows})
+            return rows
+        with patch.object(self.runner.shutil, 'which', return_value='lifecycle-gradle'), \
+                patch.object(self.runner.subprocess, 'Popen', side_effect=spawn), \
+                patch.object(self.runner, 'owned_processes', side_effect=observe), \
+                patch.object(self.runner, 'WAIT_SECONDS', .2):
+            receipt = self.runner.run(self.root, self.work / 'output')
+        self.assertIn('TimeoutExpired', receipt['error'], 'fresh ownership publication must be reconciled')
+        self.assertTrue(any(r['pid'] == self.processes[0].pid for rows in snapshots for r in rows))
+        self.assert_released()
+
+    def test_launcher_exit_during_ownership_snapshot(self):
+        # ps enumerates PIDs and reads their environments separately. Hold the
+        # real snapshot at its consumer boundary while a positively observed
+        # launcher exits: the captured row must not be confused with its later
+        # liveness. Detached descendants still require synchronous cleanup.
+        original = self.runner.owned_processes
+        observed = []
+        def exiting_snapshot(owner):
+            rows = original(owner)
+            if not observed:
+                self.ready()
+                observed.extend(rows)
+                launcher = self.processes[0]
+                launcher.send_signal(signal.SIGTERM)
+                launcher.wait(timeout=3)
+            return rows
+        with patch.object(self.runner, 'owned_processes', side_effect=exiting_snapshot):
+            receipt = self.invoke()
+        self.assertTrue(observed)
+        self.assertIn('exact nonempty', receipt['error'])
+        self.assert_released()
+
+    def test_short_lived_launcher_exit_between_snapshot_and_poll(self):
+        # The launcher first publishes its owner, then really execs a terminal
+        # phase without it. Capture a genuine live poll before releasing exit;
+        # its returned liveness is already stale at the consumer boundary.
+        real_owned = self.runner.owned_processes
+        observations = []
+        def spawn(argv, **kwargs):
+            if argv[0] != 'lifecycle-gradle':
+                return self.real_popen(argv, **kwargs)
+            # exec preserves PID and publishes each actual environment.
+            published, terminal, release = [self.work / n for n in ('published', 'terminal', 'exit')]
+            last = "import pathlib,time; p=pathlib.Path(" + repr(str(terminal)) + ");p.touch();\nwhile not pathlib.Path(" + repr(str(release)) + ").exists():time.sleep(.005)"
+            first = "import os,pathlib,sys,time; p=pathlib.Path(" + repr(str(published)) + ");p.touch();\nwhile p.exists():time.sleep(.005)\nenv=dict(os.environ);env.pop(" + repr(self.runner.OWNER_ENV) + ");os.execve(sys.executable,[sys.executable,'-c'," + repr(last) + "],env)"
+            proc = self.real_popen([sys.executable, '-c', first], **kwargs)
+            self.processes.append(proc)
+            deadline = time.monotonic() + 3
+            while not published.exists() and time.monotonic() < deadline:
+                time.sleep(.005)
+            rows = real_owned(kwargs['env'][self.runner.OWNER_ENV])
+            self.assertTrue(any(r['pid'] == proc.pid for r in rows))
+            published.unlink()
+            while not terminal.exists() and time.monotonic() < deadline:
+                time.sleep(.005)
+            self.assertTrue(terminal.exists())
+            poll = proc.poll
+            def exiting_poll():
+                result = poll()
+                if result is None and not release.exists():
+                    release.touch()
+                    proc.wait(timeout=3)
+                    self.boundary_events.append({'phase': 'exit-after-live-poll',
+                        'pid': proc.pid, 'poll_result': result, 'exit_code': proc.returncode})
+                return result
+            proc.poll = exiting_poll
+            return proc
+        def observe(owner):
+            rows = real_owned(owner)
+            observations.append(rows)
+            return rows
+        with patch.object(self.runner.subprocess, 'Popen', side_effect=spawn), \
+                patch.object(self.runner, 'owned_processes', side_effect=observe):
+            with (self.work / 'launcher.log').open('w') as log:
+                code = self.runner.run_invocation(['lifecycle-gradle'], self.work, os.environ, log, self.work)
+        self.assertEqual(code, 0)
+        self.assertTrue(observations)
+        self.assertFalse(alive(self.processes[0].pid))
+        self.assertTrue(json.loads((self.work / 'release.json').read_text())['released'])
+
+    def test_reobservation_failure_preserves_primary_and_secondary_receipts(self):
+        original = self.runner.owned_processes
+        reads = []
+        primary = OSError('second ownership observation refused')
+        def observe(owner):
+            rows = original(owner)
+            reads.append(rows)
+            if len(reads) == 1:
+                return [r for r in rows if r['pid'] != self.processes[0].pid]
+            raise primary
+        with patch.object(self.runner, 'owned_processes', side_effect=observe):
+            receipt = self.invoke()
+        self.assertIn('second ownership observation refused', receipt['error'])
+        self.assertIn('Cleanup failed: OSError: second ownership observation refused', receipt['secondary_errors'])
+        release = json.loads((self.work / 'output/green/release.json').read_text())
+        self.assertFalse(release['released'])
+        self.assertIn('second ownership observation refused', release['cleanup_error'])
+
+    def test_live_launcher_with_persistently_hidden_owner_is_refused(self):
+        real_run = subprocess.run
+        def hide_launcher(argv, **kwargs):
+            result = real_run(argv, **kwargs)
+            if argv[0] == 'ps' and 'axeww' in argv:
+                pid = str(self.processes[0].pid)
+                result.stdout = '\n'.join(' '.join(word for word in line.split()
+                    if not word.startswith(self.runner.OWNER_ENV + '='))
+                    if line.split() and line.split()[0] == pid else line
+                    for line in result.stdout.splitlines())
+            return result
+        with patch.object(self.runner.subprocess, 'run', side_effect=hide_launcher):
+            receipt = self.invoke()
+        self.assertIn('Live launcher ownership unavailable', receipt['error'])
+        release = json.loads((self.work / 'output/green/release.json').read_text())
+        self.assertFalse(release['released'])
+        self.assertTrue(any(alive(r['pid']) for r in self.rows()))
+
+    def test_recorded_identity_requires_matching_start_before_signal(self):
+        # A stale PID with a different start string is not authority over the
+        # real fixture, even if it still carries this invocation's owner token.
+        with tempfile.TemporaryFile() as log:
+            owner = 'generation-fixture'
+            proc = self.real_popen([sys.executable, '-c', 'import time;time.sleep(15)'],
+                env=dict(os.environ, **{self.runner.OWNER_ENV: owner}), stdout=log,
+                start_new_session=True)
+            self.addCleanup(lambda: (proc.terminate(), proc.wait(timeout=3)) if proc.poll() is None else None)
+            rows = self.runner.owned_processes(owner)
+            row = next(r for r in rows if r['pid'] == proc.pid)
+            stale = dict(row, started='different process generation')
+            self.assertEqual(self.runner.recorded_processes([stale]), [])
+            self.assertEqual(len(self.runner.recorded_processes([row])), 1)
+            inventories = iter([[stale], [row]])
+            real_kill = os.kill
+            signalled = []
+            def guarded_kill(pid, sig):
+                signalled.append((pid, sig))
+                return real_kill(pid, sig)
+            def inventory(_owner):
+                try:
+                    return next(inventories)
+                except StopIteration:
+                    raise OSError('generation control complete')
+            state = dict(identities=[], remaining=None, released=False)
+            with patch.object(self.runner, 'owned_processes', side_effect=inventory), \
+                    patch.object(self.runner.os, 'kill', side_effect=guarded_kill):
+                with self.assertRaisesRegex(OSError, 'generation control complete'):
+                    self.runner.drain_owned(proc, owner, state)
+            self.assertEqual(signalled, [], 'PID equality alone cannot authorize signalling')
+            self.assertFalse(state['released'])
+            self.assertIsNone(proc.poll())
 
     def test_timeout_drains_detached_daemon_and_worker(self):
         receipt = self.invoke()
