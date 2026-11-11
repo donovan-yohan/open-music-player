@@ -245,7 +245,10 @@ final class LibraryDockView: NSView {
         let bodyTop = max(164*s,y+secondary+(libraryReadFailed ? 8 : 16))
         bodyDocument.rules = [headingHeight,bodyTop-1];railDocument.rules = [masthead]
         let statusHeight = SoundQTokens.grid(max(32,32*s))
-        let documentHeight = max(dockY,bodyTop+112*s+statusHeight+16)
+        let auth = controls.login as? AuthFormView
+        let authWidth = min(available,420)
+        let authHeight = controls.login.isHidden ? CGFloat(0) : (auth?.requiredHeight(width:authWidth,scale:s) ?? 0)
+        let documentHeight = max(dockY,bodyTop+112*s+statusHeight+16,authHeight > 0 ? masthead+authHeight+statusHeight+40 : 0)
         bodyDocument.frame = NSRect(x:0,y:0,width:bodyScroll.contentSize.width,height:documentHeight)
         controls.status.frame = NSRect(x:left,y:libraryReadFailed ? bodyTop : documentHeight-statusHeight-8,width:available,height:statusHeight)
         let libraryTop = libraryReadFailed ? controls.status.frame.maxY+8 : bodyTop
@@ -257,7 +260,7 @@ final class LibraryDockView: NSView {
         controls.logout.title = w < 1200 ? "" : "Sign out"
         (controls.logout as? SoundQButton)?.symbol = w < 1200 ? "rectangle.portrait.and.arrow.right" : nil
         navigation.focusDisclosure = w < 1200
-        controls.login.frame = NSRect(x:left,y:masthead+16,width:min(available,420),height:max(1,documentHeight-masthead-24))
+        controls.login.frame = NSRect(x:left,y:masthead+16,width:authWidth,height:authHeight > 0 ? authHeight : max(1,documentHeight-masthead-24))
         empty.frame = NSRect(x:left,y:bodyTop+24,width:available,height:80*s)
         let centerX = w/2
         let commandY = dockY+(reflow ? 48*s : 0)

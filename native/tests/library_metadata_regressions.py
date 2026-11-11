@@ -89,7 +89,7 @@ for kind in ["signIn","signOut","select","queue","terminate","window-close"] {
  let f=ready(),old=f.libraryDetailsAction!;_ = open(f);let p=Player();f.player=p
  var saw=false;let boundary={if !saw {check("retired-before-first-effect-"+kind,f.libraryDetailsAlert==nil && !old.active && f.libraryDetailsAction==nil)};saw=true}
  p.onEffect=boundary;f.bridge.onRevoke=boundary;f.bridge.onSend=boundary
- if kind=="signIn" {f.signIn()} else if kind=="signOut" {f.signOut()} else if kind=="select" {f.selectTrack()} else if kind=="queue" {f.queueCommand("queue_clear")} else if kind=="window-close" {f.windowWillClose(Notification(name:Notification.Name("close")))} else {f.applicationWillTerminate(Notification(name:Notification.Name("quit")))}
+ if kind=="signIn" {f.email.stringValue="synthetic@example.test";f.password.stringValue="synthetic-password";f.signIn()} else if kind=="signOut" {f.signOut()} else if kind=="select" {f.selectTrack()} else if kind=="queue" {f.queueCommand("queue_clear")} else if kind=="window-close" {f.windowWillClose(Notification(name:Notification.Name("close")))} else {f.applicationWillTerminate(Notification(name:Notification.Name("quit")))}
  old.open();check("actual-wrapper-retirement-"+kind,(saw || kind=="window-close") && f.libraryDetailsAlert==nil && !old.active)
 }
 let normalized=ready();normalized.apply(state("Caf\u{e9}"));normalized.updateLibraryDetailsAction();let n=normalized.libraryDetailsAction!;_ = open(normalized);normalized.apply(state("Cafe\u{301}"));check("normalization-only-exact-byte-retirement",!n.active && normalized.libraryDetailsAlert==nil)
@@ -267,7 +267,13 @@ def facade_probe(root, output, native_selection=False):
     cases = NATIVE_SELECTION_CASES if native_selection else SWIFT_CASES
     cases = cases.replace('print("LIBRARY_', TERMINATION_CASES + '\nprint("LIBRARY_')
     cases = re.sub(r'(?m)^func ', '@MainActor func ', cases)
-    generated=base+'\n'+'\n'.join(blocks[s] for s in types)+'\n'+projection+'\n'+metadata.replace('import AppKit','')+'\n'+app+'\n'+cases
+    auth=''
+    if 'AuthFormView()' in source:
+        auth=swift_block((root/'native/macos/Sources/AuthForm.swift').read_text(),'struct AuthFormState')
+        app=app.replace('var loginArea=Label();','var authForm=AuthFormState();var loginArea=Form();')
+        app=app.replace('class App:NSObject','class Form:Label {var username=Label();var confirmation=Label();func clearSecrets(){};func update(_ state:AuthFormState){}}\n@MainActor class App:NSObject',1)
+        app=app.replace(' var phaseConfiguration:',swift_block(source,'func retireAuthPresentation()')+'\n var phaseConfiguration:',1)
+    generated=base+'\n'+'\n'.join(blocks[s] for s in types)+'\n'+auth+'\n'+projection+'\n'+metadata.replace('import AppKit','')+'\n'+app+'\n'+cases
     path=output/'main.swift';path.write_text(generated)
     argv=['/usr/bin/swiftc','-swift-version','6','-j','2','-num-threads','2',str(path),'-o',str(output/'probe')]
     built=subprocess.run(argv,capture_output=True,timeout=180)

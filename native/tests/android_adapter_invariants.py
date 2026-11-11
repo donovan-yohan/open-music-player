@@ -243,6 +243,14 @@ fun main() {
 }
 '''
 # Only package qualifier adaptation, identical for RED/GREEN.
+auth_path = ROOT / 'native/android/app/src/main/java/com/soundq/nativepreview/AuthFormState.kt'
+if auth_path.exists():
+    # Keep this older credential consumer on the actual account adapter, not a
+    # replacement login stub, when registration owns its submit lifecycle.
+    auth = '\n'.join(line for line in auth_path.read_text().splitlines() if not line.startswith(('package ', 'import ')))
+    harness = harness.replace('class JSONObject {', auth+'\nclass JSONObject {', 1)
+    harness = harness.replace('class Adapter(val prefs:Preferences=Preferences()) {', 'class Adapter(val prefs:Preferences=Preferences()) {\ninternal val authForm=AuthFormState()\n', 1)
+    methods += '\n' + block('fun submitAuth(')
 methods = methods.replace('org.json.JSONArray()', 'JSONArray()')
 harness = harness.replace('__CONSTANTS__', '\n'.join(f'const val {k}={v}' for k,v in constants.items())).replace('__FOCUS__',focus).replace('__METHODS__',methods+'\nfun startForTest(){startPlayer()}')
 harness = harness.replace('__TERMINAL_FIELDS__', '\n'.join(line.strip().removeprefix('private ') for line in source.splitlines() if line.strip().startswith('private var endedReportAcknowledged =')))

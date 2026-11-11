@@ -814,6 +814,9 @@ def macos(root, output):
         types+='\n'+'\n'.join(swift_block(source,s) for s in ['struct LibraryReadIdentity:', 'struct LibraryReadIntent:'])
         fields='\n'.join(line.strip() for line in source.splitlines() if re.match(r'    var (libraryLiked|libraryReadSerial|libraryReadRetired|pendingLibraryRead|acknowledgedLibraryRead|libraryReadFailure|libraryRevision|libraryReadInvalid)\b',line))
         template=template.replace(' var effects=[AudioEffect]()',fields+'\n func updateLibraryReadPresentation(){}\n var effects=[AudioEffect]()')
+    if 'authForm.publicationRetired' in source:
+        types += '\n' + swift_block((root/'native/macos/Sources/AuthForm.swift').read_text(),'struct AuthFormState')
+        template=template.replace('@MainActor class App {','@MainActor class App {\n var authForm=AuthFormState()')
     generated = template.replace('__TYPES__', types).replace('__METHODS__', '\n'.join(('@discardableResult\n' if s.startswith('func command(') and '-> Bool' in blocks[s] else '')+blocks[s] for s in signatures[6:]+extra))
     path = output / 'Probe.swift'
     path.write_text(generated)

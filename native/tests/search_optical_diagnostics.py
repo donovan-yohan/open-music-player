@@ -15,7 +15,7 @@ import subprocess
 from typing import TypedDict
 
 ROOT = Path(__file__).resolve().parents[2]
-DEPENDENCIES = ['LibraryDockView.swift', 'SoundQControls.swift', 'SoundQTokens.swift', 'NativeAssets.swift']
+DEPENDENCIES = ['LibraryDockView.swift', 'SoundQControls.swift', 'SoundQTokens.swift', 'NativeAssets.swift', 'AuthForm.swift']
 
 PROBE = r'''
 import AppKit

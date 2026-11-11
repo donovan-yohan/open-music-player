@@ -414,12 +414,13 @@ for kind in ["queue_play","next","previous","queue_clear","sign-in","sign-out","
   player.onEffect={effectsRetired.append(f.queueNameAlert==nil)}
   f.bridge.onRevoke={revokeRetired.append(f.queueNameAlert==nil && old.pendingCompletion)}
   switch kind {
-  case "sign-in":f.signIn()
+  case "sign-in":f.email.stringValue="synthetic@example.test";f.password.stringValue="synthetic-password";f.busy=0;f.signIn()
   case "sign-out":f.signOut()
   case "select":f.selectTrack()
   default:f.queueCommand(kind,id:11)
   }
-  try requireThat(revokeRetired==[true] && effectsRetired.allSatisfy {$0} && !effectsRetired.isEmpty && f.queueNameAlert==nil && f.sent.isEmpty,"owner boundary reached decoder/revoke before retiring detail")
+  let dispatchOK = kind == "sign-in" ? f.bridge.requests.count==1 && f.bridge.requests[0]["command"] as? String=="login" : f.sent.isEmpty
+  try requireThat(revokeRetired==[true] && effectsRetired.allSatisfy {$0} && !effectsRetired.isEmpty && f.queueNameAlert==nil && dispatchOK,"owner boundary reached decoder/revoke before retiring detail")
  }
 }
 for kind in ["login","register","restore","logout","select","queue_play","next","previous","queue_clear","queue_restore"] {
@@ -641,6 +642,9 @@ def run_platform(platform, root, output):
             conformance = ',NSMenuItemValidation' if 'NSMenuItemValidation' in declaration else ''
             probe = SWIFT_FACADES.replace('__TYPES__', types).replace('__METHODS__', methods).replace('__VALIDATION__', conformance)
             probe = probe.replace('__DETAIL_FIELDS__', detail_fields).replace('__DETAIL_CASES__', SWIFT_DETAIL_CASES if detail_fields else '')
+            if 'AuthFormView()' in source:
+                probe=probe.replace('class App:NSObject',swift_block((root/'native/macos/Sources/AuthForm.swift').read_text(),'struct AuthFormState')+'\nclass Form:Label {var username=Label();var confirmation=Label();func clearSecrets(){};func update(_ state:AuthFormState){}}\nclass App:NSObject',1)
+                probe=probe.replace('var loginArea=Label();','var authForm=AuthFormState();var loginArea=Form();')
             assert '__' not in probe
             path = work / 'main.swift'
             path.write_text(probe)
