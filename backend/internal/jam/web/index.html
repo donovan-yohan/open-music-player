@@ -1,7 +1,49 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>SoundQ · Join Jam</title><link rel="stylesheet" href="/join/app.css"><script defer src="/join/app.js"></script></head>
-<body><main><header><span class="brand">SoundQ</span><h1>Join the Jam</h1><p>Playback is on the host. Requests need host approval.</p></header>
-<p id="message" role="status" aria-live="polite"></p>
-<form id="join-form"><label for="name">Your name</label><input id="name" name="name" maxlength="32" autocomplete="off" value="Listener" required><button id="join" type="submit">Join Jam</button></form>
-<section id="session" hidden><div class="status"><strong id="state"></strong><button id="leave" type="button">Leave</button></div><section><h2>On the host</h2><p id="playing">Waiting for host</p></section><section><h2>Choose a track</h2><div id="catalog" class="list"></div></section><section><h2>Requests</h2><ol id="requests" class="list"></ol></section></section>
-</main></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>SoundQ · Jam</title>
+  <link rel="stylesheet" href="/join/app.css">
+  <script defer src="/join/app.js"></script>
+</head>
+<body>
+<main>
+  <header><span class="brand">SoundQ</span><h1>Jam</h1></header>
+  <p id="message" role="status" aria-live="polite"></p>
+  <button id="pending-check" class="inset quiet" type="button" hidden>Check same request</button>
+  <form id="join-form" class="inset">
+    <label for="name">Your name</label>
+    <input id="name" name="name" maxlength="32" autocomplete="off" value="Listener" required>
+    <button id="join" type="submit">Join Jam</button>
+  </form>
+  <section id="session" hidden>
+    <div class="status"><strong id="state"></strong><button id="leave" class="quiet" type="button">Leave</button></div>
+    <section><h2>On the host</h2><p id="playing" class="inset">Waiting for host</p></section>
+    <nav class="tabs" aria-label="Music">
+      <button id="offered-tab" type="button" aria-pressed="true">From the host</button>
+      <button id="find-tab" type="button" aria-pressed="false" hidden>Find a song</button>
+    </nav>
+    <section id="offered-panel" aria-label="Offered music">
+      <label class="sr" for="filter">Search offered music</label>
+      <input id="filter" class="search-input" type="search" placeholder="Search offered music" maxlength="160" autocomplete="off">
+      <div id="catalog" class="list"></div><p id="catalog-empty" class="inset" hidden>No matching songs.</p>
+    </section>
+    <section id="find-panel" aria-label="Find a song" hidden>
+      <form id="search-form" class="search-form">
+        <label class="sr" for="query">Song or artist</label>
+        <input id="query" type="search" placeholder="Song or artist" maxlength="160" autocomplete="off" required>
+        <button id="search" type="submit">Search</button>
+      </form>
+      <p id="search-summary" class="inset"></p><div id="results" class="list"></div>
+    </section>
+    <section><h2>Requests</h2><ol id="requests" class="list"></ol><p id="requests-empty" class="inset">No requests yet.</p></section>
+  </section>
+</main>
+<dialog id="review" aria-labelledby="review-title">
+  <h2 id="review-title"></h2><h3 id="review-song"></h3><p id="review-facts"></p><p id="review-source"></p><p id="review-note"></p>
+  <div class="actions"><button id="cancel-review" class="quiet" type="button">Cancel</button><button id="send-review" type="button">Send request</button></div>
+</dialog>
+</body>
+</html>

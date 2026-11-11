@@ -24,6 +24,25 @@ type playlistRecoveryCall struct {
 	position           int
 }
 
+func (q *recoveryQueueStub) ReconcileCompletedSourceJobs(ctx context.Context, lookup func(context.Context, *download.DownloadJob) (*download.SourceCompletion, error)) error {
+	for _, job := range q.seen {
+		if job.IsTerminal() {
+			continue
+		}
+		receipt, err := lookup(ctx, job)
+		if err != nil {
+			return err
+		}
+		if receipt != nil {
+			job.TrackID = &receipt.TrackID
+			job.CompletedAt = &receipt.CompletedAt
+			job.Status = download.StatusComplete
+			job.Progress = 100
+		}
+	}
+	return nil
+}
+
 func (q *recoveryQueueStub) EnsureSourceCandidateWithID(_ context.Context, id, userID string, candidate download.SourceCandidate, mbID *string) (*download.DownloadJob, error) {
 	if q.seen == nil {
 		q.seen = make(map[string]*download.DownloadJob)
@@ -76,6 +95,65 @@ func createSourceSelectionDownloadJob(t *testing.T, database *DB, repo *SourceSe
 		t.Fatal(err)
 	}
 	return decision, &download.DownloadJob{ID: jobID.String(), UserID: userID.String(), Status: status, CandidateID: "youtube:recommended", SourceType: "youtube", URL: "https://example.test/watch/recommended", Title: "Track youtube:recommended"}
+}
+
+func TestSourceSelectionCompletionLookupLeavesUnrelatedTerminalJobAlone(t *testing.T) {
+	database, _, ctx := newSourceSelectionTestRepository(t)
+	userID := seedSourceSelectionUser(t, database, "unrelated-terminal@test.local")
+	jobID := uuid.New()
+	if _, err := database.Exec(`INSERT INTO download_jobs(id,user_id,url,source_type,status) VALUES($1,$2,'https://example.invalid/direct','youtube','complete')`, jobID, userID); err != nil {
+		t.Fatal(err)
+	}
+	life := NewSourceSelectionDownloadLifecycle(database)
+	if receipt, err := life.committedSourceCompletion(ctx, &download.DownloadJob{ID: jobID.String(), UserID: userID.String()}); err != nil || receipt != nil {
+		t.Fatalf("unrelated completion treated as source acquisition: %+v %v", receipt, err)
+	}
+}
+
+func TestSourceSelectionCompletedAcquisitionCannotRewind(t *testing.T) {
+	database, repo, ctx := newSourceSelectionTestRepository(t)
+	userID := seedSourceSelectionUser(t, database, "terminal-replay@test.local")
+	_, job := createSourceSelectionDownloadJob(t, database, repo, ctx, userID, download.StatusProcessing)
+	trackID := seedSourceSelectionTrack(t, database, "terminal")
+	if _, err := database.Exec(`INSERT INTO user_library(user_id,track_id) VALUES($1,$2)`, userID, trackID); err != nil {
+		t.Fatal(err)
+	}
+	job.TrackID = &trackID
+	life := NewSourceSelectionDownloadLifecycle(database)
+	if err := life.Complete(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM user_library WHERE user_id=$1 AND track_id=$2`, userID, trackID); err != nil {
+		t.Fatal(err)
+	}
+	var before, after string
+	if err := database.QueryRow(`SELECT row_to_json(j)::text FROM download_jobs j WHERE id=$1`, job.ID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range []struct {
+		name string
+		run  func() error
+	}{
+		{"Sync", func() error { return life.Sync(ctx, job) }},
+		{"Fail", func() error { return life.Fail(ctx, job, errors.New("stale worker")) }},
+		{"Requeue", func() error { return life.Requeue(ctx, job, 1) }},
+		{"Complete", func() error { return life.Complete(ctx, job) }},
+	} {
+		t.Run(op.name, func(t *testing.T) {
+			if err := op.run(); !errors.Is(err, download.ErrJobNotRetryable) {
+				t.Errorf("terminal job accepted %s: %v", op.name, err)
+			}
+		})
+	}
+	if err := life.failOwnedJob(ctx, job, errors.New("stale failure audit")); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT row_to_json(j)::text FROM download_jobs j WHERE id=$1`, job.ID).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Error("terminal durable job, track or receipt changed")
+	}
 }
 
 func TestSourceSelectionDownloadLifecycleCompleteAttachesTrackBeforeDurableCompletion(t *testing.T) {

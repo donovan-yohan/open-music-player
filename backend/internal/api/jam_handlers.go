@@ -63,7 +63,10 @@ func jamError(w http.ResponseWriter, e error) {
 	jamReply(w, status, map[string]string{"code": code})
 }
 func jamID(r *http.Request) uuid.UUID {
-	s := r.PathValue("jamId")
+	return jamNamedID(r, "jamId")
+}
+func jamNamedID(r *http.Request, name string) uuid.UUID {
+	s := r.PathValue(name)
 	id, e := uuid.Parse(s)
 	if e != nil || id.String() != s {
 		return uuid.Nil
@@ -162,7 +165,19 @@ func jamBody(w http.ResponseWriter, r *http.Request, v any, n int64) bool {
 // RegisterGuestRoutes must be on a separate public capability scope, NOT
 // wrapped with account authentication or account refresh middleware.
 func (h *JamHandlers) RegisterGuestRoutes(m *http.ServeMux) {
+	h.registerAcquisitionGuest(m)
 	base := "/api/v1/guest/jams/{jamId}"
+	m.HandleFunc("DELETE "+base+"/requests/{requestId}", h.guest("request", func(w http.ResponseWriter, r *http.Request) {
+		var in jam.VersionInput
+		if !jamBody(w, r, &in, 2048) {
+			return
+		}
+		if e := h.repo.Withdraw(r.Context(), jamID(r), jamBearer(r), jamNamedID(r, "requestId"), in); e != nil {
+			jamError(w, e)
+			return
+		}
+		jamReply(w, 204, nil)
+	}))
 	m.HandleFunc("POST "+base+"/members", h.guest("join", func(w http.ResponseWriter, r *http.Request) {
 		var in jam.JoinInput
 		if !jamBody(w, r, &in, 2048) {
@@ -221,6 +236,7 @@ func (h *JamHandlers) RegisterGuestRoutes(m *http.ServeMux) {
 // Host routes still require the parent's ordinary auth + Connect generation
 // guard. owner resolver is explicit so this package never guesses JWT fields.
 func (h *JamHandlers) RegisterHostRoutes(m *http.ServeMux) {
+	h.registerAcquisitionHost(m)
 	m.HandleFunc("POST /api/v1/jams", h.host(func(w http.ResponseWriter, r *http.Request, o jam.Owner) {
 		var in jam.CreateInput
 		if !jamBody(w, r, &in, 8192) {
@@ -238,6 +254,24 @@ func (h *JamHandlers) RegisterHostRoutes(m *http.ServeMux) {
 		jamReply(w, 201, v)
 	}))
 	base := "/api/v1/jams/{jamId}"
+	m.HandleFunc("DELETE "+base+"/members/{memberId}", h.host(func(w http.ResponseWriter, r *http.Request, o jam.Owner) {
+		var in struct {
+			jam.Proof
+			jam.VersionInput
+		}
+		if !jamBody(w, r, &in, 2048) {
+			return
+		}
+		if e := h.validate(r, o, in.Proof); e != nil {
+			jamError(w, e)
+			return
+		}
+		if e := h.repo.RevokeMember(r.Context(), o, jamID(r), in.Proof, jamNamedID(r, "memberId"), in.VersionInput); e != nil {
+			jamError(w, e)
+			return
+		}
+		jamReply(w, 204, nil)
+	}))
 	m.HandleFunc("GET "+base, h.host(func(w http.ResponseWriter, r *http.Request, o jam.Owner) {
 		v, e := h.repo.HostSnapshot(r.Context(), o, jamID(r))
 		if e != nil {

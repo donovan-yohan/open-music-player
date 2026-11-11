@@ -55,6 +55,10 @@ func (l *RedisLimiter) Allow(ctx context.Context, in LimitInput) error {
 	case "join":
 		add("join-ip", in.RemoteIP, 5)
 		add("join-jam", in.JamID, 30)
+	case "search":
+		add("search-member", in.JamID+":"+in.MemberSecret, 3)
+		add("search-jam", in.JamID, 12)
+		add("search-ip", in.RemoteIP, 12)
 	case "request":
 		add("request-member", in.JamID+":"+in.MemberSecret, 5)
 		add("request-jam", in.JamID, 30)

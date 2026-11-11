@@ -75,6 +75,8 @@ func (r *Repository) Leave(ctx context.Context, id uuid.UUID, secret string) err
 					return nil
 				}
 				m.Revoked = true
+				retireRequests(j, m.Hash)
+				j.Version++
 				return save(ctx, tx, j)
 			}
 		}
