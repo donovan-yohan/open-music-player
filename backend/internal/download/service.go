@@ -100,6 +100,13 @@ func (s *Service) EnsureSourceCandidateForPlaylistWithID(ctx context.Context, jo
 	return s.queue.EnsureCandidateForPlaylistWithID(ctx, jobID, userID, candidate, mbRecordingID, targetPlaylistID)
 }
 
+// RecoverSourceCandidateForPlaylistWithID restores a durable source job,
+// including one that was in flight when the previous process stopped. Boot
+// recovery calls it before workers start; request handlers must not.
+func (s *Service) RecoverSourceCandidateForPlaylistWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string, targetPlaylistID int64) (*DownloadJob, error) {
+	return s.queue.RecoverCandidateForPlaylistWithID(ctx, jobID, userID, candidate, mbRecordingID, targetPlaylistID)
+}
+
 func (s *Service) EnqueuePlaylistImportItem(ctx context.Context, userID string, candidate SourceCandidate, importJobID string, importItemID int64, playlistID int64, playlistPosition int) (*DownloadJob, error) {
 	return s.queue.EnqueuePlaylistImportItem(ctx, userID, candidate, importJobID, importItemID, playlistID, playlistPosition)
 }

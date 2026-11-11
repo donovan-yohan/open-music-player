@@ -128,12 +128,14 @@ func (q *Queue) EnqueueCandidateForPlaylistWithID(ctx context.Context, jobID, us
 // EnsureCandidateWithID restores a missing queue-list entry after a process
 // restart without creating another entry for a job that is already queued.
 func (q *Queue) EnsureCandidateWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string) (*DownloadJob, error) {
-	return q.EnsureCandidateForPlaylistWithID(ctx, jobID, userID, candidate, mbRecordingID, 0)
+	return q.ensureSourceAtomic(ctx, jobID, userID, candidate, mbRecordingID, 0, false)
 }
 
 // EnsureCandidateForPlaylistWithID is the idempotent form of
-// EnqueueCandidateForPlaylistWithID used by restart recovery and by repeated
-// client submissions of the same source decision.
+// EnqueueCandidateForPlaylistWithID used by repeated client submissions of the
+// same source decision. It restores a missing queued entry but never
+// republishes a job a live worker already claimed; only boot recovery
+// (RecoverCandidateForPlaylistWithID) may restore in-flight work.
 //
 // A job that is already live adopts a target it does not yet have, so a second
 // submission that finally names a playlist is not lost. It never overwrites a
@@ -141,37 +143,14 @@ func (q *Queue) EnsureCandidateWithID(ctx context.Context, jobID, userID string,
 // wins, and a user who wants the track in a second playlist can add it there
 // once it lands.
 func (q *Queue) EnsureCandidateForPlaylistWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string, targetPlaylistID int64) (*DownloadJob, error) {
-	job, err := q.GetJob(ctx, jobID)
-	if err == nil {
-		if job.UserID != userID {
-			return nil, fmt.Errorf("download job %s belongs to another user", jobID)
-		}
-		if !job.IsTerminal() {
-			if targetPlaylistID != 0 && job.PlaylistID == 0 {
-				job.PlaylistID = targetPlaylistID
-				job.UpdatedAt = time.Now()
-				if err := q.saveJob(ctx, job); err != nil {
-					return nil, fmt.Errorf("adopt playlist target for job %s: %w", jobID, err)
-				}
-			}
-			_, positionErr := q.client.LPos(ctx, keyJobQueue, jobID, redis.LPosArgs{}).Result()
-			switch {
-			case positionErr == nil:
-				return job, nil
-			case errors.Is(positionErr, redis.Nil):
-				if err := q.client.LPush(ctx, keyJobQueue, jobID).Err(); err != nil {
-					return nil, fmt.Errorf("restore queued job: %w", err)
-				}
-				return job, nil
-			default:
-				return nil, fmt.Errorf("check queued job: %w", positionErr)
-			}
-		}
-		return job, nil
-	} else if !errors.Is(err, ErrJobNotFound) {
-		return nil, err
-	}
-	return q.EnqueueCandidateForPlaylistWithID(ctx, jobID, userID, candidate, mbRecordingID, targetPlaylistID)
+	return q.ensureSourceAtomic(ctx, jobID, userID, candidate, mbRecordingID, targetPlaylistID, false)
+}
+
+// RecoverCandidateForPlaylistWithID is the boot-recovery form of
+// EnsureCandidateForPlaylistWithID. It also republishes in-flight jobs, so it
+// is only safe before this process starts workers.
+func (q *Queue) RecoverCandidateForPlaylistWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string, targetPlaylistID int64) (*DownloadJob, error) {
+	return q.ensureSourceAtomic(ctx, jobID, userID, candidate, mbRecordingID, targetPlaylistID, true)
 }
 
 // EnsurePlaylistImportItemWithID restores a playlist-import job with its

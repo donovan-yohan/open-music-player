@@ -221,6 +221,7 @@ func (r *Router) setupRoutes() {
 		"POST /api/v1/jams", "GET /api/v1/jams/{jamId}",
 		"POST /api/v1/jams/{jamId}/invites", "PUT /api/v1/jams/{jamId}/host",
 		"PUT /api/v1/jams/{jamId}/requests/{requestId}", "DELETE /api/v1/jams/{jamId}",
+		"POST /api/v1/jams/{jamId}/requests/{requestId}/approval", "DELETE /api/v1/jams/{jamId}/members/{memberId}",
 	} {
 		r.mux.HandleFunc(pattern, r.withJamHostAuth(hostJamMux.ServeHTTP))
 	}

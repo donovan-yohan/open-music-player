@@ -13,8 +13,10 @@ import (
 // Repository owns SQL transaction ordering: users row -> jams row. Every
 // capability operation checks current users.connect_auth_generation under lock.
 type Repository struct {
-	DB  *sql.DB
-	Now func() time.Time
+	DB        *sql.DB
+	Now       func() time.Time
+	Searcher  SourceSearcher
+	Downloads DownloadPublisher
 }
 
 func NewRepository(db *sql.DB) *Repository { return &Repository{DB: db, Now: time.Now} }
@@ -24,35 +26,48 @@ type catalogRecord struct {
 	TrackID int64 `json:"trackId"`
 }
 type memberRecord struct {
-	ID       uuid.UUID `json:"id"`
-	JoinID   uuid.UUID `json:"joinId"`
-	Hash     string    `json:"hash"`
-	Digest   string    `json:"digest"`
-	Name     string    `json:"name"`
-	Expires  time.Time `json:"expires"`
-	Sequence int64     `json:"sequence"`
-	Revoked  bool      `json:"revoked"`
+	ID           uuid.UUID `json:"id"`
+	JoinID       uuid.UUID `json:"joinId"`
+	Hash         string    `json:"hash"`
+	Digest       string    `json:"digest"`
+	Name         string    `json:"name"`
+	Expires      time.Time `json:"expires"`
+	Sequence     int64     `json:"sequence"`
+	Revoked      bool      `json:"revoked"`
+	SearchID     uuid.UUID `json:"searchId"`
+	SearchDigest string    `json:"searchDigest"`
+	SearchCount  int       `json:"searchCount"`
 }
 type requestRecord struct {
 	Request
-	MemberHash string            `json:"memberHash"`
-	Digest     string            `json:"digest"`
-	Receipt    *AdmissionReceipt `json:"receipt,omitempty"`
+	MemberHash     string            `json:"memberHash"`
+	Digest         string            `json:"digest"`
+	Receipt        *AdmissionReceipt `json:"receipt,omitempty"`
+	Selected       json.RawMessage   `json:"selected,omitempty"`
+	TrackID        int64             `json:"trackId"`
+	DecisionID     uuid.UUID         `json:"decisionId"`
+	JobID          uuid.UUID         `json:"jobId"`
+	ApprovalOrder  int64             `json:"approvalOrder"`
+	ApprovalDigest string            `json:"approvalDigest"`
+	HostSessionID  string            `json:"hostSessionId"`
+	AdmissionKey   string            `json:"admissionKey"`
 }
 type state struct {
-	DeviceID      uuid.UUID       `json:"deviceId"`
-	LeaseID       uuid.UUID       `json:"leaseId"`
-	WriterHash    string          `json:"writerHash"`
-	CreateDigest  string          `json:"createDigest"`
-	HostSequence  int64           `json:"hostSequence"`
-	HostDigest    string          `json:"hostDigest"`
-	HostSeen      time.Time       `json:"hostSeen"`
-	InviteHash    string          `json:"inviteHash"`
-	InviteExpires time.Time       `json:"inviteExpires"`
-	NowPlaying    *NowPlaying     `json:"nowPlaying"`
-	Catalog       []catalogRecord `json:"catalog"`
-	Members       []memberRecord  `json:"members"`
-	Requests      []requestRecord `json:"requests"`
+	DeviceID              uuid.UUID       `json:"deviceId"`
+	LeaseID               uuid.UUID       `json:"leaseId"`
+	WriterHash            string          `json:"writerHash"`
+	CreateDigest          string          `json:"createDigest"`
+	HostSequence          int64           `json:"hostSequence"`
+	AllowOutsideDiscovery bool            `json:"allowOutsideDiscovery"`
+	ApprovalSequence      int64           `json:"approvalSequence"`
+	HostDigest            string          `json:"hostDigest"`
+	HostSeen              time.Time       `json:"hostSeen"`
+	InviteHash            string          `json:"inviteHash"`
+	InviteExpires         time.Time       `json:"inviteExpires"`
+	NowPlaying            *NowPlaying     `json:"nowPlaying"`
+	Catalog               []catalogRecord `json:"catalog"`
+	Members               []memberRecord  `json:"members"`
+	Requests              []requestRecord `json:"requests"`
 }
 type row struct {
 	ID         uuid.UUID
@@ -106,7 +121,7 @@ func (r *Repository) Create(ctx context.Context, o Owner, in CreateInput) (Snaps
 	if n > 0 {
 		return Snapshot{}, ErrConflict
 	}
-	j := &row{ID: in.JamID, Owner: o.UserID, Generation: gen, Created: now, Expires: now.Add(4 * time.Hour), Version: 1, State: state{DeviceID: in.HostDeviceID, LeaseID: in.LeaseID, WriterHash: hash(in.WriterSecret), CreateDigest: digest(in), HostSeen: now, Catalog: []catalogRecord{}, Members: []memberRecord{}, Requests: []requestRecord{}}}
+	j := &row{ID: in.JamID, Owner: o.UserID, Generation: gen, Created: now, Expires: now.Add(4 * time.Hour), Version: 1, State: state{DeviceID: in.HostDeviceID, LeaseID: in.LeaseID, WriterHash: hash(in.WriterSecret), AllowOutsideDiscovery: in.AllowOutsideDiscovery, CreateDigest: digest(in), HostSeen: now, Catalog: []catalogRecord{}, Members: []memberRecord{}, Requests: []requestRecord{}}}
 	for _, id := range in.TrackIDs {
 		var c catalogRecord
 		c.TrackID = id
@@ -164,7 +179,7 @@ func snapshot(j *row, now time.Time) Snapshot {
 	} else if !online(j, now) {
 		s = "hostOffline"
 	}
-	v := Snapshot{JamID: j.ID, Version: j.Version, State: s, ServerTime: now, ExpiresAt: j.Expires, HostSeenAt: j.State.HostSeen, NowPlaying: j.State.NowPlaying, Catalog: []CatalogItem{}, Requests: []Request{}}
+	v := Snapshot{JamID: j.ID, Version: j.Version, State: s, ServerTime: now, ExpiresAt: j.Expires, HostSeenAt: j.State.HostSeen, AllowOutsideDiscovery: j.State.AllowOutsideDiscovery, NowPlaying: j.State.NowPlaying, Catalog: []CatalogItem{}, Requests: []Request{}}
 	for _, c := range j.State.Catalog {
 		v.Catalog = append(v.Catalog, c.CatalogItem)
 	}
@@ -212,27 +227,99 @@ func (r *Repository) locked(ctx context.Context, id uuid.UUID, o *Owner, fn func
 	}
 	now := r.Now().UTC()
 	if e = fn(tx, j, now); e != nil {
+		var keep commitThen
+		if errors.As(e, &keep) {
+			if e = tx.Commit(); e != nil {
+				return e
+			}
+			return keep.err
+		}
 		return e
 	}
 	return tx.Commit()
 }
+
+// commitThen makes locked commit the reconciliation already saved in this
+// transaction and then report err. Use it only after save succeeded.
+type commitThen struct{ err error }
+
+func (c commitThen) Error() string { return c.err.Error() }
+func (c commitThen) Unwrap() error { return c.err }
+
+// State budget. Reconciliation runs on reads and must always be able to
+// persist, so every other write keeps reconcileReserve(j) bytes free: the most
+// that reconcile can still add for each request it may change. A request's
+// reserve shrinks by at least what each reconcile step adds, so reconciling
+// never leaves an ordinary write short of headroom. Writes that add members,
+// requests or search reservations also keep admissionChurnReserve free for
+// later heartbeats, approvals and receipts. Sizes are measured as Postgres
+// renders the jsonb (what the jams.state CHECK limits), not as Go's compact
+// encoding.
+const admissionChurnReserve = 8192
+
+func reconcileReserve(j *row) int {
+	n := 0
+	for _, q := range j.State.Requests {
+		switch {
+		case q.Status == "ready":
+			n += 8 // ready -> duplicate is the longest remaining status.
+		case unadmitted(q.Status):
+			// importing -> ready writes a trackId of up to 19 digits; pending ->
+			// withdrawn and ready -> duplicate lengthen the status.
+			n += 32
+		}
+	}
+	return n
+}
+
+// save is an ordinary write: it must leave reconciliation headroom.
 func save(ctx context.Context, tx *sql.Tx, j *row) error {
+	return saveWithin(ctx, tx, j, MaxStateBytes-reconcileReserve(j))
+}
+
+// saveAdmission also reserves churn headroom for the newly admitted party.
+func saveAdmission(ctx context.Context, tx *sql.Tx, j *row) error {
+	return saveWithin(ctx, tx, j, MaxStateBytes-reconcileReserve(j)-admissionChurnReserve)
+}
+
+// saveReconciled persists reconciliation, which may spend the reserved headroom.
+func saveReconciled(ctx context.Context, tx *sql.Tx, j *row) error {
+	return saveWithin(ctx, tx, j, MaxStateBytes)
+}
+
+func saveWithin(ctx context.Context, tx *sql.Tx, j *row, limit int) error {
 	b, e := marshalState(j.State)
 	if e != nil {
 		return e
 	}
-	_, e = tx.ExecContext(ctx, `UPDATE jams SET state=$2,version=$3,closed_at=$4 WHERE id=$1`, j.ID, b, j.Version, j.Closed)
-	return e
+	result, e := tx.ExecContext(ctx, `UPDATE jams SET state=$2,version=$3,closed_at=$4 WHERE id=$1 AND octet_length($2::jsonb::text)<=$5`, j.ID, b, j.Version, j.Closed, limit)
+	if e != nil {
+		return e
+	}
+	n, e := result.RowsAffected()
+	if e != nil {
+		return e
+	}
+	if n != 1 {
+		return ErrCapacity
+	}
+	return nil
 }
 func hostView(j *row, now time.Time) HostView {
-	v := HostView{Snapshot: snapshot(j, now), HostRequests: []HostRequest{}}
+	v := HostView{OwnerUserID: j.Owner, OwnerAuthGeneration: j.Generation, HostDeviceID: j.State.DeviceID, LeaseID: j.State.LeaseID, Snapshot: snapshot(j, now), HostRequests: []HostRequest{}, Members: []HostMember{}}
 	for _, m := range j.State.Members {
+		v.Members = append(v.Members, HostMember{MemberID: m.ID, DisplayName: m.Name, ExpiresAt: m.Expires, Revoked: m.Revoked})
 		if !m.Revoked && now.Before(m.Expires) {
 			v.MemberCount++
 		}
 	}
 	for _, q := range j.State.Requests {
-		h := HostRequest{Request: q.Request, Receipt: q.Receipt}
+		h := HostRequest{Request: q.Request, Receipt: q.Receipt, TrackID: q.TrackID, SelectedSource: q.Selected, ApprovalOrder: q.ApprovalOrder, HostSessionID: q.HostSessionID, AdmissionKey: q.AdmissionKey, DownloadJobID: q.JobID, CanAdmit: admissible(j, &q, now)}
+		for _, m := range j.State.Members {
+			if m.Hash == q.MemberHash {
+				h.MemberID = m.ID
+			}
+		}
 		for _, c := range j.State.Catalog {
 			if c.CatalogItemID == q.CatalogItemID {
 				h.TrackID = c.TrackID
@@ -244,6 +331,12 @@ func hostView(j *row, now time.Time) HostView {
 }
 func (r *Repository) HostSnapshot(ctx context.Context, o Owner, id uuid.UUID) (HostView, error) {
 	var out HostView
-	e := r.locked(ctx, id, &o, func(_ *sql.Tx, j *row, now time.Time) error { out = hostView(j, now); return nil })
+	e := r.locked(ctx, id, &o, func(tx *sql.Tx, j *row, now time.Time) error {
+		if e := reconcile(ctx, tx, j, now); e != nil {
+			return e
+		}
+		out = hostView(j, now)
+		return nil
+	})
 	return out, e
 }

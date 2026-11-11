@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,8 @@ import (
 func TestJamIntegrationFixtureProtection(t *testing.T) {
 	assertFixtureProtection(t, func(t *testing.T) { jamIntegration(t) }, "JAM_TEST_DSN", "JAM_TEST_REDIS")
 }
+
+func migrateJamFixture(database *sql.DB) error { return (&db.DB{DB: database}).Migrate() }
 
 func jamIntegration(t *testing.T) (*jam.Repository, jam.Owner, jam.Proof, *http.ServeMux) {
 	t.Helper()
@@ -45,29 +48,40 @@ func jamIntegration(t *testing.T) (*jam.Repository, jam.Owner, jam.Proof, *http.
 	if err := (&db.DB{DB: admin}).CheckDatabaseNotProtected(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	schema := "jam_http_" + uuid.NewString()[:8]
-	if _, e = admin.Exec(`CREATE SCHEMA ` + schema); e != nil {
+	// Canonical startup contains public-qualified SQL functions, so exercise it
+	// in a uniquely owned disposable DATABASE, not a misleading search_path copy.
+	name := "jam_http_" + uuid.NewString()[:8]
+	if _, e = admin.Exec(`CREATE DATABASE ` + name); e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`) })
-	db, e := sql.Open("postgres", dsn+"&search_path="+schema)
+	t.Cleanup(func() {
+		if _, err := admin.Exec(`DROP DATABASE ` + name); err != nil {
+			t.Errorf("drop owned fixture: %v", err)
+		}
+	})
+	parsed, e := url.Parse(dsn)
+	if e != nil {
+		t.Fatal(e)
+	}
+	parsed.Path = "/" + name
+	db, e := sql.Open("postgres", parsed.String())
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { db.Close() })
-	_, e = db.Exec(`CREATE TABLE users(id uuid PRIMARY KEY,connect_auth_generation bigint NOT NULL DEFAULT 0); CREATE TABLE tracks(id bigint PRIMARY KEY,title text,artist text,duration_ms integer);CREATE TABLE user_library(user_id uuid REFERENCES users(id),track_id bigint REFERENCES tracks(id),PRIMARY KEY(user_id,track_id));CREATE TABLE jams(id uuid PRIMARY KEY,owner_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,owner_auth_generation bigint NOT NULL,created_at timestamptz NOT NULL,expires_at timestamptz NOT NULL,closed_at timestamptz,version bigint NOT NULL CHECK(version>=1),state jsonb NOT NULL CHECK(octet_length(state::text)<=65536));CREATE INDEX jams_owner_idx ON jams(owner_user_id);`)
+	e = migrateJamFixture(db)
 	if e != nil {
 		t.Fatal(e)
 	}
 	o := jam.Owner{UserID: uuid.New()}
 	p := jam.Proof{HostDeviceID: uuid.New(), LeaseID: uuid.New(), WriterSecret: jam.NewSecret()}
-	if _, e = db.Exec(`INSERT INTO users(id) VALUES($1)`, o.UserID); e != nil {
+	if _, e = db.Exec(`INSERT INTO users(id,email,username,password_hash) VALUES($1::uuid,($1::uuid)::text||'@example.invalid','fixture','not-a-password')`, o.UserID); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = db.Exec(`INSERT INTO tracks VALUES(1,'<script>not executable</script>','Local fixture',180000)`); e != nil {
+	if _, e = db.Exec(`INSERT INTO tracks(id,identity_hash,title,artist,duration_ms,storage_key) VALUES(1,'jam-local-fixture','<script>not executable</script>','Local fixture',180000,'synthetic-no-media')`); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = db.Exec(`INSERT INTO user_library VALUES($1,1)`, o.UserID); e != nil {
+	if _, e = db.Exec(`INSERT INTO user_library(user_id,track_id) VALUES($1,1)`, o.UserID); e != nil {
 		t.Fatal(e)
 	}
 	c := redis.NewClient(&redis.Options{Addr: addr})
@@ -194,7 +208,7 @@ func TestJamHTTPRealLocalFlow(t *testing.T) {
 		}
 	}
 	status, b, h = jamHTTP(t, server.Client(), "GET", server.URL+"/join", "", nil)
-	if status != 200 || !strings.Contains(string(b), "Playback is on the host") || !strings.Contains(h.Get("Content-Security-Policy"), "default-src 'none'") {
+	if status != 200 || !strings.Contains(string(b), "On the host") || !strings.Contains(string(b), `id="review"`) || !strings.Contains(string(b), `id="query"`) || !strings.Contains(h.Get("Content-Security-Policy"), "default-src 'none'") {
 		t.Fatalf("guest page=%d", status)
 	}
 	status, b, _ = jamHTTP(t, server.Client(), "GET", server.URL+"/join/app.js", "", nil)
