@@ -78,7 +78,7 @@ def malformed(api,directory):
     fifo=directory/'fifo'
     import os
     if not fifo.exists(): os.mkfifo(fifo)
-    for path,limit,want in [(link,1<<27,-2),(fifo,1<<27,-2),(directory,1<<27,-2),('relative',1<<27,-1),(directory/'44100-2.wav',0,-1),(directory/'44100-2.wav',(1<<27)+1,-1),(directory/'44100-2.wav',1,-5)]:
+    for path,limit,want in [(link,1<<27,-2),(fifo,1<<27,-2),(directory,1<<27,-2),('relative',1<<27,-1),(directory/'44100-2.wav',0,-1),(directory/'44100-2.wav',(1<<34)+33,-1),(directory/'44100-2.wav',1,-5)]:
         status,d=api.load(path,limit); assert status==want and not d.value,(path,status,want); checked+=1
     big=directory/'oversized';
     with big.open('wb') as f: f.truncate((1<<27)+1)

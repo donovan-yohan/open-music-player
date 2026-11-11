@@ -19,7 +19,7 @@ s=(k/'playback/SoundQLibraryService.kt').read_text()
 c=(k/'playback/ControllerProjection.kt').read_text()
 n=(k/'playback/nativeengine/NativeCallbackPlayer.kt').read_text()
 service='\n'.join(block(s,m) for m in ['    private fun clockProjection(', '    private fun seekClock(']).replace('com.soundq.android.playback.nativeengine.NativeCallbackPlayer','ServicePlayer')
-controller=block(c,'    fun seekClock(')
+controller=block(c,'    fun seekClock(')+'\n'+block(c,'    fun toggle(')
 native=n[n.index('    private class ClockSeekReceipt'):n.index('    private fun seekNative(')]
 source='''package com.soundq.android.clockprobe
 import com.soundq.android.playback.*
@@ -63,6 +63,12 @@ private class Service {
  suspend fun finish(){val body=work!!;work=null;result!!.set(body())}
 }
 private class ControllerPort {
+ var playbackState=Player.STATE_READY;var isPlaying=false;var playWhenReady=false;var playerError:Any?=null
+ val transportCalls=mutableListOf<String>()
+ fun pause(){transportCalls+="pause";playWhenReady=false}
+ fun play(){transportCalls+="play";playWhenReady=true}
+ fun prepare(){transportCalls+="prepare"}
+ fun seekTo(position:Long){transportCalls+="seek:$position"}
  var available=true;var sent=0;var request:ClockSeek?=null;val reply=SettableFuture.create<SessionResult>()
  fun isSessionCommandAvailable(c:SessionCommand)=available
  fun sendCustomCommand(c:SessionCommand,b:Bundle):ListenableFuture<SessionResult> {sent++;request=Json.decodeFromString(b.getString("clockSeek")!!);return reply}
@@ -93,6 +99,25 @@ internal suspend fun unobservedClockDeadline():Pair<Boolean,Int> {
  return result to native.dispatches
 }
 class PlayerClockCommandTest {
+ @Test fun completedPlayRestartsBeforePlayEvenWhenMedia3RetainsPlayWhenReady() {
+  for(retainedIntent in listOf(false,true)) {
+   val c=Controller(PlaybackProjection());val p=c.controller!!
+   p.playbackState=Player.STATE_ENDED;p.playWhenReady=retainedIntent
+   c.toggle()
+   assertEquals(listOf("seek:0","play"),p.transportCalls);assertTrue(p.playWhenReady)
+  }
+ }
+ @Test fun ordinaryToggleStillPausesAcceptedIntentAndPreparesIdleOrFailedSources() {
+  for(playing in listOf(false,true)) {
+   val c=Controller(PlaybackProjection());val p=c.controller!!;p.playWhenReady=true;p.isPlaying=playing
+   c.toggle();assertEquals(listOf("pause"),p.transportCalls)
+  }
+  for(failed in listOf(false,true)) {
+   val c=Controller(PlaybackProjection());val p=c.controller!!
+   if(failed)p.playerError=Any() else p.playbackState=Player.STATE_IDLE
+   c.toggle();assertEquals(listOf("prepare","play"),p.transportCalls)
+  }
+ }
  private fun request(s:Service,mode:PlayerClockMode=PlayerClockMode.Queue,position:Long=32500):ClockSeek {val p=s.projection()!!;return ClockSeek(p.clockAuthority!!,mode,position,projectPlayerClock(p,mode).destination(position)!!)}
  @Test fun acceptedCustomSeekRetiresPreIoContextBeforeDeferredNativeDispatch()=runBlocking {
   val s=Service();val native=s.player as ServicePlayer;val reply=s.send(request(s))

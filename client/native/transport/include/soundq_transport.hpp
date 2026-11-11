@@ -1,5 +1,6 @@
 #pragma once
 #define SOUNDQ_LIVE_TEMPO_API 1
+#define SOUNDQ_NATURAL_END_API 1
 
 #include <array>
 #include <cstdint>
@@ -58,6 +59,14 @@ struct DeckSnapshot {
     double effectiveBpm = 0;
     uint64_t tempoGeneration = 0;
     double boundaryGain = 1;
+    // Ordinary (not schedule/scratch) decoded-EOF consumption only. The deck
+    // index plus generation/identity bind the receipt to the caller's occurrence.
+    // Assign/Seek/SetRate/BeginScratch use their structural sequence as revision.
+    // Compare captured revision to CURRENT traversal before acting on a receipt;
+    // count is cumulative within an assignment, not authority for a later seek.
+    uint64_t traversalRevision = 0;
+    uint64_t naturalEndCount = 0, naturalEndGeneration = 0, naturalEndIdentity = 0;
+    uint64_t naturalEndTraversalRevision = 0;
 };
 struct LiveSync {
     uint64_t incoming = 0, reference = 0;

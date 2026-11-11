@@ -57,16 +57,20 @@ import kotlinx.coroutines.*
         } ?: graph.localUnlock.cancel()
     }
     var appearanceOpen by remember {mutableStateOf(false)}
+    var localAudioOpen by remember {mutableStateOf(false)}
+    val localAudioScroll=androidx.compose.foundation.rememberScrollState()
     var restoreAppearanceFocus by remember {mutableStateOf(false)}
     val appearanceOpener=remember {androidx.compose.ui.focus.FocusRequester()}
     val settingsScroll=androidx.compose.foundation.rememberScrollState()
     val appearanceScroll=androidx.compose.foundation.rememberScrollState()
     fun closeAppearance(){appearanceOpen=false;restoreAppearanceFocus=true}
     androidx.activity.compose.BackHandler(appearanceOpen){closeAppearance()}
+    androidx.activity.compose.BackHandler(localAudioOpen){localAudioOpen=false}
     LaunchedEffect(restoreAppearanceFocus,appearanceOpen){if(restoreAppearanceFocus&&!appearanceOpen){withFrameNanos {};appearanceOpener.requestFocus();restoreAppearanceFocus=false}}
-    SoundQSheet(if(appearanceOpen)"Appearance" else "Settings",{alive.set(false);onDismiss()},
-        dismissAdmission={if(appearanceOpen){closeAppearance();false}else true},scrollState=if(appearanceOpen)appearanceScroll else settingsScroll) {
-        if(appearanceOpen)AppearanceChoices(graph.appearancePreferences)
+    SoundQSheet(if(localAudioOpen)"Local audio" else if(appearanceOpen)"Appearance" else "Settings",{alive.set(false);onDismiss()},
+        dismissAdmission={if(localAudioOpen){localAudioOpen=false;false}else if(appearanceOpen){closeAppearance();false}else true},scrollState=if(localAudioOpen)localAudioScroll else if(appearanceOpen)appearanceScroll else settingsScroll) {
+        if(localAudioOpen)LocalAudioDetail(graph,{localAudioOpen=false})
+        else if(appearanceOpen)AppearanceChoices(graph.appearancePreferences)
         else {
         Text("Account",style=SoundQ.typography.title)
         Text("Server: ${graph.endpoint.identity}",style=SoundQ.typography.mono)
@@ -113,6 +117,7 @@ import kotlinx.coroutines.*
         DjModeSetting(graph.djModePreferences,valid)
         CrossfadeSetting(graph.crossfadePreferences,valid)
         Text("Storage",style=SoundQ.typography.title)
+        SoundQButton("Local audio",{localAudioOpen=true},variant=SoundQButtonVariant.Secondary)
         val storageCapture=graph.storagePreferences.capture()
         SettingsChoices {
         SoundQRow("Temporary audio","Downloads are kept",storage.temporaryAudioEnabled,

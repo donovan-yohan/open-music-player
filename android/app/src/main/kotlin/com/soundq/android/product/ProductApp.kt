@@ -36,6 +36,11 @@ import com.soundq.android.product.imports.ImportsScreen
     val auth by model.auth.collectAsStateWithLifecycle()
     val onlineRestore by model.onlineRestore.collectAsStateWithLifecycle()
     val library by model.library.collectAsStateWithLifecycle()
+    val phone by model.graph.phoneAudio.state.collectAsStateWithLifecycle()
+    var localFiles by rememberSaveable {mutableStateOf(false)}
+    var recentOrder by rememberSaveable {mutableStateOf(false)}
+    var localQuery by remember {mutableStateOf(LibraryQuery())}
+    var selectedPhone by remember {mutableStateOf<com.soundq.android.data.deviceaudio.DeviceAudio?>(null)}
     val imports by model.imports.collectAsStateWithLifecycle()
     val downloads by model.downloads.collectAsStateWithLifecycle()
     val incomingShare by model.graph.incomingShares.state.collectAsStateWithLifecycle()
@@ -171,6 +176,7 @@ import com.soundq.android.product.imports.ImportsScreen
         onDispose {currentRowLifetime.close();revealOwner.close();rowLifecycle.removeObserver(observer)}
     }
     fun navigate(next:String) {
+        if(auth !is AuthState.SignedIn&&next !in setOf("Library","Downloads")){panel="Account";return}
         acquisitionReturn=emptyList()
         collectionVisit.close();paginationVisit.close();paginationNavigation++
         rowLifetime.close();revealOwner.close()
@@ -204,18 +210,11 @@ import com.soundq.android.product.imports.ImportsScreen
         Surface(Modifier.fillMaxSize().closeRowRevealOutside(revealOwner),color=SoundQ.colors.background) {
             Box(Modifier.safeDrawingPadding().imePadding(),contentAlignment=Alignment.TopCenter) {
                 if(gallery && auth is AuthState.SignedIn) {androidx.activity.compose.BackHandler {gallery=false};SoundQApp()}
-                else if(auth is AuthState.DeviceOnly) Column(Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxSize()) {
-                    Box(Modifier.weight(1f).fillMaxWidth()) {
-                        deviceScope?.let {scope ->com.soundq.android.product.offline.DownloadsScreen(model,downloads,scope,{model.goOnline(scope)})}
-                    }
-                    if(playback.title!=null)SoundQCompactPlayer(playback.title!!,playback.artist,playback.isPlaying,playback.canPlay,playback.preparing,{transportReturn=null;panel="Player"},model.controller::toggle,{transportReturn=null;panel="Queue"},
-                        timing=compactSongTiming(playback),artwork={com.soundq.android.product.artwork.PlayerArtwork(model.graph,playback,72.dp,{compactEntry.get()})})
-                }
                 else if(auth is AuthState.LocalLocked) com.soundq.android.product.preferences.LocalUnlockScreen(model)
                 else if(auth is AuthState.Pending && onlineRestore?.deviceOnly==true) Column(Modifier.fillMaxSize().padding(SoundQ.spacing.gutter)) {
                     SoundQFeedback("Going online",FeedbackKind.Loading)
                 }
-                else if(auth !is AuthState.SignedIn) Column(Modifier.fillMaxSize()) {
+                else if(auth !is AuthState.SignedIn&&auth !is AuthState.DeviceOnly&&auth !is AuthState.SignedOut) Column(Modifier.fillMaxSize()) {
                     incomingShare?.takeIf {it.account==null}?.let {share->
                         Text("Shared music link retained. Sign in, then confirm the import.",Modifier.padding(SoundQ.spacing.gutter))
                         SoundQButton("Discard shared link",{model.graph.incomingShares.dismiss(share)},variant=SoundQButtonVariant.Secondary)
@@ -223,10 +222,10 @@ import com.soundq.android.product.imports.ImportsScreen
                     Box(Modifier.weight(1f)){AuthScreen(auth,model)}
                 }
                 else Column(Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxSize()) {
-                    incomingShare?.takeIf {it.account==null||it.account==(auth as AuthState.SignedIn).accountId}?.let {
+                    incomingShare?.takeIf {it.account==null||it.account==(auth as? AuthState.SignedIn)?.accountId}?.let {
                         Row(Modifier.fillMaxWidth().heightIn(min=48.dp).padding(start=SoundQ.spacing.gutter),verticalAlignment=Alignment.CenterVertically) {
-                            Text("Shared link ready",Modifier.weight(1f),style=SoundQ.typography.caption)
-                            LibraryIconCell(SoundQIcon.Info,"Review shared link",{panel="SharedLink"})
+                            Text(if(auth is AuthState.SignedIn)"Shared link ready" else "Shared music link retained. Sign in, then confirm the import.",Modifier.weight(1f),style=SoundQ.typography.caption)
+                            LibraryIconCell(SoundQIcon.Info,"Review shared link",{panel=if(auth is AuthState.SignedIn)"SharedLink" else "Account"})
                         }
                         SoundQDivider()
                     }
@@ -278,9 +277,24 @@ import com.soundq.android.product.imports.ImportsScreen
                         else playlistActions?.let { actions -> com.soundq.android.product.playlists.PlaylistsScreen(playlists,actions.capture,actions::create,actions::reload,actions::startNew,model::openPlaylist,
                             {managementActions?.let {com.soundq.android.product.playlists.PlaylistManagementFeedback(playlistManagement,it)}},onRefine=actions::refine) }
                     } else Column(Modifier.weight(1f).fillMaxWidth()) {
+                        val mixedQuery=if(auth is AuthState.SignedIn)library.query else localQuery
+                        val account=(auth as? AuthState.SignedIn)?.accountId ?: (auth as? AuthState.DeviceOnly)?.accountId
+                        val projectionOwner=model.graph.library.projectionScope(library)
+                        val downloadTracks=downloads.rows.filter {row->paginationScope?.let {model.graph.downloads.ownsComplete(it,row)}==true}.map {it.track}
+                        val mixedNeeded=phone.snapshot?.files?.isNotEmpty()==true||downloadTracks.isNotEmpty()||localFiles||recentOrder||auth !is AuthState.SignedIn
+                        LaunchedEffect(accountVersion,library,mixedNeeded) {if(mixedNeeded&&auth is AuthState.SignedIn)kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){model.graph.library.completeProjection(library)}}
+                        val mixedRows=remember(library,phone.snapshot,downloads,account,projectionOwner,accountVersion,localFiles,recentOrder,mixedQuery) {unifiedLibraryRows(model.graph.endpoint.identity,account,if(auth is AuthState.SignedIn&&projectionOwner!=null)library.rows else emptyList(),downloadTracks,phone.snapshot,mixedQuery,localFiles,recentOrder)}
                         LibraryHeader({panel="Account"},{navigate("Catalog")})
-                        LibrarySearch(library.query.text) {model.refine(library.query.copy(text=it))}
-                        LibraryFilters(library.query.liked,library.total,{model.refine(library.query.copy(liked=it))},{panel="Refine"})
+                        LibrarySearch(mixedQuery.text) {if(auth is AuthState.SignedIn)model.refine(library.query.copy(text=it))else localQuery=localQuery.copy(text=it)}
+                        LibraryFilters(mixedQuery.liked,if(mixedNeeded)mixedRows.size else library.total,{if(auth is AuthState.SignedIn)model.refine(library.query.copy(liked=it))else localQuery=localQuery.copy(liked=it)},{panel="Refine"})
+                        Row(Modifier.fillMaxWidth().heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically) {
+                            Checkbox(localFiles,{localFiles=it},Modifier.semantics {contentDescription="Local files"});Text("Local files",Modifier.weight(1f),style=SoundQ.typography.caption)
+                            TextButton({panel="Refine"}) {Text(if(recentOrder)"Recently played ✓"else "Recently played",style=SoundQ.typography.caption)}
+                        }
+                        SoundQDivider()
+                        if(mixedNeeded&&auth is AuthState.SignedIn&&!library.completeProjection)Text(if(library.projectionError||library.error!=null)"Partial server coverage · ordering shown results only" else "Loading complete server coverage · ordering shown results only",Modifier.padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.caption,color=SoundQ.colors.muted)
+                        if(auth !is AuthState.SignedIn)Text("Offline Library · authorized phone files and device downloads",Modifier.padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.caption)
+                        phone.message?.takeIf {phone.snapshot==null}?.let {Text(it,Modifier.padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.caption)}
                         val collectionCurrent={collectionVisit.current()&&panel==null&&picker==null&&destination=="Library"&&rowLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)&&paginationScope?.let(model.graph.session::remoteCurrent)==true}
                         LibraryCollectionControls(library,{model.refine(library.query.copy(collection=null))},
                             {model.playLibraryCollection(library,current=collectionCurrent)},
@@ -291,8 +305,23 @@ import com.soundq.android.product.imports.ImportsScreen
                             onLoadMore={expected,current->model.loadMore(expected,current)})
                         LazyColumn(Modifier.weight(1f).fillMaxWidth().semantics {contentDescription=library.total?.let {"Library, $it tracks"} ?: "Library tracks"},state=libraryScroll) {
                         if(library.loading) item {LibraryStateCell {SoundQFeedback(if(library.rows.isEmpty())"Loading library" else "Loading more tracks",FeedbackKind.Loading)}}
-                        if(!library.loading&&library.error==null&&library.rows.isEmpty())item {LibraryStateCell {SoundQFeedback(if(library.query==LibraryQuery())"No tracks yet" else "No matching tracks",FeedbackKind.Empty,action="Clear refinement",onAction={model.refine(LibraryQuery())})}}
-                        itemsIndexed(library.rows,key={index,track -> "${track.id.value}:$index"}) {index,track ->
+                        if(!library.loading&&library.error==null&&mixedRows.isEmpty())item {LibraryStateCell {SoundQFeedback(if(mixedQuery==LibraryQuery()&&!localFiles)"No tracks yet" else "No matching tracks",FeedbackKind.Empty,action="Clear refinement",onAction={if(auth is AuthState.SignedIn)model.refine(LibraryQuery())else localQuery=LibraryQuery();localFiles=false;recentOrder=false})}}
+                        itemsIndexed(if(mixedNeeded)mixedRows else mixedRows.filter {it.server!=null},key={_,row -> row.stable}) {_,mixedRow ->
+                            val phoneRow=mixedRow.phone
+                            if(phoneRow!=null) {
+                                val phoneVisit=remember(accountVersion,paginationNavigation,rowVisit,panel){java.util.concurrent.atomic.AtomicBoolean(true)}
+                                DisposableEffect(phoneVisit){onDispose {phoneVisit.set(false)}}
+                                PhoneLibraryRow(model,phoneRow,playback.queue.singleOrNull {it.occurrenceId==playback.selectedOccurrence}?.ref==mixedRow.ref,revealOwner,
+                                    {phoneVisit.get()&&destination=="Library"&&panel==null&&rowLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)},
+                                    {if(phoneVisit.get()){selectedPhone=phoneRow;panel="PhoneTrack"}})
+                            } else {
+                            val track=requireNotNull(mixedRow.server)
+                            val index=library.rows.indexOfFirst {it===track}
+                            if(index<0) {
+                                val scope=model.graph.session.capture()
+                                val row=downloads.rows.singleOrNull {it.track.id==track.id&&it.status==com.soundq.android.data.offline.DownloadStatus.Complete}
+                                SoundQMediaRow(track.title,track.artist,false,{if(scope!=null&&row!=null)model.playDownload(scope,row){model.graph.session.current(scope)}},{navigate("Downloads")},supporting="Downloaded · SoundQ",metadata={LibraryMetadataContent(memberDurationMetadata(track.durationMs))})
+                            } else {
                             val mutation=library.mutations[track.id]
                             val capturedRow=remember(RowIdentity(track),rowLifetime,library.query,library.loading,library.error){model.graph.library.captureTrack(track)}
                             val capturedRoute=libraryActions
@@ -308,6 +337,7 @@ import com.soundq.android.product.imports.ImportsScreen
                                 metadata={LibraryMetadataContent(libraryRowMetadata(track.durationMs,library.analysis[track.id],keyNotation))},
                                 onQuickQueue={capturedRow?.let {model.quickQueueLibrary(it,valid)}},
                                 supporting=when(mutation){MutationOutcome.Pending->"Saving Like";MutationOutcome.Uncertain->"Like not confirmed — reload";MutationOutcome.ReadbackFailed->"Like saved — reload failed";MutationOutcome.Refused->"Like refused";else->if(track.liked==true)"Liked" else null})
+                        }}
                         }
                         library.error?.let {error -> item {LibraryStateCell {SoundQFeedback("Could not load library",FeedbackKind.Error,error.message,"Retry library",{
                             if(library.failedAppend)model.retryLibraryPage(library) {paginationVisit.current()&&rowLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)&&paginationScope?.let(model.graph.session::remoteCurrent)==true}
@@ -319,8 +349,8 @@ import com.soundq.android.product.imports.ImportsScreen
                         timing=compactSongTiming(playback),artwork={com.soundq.android.product.artwork.PlayerArtwork(model.graph,playback,72.dp,{compactEntry.get()})})
                     SoundQBottomNavigation(when(destination){"History"->"Home";"Catalog","Downloads","Acquisition"->"Library";else->destination},::navigate)
                 }
-                if(auth is AuthState.SignedIn || auth is AuthState.DeviceOnly)when(panel) {
-                    "SharedLink"->incomingShare?.takeIf {auth is AuthState.SignedIn&&(it.account==null||it.account==(auth as AuthState.SignedIn).accountId)}?.let {share->SoundQSheet("Shared link",{panel=null}) {
+                if(auth is AuthState.SignedIn || auth is AuthState.DeviceOnly || auth is AuthState.SignedOut)when(panel) {
+                    "SharedLink"->incomingShare?.takeIf {auth is AuthState.SignedIn&&(it.account==null||it.account==(auth as? AuthState.SignedIn)?.accountId)}?.let {share->SoundQSheet("Shared link",{panel=null}) {
                         SoundQButton("Review shared link",{
                             openImports()
                             importView?.let {v->model.graph.imports.another(v);if(!model.imports.value.consumed){model.graph.imports.edit(v,share.source.url);model.graph.incomingShares.dismiss(share)}}
@@ -328,6 +358,12 @@ import com.soundq.android.product.imports.ImportsScreen
                         SoundQButton("Discard shared link",{model.graph.incomingShares.dismiss(share);panel=null},variant=SoundQButtonVariant.Quiet)
                     }}
                     "Account"->SoundQSheet("Account",{panel=null}) {
+                        if(auth !is AuthState.SignedIn) {
+                            if(auth is AuthState.DeviceOnly)deviceScope?.let {scope->SoundQButton("Go online",{model.goOnline(scope);panel=null})}
+                            else AuthScreen(auth,model,scrollable=false)
+                            SoundQButton("Settings",{panel="Settings"},variant=SoundQButtonVariant.Secondary)
+                            SoundQButton("Back to Library",{panel=null},variant=SoundQButtonVariant.Quiet)
+                        } else {
                         Text("Server: ${model.graph.endpoint.identity}",style=SoundQ.typography.mono)
                         SoundQButton("Catalog",{navigate("Catalog")})
                         SoundQButton("Mixes",{navigate("Mixes")})
@@ -340,9 +376,10 @@ import com.soundq.android.product.imports.ImportsScreen
                         SoundQButton("Sign out",{orderActions?.close();closeQueueSave();importView?.let(model.graph.imports::close);importView=null;panel=null;model.logout()})
                         SoundQButton("Settings",{panel="Settings"},variant=SoundQButtonVariant.Secondary)
                         if(BuildConfig.DEBUG)SoundQButton("Developer component gallery",{panel=null;gallery=true},variant=SoundQButtonVariant.Secondary)
-                    }
+                    }}
                     "Settings"->com.soundq.android.product.preferences.PreferencesSheet(model,{panel=null},{navigate("Downloads")},{navigate("History")})
-                    "Refine"->RefineSheet(library.query,{panel=null}) {model.refine(it);panel=null}
+                    "Refine"->RefineSheet(if(auth is AuthState.SignedIn)library.query else localQuery,{panel=null},recent=recentOrder,onRecentApply={recentOrder=it}) {if(auth is AuthState.SignedIn)model.refine(it)else localQuery=it;panel=null}
+                    "PhoneTrack"->selectedPhone?.let {row->PhoneTrackSheet(model,row,{panel=null},{panel="Settings"})}
                     "Devices"->com.soundq.android.product.connect.ConnectedDevicesPanel(model,{panel=null},{panel="Jam"})
                     "Jam"->com.soundq.android.product.jam.JamHostPanel(model,{panel=null})
                     "Track"->selected?.let {track -> SoundQSheet(track.title,{panel=null}) {
@@ -390,7 +427,8 @@ import com.soundq.android.product.imports.ImportsScreen
                         val playerEntry=remember {java.util.concurrent.atomic.AtomicBoolean(true)}
                         DisposableEffect(playerEntry){onDispose {playerEntry.set(false)}}
                         val infoCapture=model.graph.session.capture()?.let {scope->model.graph.trackDetails.capturePlayer(scope,playback){model.playback.value}}
-                        val openInfo:(()->Unit)?=if(infoCapture==null)null else {{
+                        val selectedDevice=(playback.queue.singleOrNull {it.occurrenceId==playback.selectedOccurrence}?.ref as? com.soundq.android.playback.PlaybackRef.Device)?.let {model.graph.phoneAudio.observed(it)}
+                        val openInfo:(()->Unit)?=if(selectedDevice!=null){{selectedPhone=selectedDevice;panel="PhoneTrack"}}else if(infoCapture==null)null else {{
                             if(playerEntry.get()&&panel=="Player")model.graph.trackDetails.open(infoCapture)?.let {detailsRoute=it;model.loadTrackDetails(it);panel="Details"}
                         }}
                         SoundQFullPlayer(playback.title ?: "No track selected",playback.artist,playback.isPlaying,
@@ -508,7 +546,7 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
     Box(Modifier.fillMaxWidth().padding(horizontal=SoundQ.spacing.gutter),contentAlignment=Alignment.CenterStart) {content()}
 }
 
-@Composable private fun AuthScreen(state:AuthState,model:ProductViewModel) {
+@Composable private fun AuthScreen(state:AuthState,model:ProductViewModel,scrollable:Boolean=true) {
     var register by rememberSaveable {mutableStateOf(false)}
     var email by rememberSaveable(stateSaver=TextFieldValue.Saver) {mutableStateOf(TextFieldValue(""))}
     var username by rememberSaveable(stateSaver=TextFieldValue.Saver) {mutableStateOf(TextFieldValue(""))}
@@ -541,7 +579,12 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
             else->null }
         if(error==null){focus.clearFocus();model.submit(email.text,password.text,username.text.takeIf {register})}
     }
-    Column(Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxSize().verticalScroll(rememberScrollState()).padding(SoundQ.spacing.gutter),verticalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium)) {
+    // The standalone route owns a viewport. Account's sheet already owns scrolling
+    // and measures its body unbounded, so auth fields there must be ordinary content.
+    val scroll=rememberScrollState()
+    val bodyModifier=if(scrollable)Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxSize().verticalScroll(scroll)
+        else Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxWidth()
+    Column(bodyModifier.padding(SoundQ.spacing.gutter),verticalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium)) {
         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium)) {
             Image(painterResource(R.drawable.soundq_logo),null,Modifier.size(SoundQ.sizes.target))
             Text("SoundQ",style=SoundQ.typography.title)
@@ -586,11 +629,15 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
         Text(model.graph.endpoint.identity,style=SoundQ.typography.caption,color=SoundQ.colors.muted)
     }
 }
-@Composable private fun RefineSheet(query:LibraryQuery,onDismiss:()->Unit,onApply:(LibraryQuery)->Unit) {
+@Composable private fun RefineSheet(query:LibraryQuery,onDismiss:()->Unit,recent:Boolean=false,onRecentApply:(Boolean)->Unit={},onApply:(LibraryQuery)->Unit) {
     var draft by remember {mutableStateOf(query)}
+    var draftRecent by remember {mutableStateOf(recent)}
     SoundQSheet("Refine library",onDismiss) {
         Text("Sort",style=SoundQ.typography.title)
-        SoundQTabs(LibrarySort.entries.map {it.name},LibrarySort.entries.indexOf(draft.sort),{draft=draft.copy(sort=LibrarySort.entries[it])})
+        SoundQTabs(LibrarySort.entries.map {it.name},LibrarySort.entries.indexOf(draft.sort),{draftRecent=false;draft=draft.copy(sort=LibrarySort.entries[it])})
+        Row(Modifier.fillMaxWidth().heightIn(min=48.dp).selectable(selected=draftRecent,role=Role.RadioButton,onClick={draftRecent=true}),verticalAlignment=Alignment.CenterVertically) {
+            RadioButton(draftRecent,{draftRecent=true});Text("Recently played",style=SoundQ.typography.body)
+        }
         SoundQTabs(listOf("Descending","Ascending"),if(draft.ascending)1 else 0,{draft=draft.copy(ascending=it==1)})
         SoundQTabs(listOf("All verification","Verified","Unverified"),when(draft.verified){true->1;false->2;null->0},{draft=draft.copy(verified=when(it){1->true;2->false;else->null})})
         SoundQTextField(draft.genre,{draft=draft.copy(genre=it)},"Genre (exact match)")
@@ -602,7 +649,8 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
             val album=value.takeUnless {it.isEmpty()};val artist=draft.collection?.artist
             draft=draft.copy(collection=if(artist==null&&album==null)null else LibraryCollection(artist,album))
         },"Album (exact match)")
-        SoundQButton("Apply refinement",{onApply(draft)})
-        SoundQButton("Reset refinement",{draft=LibraryQuery()},variant=SoundQButtonVariant.Secondary)
+        SoundQButton("Apply refinement",{onRecentApply(draftRecent);onApply(draft)})
+        SoundQButton("Reset refinement",{draft=LibraryQuery();draftRecent=false},variant=SoundQButtonVariant.Secondary)
+        SoundQButton("Cancel",onDismiss,variant=SoundQButtonVariant.Quiet)
     }
 }

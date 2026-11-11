@@ -20,7 +20,17 @@ internal class GrantedNativeCallbackSource(
     private val graph: AppGraph,
     private val grants: ConcurrentHashMap<String, MediaGrant>,
 ) : NativeCallbackSource {
-    override fun prepare(item: MediaItem, current: () -> Boolean): File = prepareBounded(item, MAX_BYTES, current)
+    override fun prepare(item: MediaItem, current: () -> Boolean): File {
+        val permit=grants[item.localConfiguration?.uri.toString()] ?: error("Source grant required")
+        val device=permit.device ?: return prepareBounded(item, MAX_BYTES, current)
+        return kotlinx.coroutines.runBlocking {
+            check(current()&&permit.current(graph))
+            val row=graph.phoneAudio.observed(device) ?: error("Phone audio unavailable")
+            val admission=graph.phoneAudio.admit(row) ?: error("Phone source retired")
+            try {graph.phoneAudio.prepare(admission) {current()&&grants[item.localConfiguration?.uri.toString()]===permit&&permit.current(graph)}.also {permit.phoneAdmission=admission}}
+            catch(failure:Exception){if(current()&&permit.current(graph))graph.phoneAudio.reportFailure(admission,failure);throw failure}
+        }
+    }
     internal fun prepareBounded(item: MediaItem, maxBytes: Long, current: () -> Boolean): File {
         require(maxBytes in 1..MAX_BYTES)
         val uri = requireNotNull(item.localConfiguration).uri

@@ -41,6 +41,21 @@
       "bytes": 1152000,
       "distribution": "instrumentation APK only"
     },
+    "local-audio/embedded-cover.flac": {
+      "sha256": "e41f0e21035ecce2aab4cc682cd2946ecadd901efdba47ce31ebc0f46b26f3e6",
+      "bytes": 21162,
+      "distribution": "instrumentation APK only"
+    },
+    "local-audio/tone.flac": {
+      "sha256": "f0034ee9f1ddfa91f01a4b81b6bd0fb6b658a84b000d9f016ca8d5ffdef70405",
+      "bytes": 39339,
+      "distribution": "instrumentation APK only"
+    },
+    "local-audio/tone.m4a": {
+      "sha256": "da8ee3b0a6badf5b9f1283813b5ad109cbb308da3441df3dfd8e53431197f948",
+      "bytes": 33575,
+      "distribution": "instrumentation APK only"
+    },
     "mix-exchange/export.json": {
       "sha256": "34fcf874ea35efcf92da97be45d287f9ec1837744f74daed96057a2091ff9ce7",
       "bytes": 1511,

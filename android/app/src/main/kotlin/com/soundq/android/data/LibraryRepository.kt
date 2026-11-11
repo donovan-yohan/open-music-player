@@ -4,7 +4,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import com.soundq.android.data.playlists.LibraryTrackCapture
 
-data class LibraryState(val query: LibraryQuery = LibraryQuery(), val rows: List<Track> = emptyList(), val total: Int? = null, val loading: Boolean = false, val error: SafeFailure.Reason? = null, val mutations: Map<TrackId,MutationOutcome> = emptyMap(), val analysis:Map<TrackId,LibraryAnalysisFacts> = emptyMap(), val nextOffset:Int=0, val endReached:Boolean=false, val pageRevision:Long=0, val failedAppend:Boolean=false, val sortError:Boolean=false, val collectionLoading:Boolean=false, val collectionError:String?=null)
+data class LibraryState(val query: LibraryQuery = LibraryQuery(), val rows: List<Track> = emptyList(), val total: Int? = null, val loading: Boolean = false, val error: SafeFailure.Reason? = null, val mutations: Map<TrackId,MutationOutcome> = emptyMap(), val analysis:Map<TrackId,LibraryAnalysisFacts> = emptyMap(), val nextOffset:Int=0, val endReached:Boolean=false, val pageRevision:Long=0, val failedAppend:Boolean=false, val sortError:Boolean=false, val collectionLoading:Boolean=false, val collectionError:String?=null,val completeProjection:Boolean=false,val projectionError:Boolean=false)
 /** One account-bound acknowledgement and mutation owner for rows and system controls. */
 class LibraryRepository(val session: AccountSession, private val fetch: (AccountScope,LibraryQuery,Int)->LibraryPage, private val mutate: (AccountScope,TrackId,Boolean)->Unit) {
     private var sortStore:LibrarySortStore?=null
@@ -86,6 +86,24 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
         require(tracks.take(c.prefix.size).map {it.id}==c.prefix.map {it.id})
         if(c.selected !in tracks.indices||!current()||!ownsPlayback(c))return null
         return tracks.toList() to c.selected
+    }
+    /** Read-only presentation ownership. A new account must not relabel a retired row set. */
+    @Synchronized fun projectionScope(expected:LibraryState):AccountScope? = acceptedScope?.takeIf {mutable.value===expected&&session.current(it)}
+    /** Complete bounded acknowledged corpus for mixed client-side ordering; never bless a prefix. */
+    fun completeProjection(expected:LibraryState) {
+        val capture=synchronized(this) {
+            val scope=acceptedScope ?: return
+            if(mutable.value!==expected||expected.loading||expected.error!=null||expected.completeProjection||expected.projectionError||!session.remoteCurrent(scope))return
+            Triple(scope,queryLifetime,mutationRevision)
+        }
+        fun valid()=synchronized(this){mutable.value===expected&&queryLifetime==capture.second&&mutationRevision==capture.third&&session.remoteCurrent(capture.first)}
+        try {
+            val page=readBoundedLibraryCorpus(capture.first,expected.query,fetch,::valid)
+            synchronized(this) {if(valid()) {
+                observe(capture.first,page.tracks,true)
+                mutable.value=expected.copy(rows=page.tracks,total=page.total,analysis=page.analysis,nextOffset=page.total,endReached=true,completeProjection=true,pageRevision=++paginationSerial)
+            }}
+        }catch(_:Exception){synchronized(this){if(valid())mutable.value=expected.copy(projectionError=true)}}
     }
     @Synchronized fun captureTrack(track: Track): LibraryTrackCapture? {
         val s=mutable.value;val scope=acceptedScope ?: return null
@@ -280,7 +298,7 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
                 acceptedScope=scope;observe(scope,added,explicit=true)
                 val next=(offset.toLong()+page.scannedIds.size).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                 val analysis=pageAnalysis(page).filterKeys {id->added.any {it.id==id}}
-                mutable.value=mutable.value.copy(rows=if(added.isEmpty()&&offset>0)prior else prior+added,total=page.total,loading=false,error=null,nextOffset=next,endReached=added.isEmpty()||next<=offset||next>=page.total,pageRevision=++paginationSerial,
+                mutable.value=mutable.value.copy(completeProjection=false,projectionError=false,rows=if(added.isEmpty()&&offset>0)prior else prior+added,total=page.total,loading=false,error=null,nextOffset=next,endReached=added.isEmpty()||next<=offset||next>=page.total,pageRevision=++paginationSerial,
                     analysis=if(offset==0)analysis else mutable.value.analysis+analysis)
             }
         } catch(e:Exception) {synchronized(this){if(session.current(scope)&&generation==version&&current())mutable.value=mutable.value.copy(loading=false,error=(e as? SafeFailure)?.reason?:SafeFailure.Reason.Network,failedAppend=offset>0)}}
@@ -326,10 +344,10 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
                         if(pageCurrent) {
                             val acceptedTarget=acknowledged[id]?.track
                             val rows=page.tracks.map {if(it.id==id&&acceptedTarget!=null)it.copy(liked=acceptedTarget.liked) else it}
-                            mutable.value=mutable.value.copy(rows=rows,total=page.total,error=null,loading=false,analysis=pageAnalysis(page),nextOffset=page.scannedIds.size,endReached=page.tracks.isEmpty()||page.scannedIds.size>=page.total,pageRevision=++paginationSerial)
+                            mutable.value=mutable.value.copy(completeProjection=false,projectionError=false,rows=rows,total=page.total,error=null,loading=false,analysis=pageAnalysis(page),nextOffset=page.scannedIds.size,endReached=page.tracks.isEmpty()||page.scannedIds.size>=page.total,pageRevision=++paginationSerial)
                         } else if(targetCurrent&&target!=null) {
                             val rows=mutable.value.rows
-                            if(rows.any {it.id==id&&it.liked!=target.liked})mutable.value=mutable.value.copy(rows=rows.map {if(it.id==id)it.copy(liked=target.liked) else it})
+                            if(rows.any {it.id==id&&it.liked!=target.liked})mutable.value=mutable.value.copy(completeProjection=false,projectionError=false,rows=rows.map {if(it.id==id)it.copy(liked=target.liked) else it})
                         }
                         changed()
                     }
@@ -367,14 +385,14 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
         synchronized(this) {
             if(!session.remoteCurrent(scope)||mutationRevision!=revision||mutations[id]?.let {accepts(it)}==true)return
             if(track==null)acknowledged.remove(id) else observe(scope,listOf(track),explicit=true)
-            mutable.value=mutable.value.copy(rows=mutable.value.rows.map {if(it.id==id&&track!=null)it.copy(liked=track.liked) else it},mutations=mutable.value.mutations-id)
+            mutable.value=mutable.value.copy(completeProjection=false,projectionError=false,rows=mutable.value.rows.map {if(it.id==id&&track!=null)it.copy(liked=track.liked) else it},mutations=mutable.value.mutations-id)
             changed()
         }
     }
     fun refreshObserved(scope:AccountScope,expected:LibraryState,valid:()->Boolean={true}) {
         val version=synchronized(this){if(!valid()||!session.current(scope)||mutable.value!==expected||expected.loading)return;generation}
         val page=fetchPage(scope,expected.query,0) {valid()&&session.current(scope)&&synchronized(this){generation==version}}
-        synchronized(this){if(valid()&&session.current(scope)&&generation==version&&mutable.value===expected){generation++;observe(scope,page.tracks,true);mutable.value=expected.copy(rows=page.tracks,total=page.total,error=null,analysis=pageAnalysis(page),nextOffset=page.scannedIds.size,endReached=page.tracks.isEmpty()||page.scannedIds.size>=page.total,pageRevision=++paginationSerial)}}
+        synchronized(this){if(valid()&&session.current(scope)&&generation==version&&mutable.value===expected){generation++;observe(scope,page.tracks,true);mutable.value=expected.copy(completeProjection=false,projectionError=false,rows=page.tracks,total=page.total,error=null,analysis=pageAnalysis(page),nextOffset=page.scannedIds.size,endReached=page.tracks.isEmpty()||page.scannedIds.size>=page.total,pageRevision=++paginationSerial)}}
     }
     /** Playback cleanup may trail a newer account's read; preserve only that current owner. */
     @Synchronized internal fun retireObsolete() {

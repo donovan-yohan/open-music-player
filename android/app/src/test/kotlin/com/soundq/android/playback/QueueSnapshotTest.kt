@@ -13,6 +13,6 @@ class QueueSnapshotTest {
         val encoded=saved.encode();val restored=QueueSnapshot.decode(encoded,saved.endpoint,"A")
         assertEquals(saved,restored);assertFalse(encoded.contains("playWhenReady"));assertFalse(encoded.contains("signature"))
         assertNull(QueueSnapshot.decode(encoded,saved.endpoint,"B"));assertNull(QueueSnapshot.decode(encoded,"https://other.test/api/v1","A"))
-        assertNull(QueueSnapshot.decode(encoded.replace("\"version\":1","\"version\":999"),saved.endpoint,"A"))
+        assertNull(QueueSnapshot.decode(encoded.replace("\"version\":3","\"version\":999"),saved.endpoint,"A"))
     }
 }

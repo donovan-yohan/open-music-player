@@ -33,14 +33,14 @@ def block(path, marker):
 tree = ast.parse((root / 'scripts/test-device-play.py').read_text())
 prelude = next(ast.literal_eval(n.value) for n in tree.body
                if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'prelude' for t in n.targets))
-prelude = prelude.replace('fun getLong(k:String)', 'fun getString(k:String)=fields[k] as? String;fun getLong(k:String)')
+# getString is supplied by the shared facade; do not redeclare it.
 prelude = prelude.replace('class Graph {', 'class Graph {val jamAdmission=Port();')
 prelude = prelude.replace('object QueuePolicy {', 'object QueuePolicy {' + block('playback/QueuePolicy.kt', '    fun manualInsert('))
 # The device-download facade is not needed by this test.
 prelude = prelude.replace('com.soundq.android.data.offline.DownloadStatus', 'DownloadStatus')
 resolve = block('playback/SoundQLibraryService.kt', '    private fun resolve(')
 admit = block('playback/SoundQLibraryService.kt', '            if(customCommand.customAction==JAM_ADMIT)')
-grant = (base / 'playback/SignedAudioDataSource.kt').read_text().split('internal class MediaGrant', 1)[1].split('\n', 1)[0]
+grant = '(val scope:AccountScope,val track:TrackId,val localOnly:Boolean=false)' # Server-only legacy boundary declaration; phone consumer is tested separately.
 source = '''package com.soundq.android.extractedjam
 ''' + prelude + '''
 enum class DownloadStatus {Complete}
@@ -54,7 +54,7 @@ class PlayerFacade {val items=mutableListOf<MediaItem>();val mediaItemCount get(
 // Hardware boundary facade only. The production ServiceTransportPlayer is qualified
 // separately with its pinned Media3 continuations; no pending read leaves playback alone.
 class TransportFacade(private val player:PlayerFacade){fun selectionCommitted(){};var pending=false;var retireCalls=0;fun retire(){retireCalls++;if(pending)player.pause();pending=false}}
-class Service(val graph:Graph){fun validateSelection(items:List<MediaItem>,index:Int,position:Long){};fun supportsSourceActions()=true;var account:AccountScope?=graph.session.capture();val grants=ConcurrentHashMap<String,MediaGrant>();val player=PlayerFacade();val transport=TransportFacade(player);val JAM_ADMIT="soundq.jam.admit";var saveCalls=0;var saveFails=false;fun saveJamQueue(){saveCalls++;check(!saveFails)}
+class Service(val graph:Graph){fun localAccess()=false;var undoVersion=-1L;fun resolveDevice(item:MediaItem):MediaItem=error("Phone source separately tested");fun grantFor(item:MediaItem,scope:AccountScope?)=MediaGrant(requireNotNull(scope),TrackId(item.mediaMetadata.extras!!.getLong("trackId")),item.mediaMetadata.extras!!.getBoolean("localOnly"));fun validateSelection(items:List<MediaItem>,index:Int,position:Long){};fun supportsSourceActions()=true;var account:AccountScope?=graph.session.capture();val grants=ConcurrentHashMap<String,MediaGrant>();val player=PlayerFacade();val transport=TransportFacade(player);val JAM_ADMIT="soundq.jam.admit";var saveCalls=0;var saveFails=false;fun saveJamQueue(){saveCalls++;check(!saveFails)}
 ''' + resolve + '''
 fun command(id:String):SessionResult {val args=Bundle().apply {putString("ticket",id)};val customCommand=Command(JAM_ADMIT)
 ''' + admit + '''
