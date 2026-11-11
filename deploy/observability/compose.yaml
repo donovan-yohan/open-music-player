@@ -1,0 +1,61 @@
+name: soundq-observability-preview
+
+services:
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:v1.1.2@sha256:4a154849432f75c4fb024de32fe34163c02406c905dab22bf8d213d2e3386392
+    restart: unless-stopped
+    environment:
+      ZO_ROOT_USER_EMAIL: ${ZO_ROOT_USER_EMAIL:?set private env file}
+      ZO_ROOT_USER_PASSWORD: ${ZO_ROOT_USER_PASSWORD:?set private env file}
+      ZO_LOCAL_MODE: "true"
+      ZO_LOCAL_MODE_STORAGE: disk
+      ZO_DATA_DIR: /data
+      ZO_HTTP_ADDR: 0.0.0.0
+      ZO_HTTP_PORT: "5080"
+      ZO_TELEMETRY: "false"
+      ZO_COMPACT_ENABLED: "true"
+      ZO_COMPACT_DATA_RETENTION_DAYS: ${OBS_RETENTION_DAYS:-7}
+      ZO_COMPACT_DELETE_FILES_DELAY_MINUTES: "10"
+      ZO_MEMORY_CACHE_ENABLED: "false"
+      ZO_HTTP_WORKER_NUM: "2"
+    ports:
+      - "127.0.0.1:${OBS_UI_PORT:-15080}:5080"
+    volumes:
+      - openobserve_data:/data
+    mem_limit: 2g
+    cpus: 2
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.164.0@sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b
+    restart: unless-stopped
+    # Root inside this capability-free container owns its new named queue volume.
+    # No host data directories, socket, or process namespace is mounted.
+    user: "0:0"
+    read_only: true
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    environment:
+      OPENOBSERVE_AUTH: ${OPENOBSERVE_AUTH:?set private env file}
+      GOMEMLIMIT: 384MiB
+    volumes:
+      - ./collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - collector_queue:/var/lib/otelcol
+    ports:
+      - "127.0.0.1:${OBS_OTLP_PORT:-14318}:4318"
+      - "127.0.0.1:${OBS_HEALTH_PORT:-14333}:13133"
+    depends_on: [openobserve]
+    mem_limit: 512m
+    cpus: 1
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+
+volumes:
+  openobserve_data:
+  collector_queue:

@@ -1,8 +1,6 @@
 name: nightly-apk
 
-# Rolling nightly APK: latest commit on main -> one overwritten artifact.
-# No formal releases; previous uploads age out via the 7-day retention.
-
+# Active Android target. Flutter Android is retained only as legacy source.
 on:
   push:
     branches: [main]
@@ -10,7 +8,6 @@ on:
 
 permissions:
   contents: read
-
 concurrency:
   group: nightly-apk
   cancel-in-progress: true
@@ -18,62 +15,73 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Public artifacts must not bake in private infrastructure or capabilities.
+      OMP_API_BASE_URL: https://fixture.invalid/api/v1
+      OMP_SOURCE_REF: ${{ github.sha }}
+      OMP_BUILD_ID: native-nightly-${{ github.run_id }}-${{ github.run_attempt }}
+      CMAKE_BUILD_PARALLEL_LEVEL: '1'
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          persist-credentials: false
+      - name: Prepare private build directories
+        run: |
+          mkdir -p "$RUNNER_TEMP/compose-tmp" "$RUNNER_TEMP/compose-gradle"
+          printf 'TMPDIR=%s\nGRADLE_USER_HOME=%s\n' "$RUNNER_TEMP/compose-tmp" "$RUNNER_TEMP/compose-gradle" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-
-      - uses: subosito/flutter-action@v2
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
         with:
-          channel: stable
-          cache: true
-
-      - name: Version info
-        id: ver
+          # The action's default also requests the retired "tools" package.
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Install pinned SDK and host fixture tools
         run: |
-          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
-
-      - name: Build debug APK
-        working-directory: client
-        env:
-          OMP_API_BASE_URL: ${{ vars.OMP_NIGHTLY_API_BASE_URL || 'http://10.0.2.2:8080/api/v1' }}
-        run: flutter build apk --debug --dart-define=OMP_API_BASE_URL="$OMP_API_BASE_URL"
-
-      - name: Rename APK
+          mkdir -p "$TMPDIR" "$GRADLE_USER_HOME"
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build ffmpeg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Validate product tooling
         run: |
-          mkdir -p dist
-          cp client/build/app/outputs/flutter-apk/app-debug.apk \
-            "dist/soundq-nightly-${{ steps.ver.outputs.date }}-${{ steps.ver.outputs.sha }}.apk"
-
-      - name: Remove previous nightly artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
+          python3 -B scripts/test-android-product.py
+          python3 -B scripts/test-native-publication.py
+          python3 scripts/android-product preflight
+      - name: Check native Android product
         run: |
-          # best-effort: delete any existing nightly artifact so only the latest remains
-          gh api --paginate "repos/${{ github.repository }}/actions/artifacts?name=soundq-nightly" \
-            --jq '.artifacts[].id' 2>/dev/null | while read -r id; do
-            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" || true
-          done
-
+          export PATH="$ANDROID_HOME/cmake/3.22.1/bin:$PATH"
+          python3 scripts/android-product check -Pkotlin.compiler.execution.strategy=in-process '-Dorg.gradle.jvmargs=-Xmx3g -XX:ActiveProcessorCount=2'
       - name: Upload nightly APK
         uses: actions/upload-artifact@v4
         with:
           name: soundq-nightly
-          path: dist/*.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 7
           if-no-files-found: error
-
+          include-hidden-files: false
+      - name: Preserve native check reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soundq-nightly-checks
+          path: |
+            android/app/build/test-results/testDebugUnitTest/TEST-*.xml
+            android/designsystem/build/test-results/testDebugUnitTest/TEST-*.xml
+            android/app/build/reports/lint-results-debug.*
+            android/designsystem/build/reports/lint-results-debug.*
+          retention-days: 7
+          if-no-files-found: warn
+          include-hidden-files: false
       - name: Job summary
-        env:
-          API_BASE: ${{ vars.OMP_NIGHTLY_API_BASE_URL || 'http://10.0.2.2:8080/api/v1' }}
         run: |
-          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
-          ### Nightly APK ready
-          - Commit: ${{ steps.ver.outputs.sha }} (${{ steps.ver.outputs.date }})
-          - Download from this run's **Artifacts** section: soundq-nightly
-          - API base baked in: $API_BASE
-          SUMMARY
+          printf '%s\n' '### Native Android nightly APK' \
+            'Commit: ${{ github.sha }}' \
+            'Artifact: soundq-nightly (7-day retention).' \
+            'Synthetic endpoint fixture.invalid. Build with an explicit approved endpoint for private use.' \
+            'No installation, data migration or full native parity is implied.' >> "$GITHUB_STEP_SUMMARY"

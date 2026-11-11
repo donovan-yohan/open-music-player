@@ -1,0 +1,1500 @@
+{
+  "$description": "SoundQ canonical design authority. DTCG 2025.10 bounded subset. Current reference values plus approved angular aerospace motion direction. Fonts proposed, not final. No shadows, glow, gradients or rounded corners.",
+  "$extensions": {
+    "org.soundq": {
+      "format": "2025.10",
+      "spec": "https://www.designtokens.org/tr/2025.10/format/",
+      "source": "tokens/soundq.tokens.json",
+      "provenance": "Initial visual values sampled from preserved first checkpoint; this JSON is now the sole numerical authoring authority.",
+      "referenceRootFontPx": 16,
+      "android": "Compose-first mappings: CSS px to logical dp; typography sizes and letter spacing to sp (TextUnit), never Dp; native platform sheets/insets/Back/accessibility with custom SoundQ visuals. No native compilation or integration implied.",
+      "fontsStatus": "proposed: local Space Grotesk normal-width and IBM Plex Mono; not condensed"
+    }
+  },
+  "primitive": {
+    "color": {
+      "bg": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.0196078431372549,
+            0.0196078431372549,
+            0.0196078431372549
+          ],
+          "alpha": 1
+        }
+      },
+      "surface": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.0784313725490196,
+            0.06666666666666667,
+            0.050980392156862744
+          ],
+          "alpha": 1
+        }
+      },
+      "raised": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.12941176470588237,
+            0.10196078431372549,
+            0.07450980392156863
+          ],
+          "alpha": 1
+        }
+      },
+      "ink": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.9568627450980393,
+            0.9294117647058824,
+            0.8627450980392157
+          ],
+          "alpha": 1
+        }
+      },
+      "muted": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.7098039215686275,
+            0.6745098039215687,
+            0.6235294117647059
+          ],
+          "alpha": 1
+        }
+      },
+      "rule": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.28627450980392155,
+            0.24313725490196078,
+            0.19607843137254902
+          ],
+          "alpha": 1
+        }
+      },
+      "input": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.5098039215686274,
+            0.4588235294117647,
+            0.396078431372549
+          ],
+          "alpha": 1
+        }
+      },
+      "orange": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            1.0,
+            0.35294117647058826,
+            0.0
+          ],
+          "alpha": 1
+        }
+      },
+      "cyan": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.2235294117647059,
+            0.7764705882352941,
+            0.7137254901960784
+          ],
+          "alpha": 1
+        }
+      },
+      "error": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            1.0,
+            0.5529411764705883,
+            0.5137254901960784
+          ],
+          "alpha": 1
+        }
+      },
+      "disabledInk": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.6588235294117647,
+            0.6235294117647059,
+            0.5647058823529412
+          ],
+          "alpha": 1
+        }
+      },
+      "disabledSurface": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.09803921568627451,
+            0.09019607843137255,
+            0.0784313725490196
+          ],
+          "alpha": 1
+        }
+      },
+      "disabledBorder": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.43137254901960786,
+            0.3843137254901961,
+            0.32941176470588235
+          ],
+          "alpha": 1
+        }
+      },
+      "hover": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.20392156862745098,
+            0.17254901960784313,
+            0.13725490196078433
+          ],
+          "alpha": 1
+        }
+      },
+      "subtleRule": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.1607843137254902,
+            0.13725490196078433,
+            0.10980392156862745
+          ],
+          "alpha": 1
+        }
+      },
+      "art": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.11764705882352941,
+            0.10980392156862745,
+            0.09803921568627451
+          ],
+          "alpha": 1
+        }
+      },
+      "progress": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.3333333333333333,
+            0.27058823529411763,
+            0.20784313725490197
+          ],
+          "alpha": 1
+        }
+      },
+      "primaryHover": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            1.0,
+            0.49019607843137253,
+            0.2196078431372549
+          ],
+          "alpha": 1
+        }
+      },
+      "black": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "alpha": 1
+        }
+      }
+    },
+    "dimension": {
+      "px0": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0,
+          "unit": "px"
+        }
+      },
+      "px1": {
+        "$type": "dimension",
+        "$value": {
+          "value": 1,
+          "unit": "px"
+        }
+      },
+      "px2": {
+        "$type": "dimension",
+        "$value": {
+          "value": 2,
+          "unit": "px"
+        }
+      },
+      "px4": {
+        "$type": "dimension",
+        "$value": {
+          "value": 4,
+          "unit": "px"
+        }
+      },
+      "px5": {
+        "$type": "dimension",
+        "$value": {
+          "value": 5,
+          "unit": "px"
+        }
+      },
+      "px6": {
+        "$type": "dimension",
+        "$value": {
+          "value": 6,
+          "unit": "px"
+        }
+      },
+      "px8": {
+        "$type": "dimension",
+        "$value": {
+          "value": 8,
+          "unit": "px"
+        }
+      },
+      "px10": {
+        "$type": "dimension",
+        "$value": {
+          "value": 10,
+          "unit": "px"
+        }
+      },
+      "px12": {
+        "$type": "dimension",
+        "$value": {
+          "value": 12,
+          "unit": "px"
+        }
+      },
+      "px14": {
+        "$type": "dimension",
+        "$value": {
+          "value": 14,
+          "unit": "px"
+        }
+      },
+      "px16": {
+        "$type": "dimension",
+        "$value": {
+          "value": 16,
+          "unit": "px"
+        }
+      },
+      "px20": {
+        "$type": "dimension",
+        "$value": {
+          "value": 20,
+          "unit": "px"
+        }
+      },
+      "px22": {
+        "$type": "dimension",
+        "$value": {
+          "value": 22,
+          "unit": "px"
+        }
+      },
+      "px24": {
+        "$type": "dimension",
+        "$value": {
+          "value": 24,
+          "unit": "px"
+        }
+      },
+      "px28": {
+        "$type": "dimension",
+        "$value": {
+          "value": 28,
+          "unit": "px"
+        }
+      },
+      "px32": {
+        "$type": "dimension",
+        "$value": {
+          "value": 32,
+          "unit": "px"
+        }
+      },
+      "px36": {
+        "$type": "dimension",
+        "$value": {
+          "value": 36,
+          "unit": "px"
+        }
+      },
+      "px40": {
+        "$type": "dimension",
+        "$value": {
+          "value": 40,
+          "unit": "px"
+        }
+      },
+      "px48": {
+        "$type": "dimension",
+        "$value": {
+          "value": 48,
+          "unit": "px"
+        }
+      },
+      "px50": {
+        "$type": "dimension",
+        "$value": {
+          "value": 50,
+          "unit": "px"
+        }
+      },
+      "px52": {
+        "$type": "dimension",
+        "$value": {
+          "value": 52,
+          "unit": "px"
+        }
+      },
+      "px56": {
+        "$type": "dimension",
+        "$value": {
+          "value": 56,
+          "unit": "px"
+        }
+      },
+      "px60": {
+        "$type": "dimension",
+        "$value": {
+          "value": 60,
+          "unit": "px"
+        }
+      },
+      "px64": {
+        "$type": "dimension",
+        "$value": {
+          "value": 64,
+          "unit": "px"
+        }
+      },
+      "px72": {
+        "$type": "dimension",
+        "$value": {
+          "value": 72,
+          "unit": "px"
+        }
+      },
+      "px80": {
+        "$type": "dimension",
+        "$value": {
+          "value": 80,
+          "unit": "px"
+        }
+      },
+      "px88": {
+        "$type": "dimension",
+        "$value": {
+          "value": 88,
+          "unit": "px"
+        }
+      },
+      "px96": {
+        "$type": "dimension",
+        "$value": {
+          "value": 96,
+          "unit": "px"
+        }
+      },
+      "px100": {
+        "$type": "dimension",
+        "$value": {
+          "value": 100,
+          "unit": "px"
+        }
+      },
+      "px112": {
+        "$type": "dimension",
+        "$value": {
+          "value": 112,
+          "unit": "px"
+        }
+      },
+      "px220": {
+        "$type": "dimension",
+        "$value": {
+          "value": 220,
+          "unit": "px"
+        }
+      },
+      "px320": {
+        "$type": "dimension",
+        "$value": {
+          "value": 320,
+          "unit": "px"
+        }
+      },
+      "px460": {
+        "$type": "dimension",
+        "$value": {
+          "value": 460,
+          "unit": "px"
+        }
+      },
+      "px480": {
+        "$type": "dimension",
+        "$value": {
+          "value": 480,
+          "unit": "px"
+        }
+      },
+      "px640": {
+        "$type": "dimension",
+        "$value": {
+          "value": 640,
+          "unit": "px"
+        }
+      },
+      "px700": {
+        "$type": "dimension",
+        "$value": {
+          "value": 700,
+          "unit": "px"
+        }
+      },
+      "px128": {
+        "$type": "dimension",
+        "$value": {
+          "value": 128,
+          "unit": "px"
+        }
+      }
+    },
+    "duration": {
+      "ms0": {
+        "$type": "duration",
+        "$value": {
+          "value": 0,
+          "unit": "ms"
+        }
+      },
+      "ms100": {
+        "$type": "duration",
+        "$value": {
+          "value": 100,
+          "unit": "ms"
+        }
+      },
+      "ms120": {
+        "$type": "duration",
+        "$value": {
+          "value": 120,
+          "unit": "ms"
+        }
+      },
+      "ms160": {
+        "$type": "duration",
+        "$value": {
+          "value": 160,
+          "unit": "ms"
+        }
+      },
+      "ms180": {
+        "$type": "duration",
+        "$value": {
+          "value": 180,
+          "unit": "ms"
+        }
+      },
+      "ms260": {
+        "$type": "duration",
+        "$value": {
+          "value": 260,
+          "unit": "ms"
+        }
+      },
+      "ms280": {
+        "$type": "duration",
+        "$value": {
+          "value": 280,
+          "unit": "ms"
+        }
+      }
+    },
+    "number": {
+      "zero": {
+        "$type": "number",
+        "$value": 0
+      },
+      "regular": {
+        "$type": "number",
+        "$value": 400
+      },
+      "semibold": {
+        "$type": "number",
+        "$value": 600
+      },
+      "iconStroke": {
+        "$type": "number",
+        "$value": 1.7
+      },
+      "disabledOpacity": {
+        "$type": "number",
+        "$value": 0.65
+      },
+      "slopRatio": {
+        "$type": "number",
+        "$value": 1.25
+      },
+      "half": {
+        "$type": "number",
+        "$value": 0.5
+      },
+      "mediumSheet": {
+        "$type": "number",
+        "$value": 0.62
+      },
+      "fullSheet": {
+        "$type": "number",
+        "$value": 0.94
+      },
+      "dismissProgress": {
+        "$type": "number",
+        "$value": 0.22
+      },
+      "dismissVelocity": {
+        "$type": "number",
+        "$value": 0.6
+      },
+      "scrimOpacity": {
+        "$type": "number",
+        "$value": 0.64
+      },
+      "queueEdgeScrollVelocity": {
+        "$type": "number",
+        "$value": 0.56,
+        "$description": "CSS reference px/ms; native density adapter maps Dp/s."
+      }
+    },
+    "font": {
+      "family": {
+        "display": {
+          "$type": "fontFamily",
+          "$value": "Space Grotesk",
+          "$description": "Proposed normal-width display/body; local @font-face alias Space in reference."
+        },
+        "technical": {
+          "$type": "fontFamily",
+          "$value": "IBM Plex Mono",
+          "$description": "Proposed technical labels; local @font-face alias Plex in reference."
+        }
+      },
+      "weight": {
+        "regular": {
+          "$type": "fontWeight",
+          "$value": 400
+        },
+        "semibold": {
+          "$type": "fontWeight",
+          "$value": 600
+        }
+      }
+    },
+    "fontSize": {
+      "body": {
+        "$type": "dimension",
+        "$value": {
+          "value": 1,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "h1": {
+        "$type": "dimension",
+        "$value": {
+          "value": 2,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "h2": {
+        "$type": "dimension",
+        "$value": {
+          "value": 1.3,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "mono": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.72,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "brand": {
+        "$type": "dimension",
+        "$value": {
+          "value": 1.18,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "intro": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.82,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "tab": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.88,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "sort": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.8,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "title": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.94,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "artist": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.78,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "playing": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.66,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "compactTitle": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.85,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "compactArtist": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.72,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "nav": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.75,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "stateHeading": {
+        "$type": "dimension",
+        "$value": {
+          "value": 1.2,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "stateBody": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.9,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      },
+      "badge": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.7,
+          "unit": "rem"
+        },
+        "$description": "Existing reference.css rem; normalized at 16px baseline for runtime/native."
+      }
+    },
+    "lineHeight": {
+      "heading": {
+        "$type": "number",
+        "$value": 1.12
+      },
+      "subheading": {
+        "$type": "number",
+        "$value": 1.25
+      },
+      "body": {
+        "$type": "number",
+        "$value": 1.5
+      },
+      "title": {
+        "$type": "number",
+        "$value": 1.45
+      },
+      "navigation": {
+        "$type": "number",
+        "$value": 1.35
+      },
+      "button": {
+        "$type": "number",
+        "$value": 1.4
+      }
+    },
+    "letterSpacing": {
+      "heading": {
+        "$type": "dimension",
+        "$value": {
+          "value": -1.28,
+          "unit": "px"
+        },
+        "$description": "Resolved reference em tracking at its own font-size, not root em."
+      },
+      "brand": {
+        "$type": "dimension",
+        "$value": {
+          "value": -0.8496,
+          "unit": "px"
+        },
+        "$description": "Resolved reference em tracking at its own font-size, not root em."
+      },
+      "mono": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.1152,
+          "unit": "px"
+        },
+        "$description": "Resolved reference em tracking at its own font-size, not root em."
+      },
+      "playing": {
+        "$type": "dimension",
+        "$value": {
+          "value": 0.4224,
+          "unit": "px"
+        },
+        "$description": "Resolved reference em tracking at its own font-size, not root em."
+      }
+    },
+    "easing": {
+      "standard": {
+        "$type": "cubicBezier",
+        "$value": [
+          0.2,
+          0,
+          0,
+          1
+        ]
+      },
+      "exit": {
+        "$type": "cubicBezier",
+        "$value": [
+          0.4,
+          0,
+          1,
+          1
+        ]
+      }
+    }
+  },
+  "semantic": {
+    "color": {
+      "background": {
+        "$type": "color",
+        "$value": "{primitive.color.bg}"
+      },
+      "surface": {
+        "$type": "color",
+        "$value": "{primitive.color.surface}"
+      },
+      "raised": {
+        "$type": "color",
+        "$value": "{primitive.color.raised}"
+      },
+      "text": {
+        "$type": "color",
+        "$value": "{primitive.color.ink}"
+      },
+      "textMuted": {
+        "$type": "color",
+        "$value": "{primitive.color.muted}"
+      },
+      "border": {
+        "$type": "color",
+        "$value": "{primitive.color.rule}"
+      },
+      "borderInput": {
+        "$type": "color",
+        "$value": "{primitive.color.input}"
+      },
+      "primary": {
+        "$type": "color",
+        "$value": "{primitive.color.orange}"
+      },
+      "selected": {
+        "$type": "color",
+        "$value": "{primitive.color.orange}"
+      },
+      "focus": {
+        "$type": "color",
+        "$value": "{primitive.color.cyan}"
+      },
+      "secondary": {
+        "$type": "color",
+        "$value": "{primitive.color.cyan}"
+      },
+      "error": {
+        "$type": "color",
+        "$value": "{primitive.color.error}"
+      },
+      "hover": {
+        "$type": "color",
+        "$value": "{primitive.color.hover}"
+      },
+      "disabledText": {
+        "$type": "color",
+        "$value": "{primitive.color.disabledInk}"
+      },
+      "disabledBackground": {
+        "$type": "color",
+        "$value": "{primitive.color.disabledSurface}"
+      },
+      "disabledBorder": {
+        "$type": "color",
+        "$value": "{primitive.color.disabledBorder}"
+      },
+      "subtleBorder": {
+        "$type": "color",
+        "$value": "{primitive.color.subtleRule}"
+      },
+      "art": {
+        "$type": "color",
+        "$value": "{primitive.color.art}"
+      },
+      "progressTrack": {
+        "$type": "color",
+        "$value": "{primitive.color.progress}"
+      },
+      "primaryHover": {
+        "$type": "color",
+        "$value": "{primitive.color.primaryHover}"
+      },
+      "scrim": {
+        "$type": "color",
+        "$value": "{primitive.color.black}"
+      }
+    },
+    "dimension": {
+      "rhythm": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px4}"
+      },
+      "corner": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px0}"
+      },
+      "targetMin": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px48}"
+      },
+      "pageGutter": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px20}"
+      },
+      "safeTop": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px24}"
+      },
+      "safeBottom": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px24}"
+      },
+      "safeCompact": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px8}"
+      },
+      "border": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px1}"
+      },
+      "focusWidth": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px2}"
+      },
+      "icon": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px24}"
+      },
+      "iconSmall": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px20}"
+      },
+      "iconTiny": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px16}"
+      },
+      "iconArt": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px22}"
+      },
+      "iconPadding": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px12}"
+      },
+      "appMax": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px640}"
+      },
+      "appMinHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px480}"
+      }
+    },
+    "font": {
+      "family": {
+        "display": {
+          "$type": "fontFamily",
+          "$value": "{primitive.font.family.display}"
+        },
+        "technical": {
+          "$type": "fontFamily",
+          "$value": "{primitive.font.family.technical}"
+        }
+      },
+      "weight": {
+        "regular": {
+          "$type": "fontWeight",
+          "$value": "{primitive.font.weight.regular}"
+        },
+        "semibold": {
+          "$type": "fontWeight",
+          "$value": "{primitive.font.weight.semibold}"
+        }
+      }
+    },
+    "fontSize": {
+      "body": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.body}"
+      },
+      "h1": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.h1}"
+      },
+      "h2": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.h2}"
+      },
+      "mono": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.mono}"
+      },
+      "brand": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.brand}"
+      },
+      "intro": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.intro}"
+      },
+      "tab": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.tab}"
+      },
+      "sort": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.sort}"
+      },
+      "title": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.title}"
+      },
+      "artist": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.artist}"
+      },
+      "playing": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.playing}"
+      },
+      "compactTitle": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.compactTitle}"
+      },
+      "compactArtist": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.compactArtist}"
+      },
+      "nav": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.nav}"
+      },
+      "stateHeading": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.stateHeading}"
+      },
+      "stateBody": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.stateBody}"
+      },
+      "badge": {
+        "$type": "dimension",
+        "$value": "{primitive.fontSize.badge}"
+      }
+    },
+    "lineHeight": {
+      "heading": {
+        "$type": "number",
+        "$value": "{primitive.lineHeight.heading}"
+      },
+      "subheading": {
+        "$type": "number",
+        "$value": "{primitive.lineHeight.subheading}"
+      },
+      "body": {
+        "$type": "number",
+        "$value": "{primitive.lineHeight.body}"
+      },
+      "title": {
+        "$type": "number",
+        "$value": "{primitive.lineHeight.title}"
+      },
+      "navigation": {
+        "$type": "number",
+        "$value": "{primitive.lineHeight.navigation}"
+      },
+      "button": {
+        "$type": "number",
+        "$value": "{primitive.lineHeight.button}"
+      }
+    },
+    "letterSpacing": {
+      "heading": {
+        "$type": "dimension",
+        "$value": "{primitive.letterSpacing.heading}"
+      },
+      "brand": {
+        "$type": "dimension",
+        "$value": "{primitive.letterSpacing.brand}"
+      },
+      "mono": {
+        "$type": "dimension",
+        "$value": "{primitive.letterSpacing.mono}"
+      },
+      "playing": {
+        "$type": "dimension",
+        "$value": "{primitive.letterSpacing.playing}"
+      }
+    }
+  },
+  "motion": {
+    "duration": {
+      "quick": {
+        "$type": "duration",
+        "$value": "{primitive.duration.ms120}"
+      },
+      "settle": {
+        "$type": "duration",
+        "$value": "{primitive.duration.ms180}"
+      },
+      "sheet": {
+        "$type": "duration",
+        "$value": "{primitive.duration.ms260}"
+      },
+      "page": {
+        "$type": "duration",
+        "$value": "{primitive.duration.ms280}"
+      },
+      "list": {
+        "$type": "duration",
+        "$value": "{primitive.duration.ms180}"
+      },
+      "exit": {
+        "$type": "duration",
+        "$value": "{primitive.duration.ms160}"
+      },
+      "reduced": {
+        "$type": "duration",
+        "$value": "{primitive.duration.ms0}"
+      }
+    },
+    "easing": {
+      "standard": {
+        "$type": "cubicBezier",
+        "$value": "{primitive.easing.standard}"
+      },
+      "exit": {
+        "$type": "cubicBezier",
+        "$value": "{primitive.easing.exit}"
+      }
+    },
+    "gesture": {
+      "slop": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px8}"
+      },
+      "axisRatio": {
+        "$type": "number",
+        "$value": "{primitive.number.slopRatio}"
+      }
+    },
+    "row": {
+      "reveal": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px112}"
+      },
+      "commitProgress": {
+        "$type": "number",
+        "$value": "{primitive.number.half}"
+      }
+    },
+    "sheet": {
+      "medium": {
+        "$type": "number",
+        "$value": "{primitive.number.mediumSheet}"
+      },
+      "full": {
+        "$type": "number",
+        "$value": "{primitive.number.fullSheet}"
+      },
+      "dismissProgress": {
+        "$type": "number",
+        "$value": "{primitive.number.dismissProgress}"
+      },
+      "dismissVelocity": {
+        "$type": "number",
+        "$value": "{primitive.number.dismissVelocity}",
+        "$description": "CSS px/ms, not px/s."
+      }
+    },
+    "scrim": {
+      "opacity": {
+        "$type": "number",
+        "$value": "{primitive.number.scrimOpacity}"
+      }
+    },
+    "queue": {
+      "edgeZone": {
+        "$type": "dimension",
+        "$value": "{semantic.dimension.targetMin}"
+      },
+      "edgeScrollSpeed": {
+        "$type": "number",
+        "$value": "{primitive.number.queueEdgeScrollVelocity}"
+      }
+    }
+  },
+  "component": {
+    "icon": {
+      "minHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px48}"
+      },
+      "minWidth": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px48}"
+      },
+      "padding": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px12}"
+      },
+      "strokeWidth": {
+        "$type": "number",
+        "$value": "{primitive.number.iconStroke}"
+      }
+    },
+    "masthead": {
+      "minHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px64}"
+      },
+      "compactHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px56}"
+      },
+      "gap": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px10}"
+      }
+    },
+    "search": {
+      "minHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px52}"
+      },
+      "inputMinHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px50}"
+      },
+      "iconInset": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px14}"
+      },
+      "border": {
+        "$type": "color",
+        "$value": "{semantic.color.borderInput}"
+      },
+      "focus": {
+        "$type": "color",
+        "$value": "{semantic.color.focus}"
+      }
+    },
+    "row": {
+      "minHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px80}"
+      },
+      "wideMinHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px88}"
+      },
+      "scaledMinHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px96}"
+      },
+      "art": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px48}"
+      },
+      "wideArt": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px56}"
+      },
+      "gap": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px12}"
+      },
+      "currentBackground": {
+        "$type": "color",
+        "$value": "{semantic.color.surface}"
+      },
+      "selectedBorder": {
+        "$type": "color",
+        "$value": "{semantic.color.selected}"
+      },
+      "currentTitle": {
+        "$type": "color",
+        "$value": "{semantic.color.selected}"
+      },
+      "duration": {
+        "$type": "duration",
+        "$value": "{motion.duration.settle}"
+      }
+    },
+    "compactPlayer": {
+      "art": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px40}"
+      },
+      "minHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px56}"
+      },
+      "progressHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px2}"
+      }
+    },
+    "navigation": {
+      "minHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px72}"
+      },
+      "compactHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px60}"
+      },
+      "scaledHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px56}"
+      },
+      "gap": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px5}"
+      },
+      "selectedText": {
+        "$type": "color",
+        "$value": "{semantic.color.selected}"
+      }
+    },
+    "player": {
+      "artMax": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px320}"
+      },
+      "transport": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px56}"
+      },
+      "gap": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px16}"
+      },
+      "background": {
+        "$type": "color",
+        "$value": "{semantic.color.raised}"
+      },
+      "progress": {
+        "$type": "color",
+        "$value": "{semantic.color.primary}"
+      },
+      "duration": {
+        "$type": "duration",
+        "$value": "{motion.duration.page}"
+      }
+    },
+    "sheet": {
+      "choiceMinHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px52}"
+      },
+      "bodyPadding": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px20}"
+      },
+      "bodyGap": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px16}"
+      },
+      "background": {
+        "$type": "color",
+        "$value": "{semantic.color.surface}"
+      },
+      "duration": {
+        "$type": "duration",
+        "$value": "{motion.duration.sheet}"
+      }
+    },
+    "state": {
+      "padding": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px32}"
+      }
+    },
+    "button": {
+      "primaryBackground": {
+        "$type": "color",
+        "$value": "{semantic.color.primary}"
+      },
+      "primaryText": {
+        "$type": "color",
+        "$value": "{semantic.color.background}"
+      },
+      "primaryHover": {
+        "$type": "color",
+        "$value": "{semantic.color.primaryHover}"
+      },
+      "disabledBackground": {
+        "$type": "color",
+        "$value": "{semantic.color.disabledBackground}"
+      },
+      "disabledText": {
+        "$type": "color",
+        "$value": "{semantic.color.disabledText}"
+      },
+      "duration": {
+        "$type": "duration",
+        "$value": "{motion.duration.quick}"
+      },
+      "corner": {
+        "$type": "dimension",
+        "$value": "{semantic.dimension.corner}"
+      },
+      "targetMin": {
+        "$type": "dimension",
+        "$value": "{semantic.dimension.targetMin}"
+      },
+      "disabledOpacity": {
+        "$type": "number",
+        "$value": "{primitive.number.disabledOpacity}"
+      }
+    },
+    "queue": {
+      "duration": {
+        "$type": "duration",
+        "$value": "{motion.duration.list}"
+      }
+    },
+    "arrangement": {
+      "laneMinHeight": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px128}"
+      },
+      "rulerMinHeight": {
+        "$type": "dimension",
+        "$value": "{semantic.dimension.targetMin}"
+      },
+      "clipTargetMin": {
+        "$type": "dimension",
+        "$value": "{semantic.dimension.targetMin}"
+      },
+      "labelPadding": {
+        "$type": "dimension",
+        "$value": "{component.icon.padding}"
+      },
+      "laneGap": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px8}"
+      },
+      "tickSpacingMin": {
+        "$type": "dimension",
+        "$value": "{primitive.dimension.px80}"
+      }
+    }
+  }
+}

@@ -1,0 +1,175 @@
+{
+  "w10": {
+    "spectrum": {
+      "low": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "hex": "#FF0000"
+        }
+      },
+      "mid": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.0,
+            1.0,
+            0.0
+          ],
+          "hex": "#00FF00"
+        }
+      },
+      "high": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "hex": "#0000FF"
+        }
+      },
+      "unavailable": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.596078431372549,
+            0.5764705882352941,
+            0.5450980392156862
+          ],
+          "hex": "#98938B"
+        }
+      },
+      "deck": {
+        "$type": "color",
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.03529411764705882,
+            0.043137254901960784,
+            0.050980392156862744
+          ],
+          "hex": "#090B0D"
+        }
+      }
+    },
+    "color": {
+      "selection": {
+        "$type": "color",
+        "$value": "{semantic.color.primary}"
+      },
+      "lockAccepted": {
+        "$type": "color",
+        "$value": "{semantic.color.secondary}"
+      },
+      "lockPreview": {
+        "$type": "color",
+        "$value": "{semantic.color.text}"
+      },
+      "playhead": {
+        "$type": "color",
+        "$value": "{semantic.color.primary}"
+      },
+      "beat": {
+        "$type": "color",
+        "$value": "{semantic.color.textMuted}"
+      },
+      "downbeat": {
+        "$type": "color",
+        "$value": "{semantic.color.text}"
+      },
+      "group": {
+        "$type": "color",
+        "$value": "{semantic.color.text}"
+      }
+    },
+    "tick": {
+      "beatLength": {
+        "$type": "dimension",
+        "$value": {
+          "value": 7,
+          "unit": "px"
+        }
+      },
+      "group4Length": {
+        "$type": "dimension",
+        "$value": {
+          "value": 12,
+          "unit": "px"
+        }
+      },
+      "group16Length": {
+        "$type": "dimension",
+        "$value": {
+          "value": 19,
+          "unit": "px"
+        }
+      },
+      "group32Length": {
+        "$type": "dimension",
+        "$value": {
+          "value": 25,
+          "unit": "px"
+        }
+      },
+      "downbeatLength": {
+        "$type": "dimension",
+        "$value": {
+          "value": 32,
+          "unit": "px"
+        }
+      },
+      "beatWeight": {
+        "$type": "dimension",
+        "$value": {
+          "value": 1,
+          "unit": "px"
+        }
+      },
+      "group4Weight": {
+        "$type": "dimension",
+        "$value": {
+          "value": 1.25,
+          "unit": "px"
+        }
+      },
+      "group16Weight": {
+        "$type": "dimension",
+        "$value": {
+          "value": 1.75,
+          "unit": "px"
+        }
+      },
+      "group32Weight": {
+        "$type": "dimension",
+        "$value": {
+          "value": 2.25,
+          "unit": "px"
+        }
+      },
+      "downbeatWeight": {
+        "$type": "dimension",
+        "$value": {
+          "value": 2,
+          "unit": "px"
+        }
+      }
+    },
+    "targetMin": {
+      "$type": "dimension",
+      "$value": {
+        "value": 48,
+        "unit": "px"
+      }
+    }
+  }
+}

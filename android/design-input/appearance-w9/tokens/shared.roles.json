@@ -1,0 +1,98 @@
+{
+  "w9": {
+    "color": {
+      "selectionBackground": {
+        "$type": "color",
+        "$value": "{semantic.color.surface}"
+      },
+      "selectionText": {
+        "$type": "color",
+        "$value": "{semantic.color.primary}"
+      },
+      "rowRevealBackground": {
+        "$type": "color",
+        "$value": "{semantic.color.secondary}"
+      },
+      "rowRevealText": {
+        "$type": "color",
+        "$value": "{semantic.color.background}"
+      },
+      "waveformBase": {
+        "$type": "color",
+        "$value": "{semantic.color.textMuted}"
+      },
+      "waveformBeat": {
+        "$type": "color",
+        "$value": "{semantic.color.secondary}"
+      },
+      "waveformPlayhead": {
+        "$type": "color",
+        "$value": "{semantic.color.primary}"
+      },
+      "waveformSelection": {
+        "$type": "color",
+        "$value": "{semantic.color.secondary}"
+      },
+      "waveformDeck": {
+        "$type": "color",
+        "$value": "{semantic.color.surface}"
+      },
+      "waveformCue": {
+        "$type": "color",
+        "$value": "{semantic.color.primary}"
+      },
+      "waveformOrigin": {
+        "$type": "color",
+        "$value": "{semantic.color.text}"
+      },
+      "compactPlayerBackground": {
+        "$type": "color",
+        "$value": "{semantic.color.raised}"
+      },
+      "compactPlayerText": {
+        "$type": "color",
+        "$value": "{semantic.color.text}"
+      },
+      "sheetBackground": {
+        "$type": "color",
+        "$value": "{semantic.color.surface}"
+      },
+      "sheetScrim": {
+        "$type": "color",
+        "$value": "{semantic.color.scrim}"
+      },
+      "inputBackground": {
+        "$type": "color",
+        "$value": "{semantic.color.background}"
+      },
+      "inputBorder": {
+        "$type": "color",
+        "$value": "{semantic.color.borderInput}"
+      },
+      "inputHover": {
+        "$type": "color",
+        "$value": "{semantic.color.hover}"
+      },
+      "inputFocus": {
+        "$type": "color",
+        "$value": "{semantic.color.focus}"
+      },
+      "buttonPressed": {
+        "$type": "color",
+        "$value": "{semantic.color.secondary}"
+      },
+      "buttonHover": {
+        "$type": "color",
+        "$value": "{semantic.color.hover}"
+      },
+      "buttonSelected": {
+        "$type": "color",
+        "$value": "{semantic.color.selected}"
+      },
+      "buttonOnPressed": {
+        "$type": "color",
+        "$value": "{semantic.color.background}"
+      }
+    }
+  }
+}

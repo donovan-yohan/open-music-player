@@ -3,10 +3,16 @@
 ## Purpose
 
 Open Music Player is a self-hosted music library and playback system. Production
-means the Go backend, Flutter client, browser extension, Docker/dev stack, and
+means the Go backend, native Android Compose product, supported Flutter client, browser extension, Docker/dev stack, and
 physical mobile dogfood path continue to work together.
 
 ## Domain Map
+
+- Active Android product -> `android/` (`:app`, `:designsystem`),
+  `scripts/android-product`, `android/README.md`,
+  `docs/adr/0014-platform-native-android-client.md`. This independent Compose
+  Gradle root is not `native/android/` or Flutter's `client/android/`.
+  Go remains API/schema authority; `SoundQLibraryService` owns native playback.
 
 - Auth/session/API contracts -> `backend/internal/auth/`, `backend/internal/api/`, `client/lib/core/api/`, `client/lib/core/auth/`, `extension/src/`.
 - Library, playlists, queue, downloads -> `backend/internal/db/`, `backend/internal/queue/`, `backend/internal/download/`, `backend/internal/processor/`, `client/lib/providers/`, `client/lib/screens/`.
@@ -63,8 +69,18 @@ See `docs/context-map.md` for the fuller map and harness table.
 - Deterministic dev-cycle evidence path:
   `scripts/agentic-cycle --run --evidence /tmp/omp-cycle.json`
 - Release/closeout audit: `scripts/release-audit --pr <number> --issue <number>`
-- Build checks: `scripts/build client` builds the Android arm64 debug APK;
-  native experimental clients use `scripts/test native`,
+- Native Compose checks: `scripts/test android-product`,
+  `scripts/lint android-product`, `scripts/build android-product`, or
+  `python3 scripts/android-product check` for all three. Explicit SDK/JDK,
+  private Gradle home, temporary root and API/build identity are required.
+  `python3 scripts/android-product preflight` verifies setup without compilation.
+  CI `Native Clients / Android Compose product` uploads debug/test APKs only.
+  This does not alter signed3-image production qualification or authorize install.
+- Build checks: `scripts/build client` selects native Android. Flutter Android is
+  deprecated; explicit recovery uses `scripts/build client-flutter-android-legacy`.
+  Flutter web/desktop/shared checks remain supported. `scripts/build client-web`
+  builds the retained web app;
+  retained native experimental clients use `scripts/test native`,
   `scripts/build native-macos`, and `scripts/build native-android`; see
   `docs/adr/0013-native-client-application-core.md`. These never install apps.
   `scripts/build analyzer` verifies the pinned Beat This/librosa image and
@@ -72,102 +88,34 @@ See `docs/context-map.md` for the fuller map and harness table.
 - Local backend smoke: `scripts/smoke`
 - Isolated backend smoke: `scripts/smoke isolated`
 - Download/worker smoke: `scripts/smoke e2e`
-- Android dogfood APK/evidence: `scripts/dogfood-android build|install|all`
+- Native Android dogfood build: `scripts/dogfood-android build`; installation is
+  separately authorized with explicit target, compatible signer and private receipt.
 
 Use RTK wrappers for noisy output when running these through Codex.
 
 ## Local Testing / Deploy
 
-**Legacy local/tailnet recipes, not private VM production instructions.** The
-`dev.fish-rattlesnake.ts.net` addresses and ports below are historical dogfood
-targets, not the migration destination. See `docs/PRIVATE_VM_MIGRATION.md` for
-explicit endpoint contracts and Anko's enrollment/restore/routes/media/CORS/reboot
-gates. Do not run these recipes, change nightly repository variables, or deploy
-as part of migration preparation. Dogfood now requires an explicit valid API URL.
+Android uses `android/`, not deprecated Flutter Android. Follow
+`android/README.md` for explicit toolchain, canonical temporary directory,
+private Gradle home and API/source/build markers. Use
+`python3 scripts/android-product check` for the native product gate.
+`scripts/dogfood-android build` builds native only. Installing requires separate
+exact-artifact/target authority, explicit `ANDROID_SERIAL`,
+`OMP_ALLOW_ANDROID_INSTALL=1` and compatible signer proof. Never uninstall,
+clear data, downgrade or rename a package to work around refusal.
+See `docs/ANDROID_PR_ARTIFACTS.md` for native PR/nightly artifacts and retained
+`scripts/build client-flutter-android-legacy` recovery. Public artifacts use
+`https://fixture.invalid/api/v1`; private installs require an approved explicit
+backend override. No full native parity or Flutter data migration is implied.
 
-Use when user says "deploy backend", "deploy frontend", "phone dogfood", or
-"local testing". Backend deploy means tailnet staging on `dev`; frontend deploy
-means Android dogfood through remote ADB or Flutter Web preview on tailnet.
-`server-mac` is only remote ADB/LLM. Do not revive the old `8091` APK download
-page; install through remote ADB.
-
-- Backend root: `http://dev.fish-rattlesnake.ts.net:8080`
-- API base: `http://dev.fish-rattlesnake.ts.net:8080/api/v1`
-- Remote ADB: `tcp:server-mac.fish-rattlesnake.ts.net:5037`
-- Known Pixel 10 Pro serial: `5B120DLCH002TK`
-
-Deploy backend from checkout you want live:
-
-```bash
-export OMP_TAILNET_HOST=dev.fish-rattlesnake.ts.net
-scripts/tailnet-staging.sh start-downloads
-scripts/tailnet-staging.sh smoke
-```
-
-Backend-only fast path when queue/download worker is irrelevant:
-
-```bash
-export OMP_TAILNET_HOST=dev.fish-rattlesnake.ts.net
-scripts/tailnet-staging.sh start-backend
-scripts/tailnet-staging.sh smoke
-```
-
-Use the remote `Pixel_10_Pro` AVD for automated Android checks unless the user
-explicitly asks for the physical phone. Boot it on the Mac, then use its remote
-ADB server:
-
-```bash
-ssh server-mac.fish-rattlesnake.ts.net \
-  'nohup $HOME/Library/Android/sdk/emulator/emulator -avd Pixel_10_Pro \
-  >/tmp/omp-pixel-10-pro.log 2>&1 </dev/null &'
-export ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037
-adb wait-for-device
-export ANDROID_SERIAL="$(adb devices | awk '$1 ~ /^emulator-/ { print $1; exit }')"
-export OMP_DEV_TAILNET_IP="$(getent ahostsv4 dev.fish-rattlesnake.ts.net | \
-  awk 'NR == 1 { print $1 }')"
-
-OMP_API_BASE_URL="http://$OMP_DEV_TAILNET_IP:8080/api/v1" \
-OMP_SOURCE_REF="$(git rev-parse --abbrev-ref HEAD)@$(git rev-parse --short HEAD)" \
-OMP_BUILD_ID="<slice>-$(date -u +%Y%m%dT%H%M%SZ)" \
-scripts/dogfood-android all
-```
-
-The AVD can route to tailnet IPs through the Mac but may not resolve MagicDNS
-`.ts.net` names. Use the resolved tailnet IP in `OMP_API_BASE_URL` when login
-reports `Unable to connect to server`.
-
-Deploy Android frontend to the physical phone only when requested:
-
-```bash
-export ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037
-export ANDROID_SERIAL=5B120DLCH002TK
-adb devices -l
-
-OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
-OMP_SOURCE_REF="$(git rev-parse --abbrev-ref HEAD)@$(git rev-parse --short HEAD)" \
-OMP_BUILD_ID="<slice>-$(date -u +%Y%m%dT%H%M%SZ)" \
-scripts/dogfood-android all
-
-adb shell monkey -p com.openmusicplayer.app -c android.intent.category.LAUNCHER 1
-adb shell pidof com.openmusicplayer.app
-adb logcat -d -t 1000 | \
-  rg -i "FATAL EXCEPTION|E/flutter|AndroidRuntime: FATAL|AndroidRuntime.*FATAL"
-```
-
-Preview Flutter Web frontend on tailnet:
-
-```bash
-export OMP_TAILNET_HOST=dev.fish-rattlesnake.ts.net
-OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
-  scripts/tailnet-staging.sh serve-web
-```
-
-Use `scripts/tailnet-staging.sh urls` for live URLs. Use
-`scripts/tailnet-staging.sh stop` to tear down backend services. Report backend
-URL, build ID/source ref, Android serial or web URL, evidence path, and fatal-log
-status. `scripts/dogfood-android` writes
-`/tmp/open-music-player-dogfood-<build-id>/evidence.md`. Settings Build must
-match `OMP_SOURCE_REF` and `OMP_BUILD_ID`.
+Flutter web/desktop/shared checks remain supported. Use `scripts/build client-web`,
+`scripts/build client-macos`, `scripts/test client` and `scripts/lint client`.
+Local backend/web recipes remain in `docs/TAILNET_STAGING.md`; they are not
+private VM production instructions. `docs/PRIVATE_VM_MIGRATION.md` still owns
+explicit migration endpoint/enrollment/restore/routes/media/CORS/reboot gates.
+Do not change infrastructure, repository variables or production hosts as part
+of a native client build. Never recover private target addresses or device IDs
+from historical agent instructions.
 
 ## Architecture Guardrails
 

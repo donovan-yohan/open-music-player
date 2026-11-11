@@ -1,195 +1,109 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Local/dev/dogfood only, not production-approved migration artifacts.
-# Approved artifact-only migration builds must use scripts/private-vm-build.
-
+# Native Android only. Flutter Android recovery is an explicit build target.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${1:-build}"
+APK_PATH="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
+PACKAGE=com.soundq.android.dev
 
-# Fail before creating evidence or invoking Flutter/ADB. Never silently target
-# the retired devbox when a migration/dogfood caller omits its compile input.
-API_BASE_URL="$(node -e '
-  try {
-    const {validateUrl} = require(process.argv[1]);
-    process.stdout.write(validateUrl(process.env.OMP_API_BASE_URL).replace(/\/$/, ""));
-  } catch (_) {
-    console.error("Explicit valid OMP_API_BASE_URL required (http(s), no credentials/query/fragment)");
-    process.exit(2);
-  }
-' "$ROOT/extension/config/endpoints.cjs")"
-SOURCE_REF="${OMP_SOURCE_REF:-$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)@$(git -C "$ROOT" rev-parse --short HEAD)}"
-BUILD_ID="${OMP_BUILD_ID:-dogfood-$(date -u +%Y%m%dT%H%M%SZ)}"
+usage() {
+  printf '%s\n' 'usage: scripts/dogfood-android [build|install|logs|all]' \
+    'build uses scripts/android-product with explicit OMP_API_BASE_URL, OMP_SOURCE_REF and OMP_BUILD_ID.' \
+    'install/all requires ANDROID_SERIAL and OMP_ALLOW_ANDROID_INSTALL=1; never uninstalls or clears data.' \
+    'ADB_SERVER_SOCKET is optional. No device is selected by default.' \
+    'Flutter Android recovery: scripts/build client-flutter-android-legacy.' >&2
+}
 
-EVIDENCE_DIR="${OMP_DOGFOOD_EVIDENCE_DIR:-/tmp/open-music-player-dogfood-$BUILD_ID}"
-
-# Dogfood builds are profile, not debug. A Flutter debug build runs Dart under
-# the JIT with assertions on, and on a Pixel 10 Pro that alone triples the
-# library scroll's late-frame rate (35% of moving frames late in debug vs 10%
-# in profile) — so debug dogfooding reports jank the shipped app does not have.
-# Profile keeps the service extensions and observability that dogfooding wants.
-# Set OMP_BUILD_MODE=debug when you actually need hot reload or a debugger.
-BUILD_MODE="${OMP_BUILD_MODE:-profile}"
-case "$BUILD_MODE" in
-  profile|debug|release) ;;
-  *)
-    printf 'Unsupported OMP_BUILD_MODE: %s (want profile, debug or release)\n' \
-      "$BUILD_MODE" >&2
+require_target() {
+  : "${ANDROID_SERIAL:?Set ANDROID_SERIAL explicitly; default device selection is forbidden}"
+  if [ "${OMP_ALLOW_ANDROID_INSTALL:-}" != 1 ]; then
+    printf '%s\n' 'Set OMP_ALLOW_ANDROID_INSTALL=1 only after authorizing this exact target/artifact.' >&2
     exit 2
-    ;;
-esac
-APK_PATH="$ROOT/client/build/app/outputs/flutter-apk/app-$BUILD_MODE.apk"
-EVIDENCE_PATH="$EVIDENCE_DIR/evidence.md"
-LOGCAT_PATH="$EVIDENCE_DIR/logcat.txt"
-
-mkdir -p "$EVIDENCE_DIR"
-
-sha256_file() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
-  else
-    shasum -a 256 "$1" | awk '{print $1}'
-  fi
-}
-
-append_evidence() {
-  printf '%s\n' "$1" >>"$EVIDENCE_PATH"
-}
-
-reset_evidence() {
-  cat >"$EVIDENCE_PATH" <<EOF
-# Android Dogfood Evidence
-
-- Generated UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-- Source ref: \`$SOURCE_REF\`
-- Build ID: \`$BUILD_ID\`
-- API base URL: \`$API_BASE_URL\`
-- Build mode: \`$BUILD_MODE\`
-- ADB server: \`${ADB_SERVER_SOCKET:-default}\`
-- Android serial: \`${ANDROID_SERIAL:-default}\`
-
-EOF
-}
-
-ensure_evidence() {
-  if [ ! -f "$EVIDENCE_PATH" ]; then
-    reset_evidence
   fi
 }
 
 build_apk() {
-  reset_evidence
-  (
-    cd "$ROOT/client"
-    flutter pub get
-    flutter build apk \
-      "--$BUILD_MODE" \
-      --no-pub \
-      --target-platform android-arm64 \
-      --dart-define=OMP_API_BASE_URL="$API_BASE_URL" \
-      --dart-define=OMP_SOURCE_REF="$SOURCE_REF" \
-      --dart-define=OMP_BUILD_ID="$BUILD_ID"
-  )
-  local apk_sha
-  apk_sha="$(sha256_file "$APK_PATH")"
-  append_evidence "## Build"
-  append_evidence ""
-  append_evidence "- APK: \`$APK_PATH\`"
-  append_evidence "- APK SHA256: \`$apk_sha\`"
-  append_evidence "- Build mode: \`$BUILD_MODE\`"
-  append_evidence ""
-  printf 'Built APK: %s\n' "$APK_PATH"
-  printf 'Evidence: %s\n' "$EVIDENCE_PATH"
+  python3 "$ROOT/scripts/android-product" build "${@:1}"
 }
 
-ensure_adb() {
-  if ! command -v adb >/dev/null 2>&1; then
-    append_evidence "## Install"
-    append_evidence ""
-    append_evidence "- Status: failed"
-    append_evidence "- Reason: \`adb\` not found on PATH"
-    append_evidence ""
-    echo "adb not found on PATH" >&2
-    exit 1
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d ' ' -f 1
+  else
+    shasum -a 256 "$1" | cut -d ' ' -f 1
   fi
 }
 
 install_apk() {
-  ensure_adb
-  ensure_evidence
-  if [ ! -f "$APK_PATH" ]; then
-    build_apk
+  require_target
+  : "${ANDROID_HOME:?Set ANDROID_HOME}"
+  : "${TMPDIR:?Set an owned canonical TMPDIR}"
+  : "${OMP_DOGFOOD_EVIDENCE_DIR:?Set a private OMP_DOGFOOD_EVIDENCE_DIR}"
+  local tools="$ANDROID_HOME/build-tools/37.0.0"
+  [ -f "$APK_PATH" ] || { printf '%s\n' 'Build the native APK first.' >&2; exit 2; }
+  local package
+  package="$("$tools/aapt" dump badging "$APK_PATH" | python3 -c 'import re,sys; print(re.search(r"package: name=\x27([^\x27]+)",sys.stdin.read()).group(1))')"
+  [ "$package" = "$PACKAGE" ] || { printf '%s\n' 'Refusing unexpected application ID.' >&2; exit 2; }
+  mkdir -p "$OMP_DOGFOOD_EVIDENCE_DIR"
+  local scope
+  scope="$(mktemp -d "$TMPDIR/soundq-native-install.XXXXXX")"
+  # Retain evidence on failure. No keyfiles, uninstall, clear-data or downgrade flags.
+  adb -s "$ANDROID_SERIAL" devices -l > "$scope/devices.txt"
+  adb -s "$ANDROID_SERIAL" get-state > "$scope/state.txt"
+  "$tools/apksigner" verify --print-certs "$APK_PATH" > "$scope/candidate-cert.txt"
+  local installed
+  installed="$(adb -s "$ANDROID_SERIAL" shell pm path "$PACKAGE" | tr -d '\r' | python3 -c 'import sys; p=[x.removeprefix("package:").strip() for x in sys.stdin if x.startswith("package:")]; print(next((x for x in p if x.endswith("/base.apk")),p[0] if len(p)==1 else ""))')"
+  if [ -n "$installed" ]; then
+    adb -s "$ANDROID_SERIAL" pull "$installed" "$scope/installed-before.apk" > "$scope/pull-before.txt" 2>&1
+    "$tools/apksigner" verify --print-certs "$scope/installed-before.apk" > "$scope/installed-cert.txt"
+    python3 - "$scope" <<'PY'
+from pathlib import Path
+import re
+import sys
+root = Path(sys.argv[1])
+def signers(name):
+    # Build Tools 37 emits "V2 Signer:"; older tools use "Signer #1".
+    pattern = r"(?:Signer #\d+|V[1-4] Signer:) certificate SHA-256 digest: ([0-9a-fA-F]{64})"
+    return sorted({match.group(1).lower() for line in (root / name).read_text().splitlines()
+                   if (match := re.fullmatch(pattern, line.strip()))})
+a, b = signers('candidate-cert.txt'), signers('installed-cert.txt')
+if not a or a != b:
+    raise SystemExit('Signer mismatch. Preserve the installed app/data; use its compatible signing path. No install performed.')
+PY
   fi
-
-  local devices_path
-  devices_path="$EVIDENCE_DIR/adb-devices.txt"
-  adb devices -l >"$devices_path"
-  if ! awk 'NR > 1 && $2 == "device" { found = 1 } END { exit found ? 0 : 1 }' "$devices_path"; then
-    append_evidence "## Install"
-    append_evidence ""
-    append_evidence "- Status: failed"
-    append_evidence "- Reason: no authorized Android device from \`adb devices -l\`"
-    append_evidence "- Device list: \`$devices_path\`"
-    append_evidence ""
-    echo "No authorized Android device found. See $devices_path" >&2
-    exit 1
-  fi
-
-  adb install -r "$APK_PATH"
-  append_evidence "## Install"
-  append_evidence ""
-  append_evidence "- Status: installed"
-  append_evidence "- Device list: \`$devices_path\`"
-  append_evidence ""
-  printf 'Installed APK on Android device. Evidence: %s\n' "$EVIDENCE_PATH"
-}
-
-capture_logs() {
-  ensure_adb
-  ensure_evidence
-  adb logcat -d -t "${OMP_DOGFOOD_LOG_LINES:-1000}" >"$LOGCAT_PATH" || true
-  append_evidence "## Logs"
-  append_evidence ""
-  append_evidence "- Logcat tail: \`$LOGCAT_PATH\`"
-  append_evidence ""
-  printf 'Captured logcat tail: %s\n' "$LOGCAT_PATH"
-}
-
-usage() {
-  cat >&2 <<'EOF'
-usage: scripts/dogfood-android [build|install|logs|all]
-
-Environment:
-  OMP_API_BASE_URL             Required explicit phone-reachable HTTP(S) API base.
-                               Node validates it before Flutter/ADB are invoked.
-  OMP_BUILD_MODE               profile (default), debug, or release. Debug is
-                               JIT and janks in ways the shipped app does not;
-                               use it only for hot reload or a debugger.
-  OMP_SOURCE_REF               Source marker compiled into Settings.
-  OMP_BUILD_ID                 Build marker compiled into Settings.
-  OMP_DOGFOOD_EVIDENCE_DIR     Evidence output directory.
-  ADB_SERVER_SOCKET            Optional remote ADB server, e.g. tcp:host:5037.
-  ANDROID_SERIAL               Optional adb target serial.
-EOF
+  adb -s "$ANDROID_SERIAL" install -r "$APK_PATH" > "$scope/install.txt" 2>&1
+  installed="$(adb -s "$ANDROID_SERIAL" shell pm path "$PACKAGE" | tr -d '\r' | python3 -c 'import sys; p=[x.removeprefix("package:").strip() for x in sys.stdin if x.startswith("package:")]; print(next((x for x in p if x.endswith("/base.apk")),p[0] if len(p)==1 else ""))')"
+  [ -n "$installed" ] || { printf '%s\n' 'Installed package readback missing.' >&2; exit 1; }
+  adb -s "$ANDROID_SERIAL" pull "$installed" "$scope/installed-after.apk" > "$scope/pull-after.txt" 2>&1
+  cmp "$APK_PATH" "$scope/installed-after.apk"
+  {
+    printf '%s\n' '# Native Android install evidence' "Package: $PACKAGE" \
+      "APK SHA256: $(sha256_file "$APK_PATH")" "Private receipt directory: $scope" \
+      'Exact installed bytes verified. No launch, account migration or playback qualification.'
+  } > "$OMP_DOGFOOD_EVIDENCE_DIR/evidence.md"
+  printf 'Installed native artifact; private receipt: %s\n' "$OMP_DOGFOOD_EVIDENCE_DIR/evidence.md"
 }
 
 case "$TARGET" in
   build)
-    build_apk
+    shift || true
+    build_apk "$@"
     ;;
   install)
     install_apk
     ;;
   logs)
-    capture_logs
+    require_target
+    : "${OMP_DOGFOOD_EVIDENCE_DIR:?Set a private OMP_DOGFOOD_EVIDENCE_DIR}"
+    mkdir -p "$OMP_DOGFOOD_EVIDENCE_DIR"
+    adb -s "$ANDROID_SERIAL" logcat -d -t "${OMP_DOGFOOD_LOG_LINES:-1000}" > "$OMP_DOGFOOD_EVIDENCE_DIR/logcat.txt"
     ;;
   all)
-    build_apk
+    require_target
+    shift
+    build_apk "$@"
     install_apk
-    capture_logs
     ;;
-  *)
-    usage
-    exit 2
-    ;;
+  *) usage; exit 2 ;;
 esac

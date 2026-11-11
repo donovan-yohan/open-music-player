@@ -1,0 +1,14 @@
+{
+  "kind": "consumed-subset-not-full-release",
+  "archiveSha256": "3df30d8e34460411ffbac438caf18b28daab0493d1c344f295c77d5252a1c93c",
+  "manifestSha256": "e715bf6f4f5ee3981382f85fe0a442f84e8ff4e09951daea627eadff94c248a1",
+  "files": {
+    "CONTRACT.md": "7f677c9f95e44a744a9c740ec20336fdd7abec0c2a87fb8d33135ea6e2d0fd45",
+    "HANDOFF.md": "7b53715dc0593d858be38615de233143000861b212eaaeaf333b0d9b7ae78794",
+    "tokens/base.tokens.json": "68015c1afa0bd52efee6df854be0e9d9c64d6a339d2430f95201830390e0487c",
+    "tokens/spectral.roles.json": "c84854a7aef3d6e60868b552457f5d1a330663ce430f338fcac62b642d8d4a3e",
+    "tools/build_tokens.py": "913b24c7c988792da6a4466d0a2e172ea5b374d621c0d8dcf1cf9c8b2b2b2f8c",
+    "generated/SoundQComposeTokens.kt": "7f540f4363155feeca86062d6bd72b9092503c546513f04a784d3f88d3e724d8"
+  },
+  "selection": "Canonical full exporter merged base + spectral roles; select exactly val W10_ declarations (23), rename object SoundQSpectralTokens. No fixtures/audio/HTML imported."
+}

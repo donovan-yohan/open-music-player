@@ -144,9 +144,13 @@ Record:
 - backend URL and health check used by the device;
 - relevant log tail path under `/tmp`, not pasted raw into the PR.
 
-Use `scripts/dogfood-android build` for reproducible APK evidence and
-`scripts/dogfood-android all` when an authorized Android device is reachable
-through local or remote ADB.
+`scripts/dogfood-android build` selects native Compose Android. `install`/`all`
+requires a separately authorized exact target/artifact, explicit `ANDROID_SERIAL`,
+`OMP_ALLOW_ANDROID_INSTALL=1` and compatible signer; it records private installed
+byte evidence and never uninstalls or clears data. See `android/README.md` and
+`docs/ANDROID_PR_ARTIFACTS.md`. Flutter Android is deprecated. Shared Flutter
+changes retain their required tests and need supported web/desktop runtime
+proof; installing native Android cannot certify Flutter behavior.
 
 ## Resource Closeout
 

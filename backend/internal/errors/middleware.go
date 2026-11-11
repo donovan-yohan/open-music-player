@@ -13,7 +13,10 @@ const (
 func RequestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if request ID is provided in header, otherwise generate one
-		requestID := r.Header.Get(RequestIDHeader)
+		requestID := GetRequestID(r.Context())
+		if requestID == "" {
+			requestID = r.Header.Get(RequestIDHeader)
+		}
 		if requestID == "" {
 			requestID = GenerateRequestID()
 		}

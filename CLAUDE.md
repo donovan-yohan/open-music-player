@@ -6,12 +6,13 @@ For desktop UI work, read `docs/DESKTOP_VISUAL_SYSTEM.md` first. It is the curre
 
 ## Project Overview
 
-Open Music Player is a self-hosted music library management system with three main components:
+Open Music Player is a self-hosted music library management system with these components:
 
 | Component | Language | Location | Purpose |
 |-----------|----------|----------|---------|
+| Android product | Kotlin/Compose + C++ DSP | `android/` | Active platform-native Android product, independent Gradle root |
 | Backend | Go | `backend/` | REST API server, migrations, download workers, MusicBrainz matching |
-| Client | Flutter/Dart | `client/` | Cross-platform mobile/desktop/web app |
+| Client | Flutter/Dart | `client/` | Supported web/desktop/shared code; deprecated Android recovery source |
 | Extension | TypeScript | `extension/` | Browser extension for Chrome/Firefox |
 
 ## Development Commands
@@ -43,6 +44,19 @@ cd backend
 make run                     # Start server; startup runs the idempotent schema in internal/db/db.go
 make test                    # Run tests
 ```
+
+### Android product (Kotlin/Compose)
+Use the explicit toolchain/environment setup in `android/README.md`.
+```bash
+python3 scripts/android-product preflight
+scripts/test android-product
+scripts/lint android-product
+scripts/build android-product
+```
+These validate `android/`, not the retained `native/android/` framework preview
+or Flutter's `client/android/`. They never install or deploy. Native Clients CI
+publishes debug/test APK artifacts separately from the protected signed-image
+production pipeline. Flutter, backend and extension gates remain supported.
 
 ### Client (Flutter)
 ```bash

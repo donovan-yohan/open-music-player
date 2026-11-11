@@ -1,0 +1,124 @@
+{
+  "release": "SoundQ appearance-w9",
+  "author": "Hotate / hotate-design",
+  "status": "Authored and browser-exercised design input; not native acceptance",
+  "authority": {
+    "base": "canonical/tokens/soundq.tokens.json (byte-identical W5 via W8)",
+    "shared": "tokens/shared.roles.json",
+    "light": "tokens/light.overlay.json",
+    "mergeOrder": [
+      "base",
+      "shared",
+      "light only when resolved mode is Light"
+    ],
+    "exporter": "tools/build_tokens.py, unchanged canonical exporter imported by build.py",
+    "forbidden": [
+      "Editing accepted dark tokens",
+      "Dynamic Material colors",
+      "Hardcoded parallel phone/native palettes",
+      "Route/player recreation on appearance change"
+    ]
+  },
+  "selection": {
+    "choices": [
+      "System",
+      "Light",
+      "Dark"
+    ],
+    "default": "System",
+    "invalidOrMissing": "System",
+    "scope": "device-local, not account/library/playback",
+    "system": "Resolve from current OS day/night; react to later OS changes, keep selected System",
+    "explicit": "Ignore later OS brightness; preserve chosen Light or Dark",
+    "acceptedWrite": "Commit accepted selection immediately after successful local write; no delayed color animation",
+    "failedWrite": "Keep prior accepted choice and resolved palette. Inline error and explicit retry of failed choice. No background retry",
+    "initialRead": "Read before publishing persisted choice; on failure keep currently accepted choice, or System if none, show reload. Do not overwrite corrupted/unread data automatically",
+    "migration": "Existing valid Dark remains Dark; newly absent/out-of-range values use System. Do not infer Flutter numeric persistence ordinals from native enum order; use explicit native stable serialization."
+  },
+  "components": {
+    "SettingsAppearanceRow": {
+      "mapsTo": "SoundQRow / icon-led disclosure / 48dp target",
+      "summary": [
+        "System \u00b7 Light",
+        "System \u00b7 Dark",
+        "Light",
+        "Dark"
+      ],
+      "action": "Open Appearance sheet"
+    },
+    "AppearanceChoiceSheet": {
+      "mapsTo": "SoundQSheet + single-select radio rows",
+      "selected": "Radio semantics plus filled indicator and check; whole row target >=48dp",
+      "keyboard": "Arrow/Home/End selects; Tab stays in sheet; Escape closes; restore opener focus",
+      "close": [
+        "close icon",
+        "Back",
+        "Escape",
+        "outside scrim"
+      ],
+      "commit": "Selection does not dismiss sheet or remount route"
+    },
+    "PersistentPlayer": {
+      "mapsTo": "existing sole SoundQCompactPlayer and service",
+      "invariants": [
+        "track",
+        "position",
+        "play intent",
+        "queue order",
+        "mounted nodes",
+        "selection",
+        "scroll",
+        "focus"
+      ],
+      "reference": "Only synthetic transport intent, no audio"
+    },
+    "LibraryQueuePreview": {
+      "purpose": "Populated color composition, not another library repository",
+      "rows": [
+        "Blue hour / North Window",
+        "Glass station / Soft Circuit",
+        "Slow orbit / North Window"
+      ]
+    }
+  },
+  "roles": {
+    "core": "semantic.color.*",
+    "components": "component.* aliases must resolve in the same selected mode, not retain static dark references",
+    "extended": "w9.color.*",
+    "waveform": "Base=textMuted; beat=secondary; playhead/cue=primary; deck=surface; origin=text. Selection is a 2dp boundary, NOT an opaque fill hiding waveforms. Use markers/labels/dash geometry to distinguish cue/origin/beat; keep existing data and dimensions. Browser packet does not qualify native waveform paint.",
+    "rowReveal": "secondary surface with background ink; no playback operations on mode change",
+    "scrim": "semantic black with unchanged motion.scrim.opacity .64",
+    "disabled": "Explicit disabled text/background/border, never opacity-multiply enabled text",
+    "rules": "borderInput for meaningful control boundaries; subtleBorder is decorative only. Dark border/subtleBorder remain accepted W5 decorative rules, not new 3:1 claims."
+  },
+  "motion": {
+    "source": "unchanged W6/W8 numerical authority",
+    "quickMs": 120,
+    "rowMs": 180,
+    "sheetEntryMs": 260,
+    "sheetExitMs": 160,
+    "pageMs": 280,
+    "reducedMs": 0,
+    "easing": "canonical standard/exit",
+    "appearance": "Immediate mode paint without whole-screen crossfade; preserve active pointer/focus and sheet lifecycle",
+    "interruption": "Changing preference/OS must not exit/reenter sheet or reset row/swipe controller"
+  },
+  "nativeIntegration": {
+    "inputs": [
+      "generated/dark.SoundQComposeTokens.kt",
+      "generated/light.SoundQComposeTokens.kt",
+      "generated/SoundQAppearanceMapping.kt"
+    ],
+    "mapping": "Use a CompositionLocal resolved SoundQModeColors; make SoundQ.colors a composable read instead of static singleton. Supply explicit lightColorScheme/darkColorScheme from resolved roles for Material hosts, not Material defaults/dynamic color. Existing font/spacing/motion tokens unchanged.",
+    "os": "Read isSystemInDarkTheme() at theme boundary, resolve(choice, systemDark), never store resolved brightness as choice",
+    "state": "Store stable device-local accepted choice in existing preference owner; maintain single playback service and retain route keys. Wire native Back to existing sheet dismissal.",
+    "acceptanceOwner": "Ebi/native implementation owner; must compile, exercise persistence/restart, actual OS changes, native accessibility and player continuity separately"
+  },
+  "limits": [
+    "No native build/device/ADB/compiler",
+    "No actual OS brightness delivery or Android storage tested",
+    "No audio decoding, accounts or backend",
+    "No broad 200% text/performance matrix",
+    "Initial preference read error specified only, not simulated in reference"
+  ]
+}

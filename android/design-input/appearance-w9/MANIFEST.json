@@ -1,0 +1,219 @@
+{
+  "release": "appearance-w9",
+  "owner": "Hotate / hotate-design",
+  "files": {
+    "CONTRACT.json": {
+      "sha256": "8b9c245292cf53443f6d14ddd19bad8325fa78063ddb9efb297f8e7669153358",
+      "bytes": 5864
+    },
+    "HANDOFF.md": {
+      "sha256": "9bec7bbc4bb2b03cd13cd8991e04434bd31a7384eba44bcf212e9a6a0a5703c5",
+      "bytes": 8666
+    },
+    "INPUTS.json": {
+      "sha256": "55c913b7f113ad22caa23f4306e865f20c3bbbb11f041dc317d72e1bbe243507",
+      "bytes": 2645
+    },
+    "RUN.md": {
+      "sha256": "d365da4d7d75ecf650c6250e4c50f188d01819880185e5880a14760ff0a62b6e",
+      "bytes": 1424
+    },
+    "SOURCE_REVIEW.json": {
+      "sha256": "52ffb86105938705e74d94fe20ec1403ad001688a04346ba96248a0874401eff",
+      "bytes": 1750
+    },
+    "app.js": {
+      "sha256": "b0e7a703a6b9733a729d1a6217c519683817f114612809ae66614ad140b4be1e",
+      "bytes": 4224
+    },
+    "browser-checks.mjs": {
+      "sha256": "bc829fd2d0a053f747ccd52eb97a56e2ea829bbf3d464e67100d81d462a4d002",
+      "bytes": 12848
+    },
+    "build.py": {
+      "sha256": "480502f8358e41c868dcf227d721e5ceae1f43c495a54ba7cb99298b76b22011",
+      "bytes": 5766
+    },
+    "canonical/assets/brand/soundq-brand-assets.json": {
+      "sha256": "329ce46e57b3d69746aa9408df98d847f000e894210be0b2cd1210e7b3c4615d",
+      "bytes": 4733
+    },
+    "canonical/assets/brand/soundq-logo.png": {
+      "sha256": "8b8ec5737c39efab15cc513772ee83360bda623c7aaf02aaa0cb4bc0c4e589f8",
+      "bytes": 664777
+    },
+    "canonical/assets/covers/blue.svg": {
+      "sha256": "ba98c411904f39c18ddbe1637f003a58452b7b49b93582395d1672e8b5febd37",
+      "bytes": 449
+    },
+    "canonical/assets/covers/cream.svg": {
+      "sha256": "09f2e8d3f7194fe06bbe3417d24c12e8635c0fa3d2bf18b9b0ba69f322ea0abc",
+      "bytes": 449
+    },
+    "canonical/assets/covers/orange.svg": {
+      "sha256": "e7eed12c7fe37f937f28262a3a6154020469eee85fb01d0b3dd16e855774b6d3",
+      "bytes": 449
+    },
+    "canonical/assets/fonts/ibmplexmono/IBMPlexMono-Regular.ttf": {
+      "sha256": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46",
+      "bytes": 135580
+    },
+    "canonical/assets/fonts/ibmplexmono/OFL.txt": {
+      "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da",
+      "bytes": 4456
+    },
+    "canonical/assets/fonts/sources.json": {
+      "sha256": "b95b845320da6d8709b4c07edc0a16873361d97219a446cf2145457c6e841c49",
+      "bytes": 5737
+    },
+    "canonical/assets/fonts/spacegrotesk/OFL.txt": {
+      "sha256": "564ce565c371c5e5bbf286006565a7c9aa55a9f56e7ca58d56e05d649dd61a72",
+      "bytes": 4495
+    },
+    "canonical/assets/fonts/spacegrotesk/SpaceGrotesk-Regular.ttf": {
+      "sha256": "28af0332e262e4953efdf5159fb8426f8218a84ab2f22453f85d258c62773fcd",
+      "bytes": 88324
+    },
+    "canonical/assets/fonts/spacegrotesk/SpaceGrotesk-SemiBold.ttf": {
+      "sha256": "a3916fb4a0f1362c88e0918eda2e1fc5bab2fde1ad3e102a5e3c89713c2b09bb",
+      "bytes": 88240
+    },
+    "canonical/generated/icons.runtime.js": {
+      "sha256": "b453e6d58a8050be293147c2453e43cc1c7f96328dbf670d011dd4b78e450004",
+      "bytes": 2387
+    },
+    "canonical/generated/tokens.css": {
+      "sha256": "ed2d7fe65521153d03dc724b9136885aaae1feca5483be43c5bb1fc1e1929157",
+      "bytes": 10158
+    },
+    "canonical/tokens/soundq.tokens.json": {
+      "sha256": "68015c1afa0bd52efee6df854be0e9d9c64d6a339d2430f95201830390e0487c",
+      "bytes": 35732
+    },
+    "captures/01-system-light.png": {
+      "sha256": "30f80a7256609678e9c24b0fa4d87faac80c88abc66f697b70e0d3558b689c3a",
+      "bytes": 52005
+    },
+    "captures/02-light-appearance.png": {
+      "sha256": "7854ef007dc427e74004ff2425a587f0d6aac3c41a036783d5a3c800c9596248",
+      "bytes": 51296
+    },
+    "captures/03-dark-appearance.png": {
+      "sha256": "834055b6436a7c72862233cce49291a824c5f8e9c1d81d90986142ec5a6a0782",
+      "bytes": 47697
+    },
+    "captures/04-dark-settings.png": {
+      "sha256": "6badd56e4147035987a9c6ecf27694662e1db77f14512ab9b8db2621193f62d0",
+      "bytes": 49993
+    },
+    "captures/05-failed-write.png": {
+      "sha256": "00b80c1a549b161d22659830bd8a47e06f290347389d5e96697b62f1a961423a",
+      "bytes": 47921
+    },
+    "captures/06-dark-queue.png": {
+      "sha256": "70c73b055f6ded4993c15e2d88aa4209de2b4cb690e60f025070a91bce6a94d0",
+      "bytes": 45331
+    },
+    "captures/07-compact-light-sheet.png": {
+      "sha256": "0a35899512f2815f80e514649858029ef18ad1a404bdcb942d8aa485144d576b",
+      "bytes": 37369
+    },
+    "captures/08-compact-light-settings.png": {
+      "sha256": "ccf3bcbb4521fefcc75bf414677a2cc9acea16a59b66d24d1fe7c03e278839eb",
+      "bytes": 40235
+    },
+    "captures/09-side-by-side.png": {
+      "sha256": "eaa76474a730966dcba153653c219c1b61a1f1aadbeb6df57290320cdafd6288",
+      "bytes": 130117
+    },
+    "captures/focus-dark.png": {
+      "sha256": "ba8dbeae216841ed6ecba848f4bd02cd82e570102db18eafe598592108e3e14c",
+      "bytes": 38017
+    },
+    "captures/focus-light.png": {
+      "sha256": "c070058c012ceaa6bcd5306e31c735557e6ad0c040b6f1fc5461f4b5f0b404f6",
+      "bytes": 37652
+    },
+    "evidence/attempt-failed.json": {
+      "sha256": "adadfca7b789bc677b9f6169a3b32bcd1149ed82695e2948455fea297a555039",
+      "bytes": 3663
+    },
+    "evidence/browser-checks.json": {
+      "sha256": "e3de9a417973fd49a15690767325dcc5e003c568bd2ea4a72bf3921926c878f8",
+      "bytes": 4633
+    },
+    "evidence/contrast.json": {
+      "sha256": "010210e9781a9130330cec8d5afe6485a970728ef5536ff23fa13594652470e3",
+      "bytes": 5309
+    },
+    "evidence/runtime-closed.json": {
+      "sha256": "e76a09dbfd36dbaaa62aa0ae5ad4383e8f0ba50af5655358ee5436089b0ce727",
+      "bytes": 113
+    },
+    "evidence/token-checks.json": {
+      "sha256": "9b5dc4263aca40eae091ac34a66aa1b8c2eb13465bfcdc7971f574511ae089b6",
+      "bytes": 5648
+    },
+    "generated/SoundQAppearanceMapping.kt": {
+      "sha256": "92f70507581f3a25a6500073d65fefddf3d17737228445bd8f36947c9ecc2373",
+      "bytes": 12398
+    },
+    "generated/dark.SoundQComposeTokens.kt": {
+      "sha256": "dec88f814f8d429ffe78a8d92ec51caefe947f3834521c8798caff7f4fd9e9e3",
+      "bytes": 14372
+    },
+    "generated/dark.tokens.css": {
+      "sha256": "0485e06f943c1cd2b263731e9fac42afef52edc331cfad78822b56e59ce9ef9d",
+      "bytes": 11119
+    },
+    "generated/light.SoundQComposeTokens.kt": {
+      "sha256": "905f535f1f3bdb13c3efe48b1a660fdc2e1eeb50e80660d28bcc70ac1792cb54",
+      "bytes": 14373
+    },
+    "generated/light.tokens.css": {
+      "sha256": "e39f0f6555e24767617f52898f5fa2b070fe58b475d846733a9fdd5002236110",
+      "bytes": 11120
+    },
+    "generated/resolved.json": {
+      "sha256": "ae0871c8331e98e47f8a5da681f19f8bce0813302c828e5c795270aba62eb8d5",
+      "bytes": 22604
+    },
+    "index.html": {
+      "sha256": "397169928269d3f756bbaa27286deeebaf8802db3984882922bf2653b0a22e86",
+      "bytes": 4436
+    },
+    "lab.html": {
+      "sha256": "ca58ff282bc487df520a288a340c83c4716f91a97d2fd496f0f5b419261c693f",
+      "bytes": 1563
+    },
+    "phone.css": {
+      "sha256": "6ecda88c45993c50e596dcdc3c2fa1e3916a3c4ec96eb2124b72c887a081fabd",
+      "bytes": 5636
+    },
+    "seal.py": {
+      "sha256": "2cec9fbc345f53d5b65e9c465c54d1ef7bfa4d5c909c6c44794791ea61d49902",
+      "bytes": 3655
+    },
+    "tokens/light.overlay.json": {
+      "sha256": "367607472dcf73e4ba867deea0aa57a1e2f994f70bb6c52fc3a6994873e6ae28",
+      "bytes": 7513
+    },
+    "tokens/shared.roles.json": {
+      "sha256": "6f7685ecb0033a96f07814c57eed86a52afb6991a71dc76ced8d48c5e957280b",
+      "bytes": 2485
+    },
+    "tools/build_tokens.py": {
+      "sha256": "913b24c7c988792da6a4466d0a2e172ea5b374d621c0d8dcf1cf9c8b2b2b2f8c",
+      "bytes": 12415
+    },
+    "verify.py": {
+      "sha256": "8b1db5f231de3e7c0bbc19307cc1713739993c8f49757ea82937fd2d3956f8ea",
+      "bytes": 2751
+    }
+  },
+  "browserChecks": 29,
+  "tokenChecks": 24,
+  "renderedContrastPairs": 22,
+  "captures": 11,
+  "canonicalInputHashesRechecked": true
+}

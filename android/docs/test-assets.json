@@ -1,0 +1,110 @@
+{
+  "scope": "Controlled test payload, not production media or provider recordings. Hashes identify existing bytes; they do not assert a newly reproduced generator run.",
+  "files": {
+    "arrangement.opus": {
+      "sha256": "23a02900406e2824af0a06124a7033ad9f295459b954fd973738e9fb31d5db41",
+      "bytes": 179407,
+      "distribution": "instrumentation APK only"
+    },
+    "callback/frontend-analysis.json": {
+      "sha256": "0f3caf3e3733ed0cf73b5283bf72194a56a9ee4a460432e524545a77a3c6e3cc",
+      "bytes": 109268,
+      "distribution": "instrumentation APK only"
+    },
+    "callback/frontend.mp3": {
+      "sha256": "0f3be3e3eb5e497461bc05c1f85ae1d4602b8bb50a5cb9e4e3f1487357a90f42",
+      "bytes": 289688,
+      "distribution": "instrumentation APK only"
+    },
+    "listening-mp3/long-stereo.mp3": {
+      "sha256": "0d31f55c74f6b45aada64540a0707520aab58facfef1d86397c0a319901b31ba",
+      "bytes": 802524,
+      "distribution": "instrumentation APK only"
+    },
+    "listening-mp3/mono.mp3": {
+      "sha256": "259c2d39309dd6242917db34b98bb3e8aac515680fe2351b2144aaec932812c2",
+      "bytes": 48944,
+      "distribution": "instrumentation APK only"
+    },
+    "listening-mp3/mono.mp3.48k-stereo.f32": {
+      "sha256": "a252c6ba160c16e487d9f783becbf4284b0dd27c7cdec50176031a591cbb7f81",
+      "bytes": 1152000,
+      "distribution": "instrumentation APK only"
+    },
+    "listening-mp3/stereo.mp3": {
+      "sha256": "591c814c177b242aebc2fc3fcce562a5268a8c24f1cfd30636f096054a041bd4",
+      "bytes": 73394,
+      "distribution": "instrumentation APK only"
+    },
+    "listening-mp3/stereo.mp3.48k-stereo.f32": {
+      "sha256": "c0d91366dabc9d85c915a25c04fc62e392c8e8fe921a93d87736cb903eceda75",
+      "bytes": 1152000,
+      "distribution": "instrumentation APK only"
+    },
+    "mix-exchange/export.json": {
+      "sha256": "34fcf874ea35efcf92da97be45d287f9ec1837744f74daed96057a2091ff9ce7",
+      "bytes": 1511,
+      "distribution": "instrumentation APK only"
+    },
+    "mix-exchange/import-ack.json": {
+      "sha256": "084085a214f46f127e45d345e569b27e46f5dd745df57624fd94f10b11acd8a7",
+      "bytes": 1570,
+      "distribution": "instrumentation APK only"
+    },
+    "mix-exchange/import-input.json": {
+      "sha256": "54bbfabe7380f6393716c3d0624a53a3749b13763148f16a94fee39c32a7e383",
+      "bytes": 1514,
+      "distribution": "instrumentation APK only"
+    },
+    "mix-exchange/import-readback.json": {
+      "sha256": "084085a214f46f127e45d345e569b27e46f5dd745df57624fd94f10b11acd8a7",
+      "bytes": 1570,
+      "distribution": "instrumentation APK only"
+    },
+    "performance/track-1-analysis.json": {
+      "sha256": "61d6cf829b7e83c3b290564ca890aa25b86158569adcf41e7131fbaca8ba0328",
+      "bytes": 139552,
+      "distribution": "instrumentation APK only"
+    },
+    "performance/track-1.mp3": {
+      "sha256": "b2a61cab5b02aeaa74bfe07ef853e3596258678c14a1630e9df8ecae80e260c0",
+      "bytes": 2049068,
+      "distribution": "instrumentation APK only"
+    },
+    "performance/track-2-analysis.json": {
+      "sha256": "6693f2b8d0bc3d362dc4157e1969bea8cef5c6d933b3f9b8458de8d7b2b6e57d",
+      "bytes": 142529,
+      "distribution": "instrumentation APK only"
+    },
+    "performance/track-2.mp3": {
+      "sha256": "b48b813c7709f910f091a5bfe1cff84d26ae97f798ddcfefcbc58ef56f3878ba",
+      "bytes": 2049068,
+      "distribution": "instrumentation APK only"
+    },
+    "performance/track-3-analysis.json": {
+      "sha256": "1565e19e97404e7da4ea28feaca73bea67fef61bf97bf719cf5f95c6d7801c2d",
+      "bytes": 136652,
+      "distribution": "instrumentation APK only"
+    },
+    "performance/track-3.mp3": {
+      "sha256": "c6a58c5915b9a0a896279bc7bc714f2e26c8a1305da98ef9ff58d7653a002ba7",
+      "bytes": 2049068,
+      "distribution": "instrumentation APK only"
+    },
+    "performance/track-4-analysis.json": {
+      "sha256": "d0c0997cfc41255152f99a972df46baf881d3322f185077405955d96617736b4",
+      "bytes": 135944,
+      "distribution": "instrumentation APK only"
+    },
+    "performance/track-4.mp3": {
+      "sha256": "6876ec3e8fe3c020a171b589512e77cdcfc61d9160dbff804cf0748217ab95d0",
+      "bytes": 2049068,
+      "distribution": "instrumentation APK only"
+    },
+    "waveform/synthetic_analysis.json": {
+      "sha256": "f7a9bcf472b8de08ca7605185b439456afeb1fca99774e70f33074c474998869",
+      "bytes": 7584,
+      "distribution": "instrumentation APK only"
+    }
+  }
+}

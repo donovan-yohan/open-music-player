@@ -1,50 +1,72 @@
-# Android PR APK artifacts
+# Native Android artifacts and recovery
 
-Pull request CI builds a debug Android APK after Flutter analyze and tests pass. This gives real-device QA a downloadable app without requiring a local Android SDK or Gradle run on the devbox.
+`android/` is the supported Android product. Flutter Android is deprecated.
+Flutter web/desktop/shared source and the protected **Client (Flutter)** analyze,
+unit-test and native-readback checks remain. No app or user data is removed.
 
-## Download the APK
+## Download a native artifact
 
-1. Open the pull request on GitHub.
-2. Open the latest **Client (Flutter)** workflow run from the PR checks.
-3. Scroll to **Artifacts**.
-4. Download `open-music-player-pr-<number>-debug-apk`.
-5. Unzip the artifact and install `app-debug.apk` on the Android device.
+1. Open the PR's **Native Clients / Android Compose product** workflow run.
+2. Download `soundq-android-compose-<full-commit-sha>-debug` from **Artifacts**.
+3. The application is `app-debug.apk`; `app-debug-androidTest.apk` is only the
+   instrumentation test package, not the user application.
 
-Artifacts are retained for 7 days.
+Main also runs `nightly-apk`, which uploads the native application as
+`soundq-nightly`. Artifacts and test/lint reports are retained for seven days.
+Public PR/nightly builds use `https://fixture.invalid/api/v1`. They do not select
+private infrastructure and are not usable against a real account. For private
+use, rebuild with the approved explicit HTTPS `OMP_API_BASE_URL`, source marker
+and build ID using [the native setup](../android/README.md). Do not publish private
+endpoint builds or capability-bearing receipts.
 
-## Install on Android
+## Build and authorized installation
 
-1. Copy `app-debug.apk` to the device, or download it directly from GitHub on the device.
-2. Open the APK.
-3. If prompted, allow installs from the browser/file manager used for the download.
-4. Install the app.
-
-## Local dogfood script
-
-When Android SDK and ADB are available, prefer the repo script so build markers,
-APK hash, device list, and log paths are recorded consistently:
-
-```bash
-OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
+```sh
+# First export all native toolchain/build inputs in android/README.md.
+python3 scripts/android-product preflight
+python3 scripts/android-product check
 scripts/dogfood-android build
-
-ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 \
-OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
-scripts/dogfood-android all
 ```
 
-The script writes handoff evidence under `/tmp/open-music-player-dogfood-*`.
+`scripts/build client` and `scripts/build android-product` select the same native
+application. Builds never install. `scripts/dogfood-android install` (or `all`)
+additionally requires an explicit `ANDROID_SERIAL`, `OMP_ALLOW_ANDROID_INSTALL=1`,
+SDK build tools and private `OMP_DOGFOOD_EVIDENCE_DIR`. `ADB_SERVER_SOCKET` can
+select a separately authorized ADB server. The install path checks the native
+application ID and existing signer, uses only `adb install -r`, and reads back
+exact installed APK bytes. Signer mismatch or downgrade refusal is a blocker,
+not permission to uninstall, clear data, change signing or rename the package.
+Build logs and APK identity are not account, UI or acoustic qualification.
 
-## Smoke checklist
+The native package is `com.soundq.android.dev`, not Flutter's package. There is no
+automatic Flutter-to-native account/database/bookmark migration. Existing apps
+and data stay in place. A clean private Gradle home can produce a different debug
+signer from an installed preview. Use the compatible signing path owned by the
+release operator instead of replacing the installed application.
 
-- Launch the app.
-- Confirm it points at the intended backend/API base URL for the test build.
-- Log in with the smoke account for the environment.
-- Exercise the target PR flow.
-- For OMP queue/playback work, verify search, queue display, playback URL/playback state, reorder/slide behavior, and error display for unavailable audio.
-- Report the PR number, artifact name, device model/Android version, backend URL, and pass/fail notes.
-- For local builds, include the `scripts/dogfood-android` evidence path and APK SHA256.
+## Retained Flutter Android recovery
 
-## Local devbox warning
+`client/android/` and shared Flutter source remain in the repository. To recover
+an authorized legacy build explicitly, use:
 
-Do not use this as a reason to run Android/Gradle builds on the 8 GB devbox. The APK artifact is produced by GitHub-hosted CI; local low-memory QA should stay on Flutter Web unless Android/device validation is explicitly requested.
+```sh
+scripts/build client-flutter-android-legacy
+```
+
+Set `OMP_API_BASE_URL`, `OMP_SOURCE_REF` and `OMP_BUILD_ID` explicitly before
+that recovery build; it requires Node.js for the retained endpoint validator.
+This does not install, migrate or delete anything. Use the original compatible
+Flutter signer and explicit approved endpoint/build markers for any separately
+authorized legacy update. Flutter Android is no longer selected by PR/nightly,
+`scripts/build client`, the default build, or Android dogfood. Supported Flutter
+build targets are `client-web` and `client-macos`; shared checks remain
+`scripts/lint client` and `scripts/test client`.
+
+## Qualification limits
+
+Native host JNI/codec tests, Android unit tests, lint and APK assembly are the
+source/build gate. Mounted UI, authenticated backend/provider behavior, physical
+audio, Android Auto/voice and full Flutter parity require separate exact-artifact
+evidence. Retaining older scoped evidence is not fresh physical qualification.
+Do not run SDK/Gradle on a low-memory backend host just to obtain an artifact;
+use CI or an explicitly provisioned build machine.

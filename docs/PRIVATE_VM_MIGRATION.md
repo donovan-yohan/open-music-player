@@ -1,5 +1,14 @@
 # Private VM migration preparation — cutover HELD
 
+> Android product transition: the endpoint/enrollment migration holds in this
+> runbook are unchanged. The active Android client is now `android/`, not Flutter.
+> `scripts/dogfood-android` uses the explicit native build/compatible-install path;
+> its old Flutter/Node description below is historical. Public PR/nightly builds
+> use `https://fixture.invalid/api/v1` and do not consume the historical nightly
+> repository variable. No variable, host, backend or deployed configuration is
+> changed by this source transition. See `ANDROID_PR_ARTIFACTS.md`.
+
+
 No new production hostname, address, API prefix, health/login path, media origin,
 or published port is selected here. Dedicated VM enrollment, restore and route
 verification belong to **Anko**. This change is preparation, not deployment.
