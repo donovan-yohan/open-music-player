@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -205,7 +206,7 @@ func (l *SourceSelectionDownloadLifecycle) Complete(ctx context.Context, job *do
 type SourceSelectionRecoveryQueue interface {
 	ReconcileCompletedSourceJobs(context.Context, func(context.Context, *download.DownloadJob) (*download.SourceCompletion, error)) error
 	EnsureSourceCandidateWithID(context.Context, string, string, download.SourceCandidate, *string) (*download.DownloadJob, error)
-	EnsureSourceCandidateForPlaylistWithID(context.Context, string, string, download.SourceCandidate, *string, int64) (*download.DownloadJob, error)
+	RecoverSourceCandidateForPlaylistWithID(context.Context, string, string, download.SourceCandidate, *string, int64) (*download.DownloadJob, error)
 	EnsurePlaylistImportItemWithID(context.Context, string, string, download.SourceCandidate, string, int64, int64, int) (*download.DownloadJob, error)
 }
 
@@ -300,7 +301,7 @@ func (l *SourceSelectionDownloadLifecycle) RecoverWithPlayback(ctx context.Conte
 			if _, err := queue.EnsurePlaylistImportItemWithID(ctx, jobID.String(), userID.String(), candidate, importJobID.UUID.String(), importItemID.Int64, playlistID.Int64, int(playlistPosition.Int64)); err != nil {
 				return recovered, fmt.Errorf("recover durable playlist-import job %s: %w", jobID, err)
 			}
-		} else if _, err := queue.EnsureSourceCandidateForPlaylistWithID(ctx, jobID.String(), userID.String(), candidate, mbID, targetPlaylistID.Int64); err != nil {
+		} else if _, err := queue.RecoverSourceCandidateForPlaylistWithID(ctx, jobID.String(), userID.String(), candidate, mbID, targetPlaylistID.Int64); err != nil {
 			// target_playlist_id is NULL-on-delete, so a playlist removed while
 			// the download was in flight recovers as a plain download.
 			return recovered, fmt.Errorf("recover durable source-selection job %s: %w", jobID, err)
@@ -351,7 +352,10 @@ func (l *SourceSelectionDownloadLifecycle) committedSourceCompletion(ctx context
 	if err != nil {
 		return nil, err
 	}
-	if candidate.Provider != job.SourceType || candidate.SourceID != job.SourceID || candidate.SourceURL != job.URL || candidate.CandidateID != job.CandidateID {
+	// Queue and playlist producers publish the whitespace-trimmed URL while the
+	// decision keeps the provider's raw snapshot. Only that normalization is
+	// tolerated; any other URL or identity difference still refuses startup.
+	if candidate.Provider != job.SourceType || candidate.SourceID != job.SourceID || candidate.SourceURL != strings.TrimSpace(job.URL) || candidate.CandidateID != job.CandidateID {
 		return nil, fmt.Errorf("%w: completed source identity mismatch", ErrSourceSelectionConflict)
 	}
 	return &receipt, nil
@@ -415,12 +419,14 @@ func candidateFromPersistedSelection(snapshot json.RawMessage) (download.SourceC
 	if err := json.Unmarshal(snapshot, &candidate); err != nil {
 		return download.SourceCandidate{}, err
 	}
-	if !candidate.Downloadable || candidate.CandidateID == "" || candidate.Provider == "" || candidate.SourceURL == "" || candidate.Title == "" {
+	if !candidate.Downloadable || candidate.CandidateID == "" || candidate.Provider == "" || strings.TrimSpace(candidate.SourceURL) == "" || candidate.Title == "" {
 		return download.SourceCandidate{}, errors.New("persisted candidate is incomplete")
 	}
+	// Match the URL normalization every queue producer applies, so recovery
+	// republishes and completion checks compare the same identity.
 	return download.SourceCandidate{
 		CandidateID: candidate.CandidateID, Provider: candidate.Provider, SourceID: candidate.SourceID,
-		SourceURL: candidate.SourceURL, Title: candidate.Title, Artist: candidate.Artist, Album: candidate.Album,
+		SourceURL: strings.TrimSpace(candidate.SourceURL), Title: candidate.Title, Artist: candidate.Artist, Album: candidate.Album,
 		Uploader: candidate.Uploader, DurationMs: candidate.DurationMs, ThumbnailURL: candidate.ThumbnailURL,
 		Metadata: candidate.Metadata,
 	}, nil

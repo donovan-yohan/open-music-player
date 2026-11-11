@@ -227,17 +227,83 @@ func (r *Repository) locked(ctx context.Context, id uuid.UUID, o *Owner, fn func
 	}
 	now := r.Now().UTC()
 	if e = fn(tx, j, now); e != nil {
+		var keep commitThen
+		if errors.As(e, &keep) {
+			if e = tx.Commit(); e != nil {
+				return e
+			}
+			return keep.err
+		}
 		return e
 	}
 	return tx.Commit()
 }
+
+// commitThen makes locked commit the reconciliation already saved in this
+// transaction and then report err. Use it only after save succeeded.
+type commitThen struct{ err error }
+
+func (c commitThen) Error() string { return c.err.Error() }
+func (c commitThen) Unwrap() error { return c.err }
+
+// State budget. Reconciliation runs on reads and must always be able to
+// persist, so every other write keeps reconcileReserve(j) bytes free: the most
+// that reconcile can still add for each request it may change. A request's
+// reserve shrinks by at least what each reconcile step adds, so reconciling
+// never leaves an ordinary write short of headroom. Writes that add members,
+// requests or search reservations also keep admissionChurnReserve free for
+// later heartbeats, approvals and receipts. Sizes are measured as Postgres
+// renders the jsonb (what the jams.state CHECK limits), not as Go's compact
+// encoding.
+const admissionChurnReserve = 8192
+
+func reconcileReserve(j *row) int {
+	n := 0
+	for _, q := range j.State.Requests {
+		switch {
+		case q.Status == "ready":
+			n += 8 // ready -> duplicate is the longest remaining status.
+		case unadmitted(q.Status):
+			// importing -> ready writes a trackId of up to 19 digits; pending ->
+			// withdrawn and ready -> duplicate lengthen the status.
+			n += 32
+		}
+	}
+	return n
+}
+
+// save is an ordinary write: it must leave reconciliation headroom.
 func save(ctx context.Context, tx *sql.Tx, j *row) error {
+	return saveWithin(ctx, tx, j, MaxStateBytes-reconcileReserve(j))
+}
+
+// saveAdmission also reserves churn headroom for the newly admitted party.
+func saveAdmission(ctx context.Context, tx *sql.Tx, j *row) error {
+	return saveWithin(ctx, tx, j, MaxStateBytes-reconcileReserve(j)-admissionChurnReserve)
+}
+
+// saveReconciled persists reconciliation, which may spend the reserved headroom.
+func saveReconciled(ctx context.Context, tx *sql.Tx, j *row) error {
+	return saveWithin(ctx, tx, j, MaxStateBytes)
+}
+
+func saveWithin(ctx context.Context, tx *sql.Tx, j *row, limit int) error {
 	b, e := marshalState(j.State)
 	if e != nil {
 		return e
 	}
-	_, e = tx.ExecContext(ctx, `UPDATE jams SET state=$2,version=$3,closed_at=$4 WHERE id=$1`, j.ID, b, j.Version, j.Closed)
-	return e
+	result, e := tx.ExecContext(ctx, `UPDATE jams SET state=$2,version=$3,closed_at=$4 WHERE id=$1 AND octet_length($2::jsonb::text)<=$5`, j.ID, b, j.Version, j.Closed, limit)
+	if e != nil {
+		return e
+	}
+	n, e := result.RowsAffected()
+	if e != nil {
+		return e
+	}
+	if n != 1 {
+		return ErrCapacity
+	}
+	return nil
 }
 func hostView(j *row, now time.Time) HostView {
 	v := HostView{OwnerUserID: j.Owner, OwnerAuthGeneration: j.Generation, HostDeviceID: j.State.DeviceID, LeaseID: j.State.LeaseID, Snapshot: snapshot(j, now), HostRequests: []HostRequest{}, Members: []HostMember{}}

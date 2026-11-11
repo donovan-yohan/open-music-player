@@ -16,6 +16,7 @@ type recoveryQueueStub struct {
 	enqueue         int
 	playlistCalls   []playlistRecoveryCall
 	targetPlaylists []int64
+	urls            []string
 }
 
 type playlistRecoveryCall struct {
@@ -47,6 +48,7 @@ func (q *recoveryQueueStub) EnsureSourceCandidateWithID(_ context.Context, id, u
 	if q.seen == nil {
 		q.seen = make(map[string]*download.DownloadJob)
 	}
+	q.urls = append(q.urls, candidate.SourceURL)
 	if job := q.seen[id]; job != nil {
 		return job, nil
 	}
@@ -56,7 +58,7 @@ func (q *recoveryQueueStub) EnsureSourceCandidateWithID(_ context.Context, id, u
 	return job, nil
 }
 
-func (q *recoveryQueueStub) EnsureSourceCandidateForPlaylistWithID(ctx context.Context, id, userID string, candidate download.SourceCandidate, mbID *string, targetPlaylistID int64) (*download.DownloadJob, error) {
+func (q *recoveryQueueStub) RecoverSourceCandidateForPlaylistWithID(ctx context.Context, id, userID string, candidate download.SourceCandidate, mbID *string, targetPlaylistID int64) (*download.DownloadJob, error) {
 	q.targetPlaylists = append(q.targetPlaylists, targetPlaylistID)
 	job, err := q.EnsureSourceCandidateWithID(ctx, id, userID, candidate, mbID)
 	if err != nil {
@@ -334,5 +336,49 @@ func TestSourceSelectionRecoveryRestoresPlaylistMetadataAndPlaybackIntent(t *tes
 	}
 	if len(playbackQueue.items) != 1 || playbackQueue.items[0].itemID != "recovered-playback-item" || playbackQueue.items[0].jobID != job.ID || playbackQueue.items[0].position != "next" {
 		t.Fatalf("playback recovery = %#v", playbackQueue.items)
+	}
+}
+
+// Discovery snapshots keep the provider's raw URL, while every queue producer
+// publishes it trimmed. That normalization alone must not block startup.
+func TestSourceSelectionCompletionAcceptsQueueTrimmedSourceURL(t *testing.T) {
+	database, repo, ctx := newSourceSelectionTestRepository(t)
+	userID := seedSourceSelectionUser(t, database, "trimmed-source-url@test.local")
+	session := createSourceSelectionSession(t, repo, ctx, userID, time.Now().Add(time.Hour))
+	decision, err := repo.CreateDiscoveryDecision(ctx, userID, session.ID, "youtube:recommended", SourceSelectionActionAccepted, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const trimmed = "https://example.test/watch/youtube:recommended"
+	if _, err = database.Exec(`UPDATE source_selection_decisions SET selected_candidate=jsonb_set(selected_candidate,'{sourceUrl}',to_jsonb($2::text)) WHERE id=$1`, decision.ID, "  "+trimmed+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	trackID := seedSourceSelectionTrack(t, database, "trimmed")
+	if _, err = database.Exec(`INSERT INTO user_library(user_id,track_id) VALUES($1,$2)`, userID, trackID); err != nil {
+		t.Fatal(err)
+	}
+	jobID := uuid.New()
+	if _, err = database.Exec(`INSERT INTO download_jobs(id,user_id,url,source_type,status,candidate_id,source_id,title) VALUES($1,$2,$3,'youtube','processing','youtube:recommended','recommended','Track youtube:recommended')`, jobID, userID, trimmed); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.AttachDownloadJobForUser(ctx, userID, decision.ID, jobID); err != nil {
+		t.Fatal(err)
+	}
+	life := NewSourceSelectionDownloadLifecycle(database)
+	queue := &recoveryQueueStub{}
+	if recovered, err := life.Recover(ctx, queue, 10); err != nil || recovered != 1 || len(queue.urls) != 1 || queue.urls[0] != trimmed {
+		t.Fatalf("in-flight recovery republished %q (%d, %v), want the queue's trimmed URL", queue.urls, recovered, err)
+	}
+	job := &download.DownloadJob{ID: jobID.String(), UserID: userID.String(), Status: download.StatusProcessing, SourceType: "youtube", SourceID: "recommended", CandidateID: "youtube:recommended", URL: trimmed, TrackID: &trackID}
+	if err = life.Complete(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := life.committedSourceCompletion(ctx, job)
+	if err != nil || receipt == nil || receipt.TrackID != trackID {
+		t.Fatalf("trimmed completed job = (%+v, %v), want its committed receipt", receipt, err)
+	}
+	job.URL = "https://example.test/watch/other"
+	if _, err = life.committedSourceCompletion(ctx, job); !errors.Is(err, ErrSourceSelectionConflict) {
+		t.Fatalf("different URL = %v, want identity conflict", err)
 	}
 }

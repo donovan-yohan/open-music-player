@@ -61,7 +61,7 @@ func (r *Repository) Join(ctx context.Context, id uuid.UUID, in JoinInput) (Join
 		}
 		m := memberRecord{ID: uuid.New(), JoinID: in.RequestID, Hash: hash(in.MemberSecret), Digest: digest(in), Name: in.DisplayName, Expires: now.Add(time.Minute)}
 		j.State.Members = append(j.State.Members, m)
-		if e := save(ctx, tx, j); e != nil {
+		if e := saveAdmission(ctx, tx, j); e != nil {
 			return e
 		}
 		out = JoinResult{m.ID, m.Expires, snapshot(j, now)}
@@ -115,7 +115,7 @@ func (r *Repository) AddRequest(ctx context.Context, id uuid.UUID, secret string
 				return nil
 			}
 		}
-		if requestBlocked(j, m.Hash, in.CatalogItemID, nil) {
+		if requestBlocked(j, m.Hash, in.CatalogItemID, nil, now) {
 			return ErrConflict
 		}
 		if in.ExpectedVersion != j.Version {
@@ -136,7 +136,7 @@ func (r *Repository) AddRequest(ctx context.Context, id uuid.UUID, secret string
 		out = Request{RequestID: in.RequestID, CatalogItemID: in.CatalogItemID, DisplayName: m.Name, Status: "pending"}
 		j.State.Requests = append(j.State.Requests, requestRecord{Request: out, MemberHash: m.Hash, Digest: digest(in)})
 		j.Version++
-		return save(ctx, tx, j)
+		return saveAdmission(ctx, tx, j)
 	})
 	return out, e
 }

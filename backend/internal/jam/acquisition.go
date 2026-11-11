@@ -104,8 +104,9 @@ func (r *Repository) Search(ctx context.Context, id uuid.UUID, secret string, in
 		if m.SearchCount >= 6 {
 			return ErrCapacity
 		}
-		for _, q := range j.State.Requests {
-			if q.MemberHash == m.Hash && unadmitted(q.Status) {
+		for i := range j.State.Requests {
+			q := &j.State.Requests[i]
+			if q.MemberHash == m.Hash && unadmitted(q.Status) && !sourceRequestExpired(q, now) {
 				return ErrConflict
 			}
 		}
@@ -121,7 +122,7 @@ func (r *Repository) Search(ctx context.Context, id uuid.UUID, secret string, in
 		m.SearchID = in.SearchID
 		m.SearchDigest = digest(in)
 		fresh = true
-		return save(ctx, tx, j)
+		return saveAdmission(ctx, tx, j)
 	})
 	if err != nil {
 		return out, err
@@ -180,8 +181,18 @@ func (r *Repository) Search(ctx context.Context, id uuid.UUID, secret string, in
 	return out, err
 }
 
-func requestBlocked(j *row, memberHash string, catalogID uuid.UUID, source *SourceChoice) bool {
-	for _, q := range j.State.Requests {
+// sourceRequestExpired reports a guest source request the host can no longer
+// approve because its captured selection session ended first.
+func sourceRequestExpired(q *requestRecord, now time.Time) bool {
+	return q.Status == "pending" && q.ApprovalOrder == 0 && q.Source != nil && !now.Before(q.Source.ExpiresAt)
+}
+
+func requestBlocked(j *row, memberHash string, catalogID uuid.UUID, source *SourceChoice, now time.Time) bool {
+	for i := range j.State.Requests {
+		q := &j.State.Requests[i]
+		if sourceRequestExpired(q, now) {
+			continue // Retired by the next reconcile; it holds no slot or source.
+		}
 		active := unadmitted(q.Status) || q.Status == "queued"
 		if unadmitted(q.Status) && q.MemberHash == memberHash {
 			return true
@@ -246,13 +257,13 @@ func (r *Repository) AddSourceRequest(ctx context.Context, id uuid.UUID, secret 
 			return ErrInvalid
 		}
 		src := choice(c, in.SelectionSessionID, expiry)
-		if requestBlocked(j, m.Hash, uuid.Nil, src) {
+		if requestBlocked(j, m.Hash, uuid.Nil, src, now) {
 			return ErrConflict
 		}
 		out = Request{RequestID: in.RequestID, DisplayName: m.Name, Status: "pending", Source: src}
 		j.State.Requests = append(j.State.Requests, requestRecord{Request: out, MemberHash: m.Hash, Digest: digest(in), Selected: selected})
 		j.Version++
-		return save(ctx, tx, j)
+		return saveAdmission(ctx, tx, j)
 	})
 	return out, err
 }
@@ -268,6 +279,7 @@ func (r *Repository) Approve(ctx context.Context, o Owner, id uuid.UUID, p Proof
 		if !proofMatches(j, p) || !online(j, now) {
 			return ErrDenied
 		}
+		before := j.Version
 		if e := reconcile(ctx, tx, j, now); e != nil {
 			return e
 		}
@@ -275,6 +287,11 @@ func (r *Repository) Approve(ctx context.Context, o Owner, id uuid.UUID, p Proof
 			q := &j.State.Requests[i]
 			if q.RequestID != requestID {
 				continue
+			}
+			if q.ApprovalOrder == 0 && q.Status != "pending" && j.Version != before {
+				// Reconcile just retired this request (for example, its source
+				// expired). Keep that retirement even though approval fails.
+				return commitThen{ErrConflict}
 			}
 			if q.ApprovalOrder > 0 {
 				if q.ApprovalDigest != digest(in) {
@@ -380,7 +397,10 @@ func reconcile(ctx context.Context, tx *sql.Tx, j *row, now time.Time) error {
 		if !unadmitted(q.Status) {
 			continue
 		}
-		if !live(j, now) || !requestMemberLive(j, q, now) {
+		// An expired selection can never be approved. Retire it with the
+		// existing terminal status (the native host accepts a closed status
+		// set) so it stops holding the guest's slot and the source.
+		if !live(j, now) || !requestMemberLive(j, q, now) || sourceRequestExpired(q, now) {
 			q.Status = "withdrawn"
 			changed = true
 			continue
@@ -444,7 +464,7 @@ func reconcile(ctx context.Context, tx *sql.Tx, j *row, now time.Time) error {
 	}
 	if changed {
 		j.Version++
-		return save(ctx, tx, j)
+		return saveReconciled(ctx, tx, j)
 	}
 	return nil
 }

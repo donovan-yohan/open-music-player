@@ -139,7 +139,9 @@ for(const revoked of [false,true])test(`source binding 403 waits for authoritati
  await restored.context.testApi.poll();assert.equal(restored.calls.length,1);assert.equal(restored.calls[0].opt.method,'GET');
  assert.ok(!restored.calls.some(c=>c.url.endsWith('/source-requests')||c.url.endsWith('/members')));
  if(revoked){assert.equal(restored.storage.has('soundq.jam.guest.v1'),false);assert.equal(restored.nodes.get('search').disabled,true)}
- else {const confirmed=JSON.parse(restored.storage.get('soundq.jam.guest.v1'));assert.equal(confirmed.memberSecret,saved.memberSecret);assert.equal(confirmed.pending,null);assert.equal(confirmed.ownRequestIds.includes(JSON.parse(sent.opt.body).requestId),true)}
+ else {const confirmed=JSON.parse(restored.storage.get('soundq.jam.guest.v1'));assert.equal(confirmed.memberSecret,saved.memberSecret);assert.equal(confirmed.pending,null);
+  // The definitive rejection was confirmed absent, so its ID no longer occupies the receipt.
+  assert.equal(confirmed.ownRequestIds.includes(JSON.parse(sent.opt.body).requestId),false)}
 });
 test('search denial while host offline does not retire valid membership or exact retry',async()=>{
  const now=Date.parse(producer('guest-ready').serverTime),b=boot({now});await b.context.testApi.join();
@@ -178,4 +180,47 @@ test('accepted membership read retires stale startup or reconnect paint without 
   b.nodes.get('message').textContent=caption;await b.context.testApi.poll();assert.equal(b.nodes.get('message').textContent,'');
  }
  b.nodes.get('message').textContent='Request sent.';await b.context.testApi.poll();assert.equal(b.nodes.get('message').textContent,'Request sent.');
+});
+test('a denied held join offers a fresh invitation without replaying or discarding it implicitly',async()=>{
+ const first=boot();first.context.fetch=async(url,opt)=>{first.calls.push({url,opt});return {ok:false,status:403}};
+ await first.context.testApi.join();const held=JSON.parse(first.calls.at(-1).opt.body);
+ const fresh=Buffer.alloc(32,2).toString('base64url'),freshJam='00000000-0000-4000-8000-000000000002';
+ const second=boot({storage:first.storage,hash:'#jamId='+freshJam+'&invite='+fresh});
+ assert.equal(second.nodes.get('use-invite').hidden,false,'the fresh invitation must be offered');
+ assert.match(second.nodes.get('message').textContent,/new invitation/);
+ second.context.fetch=async(url,opt)=>{second.calls.push({url,opt});return {ok:false,status:403}};
+ await second.context.testApi.join();
+ assert.equal(second.calls.at(-1).opt.body,first.calls.at(-1).opt.body,'Join still retries the exact held payload');
+ assert.match(second.calls.at(-1).url,/000000000001\/members$/);
+ await second.nodes.get('use-invite').events.click();
+ assert.equal(second.nodes.get('use-invite').hidden,true);
+ await second.context.testApi.join();
+ const switched=JSON.parse(second.calls.at(-1).opt.body);
+ assert.match(second.calls.at(-1).url,new RegExp(freshJam+'/members$'));
+ assert.equal(switched.joinToken,fresh);assert.notEqual(switched.requestId,held.requestId);
+});
+test('an unresolved source request blocks a replacement search until it is reconciled',async()=>{
+ const now=Date.parse(producer('guest-ready').serverTime),b=boot({now});await b.context.testApi.join();
+ b.context.testApi.render({...producer('guest-ready'),requests:[]});await outsideResults(b);
+ b.context.testApi.openReview({kind:'source',item:producer('search').results[0]});
+ b.context.fetch=async(url,opt)=>{b.calls.push({url,opt});throw new Error('lost reply')};await b.context.testApi.sendReview();
+ assert.equal(JSON.parse(b.storage.get('soundq.jam.guest.v1')).pending.kind,'source');
+ assert.equal(b.nodes.get('search').disabled,true,'search control stays disabled');
+ b.nodes.get('query').value='Different recording';const before=b.calls.length;
+ await b.context.testApi.searchMusic();
+ assert.equal(b.calls.length,before,'no replacement search may be reserved');
+ assert.equal(JSON.parse(b.storage.get('soundq.jam.guest.v1')).searchAttempt,null);
+});
+test('IDs a membership read shows absent are retired before the receipt limit applies',async()=>{
+ const first=boot();await first.context.testApi.join();
+ const receipt=JSON.parse(first.storage.get('soundq.jam.guest.v1'));
+ receipt.ownRequestIds=Array.from({length:50},(_,i)=>'00000000-0000-4000-8000-'+String(i).padStart(12,'0'));
+ first.storage.set('soundq.jam.guest.v1',JSON.stringify(receipt));
+ const value={version:3,state:'open',catalog:[{catalogItemId:'c',title:'T',artist:'A'}],requests:[{requestId:receipt.ownRequestIds[7],catalogItemId:'c',displayName:'Me',status:'declined'}],nowPlaying:null};
+ const second=boot({storage:first.storage,hash:''});
+ second.context.fetch=async(url,opt)=>{second.calls.push({url,opt});return {ok:true,status:200,json:async()=>value}};
+ await second.context.testApi.poll();
+ assert.deepEqual(JSON.parse(second.storage.get('soundq.jam.guest.v1')).ownRequestIds,[receipt.ownRequestIds[7]]);
+ await second.context.testApi.requestTrack('c');
+ assert.match(second.calls.at(-1).url,/\/requests$/,'a valid request must still be sent');
 });

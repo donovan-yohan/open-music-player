@@ -6,6 +6,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func TestSourceCompletionAtomicRetirement(t *testing.T) {
@@ -49,7 +51,9 @@ func TestSourceCompletionAtomicRetirement(t *testing.T) {
 				}
 				completed := time.Now().UTC()
 				err = (&Service{queue: q}).ReconcileCompletedSourceJobs(ctx, func(ctx context.Context, scanned *DownloadJob) (*SourceCompletion, error) {
-					if variant == "unrelated" {
+					// Other packages share this Redis; only this test's job may be
+					// reconciled or counted.
+					if variant == "unrelated" || scanned.ID != id {
 						return nil, nil
 					}
 					current, e := q.GetJob(ctx, id)
@@ -77,7 +81,11 @@ func TestSourceCompletionAtomicRetirement(t *testing.T) {
 				if e != nil {
 					t.Fatal(e)
 				}
-				count := q.client.LLen(ctx, keyJobQueue).Val()
+				positions, e := q.client.LPosCount(ctx, keyJobQueue, id, 0, redis.LPosArgs{}).Result()
+				if e != nil {
+					t.Fatal(e)
+				}
+				count := len(positions)
 				if variant != "metadata" {
 					if variant == "unrelated" {
 						if err != nil {

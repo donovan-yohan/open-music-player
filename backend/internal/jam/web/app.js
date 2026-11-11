@@ -5,6 +5,7 @@ const $ = id => document.getElementById(id);
 const fragment = new URLSearchParams(location.hash.slice(1));
 let jamId = fragment.get('jamId') || '';
 let invite = fragment.get('invite') || '';
+const linkJamId = jamId, linkInvite = invite;
 fragment.delete('invite');
 let memberSecret = '';
 let snapshot = null;
@@ -72,6 +73,20 @@ function restore() {
   } catch (_) { /* An unreadable tab receipt never grants authority or replays a write. */ }
 }
 restore();
+// A fresh invitation link is only offered while a join for another invitation
+// is held: that join's response may have been lost, so a 403 alone does not
+// prove it failed. Switching is the guest's explicit choice.
+let offeredInvite = null;
+if (!memberSecret && uuidPattern.test(linkJamId) && secretPattern.test(linkInvite) && (linkJamId !== jamId || linkInvite !== invite)) {
+  if (joining) offeredInvite = {jamId: linkJamId, invite: linkInvite};
+  else { jamId = linkJamId; invite = linkInvite; }
+}
+function useOfferedInvite() {
+  if (busy || memberSecret || !offeredInvite) return;
+  jamId = offeredInvite.jamId; invite = offeredInvite.invite; joining = null; offeredInvite = null;
+  persist(); $('use-invite').hidden = true; $('join').disabled = false;
+  message('Using the new invitation. Join when ready.');
+}
 const base = () => '/api/v1/guest/jams/' + jamId;
 function message(text) { $('message').textContent = text; }
 function secret() { const bytes = crypto.getRandomValues(new Uint8Array(32)); return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
@@ -151,7 +166,9 @@ function trackRow(item, label, disabled, action) {
   row.append(art, details, button); return row;
 }
 function renderSearch() {
-  $('search').disabled = busy || leaving || !memberSecret || snapshot?.state !== 'open' || !snapshot?.allowOutsideDiscovery;
+  // A replacement search would invalidate the selection an unresolved source
+  // request still names, so its exact retry could no longer succeed.
+  $('search').disabled = busy || leaving || !memberSecret || snapshot?.state !== 'open' || !snapshot?.allowOutsideDiscovery || pending?.kind === 'source';
   $('search').textContent = searchAttempt ? searchAttempt.restart ? 'Search again' : 'Retry search' : 'Search';
   $('search-summary').textContent = searchReply ? searchReply.results.length ? 'Results for “' + searchQuery + '”' : 'No matches. Try another search.' : '';
   $('results').replaceChildren();
@@ -194,6 +211,7 @@ async function sendReview() {
 }
 async function searchMusic() {
   if (busy || leaving || !memberSecret || !snapshot?.allowOutsideDiscovery || snapshot.state !== 'open') return;
+  if (pending?.kind === 'source') { message('Check your song request before searching again.'); return; }
   const query = $('query').value.trim();
   if (!query || new TextEncoder().encode(query).length > 160) { message('Enter a song or artist, up to 160 bytes.'); return; }
   if (!searchAttempt || searchAttempt.query !== query || searchAttempt.restart) {
@@ -227,7 +245,7 @@ async function join() {
     history.replaceState(null, '', location.pathname);
     $('join-form').hidden = true; $('session').hidden = false; message('');
     heartbeatAt = Date.now() + 15000; render(result.snapshot); schedule(3000);
-  } catch (error) { message(error.status === 403 ? 'This invitation is unavailable. Ask the host for a new one.' : error.status === 429 ? 'Too many attempts. Try again in a minute.' : 'Could not join. Retry uses the same invitation.'); }
+  } catch (error) { message(error.status === 403 ? (offeredInvite ? 'This invitation is unavailable. Use the new invitation, or ask the host.' : 'This invitation is unavailable. Ask the host for a new one.') : error.status === 429 ? 'Too many attempts. Try again in a minute.' : 'Could not join. Retry uses the same invitation.'); }
   finally { busy = false; $('join').disabled = false; if (snapshot) render(snapshot); }
 }
 async function requestTrack(catalogItemId) {
@@ -302,6 +320,10 @@ async function poll() {
       if (request?.status === 'withdrawn') { withdrawal = null; message('Request withdrawn.'); }
       else if (withdrawal.rejected) { withdrawal = null; message(request?.status === 'queued' ? 'Already added to host queue.' : 'Request changed. Check its status.'); }
     }
+    // The snapshot lists every request in the Jam. Keep only IDs it confirms
+    // or that are still unresolved here, so rejected IDs cannot fill the receipt.
+    const present = new Set(value.requests.map(request => request.requestId));
+    ownRequestIds = ownRequestIds.filter(id => present.has(id) || id === pending?.requestId || id === withdrawal?.requestId);
     if (['Checking your Jam…', 'Connection interrupted. Reconnecting…'].includes($('message').textContent)) {
       message(pending ? 'Request not confirmed. Check the same request.' : '');
     }
@@ -330,6 +352,7 @@ async function leave() {
   } finally { busy = false; if (snapshot) render(snapshot); }
 }
 $('leave').addEventListener('click', leave);
+$('use-invite').addEventListener('click', useOfferedInvite);
 $('search-form').addEventListener('submit', event => { event.preventDefault(); searchMusic(); });
 $('filter').addEventListener('input', () => { if (snapshot) render(snapshot); });
 $('offered-tab').addEventListener('click', () => { mode = 'offered'; if (snapshot) render(snapshot); });
@@ -343,6 +366,9 @@ if (memberSecret) {
   history.replaceState(null, '', location.pathname);
   $('join-form').hidden = true; $('session').hidden = false;
   message(leaving ? 'Leave not confirmed. Checking…' : 'Checking your Jam…'); schedule(0);
+} else if (offeredInvite) {
+  $('use-invite').hidden = false;
+  message('Your earlier join is not confirmed. Retry it, or use the new invitation.');
 } else if (!uuidPattern.test(jamId) || !secretPattern.test(invite)) {
   $('join').disabled = true; message('Open a fresh invitation from the host.');
 }
