@@ -45,12 +45,14 @@ private data class State(val refreshing:Boolean=false,val permission:Boolean=tru
 // Record attempted obsolete publications, not merely domain refusal or eventual trailing state.
 private class RecordingStore(val domain:DeviceListeningStore,val platform:Platform) {
  val scans=mutableMapOf<ScanCapture,Int>();var obsoletePublications=0;var publications=0
+ @Volatile var publishGate:java.util.concurrent.CountDownLatch?=null;val publishing=java.util.concurrent.CountDownLatch(1)
  fun snapshot(a:AccessCapture)=domain.snapshot(a)
  fun putGrant(a:AccessCapture,g:ScanGrant)=domain.putGrant(a,g)
  fun removeGrant(a:AccessCapture,g:ScanGrantId)=domain.removeGrant(a,g)
  fun beginScan(a:AccessCapture,g:ScanGrantId)=domain.beginScan(a,g)?.also {scans[it]=platform.accessRevision}
  fun publishScan(s:ScanCapture,rows:List<DiscoveredAudio>,complete:Boolean=true):Mutation {
   publications++;if(scans[s]!=platform.accessRevision)obsoletePublications++
+  publishing.countDown();publishGate?.await()
   return domain.publishScan(s,rows,complete)
  }
 }
@@ -183,6 +185,19 @@ class PhoneRefreshTest {
    repeat(20){repo.refresh()};gate.countDown();repo.settled()
    assertEquals(0,repo.platform.cancelled);assertEquals(2,repo.platform.discoveries)
    assertEquals(1,store.snapshot(repo.access)!!.files.size)
+  }}finally{gate.countDown();jobs.cancel();root.deleteRecursively()}
+ }
+ @Test fun callerRefreshDoesNotWaitForHeldCatalogPublication()=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-caller-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO);val gate=java.util.concurrent.CountDownLatch(1)
+  try {DeviceListeningStore(File(root,"domain.json")).use {store->
+   val repo=Repository(store,jobs);repo.store.publishGate=gate;repo.refresh()
+   assertTrue(repo.store.publishing.await(5,java.util.concurrent.TimeUnit.SECONDS))
+   // Production callers are UI/picker callbacks. Publication holds the refresh lock while it commits the catalog.
+   val caller=Thread {repo.refresh()};caller.start();caller.join(2000);val blocked=caller.isAlive
+   gate.countDown();caller.join(5000);repo.settled()
+   assertFalse("refresh() caller waited for the held catalog publication",blocked)
+   assertEquals(0,repo.platform.cancelled);assertEquals(2,repo.platform.discoveries);assertEquals(2,repo.store.publications)
+   assertEquals(0,repo.store.obsoletePublications);assertEquals(1,store.snapshot(repo.access)!!.files.size)
   }}finally{gate.countDown();jobs.cancel();root.deleteRecursively()}
  }
  @Test fun partialEnumerationAndRetiredProofNeverReplaceAcknowledgedCorpus()=runBlocking {

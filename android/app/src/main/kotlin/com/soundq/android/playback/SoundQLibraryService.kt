@@ -238,13 +238,13 @@ class SoundQLibraryService : MediaLibraryService() {
                     if(player is com.soundq.android.playback.nativeengine.NativeCallbackPlayer && acceptedArrangement!=null) {
                         val originals=arrangementItems.orEmpty()
                         retireArrangement()
-                        originals.forEach {item->item.localConfiguration?.uri?.let {uri->grants[uri.toString()]=grantFor(item,next)}}
+                        originals.forEach {item->item.localConfiguration?.uri?.let {uri->grants[uri.toString()]=grantFor(item,next,renewal=true)}}
                         player.setMediaItems(originals)
                     }
                     // Same local session, new capabilities. Preserve occurrence/position and stay paused.
                     (0 until player.mediaItemCount).forEach {i->val item=player.getMediaItemAt(i);item.localConfiguration?.uri?.let {uri->
                         if(uri.scheme=="soundqmix")mixGrants[uri.toString()]?.let {prior->prior.close();mixGrants[uri.toString()]=com.soundq.android.playback.mix.MixGrant(next,prior.plan)}
-                        else grants[uri.toString()]=grantFor(item,next)
+                        else grants[uri.toString()]=grantFor(item,next,renewal=true)
                     }}
                     account=next
                     acceptedArrangement=acceptedArrangement?.let {it.copy(identity=it.identity.copy(accountEpoch=next.epoch))}
@@ -495,9 +495,13 @@ class SoundQLibraryService : MediaLibraryService() {
     })}
     private var guestRestoredVersion=-1L
     private var guestRejectedQueue=false
+    // Guest saves wait for the saved-queue read to finish, then replay once from the settled player.
+    private var guestRestoresPending=0
+    private var guestSaveDeferred=false
     private fun guestFile()=java.io.File(graph.directory,"phone-queue-guest.json")
     private fun scheduleGuestSave() {
         if(restoring||guestRejectedQueue||!localAccess())return
+        if(guestRestoresPending>0){guestSaveDeferred=true;saveJob?.cancel();queueSaveEpoch++;return}
         val version=graph.session.version()
         val rows=(0 until player.mediaItemCount).map {i->player.getMediaItemAt(i)}
         if(rows.any {PlaybackRef.read(it.mediaMetadata.extras?.getString("playbackRef")) !is PlaybackRef.Device})return
@@ -508,18 +512,26 @@ class SoundQLibraryService : MediaLibraryService() {
     private fun restoreGuestQueue() {
         val version=graph.session.version();if(guestRestoredVersion==version)return;guestRestoredVersion=version
         val command=transport.revision;val selection=selectionEpoch
+        // A save captured before or during this read must not replace the queue it reads.
+        if(saveJob?.isActive==true)guestSaveDeferred=true
+        saveJob?.cancel();queueSaveEpoch++;guestRestoresPending++
         jobs.launch {
-            val saved=withContext(Dispatchers.IO){runCatching {QueueSnapshotStore(guestFile()).read(graph.endpoint.identity,"guest"){graph.session.owns(version)}}.getOrNull()} ?: return@launch
-            if(!localAccess()||!graph.session.owns(version)||account!=null||player.mediaItemCount>0||transport.revision!=command||selectionEpoch!=selection)return@launch
-            restoring=true
             try {
-                val rows=saved.items.map {i->val ref=i.ref as? PlaybackRef.Device ?: error("Guest server source refused");val uri=Uri.parse("soundqdevice://source/${i.occurrence}");grants[uri.toString()]=MediaGrant(ref,version,graph.phoneAudio.authorityVersion)
-                    val e=Bundle().apply {putString("playbackRef",ref.wire());putBoolean("localOnly",true);putBoolean("manual",i.manual);putString("origin",i.origin.name);putLong("durationMs",i.durationMs)}
-                    MediaItem.Builder().setMediaId(i.occurrence).setUri(uri).setMediaMetadata(MediaMetadata.Builder().setTitle(i.title).setArtist(i.artist).setExtras(e).setIsPlayable(true).setIsBrowsable(false).build()).build()}
-                player.pause();player.restoringShuffle(saved.shuffleEnabled){player.setMediaItems(rows,saved.selected,saved.position)};restoreModes(saved);transport.selectionCommitted()
-                // Release only the guest hold after this exact snapshot is admitted successfully.
-                guestRejectedQueue=false
-            }catch(_:Exception){guestRejectedQueue=true;transport.rejectSelection()}finally{restoring=false}
+                val saved=withContext(Dispatchers.IO){runCatching {QueueSnapshotStore(guestFile()).read(graph.endpoint.identity,"guest"){graph.session.owns(version)}}.getOrNull()} ?: return@launch
+                if(!localAccess()||!graph.session.owns(version)||account!=null||player.mediaItemCount>0||transport.revision!=command||selectionEpoch!=selection)return@launch
+                restoring=true
+                try {
+                    val rows=saved.items.map {i->val ref=i.ref as? PlaybackRef.Device ?: error("Guest server source refused");val uri=Uri.parse("soundqdevice://source/${i.occurrence}");grants[uri.toString()]=MediaGrant(ref,version,graph.phoneAudio.authorityVersion)
+                        val e=Bundle().apply {putString("playbackRef",ref.wire());putBoolean("localOnly",true);putBoolean("manual",i.manual);putString("origin",i.origin.name);putLong("durationMs",i.durationMs)}
+                        MediaItem.Builder().setMediaId(i.occurrence).setUri(uri).setMediaMetadata(MediaMetadata.Builder().setTitle(i.title).setArtist(i.artist).setExtras(e).setIsPlayable(true).setIsBrowsable(false).build()).build()}
+                    player.pause();player.restoringShuffle(saved.shuffleEnabled){player.setMediaItems(rows,saved.selected,saved.position)};restoreModes(saved);transport.selectionCommitted()
+                    // Release only the guest hold after this exact snapshot is admitted successfully.
+                    guestRejectedQueue=false
+                }catch(_:Exception){guestRejectedQueue=true;transport.rejectSelection()}finally{restoring=false}
+            } finally {
+                // Completion, skip or failure all settle the read; replay a suppressed save from current state.
+                if(--guestRestoresPending==0&&guestSaveDeferred){guestSaveDeferred=false;scheduleSave()}
+            }
         }
     }
     private fun renewPhoneGrants() {
@@ -542,9 +554,11 @@ class SoundQLibraryService : MediaLibraryService() {
         val extras=Bundle().apply {putString("playbackRef",ref.wire());putString("occurrenceId",occurrence);putBoolean("manual",item.requestMetadata.extras?.getBoolean("manual")==true);putBoolean("localOnly",true);putLong("durationMs",row.durationMs ?: 0);putString("origin",if(item.requestMetadata.extras?.getBoolean("manual")==true)"Manual" else "Context")}
         return MediaItem.Builder().setMediaId(occurrence).setUri(uri).setMediaMetadata(MediaMetadata.Builder().setTitle(row.metadata.displayTitle).setArtist(row.metadata.artist.orEmpty()).setAlbumTitle(row.metadata.album.orEmpty()).setIsPlayable(true).setIsBrowsable(false).setExtras(extras).build()).build()
     }
-    private fun grantFor(item:MediaItem,scope:AccountScope?):MediaGrant {
+    /** Same-session renewal can run before phone audio accepts the resumed version. Its device grant is
+     * minted for that version and stays non-current until acceptance; PREPARE renews it if authority moved. */
+    private fun grantFor(item:MediaItem,scope:AccountScope?,renewal:Boolean=false):MediaGrant {
         val ref=PlaybackRef.read(item.mediaMetadata.extras?.getString("playbackRef"))
-        return if(ref is PlaybackRef.Device) {check(localAccess());MediaGrant(ref,graph.session.version(),graph.phoneAudio.authorityVersion)}
+        return if(ref is PlaybackRef.Device) {check(renewal||localAccess());MediaGrant(ref,graph.session.version(),graph.phoneAudio.authorityVersion)}
         else MediaGrant(requireNotNull(scope),TrackId(item.mediaMetadata.extras!!.getLong("trackId")),item.mediaMetadata.extras!!.getBoolean("localOnly"))
     }
     private fun resolve(items:List<MediaItem>,startIndex:Int=0,startPositionMs:Long=0,compose:((List<MediaItem>)->List<MediaItem>)?=null):List<MediaItem> {

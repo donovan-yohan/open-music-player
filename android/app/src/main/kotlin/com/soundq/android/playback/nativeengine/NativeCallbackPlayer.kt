@@ -158,7 +158,10 @@ internal class NativeCallbackPlayer(
             }
         }
         if (!c.armed) return false
-        if ((b.playing || b.positionMs > 0) && b.boundaryGain >= a.boundaryGain - 1e-12 && ordinaryDeck != c.deck) {
+        // Native installs an overlap only from incoming cursor zero. A resumed successor whose seek
+        // landed first keeps both gains at 1; it stays paused until the outgoing EOF handoff below.
+        val overlap = a.boundaryGain < 1.0 || b.boundaryGain < 1.0
+        if (overlap && (b.playing || b.positionMs > 0) && b.boundaryGain >= a.boundaryGain - 1e-12 && ordinaryDeck != c.deck) {
             index = items.indexOfFirst { it.mediaId == c.item.mediaId }
             if (index < 0) { intent = false; retireSelection(); return true }
             ordinaryDeck = c.deck; ordinaryIdentity = c.identity; activeGrant = c.grant; activeUri = c.uri

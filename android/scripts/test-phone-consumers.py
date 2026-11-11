@@ -27,6 +27,10 @@ import com.soundq.android.data.*
 import com.soundq.android.data.deviceaudio.*
 import com.soundq.android.playback.PlaybackRef
 import com.soundq.android.playback.QueuePolicy
+import com.soundq.android.playback.QueueOrigin
+import com.soundq.android.playback.QueueSnapshot
+import com.soundq.android.playback.SavedOccurrence
+import com.soundq.android.playback.SavedRepeatMode
 import com.soundq.android.playback.nativeengine.*
 import com.soundq.android.data.device.PhoneSourceAdmission
 import kotlinx.coroutines.*
@@ -55,7 +59,9 @@ private class Phone(val graph:Graph) {
  val original=File(graph.directory,"original.wav").apply{writeBytes(ByteArray(64){it.toByte()})}
  val row:DeviceAudio
  init {store.putGrant(access,grant);store.publishScan(store.beginScan(access,grant.id)!!,listOf(DiscoveredAudio(ProviderObjectId("fixture","one"),grant.locator,ContentRevision("a".repeat(64),64),OriginalMetadata("one.wav","Original title","Original artist","Original album"),601000)));row=store.snapshot(access)!!.files.single()}
- fun current(version:Long)=graph.session.owns(version)&&graph.session.state.value is AuthState.SignedOut
+ // Signed-in phone access exists only after the repository accepts that exact session version.
+ @Volatile var accepted=-1L
+ fun current(version:Long)=graph.session.owns(version)&&(graph.session.state.value is AuthState.SignedOut||accepted==version)
  fun observed(ref:PlaybackRef.Device)=row.takeIf {available&&ref.id==it.id.value.toString()&&ref.sha256==it.revision.sha256&&ref.incarnation==it.incarnation}
  suspend fun admit(row:DeviceAudio):PhoneSourceAdmission?=journal {s,_->s.captureSource(access,row.id)?.let{PhoneSourceAdmission(row,it,graph.session.version(),s.bookmark(it)?.positionMs ?: 0)}}
  suspend fun prepare(admission:PhoneSourceAdmission,valid:()->Boolean):File {stageCalls++;check(valid());stageEntered.countDown();stageGate?.await();check(valid());return File.createTempFile("app-owned-",".stage",graph.directory).apply {writeBytes(ByteArray(64){it.toByte()});check(valid())}}
@@ -281,6 +287,96 @@ class PhoneCanonicalConsumersTest {
 '''
 text=header
 for key,value in [('SERVICE',service),('GRANT',grant),('SOURCE',source),('JOURNAL',journal),('PREPARE',prepare),('BIND',bind),('SEEK',seek),('REPEAT',repeat)]:text=text.replace(key,value)
+# Service queue persistence and same-session renewal. Inserted after the token pass above:
+# these production bodies legitimately contain upper-case words used as tokens there.
+svc=(b/'playback/SoundQLibraryService.kt').read_text()
+guest=svc[svc.index('    private var guestRestoredVersion'):svc.index('    private fun renewPhoneGrants(')]
+schedule=block('playback/SoundQLibraryService.kt','    private fun scheduleSave(')
+renewal=block('playback/SoundQLibraryService.kt','if(next!=null&&account?.let(graph.session::resumesLocal)==true)')
+renewal=renewal.replace('player is com.soundq.android.playback.nativeengine.NativeCallbackPlayer','(player as Any) is com.soundq.android.playback.nativeengine.NativeCallbackPlayer')
+grant_for=block('playback/SoundQLibraryService.kt','    private fun grantFor(')
+text=text.replace('private object Player {const val STATE_IDLE=1;','private object Player {const val REPEAT_MODE_OFF=0;const val REPEAT_MODE_ONE=1;const val REPEAT_MODE_ALL=2;const val STATE_IDLE=1;')
+queue_probe='''
+private object GuestReadGate {@Volatile var gate:java.util.concurrent.CountDownLatch?=null;@Volatile var reading=java.util.concurrent.CountDownLatch(1)}
+/** Real paged store; only the restore read can be held at its declared IO boundary. */
+private class QueueSnapshotStore(file:File) {
+ val real=com.soundq.android.playback.QueueSnapshotStore(file)
+ fun write(saved:QueueSnapshot,current:()->Boolean={true})=real.write(saved,current)
+ fun read(endpoint:String,account:String,current:()->Boolean={true}):QueueSnapshot? {GuestReadGate.reading.countDown();GuestReadGate.gate?.await();return real.read(endpoint,account,current)}
+}
+private interface QueuePlayer {val mediaItemCount:Int;val currentMediaItemIndex:Int;val currentPosition:Long;var shuffleModeEnabled:Boolean;var repeatMode:Int
+ fun getMediaItemAt(i:Int):MediaItem;fun pause();fun stop();fun setMediaItems(rows:List<MediaItem>);fun setMediaItems(rows:List<MediaItem>,index:Int,position:Long);fun clearMediaItems()}
+private class LogicalPlayer:QueuePlayer {
+ @Volatile var rows=emptyList<MediaItem>();override var currentMediaItemIndex=0;override var currentPosition=0L;override var shuffleModeEnabled=false;override var repeatMode=Player.REPEAT_MODE_OFF;var stops=0
+ override val mediaItemCount get()=rows.size;override fun getMediaItemAt(i:Int)=rows[i];override fun pause(){};override fun stop(){stops++}
+ override fun setMediaItems(rows:List<MediaItem>){setMediaItems(rows,0,0)};override fun setMediaItems(rows:List<MediaItem>,index:Int,position:Long){this.rows=rows;currentMediaItemIndex=index;currentPosition=position};override fun clearMediaItems(){rows=emptyList()}
+}
+private class QueueTransport {var revision=0L;var committed=0;var rejected=0;fun selectionCommitted(){committed++};fun rejectSelection(){rejected++}}
+private class QueueService(val graph:Graph,val jobs:CoroutineScope) {
+ val grants=ConcurrentHashMap<String,MediaGrant>();val mixGrants=ConcurrentHashMap<String,com.soundq.android.playback.mix.MixGrant>()
+ val player:QueuePlayer=LogicalPlayer();val transport=QueueTransport()
+ var account:AccountScope?=null;var restoring=false;var rejectedQueue=false;var saveJob:Job?=null;val queueFileLock=Any()
+ @Volatile var queueSaveEpoch=0L;@Volatile var selectionEpoch=0L
+ var acceptedArrangement:com.soundq.android.playback.AcceptedArrangement?=null;var arrangementItems:List<MediaItem>?=null
+ fun retireArrangement(){acceptedArrangement=null;arrangementItems=null}
+ fun localAccess()=graph.phoneAudio.current(graph.session.version())
+ fun <T> QueuePlayer.restoringShuffle(enabled:Boolean,action:()->T):T=action()
+ fun restoreModes(saved:QueueSnapshot){}
+ fun queueObservation(scope:AccountScope):QueueSnapshot=error("Account queue persistence is outside this guest probe")
+ fun writeQueueObservation(scope:AccountScope,observed:QueueSnapshot){error("Account queue persistence is outside this guest probe")}
+@@GRANTFOR@@
+@@SCHEDULE@@
+@@GUEST@@
+ fun renewSameSession(){val next=graph.session.capture()
+@@RENEWAL@@
+ }
+ fun restore()=restoreGuestQueue();fun modeChanged()=scheduleSave()
+}
+class PhoneQueueServiceTest {
+ private fun device(graph:Graph):MediaItem {val row=graph.phoneAudio.row;val ref=PlaybackRef.Device(row.id.value.toString(),row.revision.sha256,row.revision.byteLength,row.incarnation)
+  return MediaItem.Builder().setMediaId(UUID.randomUUID().toString()).setUri(Uri.parse("soundqdevice://source/"+UUID.randomUUID())).setMediaMetadata(MediaMetadata.Builder().setTitle("Original title").setExtras(Bundle().apply {putString("playbackRef",ref.wire());putBoolean("localOnly",true)}).build()).build()}
+ private suspend fun settled(jobs:CoroutineScope)=withTimeout(10000){while(jobs.coroutineContext[Job]!!.children.any {it.isActive})delay(5)}
+ @Test fun sameSessionUnlockBeforePhoneAcceptanceDefersDeviceGrantWithoutStoppingRenewal()=runBlocking {
+  val dir=java.nio.file.Files.createTempDirectory("unlock-renewal-").toFile();val graph=Graph(dir);val jobs=CoroutineScope(SupervisorJob()+Dispatchers.Default)
+  try {
+   assertTrue(graph.session.accept(graph.session.beginIntent(),SecretTokens("fixture-access","fixture-refresh","fixture-account")))
+   val service=QueueService(graph,jobs);service.account=graph.session.capture()
+   val phone=device(graph);val server=MediaItem.Builder().setMediaId(UUID.randomUUID().toString()).setUri(Uri.parse("soundq://track/1")).setMediaMetadata(MediaMetadata.Builder().setExtras(Bundle().apply {putLong("trackId",1)}).build()).build()
+   service.player.setMediaItems(listOf(phone,server),0,42000)
+   assertTrue(graph.session.lockLocal());assertTrue(graph.session.completeLocalUnlock(graph.session.localUnlockTicket()!!))
+   assertFalse("Phone audio has not accepted the resumed session version yet",service.localAccess())
+   service.renewSameSession()
+   assertTrue("Renewal must still adopt the resumed account",graph.session.current(service.account!!))
+   assertEquals(2,service.player.mediaItemCount);assertEquals(42000L,service.player.currentPosition)
+   assertTrue(service.grants.getValue("soundq://track/1").current(graph))
+   val deferred=service.grants.getValue(phone.localConfiguration!!.uri.toString())
+   assertFalse("Device grant carries no capability before phone acceptance",deferred.current(graph))
+   graph.phoneAudio.accepted=graph.session.version()
+   assertTrue("Device grant becomes current once phone audio accepts this version",deferred.current(graph))
+  }finally{jobs.cancel();graph.phoneAudio.store.close();dir.deleteRecursively()}
+ }
+ @Test fun emptyModeSaveDuringGuestRestoreCannotReplaceSavedQueueButLaterClearPersists()=runBlocking {
+  val dir=java.nio.file.Files.createTempDirectory("guest-restore-save-").toFile();val graph=Graph(dir)
+  val main=java.util.concurrent.Executors.newSingleThreadExecutor().asCoroutineDispatcher();val jobs=CoroutineScope(SupervisorJob()+main)
+  val file=File(dir,"phone-queue-guest.json");val gate=java.util.concurrent.CountDownLatch(1)
+  try {
+   val row=graph.phoneAudio.row;val ref=PlaybackRef.Device(row.id.value.toString(),row.revision.sha256,row.revision.byteLength,row.incarnation)
+   com.soundq.android.playback.QueueSnapshotStore(file).write(QueueSnapshot(graph.endpoint.identity,"guest",listOf(SavedOccurrence(UUID.randomUUID().toString(),0,"Original title","Original artist",true,true,601000,ref=ref)),0,42000))
+   val service=QueueService(graph,jobs);GuestReadGate.reading=java.util.concurrent.CountDownLatch(1);GuestReadGate.gate=gate
+   withContext(main){service.restore()}
+   assertTrue(GuestReadGate.reading.await(5,java.util.concurrent.TimeUnit.SECONDS))
+   withContext(main){service.player.repeatMode=Player.REPEAT_MODE_ONE;service.modeChanged()} // empty player, restore still reading
+   delay(700);gate.countDown();settled(jobs)
+   assertEquals("Saved guest queue must be restored",1,withContext(main){service.player.mediaItemCount})
+   assertEquals("Empty mode save must not replace the queue being restored",1,com.soundq.android.playback.QueueSnapshotStore(file).read(graph.endpoint.identity,"guest")!!.items.size)
+   withContext(main){service.player.clearMediaItems();service.modeChanged()};settled(jobs)
+   assertEquals("Intentional clear after restore completion persists",0,com.soundq.android.playback.QueueSnapshotStore(file).read(graph.endpoint.identity,"guest")!!.items.size)
+  }finally{gate.countDown();GuestReadGate.gate=null;jobs.cancel();main.close();graph.phoneAudio.store.close();dir.deleteRecursively()}
+ }
+}
+'''
+for key,value in [('@@GRANTFOR@@',grant_for),('@@SCHEDULE@@',schedule),('@@GUEST@@',guest),('@@RENEWAL@@',renewal)]:queue_probe=queue_probe.replace(key,value)
+text+=queue_probe
 a.generate.mkdir(parents=True,exist_ok=True)
 (a.generate/'PhoneCanonicalConsumersTest.kt').write_text(text)
 # Keep queue mutation consumer bodies in the same registered unit-test cohort.

@@ -58,28 +58,37 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     }
     private fun fail(message: String) { mutable.value = mutable.value.copy(refreshing = false, message = message) }
     private val refreshEpoch=java.util.concurrent.atomic.AtomicLong()
-    private val refreshLock=Any()
+    private val refreshLock=java.util.concurrent.locks.ReentrantLock()
+    private inline fun <T> refreshLocked(block:()->T):T {refreshLock.lock();try {return block()} finally {refreshLock.unlock()}}
+    private val admissionOrder=Any()
+    private var deferredAdmissions=0
+    private val admissions=Dispatchers.IO.limitedParallelism(1)
     private var refreshRunning=false
     private var pendingRefresh:(()->Unit)?=null
     private data class RefreshScope(val version:Long,val indexed:Boolean,val trees:Set<String>,val reads:Set<String>)
     private var refreshScope:RefreshScope?=null
     fun refresh(valid: () -> Boolean = { true }) {
+        // UI callers never wait for a held catalog publication. Uncontended admission stays inline;
+        // otherwise admissions queue in caller order and observe once that publication commits or retires.
+        synchronized(admissionOrder) {
+            if(deferredAdmissions==0&&refreshLock.tryLock()) {try {admit(valid)} finally {refreshLock.unlock()};return}
+            deferredAdmissions++
+        }
+        jobs.launch(admissions) {try {refreshLocked {admit(valid)}} finally {synchronized(admissionOrder) {deferredAdmissions--}}}
+    }
+    private fun admit(valid: () -> Boolean) {
         // Only redundant owner/access observations may share admitted exact-byte work.
         // Observe under the same lock as publication; every observed ABA retires the old epoch.
-        val scope:RefreshScope
-        val refresh:Long
-        synchronized(refreshLock) {
-            scope=RefreshScope(graph.session.version(),platform.indexedAllowed(),platform.persistedTrees().toSet(),
-                graph.applicationContext.contentResolver.persistedUriPermissions.filter {it.isReadPermission}.map {it.uri.toString()}.toSet())
-            if(refreshRunning){
-                if(refreshScope!=scope)refreshEpoch.incrementAndGet()
-                refreshScope=scope
-                pendingRefresh={refresh(valid)};return
-            }
+        val scope=RefreshScope(graph.session.version(),platform.indexedAllowed(),platform.persistedTrees().toSet(),
+            graph.applicationContext.contentResolver.persistedUriPermissions.filter {it.isReadPermission}.map {it.uri.toString()}.toSet())
+        if(refreshRunning){
+            if(refreshScope!=scope)refreshEpoch.incrementAndGet()
             refreshScope=scope
-            refreshRunning=true
-            refresh=refreshEpoch.incrementAndGet()
+            pendingRefresh={refresh(valid)};return
         }
+        refreshScope=scope
+        refreshRunning=true
+        val refresh=refreshEpoch.incrementAndGet()
         val version = scope.version
         fun active()=valid()&&current(version)&&refreshEpoch.get()==refresh
         jobs.launch {
@@ -90,7 +99,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                 val prior = owner.snapshot(accepted) ?: error("Local audio state refused")
                 val indexed = ScanGrant(grantId("indexed:external-audio"), GrantKind.INDEXED, "Android audio index", ProviderLocator("android", "indexed:external-audio"), false,
                     if (scope.indexed) AccessState.AVAILABLE else AccessState.REVOKED)
-                synchronized(refreshLock){if(!active())throw CancellationException();check(owner.putGrant(accepted, indexed) != Mutation.REFUSED)}
+                refreshLocked{if(!active())throw CancellationException();check(owner.putGrant(accepted, indexed) != Mutation.REFUSED)}
                 val retained = scope.trees
                 val grants = listOf(indexed) + prior.grants.filter { it.kind != GrantKind.INDEXED && it.state != AccessState.REMOVED }
                 var partial = false
@@ -102,7 +111,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                         old.persisted -> old.copy(state = if (old.locator.value in scope.reads) AccessState.AVAILABLE else AccessState.REVOKED)
                         else -> old
                     }
-                    synchronized(refreshLock){if(!active())throw CancellationException();check(owner.putGrant(accepted, granted) != Mutation.REFUSED)}
+                    refreshLocked{if(!active())throw CancellationException();check(owner.putGrant(accepted, granted) != Mutation.REFUSED)}
                     if (granted.state != AccessState.AVAILABLE) continue
                     val scan = owner.beginScan(accepted, granted.id) ?: continue
                     var complete=true
@@ -134,7 +143,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                         partial = true
                         continue
                     }
-                    synchronized(refreshLock){
+                    refreshLocked{
                         if (!active()) throw CancellationException()
                         check(owner.publishScan(scan, descriptors, complete) != Mutation.REFUSED)
                     }
@@ -144,7 +153,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
             } catch (_: CancellationException) { if(refreshEpoch.get()==refresh)mutable.value = mutable.value.copy(refreshing = false) }
             catch (_: Exception) { if(active())publish("Some audio could not be refreshed. Existing files and saved progress were kept.") }
             finally {
-                val next=synchronized(refreshLock){refreshRunning=false;pendingRefresh.also {pendingRefresh=null}}
+                val next=refreshLocked{refreshRunning=false;pendingRefresh.also {pendingRefresh=null}}
                 next?.invoke()
             }
         }
@@ -161,7 +170,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                 val name = if (folder) platform.folderLabel(uri.toString()) else platform.metadata(uri).filename
                 val grant = ScanGrant(grantId((if (folder) "folder:" else "file:") + uri), if (folder) GrantKind.FOLDER else GrantKind.FILE,
                     name, locator(uri.toString()), persisted)
-                synchronized(refreshLock) {
+                refreshLocked {
                     refreshEpoch.incrementAndGet()
                     check(requireNotNull(store).putGrant(requireNotNull(access), grant) != Mutation.REFUSED)
                 }
@@ -175,7 +184,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         jobs.launch { serial.withLock {
             if (!valid() || !current(version)) return@withLock
             try {
-                synchronized(refreshLock) {
+                refreshLocked {
                     refreshEpoch.incrementAndGet()
                     check(requireNotNull(store).removeGrant(requireNotNull(access), grant.id) != Mutation.REFUSED)
                 }

@@ -97,7 +97,7 @@ private class Continuation {fun repeatChanged(){};fun shuffleChanged(){}}
 '''
 fixture='''
 private class ExtractedService(val graph:Graph,val jobs:CoroutineScope) {
- var clockRevision=0L;var guestRestoredVersion=-1L;var guestRejectedQueue=false
+ var clockRevision=0L;var guestRestoredVersion=-1L;var guestRejectedQueue=false;var guestRestoresPending=0;var guestSaveDeferred=false
  fun localAccess()=account==null
 
  fun guestStart(){restoreGuestQueue()};fun guestFileBytes()=guestFile()
