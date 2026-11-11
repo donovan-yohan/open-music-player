@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -33,6 +34,7 @@ type sourceSelectionDownloadLink struct {
 	jobID      uuid.UUID
 	jobUserID  uuid.UUID
 	decisionID uuid.UUID
+	complete   bool
 }
 
 func (l *SourceSelectionDownloadLifecycle) Sync(ctx context.Context, job *download.DownloadJob) error {
@@ -40,15 +42,26 @@ func (l *SourceSelectionDownloadLifecycle) Sync(ctx context.Context, job *downlo
 	if err != nil || !linked {
 		return err
 	}
-	_, err = l.db.ExecContext(ctx, `
+	if link.complete {
+		return download.ErrJobNotRetryable
+	}
+	result, err := l.db.ExecContext(ctx, `
 		UPDATE download_jobs
 		SET status = $3, progress = $4, error = NULL,
 			updated_at = clock_timestamp(),
 			started_at = CASE WHEN $5 = 'downloading' AND started_at IS NULL THEN clock_timestamp() ELSE started_at END
-		WHERE id = $1 AND user_id = $2
+		WHERE id = $1 AND user_id = $2 AND status <> 'complete'
 			AND EXISTS (SELECT 1 FROM source_selection_decisions WHERE id = $6 AND user_id = $2 AND download_job_id = $1)
 	`, link.jobID, link.jobUserID, job.Status, job.Progress, job.Status, link.decisionID)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return download.ErrJobNotRetryable
+	}
+	return nil
 }
 
 func (l *SourceSelectionDownloadLifecycle) Fail(ctx context.Context, job *download.DownloadJob, cause error) error {
@@ -64,13 +77,24 @@ func (l *SourceSelectionDownloadLifecycle) Fail(ctx context.Context, job *downlo
 	if !linked {
 		return err
 	}
-	_, err = l.db.ExecContext(ctx, `
+	if link.complete {
+		return download.ErrJobNotRetryable
+	}
+	result, err := l.db.ExecContext(ctx, `
 		UPDATE download_jobs
 		SET status = 'failed', error = $3, updated_at = clock_timestamp(), completed_at = clock_timestamp()
-		WHERE id = $1 AND user_id = $2
+		WHERE id = $1 AND user_id = $2 AND status <> 'complete'
 			AND EXISTS (SELECT 1 FROM source_selection_decisions WHERE id = $4 AND user_id = $2 AND download_job_id = $1)
 	`, link.jobID, link.jobUserID, cause.Error(), link.decisionID)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return download.ErrJobNotRetryable
+	}
+	return nil
 }
 
 func (l *SourceSelectionDownloadLifecycle) failOwnedJob(ctx context.Context, job *download.DownloadJob, cause error) error {
@@ -88,7 +112,7 @@ func (l *SourceSelectionDownloadLifecycle) failOwnedJob(ctx context.Context, job
 	_, err = l.db.ExecContext(ctx, `
 		UPDATE download_jobs
 		SET status = 'failed', error = $3, updated_at = clock_timestamp(), completed_at = clock_timestamp()
-		WHERE id = $1 AND user_id = $2
+		WHERE id = $1 AND user_id = $2 AND status <> 'complete'
 	`, jobID, userID, cause.Error())
 	return err
 }
@@ -98,14 +122,25 @@ func (l *SourceSelectionDownloadLifecycle) Requeue(ctx context.Context, job *dow
 	if err != nil || !linked {
 		return err
 	}
-	_, err = l.db.ExecContext(ctx, `
+	if link.complete {
+		return download.ErrJobNotRetryable
+	}
+	result, err := l.db.ExecContext(ctx, `
 		UPDATE download_jobs
 		SET status = 'queued', progress = 0, error = NULL, retry_count = $3,
 			updated_at = clock_timestamp(), completed_at = NULL
-		WHERE id = $1 AND user_id = $2
+		WHERE id = $1 AND user_id = $2 AND status <> 'complete'
 			AND EXISTS (SELECT 1 FROM source_selection_decisions WHERE id = $4 AND user_id = $2 AND download_job_id = $1)
 	`, link.jobID, link.jobUserID, retryCount, link.decisionID)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return download.ErrJobNotRetryable
+	}
+	return nil
 }
 
 // Complete attaches the generated/reused track before atomically marking the
@@ -114,6 +149,9 @@ func (l *SourceSelectionDownloadLifecycle) Complete(ctx context.Context, job *do
 	link, linked, err := l.linkForJob(ctx, job)
 	if err != nil || !linked {
 		return err
+	}
+	if link.complete {
+		return download.ErrJobNotRetryable
 	}
 	if job.TrackID == nil || *job.TrackID <= 0 {
 		return fmt.Errorf("source-selection download %s completed without a track", job.ID)
@@ -147,7 +185,7 @@ func (l *SourceSelectionDownloadLifecycle) Complete(ctx context.Context, job *do
 		UPDATE download_jobs
 		SET status = 'complete', progress = 100, error = NULL, track_id = $3,
 			updated_at = clock_timestamp(), completed_at = clock_timestamp()
-		WHERE id = $1 AND user_id = $2
+		WHERE id = $1 AND user_id = $2 AND status <> 'complete'
 			AND EXISTS (SELECT 1 FROM source_selection_decisions WHERE id = $4 AND user_id = $2 AND download_job_id = $1)
 	`, link.jobID, link.jobUserID, *job.TrackID, link.decisionID)
 	if err != nil {
@@ -166,8 +204,9 @@ func (l *SourceSelectionDownloadLifecycle) Complete(ctx context.Context, job *do
 // SourceSelectionRecoveryQueue is deliberately narrow so restart recovery can
 // be tested without Redis. Each method must be idempotent.
 type SourceSelectionRecoveryQueue interface {
+	ReconcileCompletedSourceJobs(context.Context, func(context.Context, *download.DownloadJob) (*download.SourceCompletion, error)) error
 	EnsureSourceCandidateWithID(context.Context, string, string, download.SourceCandidate, *string) (*download.DownloadJob, error)
-	EnsureSourceCandidateForPlaylistWithID(context.Context, string, string, download.SourceCandidate, *string, int64) (*download.DownloadJob, error)
+	RecoverSourceCandidateForPlaylistWithID(context.Context, string, string, download.SourceCandidate, *string, int64) (*download.DownloadJob, error)
 	EnsurePlaylistImportItemWithID(context.Context, string, string, download.SourceCandidate, string, int64, int64, int) (*download.DownloadJob, error)
 }
 
@@ -175,6 +214,19 @@ type SourceSelectionRecoveryQueue interface {
 // from a durable source-decision queue intent.
 type SourceSelectionPlaybackRecoveryQueue interface {
 	EnsureSourceCandidateWithID(context.Context, string, string, download.SourceCandidate, string, string) error
+}
+
+// RecoverAndStart is the server's recovery/worker startup boundary.
+func (l *SourceSelectionDownloadLifecycle) RecoverAndStart(ctx context.Context, queue interface {
+	SourceSelectionRecoveryQueue
+	Start()
+}, playback SourceSelectionPlaybackRecoveryQueue, limit int) (int, error) {
+	n, err := l.RecoverWithPlayback(ctx, queue, playback, limit)
+	if err != nil {
+		return n, err
+	}
+	queue.Start()
+	return n, err
 }
 
 // Recover re-enqueues a bounded set of queued or in-flight source-decision
@@ -188,6 +240,9 @@ func (l *SourceSelectionDownloadLifecycle) Recover(ctx context.Context, queue So
 // available, their durable playback queue intent. The generic Recover method is
 // retained for callers that only own the download queue.
 func (l *SourceSelectionDownloadLifecycle) RecoverWithPlayback(ctx context.Context, queue SourceSelectionRecoveryQueue, playback SourceSelectionPlaybackRecoveryQueue, limit int) (int, error) {
+	if err := queue.ReconcileCompletedSourceJobs(ctx, l.committedSourceCompletion); err != nil {
+		return 0, fmt.Errorf("recover durable source-selection completions: %w", err)
+	}
 	if limit <= 0 {
 		limit = defaultSourceSelectionRecoveryLimit
 	}
@@ -246,7 +301,7 @@ func (l *SourceSelectionDownloadLifecycle) RecoverWithPlayback(ctx context.Conte
 			if _, err := queue.EnsurePlaylistImportItemWithID(ctx, jobID.String(), userID.String(), candidate, importJobID.UUID.String(), importItemID.Int64, playlistID.Int64, int(playlistPosition.Int64)); err != nil {
 				return recovered, fmt.Errorf("recover durable playlist-import job %s: %w", jobID, err)
 			}
-		} else if _, err := queue.EnsureSourceCandidateForPlaylistWithID(ctx, jobID.String(), userID.String(), candidate, mbID, targetPlaylistID.Int64); err != nil {
+		} else if _, err := queue.RecoverSourceCandidateForPlaylistWithID(ctx, jobID.String(), userID.String(), candidate, mbID, targetPlaylistID.Int64); err != nil {
 			// target_playlist_id is NULL-on-delete, so a playlist removed while
 			// the download was in flight recovers as a plain download.
 			return recovered, fmt.Errorf("recover durable source-selection job %s: %w", jobID, err)
@@ -254,6 +309,56 @@ func (l *SourceSelectionDownloadLifecycle) RecoverWithPlayback(ctx context.Conte
 		recovered++
 	}
 	return recovered, rows.Err()
+}
+
+// committedSourceCompletion follows only an exact, same-owner decision/job
+// attachment, separately from current playability. Redis cannot nominate a source or
+// track. A completed SQL job is not republished for another acquisition.
+func (l *SourceSelectionDownloadLifecycle) committedSourceCompletion(ctx context.Context, job *download.DownloadJob) (*download.SourceCompletion, error) {
+	jobID, err := uuid.Parse(job.ID)
+	if err != nil {
+		return nil, nil
+	} // Legacy queue records have no SQL source decision.
+	owner, err := uuid.Parse(job.UserID)
+	if err != nil {
+		return nil, nil
+	}
+	var snapshot json.RawMessage
+	var receipt download.SourceCompletion
+	err = l.db.QueryRowContext(ctx, `
+		SELECT j.track_id,j.completed_at,d.selected_candidate,
+			NOT EXISTS (SELECT 1 FROM user_library ul JOIN tracks t ON t.id=ul.track_id
+				WHERE ul.user_id=j.user_id AND ul.track_id=j.track_id AND COALESCE(t.storage_key,'')<>'')
+		FROM download_jobs j
+		JOIN source_selection_decisions d ON d.download_job_id=j.id AND d.user_id=j.user_id AND d.track_id=j.track_id
+		WHERE j.id=$1 AND j.user_id=$2 AND j.status='complete' AND j.completed_at IS NOT NULL
+	`, jobID, owner).Scan(&receipt.TrackID, &receipt.CompletedAt, &snapshot, &receipt.Unplayable)
+	if errors.Is(err, sql.ErrNoRows) {
+		// An existing terminal job with a broken owner/decision/track attachment
+		// is not an unrelated job. Refuse startup instead of letting it run.
+		var terminal bool
+		if err = l.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM download_jobs j JOIN source_selection_decisions d ON d.download_job_id=j.id WHERE j.id=$1 AND j.status='complete')`, jobID).Scan(&terminal); err != nil {
+			return nil, err
+		}
+		if terminal {
+			return nil, fmt.Errorf("%w: completed source attachment mismatch", ErrSourceSelectionConflict)
+		}
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	candidate, err := candidateFromPersistedSelection(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	// Queue and playlist producers publish the whitespace-trimmed URL while the
+	// decision keeps the provider's raw snapshot. Only that normalization is
+	// tolerated; any other URL or identity difference still refuses startup.
+	if candidate.Provider != job.SourceType || candidate.SourceID != job.SourceID || candidate.SourceURL != strings.TrimSpace(job.URL) || candidate.CandidateID != job.CandidateID {
+		return nil, fmt.Errorf("%w: completed source identity mismatch", ErrSourceSelectionConflict)
+	}
+	return &receipt, nil
 }
 
 func (l *SourceSelectionDownloadLifecycle) linkForJob(ctx context.Context, job *download.DownloadJob) (sourceSelectionDownloadLink, bool, error) {
@@ -271,12 +376,13 @@ func (l *SourceSelectionDownloadLifecycle) linkForJob(ctx context.Context, job *
 
 	var durableUserID uuid.UUID
 	var decisionID, decisionUserID uuid.NullUUID
+	var status string
 	err = l.db.QueryRowContext(ctx, `
-		SELECT j.user_id, d.id, d.user_id
+		SELECT j.user_id, d.id, d.user_id, j.status
 		FROM download_jobs AS j
 		LEFT JOIN source_selection_decisions AS d ON d.download_job_id = j.id
 		WHERE j.id = $1
-	`, jobID).Scan(&durableUserID, &decisionID, &decisionUserID)
+	`, jobID).Scan(&durableUserID, &decisionID, &decisionUserID, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return sourceSelectionDownloadLink{}, false, nil
 	}
@@ -292,7 +398,7 @@ func (l *SourceSelectionDownloadLifecycle) linkForJob(ctx context.Context, job *
 	if !decisionUserID.Valid || decisionUserID.UUID != durableUserID {
 		return sourceSelectionDownloadLink{}, false, fmt.Errorf("%w: source-selection decision owner mismatch", ErrSourceSelectionDecisionNotFound)
 	}
-	return sourceSelectionDownloadLink{jobID: jobID, jobUserID: durableUserID, decisionID: decisionID.UUID}, true, nil
+	return sourceSelectionDownloadLink{jobID: jobID, jobUserID: durableUserID, decisionID: decisionID.UUID, complete: status == "complete"}, true, nil
 }
 
 func candidateFromPersistedSelection(snapshot json.RawMessage) (download.SourceCandidate, error) {
@@ -313,12 +419,14 @@ func candidateFromPersistedSelection(snapshot json.RawMessage) (download.SourceC
 	if err := json.Unmarshal(snapshot, &candidate); err != nil {
 		return download.SourceCandidate{}, err
 	}
-	if !candidate.Downloadable || candidate.CandidateID == "" || candidate.Provider == "" || candidate.SourceURL == "" || candidate.Title == "" {
+	if !candidate.Downloadable || candidate.CandidateID == "" || candidate.Provider == "" || strings.TrimSpace(candidate.SourceURL) == "" || candidate.Title == "" {
 		return download.SourceCandidate{}, errors.New("persisted candidate is incomplete")
 	}
+	// Match the URL normalization every queue producer applies, so recovery
+	// republishes and completion checks compare the same identity.
 	return download.SourceCandidate{
 		CandidateID: candidate.CandidateID, Provider: candidate.Provider, SourceID: candidate.SourceID,
-		SourceURL: candidate.SourceURL, Title: candidate.Title, Artist: candidate.Artist, Album: candidate.Album,
+		SourceURL: strings.TrimSpace(candidate.SourceURL), Title: candidate.Title, Artist: candidate.Artist, Album: candidate.Album,
 		Uploader: candidate.Uploader, DurationMs: candidate.DurationMs, ThumbnailURL: candidate.ThumbnailURL,
 		Metadata: candidate.Metadata,
 	}, nil
