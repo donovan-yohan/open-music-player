@@ -4,6 +4,14 @@ use std::path::PathBuf;
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    ImportLink {
+        operation_id: u64,
+        url: String,
+    },
+    ImportJobs {},
+    ImportJob {
+        job_id: String,
+    },
     Login {
         email: String,
         password: String,
@@ -133,6 +141,8 @@ pub struct Snapshot {
 
 #[derive(Serialize)]
 pub struct Reply {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_result: Option<ImportResult>,
     pub ok: bool,
     pub code: String,
     pub snapshot: Snapshot,
@@ -141,6 +151,53 @@ pub struct Reply {
     pub audio: Option<AudioEffect>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials: Option<Credentials>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CreateImportAck {
+    pub job_id: String,
+    pub status: ImportStatus,
+    #[serde(rename = "sourceDecisionId")]
+    pub source_decision_id: String,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportStatus {
+    Queued,
+    Downloading,
+    Processing,
+    Uploading,
+    Complete,
+    Failed,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct SubmissionReceipt {
+    pub operation_id: u64,
+    pub outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ack: Option<CreateImportAck>,
+}
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ImportResult {
+    pub receipt: Option<SubmissionReceipt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jobs: Option<Vec<ImportJob>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<ImportJob>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ImportJob {
+    pub job_id: String,
+    pub status: ImportStatus,
+    pub progress: u8,
+    pub error: Option<String>,
+    pub url: String,
+    pub source_type: String,
+    pub track_id: Option<i64>,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Serialize)]

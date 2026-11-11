@@ -117,6 +117,30 @@ ordinary outstanding work at 32; audio callbacks contain no Rust/FFI work.
 
 ## Disposable fixture qualification
 
+### macOS Add link (#519)
+
+Library's Add link opens a native sheet using ordinary text editing/Paste.
+Import submits one HTTPS YouTube watch/short-video or SoundCloud track URL;
+video links containing `list=` remain one track. Pure playlists, profiles,
+redirect links, userinfo and lookalike hosts are refused. Rust owns authenticated
+submission and a no-replay receipt; App owns job presentation across sheet close.
+Check status and Recent jobs read owned backend jobs. Unconfirmed submissions
+are never automatically resent or matched by URL. Another link is a new explicit
+operation, not a safe retry guarantee.
+
+Completion schedules one normal Library refresh without changing search/Liked,
+queue or playback. Open in Library explicitly reads All with an empty search and
+selects the completed track only if it appears in acknowledged rows. Play selected
+remains the ordinary explicit playback action; no import autoplays. Complete
+without a track ID remains unavailable. Status reads are explicit, not polling.
+
+`link_import_regressions.py --core-library <fresh-dylib> --output <new-dir>`
+executes extracted App owners through ABI1 and owned loopback HTTP; without
+`--core-library` it tests terminal callback delivery. `link_import_layout.py`
+checks window-free native controls at 1×/2× text. Real sheet keyboard/paste,
+permitted music ingestion, audible playback and designer acceptance are separate
+runtime gates. The existing Go fixture below has no downloads routes.
+
 `backend/cmd/native-fixture` composes the actual existing Go auth/library/playback
 handlers and migrations with a uniquely owned empty PostgreSQL database. It
 refuses non-loopback, non-fixture database names and populated databases. It never
