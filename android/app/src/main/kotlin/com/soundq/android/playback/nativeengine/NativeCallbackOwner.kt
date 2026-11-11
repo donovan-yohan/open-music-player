@@ -30,6 +30,8 @@ internal data class NativeCallbackDeck(
     val boundaryGain: Double = 1.0,
     val traversalRevision: Long = 0,
     val naturalEnd: NativeNaturalEndReceipt? = null,
+    /** Requested ordinary listening speed; [rate] is the applied engine pace. */
+    val speed: Double = 1.0,
 )
 
 internal data class NativeCallbackSnapshot(
@@ -40,6 +42,7 @@ internal data class NativeCallbackSnapshot(
     val scheduleEnded: Boolean = false, val scheduleError: Int = 0,
     val tempoApplied: Long = 0, val tempoRefused: Long = 0, val sampleRate: Int = 0,
     val naturalEndVersion: Int = 0,
+    val speedMin: Double = 1.0, val speedMax: Double = 1.0,
 ) {
     companion object {
         private fun naturalEnd(root: JSONObject, deck: JSONObject): NativeNaturalEndReceipt? {
@@ -72,13 +75,14 @@ internal data class NativeCallbackSnapshot(
                 deck.optLong("syncReference"), deck.optInt("syncBeats"), deck.optInt("syncState"), deck.optDouble("syncPhaseErrorFrames", 0.0),
                 deck.optBoolean("pitchPreserved"), deck.optLong("processingEpoch"), deck.optDouble("effectiveBpm",Double.NaN), deck.optLong("tempoGeneration"),
                 deck.optDouble("boundaryGain", 1.0),
-                deck.optLong("traversalRevision"), naturalEnd(root, deck),
+                deck.optLong("traversalRevision"), naturalEnd(root, deck), deck.optDouble("speed", 1.0),
             ) }
             val rate = root.optInt("sampleRate", 0)
             return NativeCallbackSnapshot(json, root.getInt("error"), decks.first(), decks,
                 root.optLong("scheduleRevision"), if (rate > 0) root.optLong("globalFrame") * 1000 / rate else 0,
                 if (rate > 0) root.optLong("durationFrames") * 1000 / rate else 0,
-                root.optBoolean("scheduleReady"), root.optBoolean("schedulePlaying"), root.optBoolean("scheduleEnded"), root.optInt("scheduleError"), root.optLong("tempoApplied"), root.optLong("tempoRefused"), rate, root.optInt("naturalEndVersion"))
+                root.optBoolean("scheduleReady"), root.optBoolean("schedulePlaying"), root.optBoolean("scheduleEnded"), root.optInt("scheduleError"), root.optLong("tempoApplied"), root.optLong("tempoRefused"), rate, root.optInt("naturalEndVersion"),
+                root.optDouble("speedMin", 1.0), root.optDouble("speedMax", 1.0))
         }
     }
 }
@@ -132,8 +136,8 @@ internal class NativeCallbackOwner(
         }
     }
 
-    suspend fun load(file: File, identity: Long, generation: Long, position: Long, current: () -> Boolean): Boolean = loadDeck(0, file, identity, generation, position, current)
-    suspend fun loadDeck(deck: Int, file: File, identity: Long, generation: Long, position: Long, current: () -> Boolean): Boolean =
+    suspend fun load(file: File, identity: Long, generation: Long, position: Long, current: () -> Boolean, speed: Double = 1.0): Boolean = loadDeck(0, file, identity, generation, position, current, speed)
+    suspend fun loadDeck(deck: Int, file: File, identity: Long, generation: Long, position: Long, current: () -> Boolean, speed: Double = 1.0): Boolean =
         withContext(dispatcher) {
             // Calling load transfers custody even if admission is revoked before JNI.
             // A throwing JNI load has uncertain custody. Keep its file through release.
@@ -141,7 +145,8 @@ internal class NativeCallbackOwner(
             borrowed.add(file)
             ordinaryFiles[deck] = file
             if (closing || openingFailed || handle == 0L || !current()) return@withContext false
-            try { calls.load(handle, deck, file.absolutePath, identity, generation, position) }
+            try { if (speed == 1.0) calls.load(handle, deck, file.absolutePath, identity, generation, position)
+                else calls.loadSpeed(handle, deck, file.absolutePath, identity, generation, position, speed) }
             catch (_: Throwable) { false }
         }
 

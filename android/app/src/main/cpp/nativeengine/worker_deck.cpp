@@ -1,11 +1,14 @@
 #include "worker_deck.hpp"
 #include "sq_file_decoder.h"
 #include "decoder_budget.hpp"
+#include "tempo_processor.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
+#include <functional>
+#include <vector>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -44,6 +47,52 @@ Batch neighborhood(Batch batch, uint64_t extent, uint64_t cursor) {
     }
     return batch;
 }
+// Worker-thread only. Pitch-compensated ordinary listening pages: one continuous
+// stretch stream at transpose 1/speed with an identity source-time map, plus a
+// private processed-page cache so neighborhood refills republish identical
+// bytes and only newly required pages advance the stream (no per-page seams).
+struct SpeedPages {
+    struct Page { uint64_t first = 0; uint32_t frames = 0; std::vector<float> pcm; };
+    double speed = 1; uint64_t extent = 0; uint32_t rate = 0;
+    std::unique_ptr<TempoProcessor> processor;
+    std::vector<Page> cache;
+    std::array<float, size_t{tempoPageFrames} * 2> a{}, b{};
+    void reset() { processor.reset(); cache.clear(); speed = 1; extent = 0; rate = 0; }
+    int fill(sq_file_decoder* decoder, double nextSpeed, uint32_t hz, uint64_t frames, uint64_t first,
+             uint32_t count, float* out, const std::function<bool()>& obsolete) {
+        if (!processor || speed != nextSpeed || extent != frames || rate != hz) {
+            cache.clear();
+            transport::ScheduleClip clip{};
+            clip.instance = 1; clip.start = 0; clip.end = frames; clip.trimIn = 0;
+            clip.trimOut = static_cast<double>(frames); clip.sourceRate = hz; clip.sourceFrames = frames;
+            processor = std::make_unique<TempoProcessor>(clip, hz, 1.0 / nextSpeed);
+            speed = nextSpeed; extent = frames; rate = hz;
+        }
+        for (const auto& page : cache) if (page.first == first && page.frames == count) {
+            std::copy_n(page.pcm.data(), size_t{count} * 2, out);
+            return SQ_FILE_OK;
+        }
+        for (uint64_t block = first / tempoPageFrames * tempoPageFrames; block < first + count; block += tempoPageFrames) {
+            if (obsolete()) return SQ_FILE_OK; // reply is discarded by token
+            uint32_t na = 0, nb = 0;
+            const int error = processor->window(decoder, block, a.data(), na, b.data(), nb);
+            if (error) return error;
+            const uint64_t from = std::max(block, first), to = std::min(block + na, first + count);
+            if (to > from) std::copy_n(a.data() + (from - block) * 2, size_t(to - from) * 2, out + (from - first) * 2);
+        }
+        if (cache.size() >= 6) {
+            // Evict the page farthest from this request; the window is local.
+            auto far = std::max_element(cache.begin(), cache.end(), [&](const Page& x, const Page& y) {
+                const auto dx = x.first > first ? x.first - first : first - x.first;
+                const auto dy = y.first > first ? y.first - first : first - y.first;
+                return dx < dy;
+            });
+            cache.erase(far);
+        }
+        cache.push_back({first, count, std::vector<float>(out, out + size_t{count} * 2)});
+        return SQ_FILE_OK;
+    }
+};
 bool sameRange(const Batch& a, const Batch& b) {
     if (a.count != b.count) return false;
     for (uint32_t i = 0; i < a.count; ++i)
@@ -58,18 +107,21 @@ struct WorkerDeck::Impl {
     struct Intent {
         std::string path;
         uint64_t identity = 0, generation = 0, start = 0;
+        double speed = 1;
     };
     struct Job {
         bool open = false;
         uint64_t token = 0, extent = 0, cursor = 0;
         std::string path;
         Batch batch{};
+        double speed = 1;
     };
     struct Reply {
         uint64_t token = 0, extent = 0;
         uint32_t rate = 0;
         int error = 0;
         Batch batch{};
+        double speed = 1;
     };
 
     uint32_t deck;
@@ -82,6 +134,7 @@ struct WorkerDeck::Impl {
     Pending pendingState = Pending::None;
     Batch current{}, pending{};
     uint32_t rate = 0;
+    double pendingSpeed = 1, submittedSpeed = 1;
     bool unloading = false;
     uint64_t extent = 0, pendingReceipt = 0, retirementReceipt = 0, seekReceipt = 0;
     WorkerStats controlStats{};
@@ -162,6 +215,7 @@ struct WorkerDeck::Impl {
         job.token = token.load(std::memory_order_acquire);
         job.extent = extent;
         job.cursor = cursor; // milliseconds for open, source frames for subsequent fills
+        job.speed = intended.speed;
         if (open) job.batch.count = 4;
         else job.batch = neighborhood({}, extent, cursor);
         uint32_t found = 0;
@@ -194,6 +248,7 @@ struct WorkerDeck::Impl {
         for (uint32_t i = result.batch.count; i < pending.count; ++i)
             occupied[pending.slots[i]] = false;
         pending = result.batch;
+        pendingSpeed = result.speed;
         extent = result.extent;
         if (result.rate != 0) rate = result.rate;
         pendingState = Pending::Ready;
@@ -222,7 +277,8 @@ struct WorkerDeck::Impl {
         if (pendingState != Pending::Ready) return false;
         const auto seq = nextSequence();
         if (seq == 0 || !engine.assignPaged(deck, seq, intended.generation,
-                {extent, rate, intended.identity}, window(pending))) return false;
+                {extent, rate, intended.identity, pendingSpeed}, window(pending))) return false;
+        submittedSpeed = pendingSpeed;
         pendingReceipt = seq;
         pendingState = Pending::Submitted;
         phase = Phase::Assigning;
@@ -288,7 +344,10 @@ struct WorkerDeck::Impl {
         if (phase != Phase::Live) return;
         if (pendingState == Pending::Ready) {
             const auto seq = nextSequence();
-            if (seq != 0 && engine.publishWindow(deck, seq, intended.generation, window(pending))) {
+            const bool retimed = pendingSpeed != submittedSpeed;
+            if (seq != 0 && (retimed ? engine.publishWindowRate(deck, seq, intended.generation, window(pending), pendingSpeed)
+                                     : engine.publishWindow(deck, seq, intended.generation, window(pending)))) {
+                submittedSpeed = pendingSpeed;
                 pendingReceipt = seq;
                 pendingState = Pending::Submitted;
                 ++controlStats.publishedWindows;
@@ -303,11 +362,12 @@ struct WorkerDeck::Impl {
         const auto cursor = observed.sourceFrame >= static_cast<double>(extent)
             ? extent - 1 : static_cast<uint64_t>(observed.sourceFrame);
         const auto target = neighborhood({}, extent, cursor);
-        if (!sameRange(current, target)) startFill(false, cursor);
+        if (!sameRange(current, target) || intended.speed != submittedSpeed) startFill(false, cursor);
     }
     void run() {
         sq_file_decoder* decoder = nullptr; // worker-only lifetime, including close
         DecoderPermit permit;
+        SpeedPages speedPages;
         for (;;) {
             Job job;
             {
@@ -320,11 +380,13 @@ struct WorkerDeck::Impl {
             Reply result{};
             result.token = job.token;
             result.extent = job.extent;
+            result.speed = job.speed;
             fillsInFlight.store(1, std::memory_order_release);
             try {
             if (job.open && !obsolete(job.token)) {
                 sq_file_decoder_destroy(decoder);
                 decoder = nullptr;
+                speedPages.reset();
                 openDecoders.store(0, std::memory_order_release);
                 permit.release();
                 if(!permit.acquire())result.error=SQ_FILE_LIMIT;
@@ -354,7 +416,16 @@ struct WorkerDeck::Impl {
                     // after the complete immutable window has been filled.
                     const std::array<uint64_t, 4> priority{{center, center + 1,
                         center == 0 ? std::numeric_limits<uint64_t>::max() : center - 1, center + 2}};
-                    for (const auto page : priority) {
+                    if (job.speed != 1) {
+                        // One continuous ascending stream; cached pages are reused verbatim.
+                        const auto stale = [&] { return obsolete(job.token); };
+                        for (uint32_t i = 0; i < result.batch.count && !stale(); ++i) {
+                            const int error = speedPages.fill(decoder, job.speed, sq_file_decoder_sample_rate(decoder), result.extent,
+                                result.batch.first[i], result.batch.frames[i], pages[result.batch.slots[i]].get(), stale);
+                            if (error != SQ_FILE_OK) { result.error = error; break; }
+                            decodedFrames.fetch_add(result.batch.frames[i], std::memory_order_relaxed);
+                        }
+                    } else for (const auto page : priority) {
                         for (uint32_t i = 0; i < result.batch.count; ++i) {
                             if (result.batch.first[i] / pageFrames != page) continue;
                             if (obsolete(job.token)) break;
@@ -375,6 +446,7 @@ struct WorkerDeck::Impl {
             }
             } catch (...) { result.error = SQ_FILE_OUT_OF_MEMORY; }
             if (result.error != 0 && decoder) {
+                speedPages.reset();
                 sq_file_decoder_destroy(decoder);
                 decoder = nullptr;
                 openDecoders.store(0, std::memory_order_release);
@@ -399,12 +471,13 @@ WorkerDeck::~WorkerDeck() = default;
 
 void WorkerDeck::pump(const transport::Snapshot& snapshot) { impl_->pump(snapshot); }
 
-bool WorkerDeck::replace(const std::string& path, uint64_t identity, uint64_t generation, uint64_t startMs) {
+bool WorkerDeck::replace(const std::string& path, uint64_t identity, uint64_t generation, uint64_t startMs, double speed) {
     auto& p = *impl_;
-    if (!p.valid(path, identity, generation)) return false;
+    if (!p.valid(path, identity, generation) || !std::isfinite(speed) || speed < transport::minListeningSpeed ||
+        speed > transport::maxListeningSpeed) return false;
     // Copy before committing any side effect. Refusal leaves the old request,
     // decoder and ready/current slot custody unchanged.
-    Impl::Intent next{path, identity, generation, startMs};
+    Impl::Intent next{path, identity, generation, startMs, speed};
     uint64_t retirement = p.phase == Impl::Phase::Retiring ? p.retirementReceipt : 0;
     if (p.phase != Impl::Phase::Retiring && (p.current.count != 0 || p.pendingState == Impl::Pending::Submitted)) {
         retirement = p.nextSequence();
@@ -425,6 +498,23 @@ bool WorkerDeck::replace(const std::string& path, uint64_t identity, uint64_t ge
     // structural receipt AND concrete worker reply before scheduling reopen.
     return true;
 }
+bool WorkerDeck::setSpeed(double speed) {
+    auto& p = *impl_;
+    if (!std::isfinite(speed) || speed < transport::minListeningSpeed || speed > transport::maxListeningSpeed ||
+        p.unloading || p.phase == Impl::Phase::Retiring || p.phase == Impl::Phase::Failed || p.phase == Impl::Phase::Empty) return false;
+    if (speed == p.intended.speed) return true;
+    p.intended.speed = speed;
+    // Before Live the first window is still being prepared; Live pump refills
+    // whenever intent differs from the submitted rate. While Live, revoke an
+    // obsolete-speed fill or unpublished ready window (never a submitted one).
+    if (p.phase == Impl::Phase::Live) {
+        if (p.pendingState == Impl::Pending::Filling) p.token.fetch_add(1, std::memory_order_acq_rel);
+        else if (p.pendingState == Impl::Pending::Ready) { p.discardUnborrowed(p.pending); p.pendingState = Impl::Pending::None; }
+    }
+    return true;
+}
+double WorkerDeck::speed() const noexcept { return impl_->intended.speed; }
+double WorkerDeck::appliedSpeed() const noexcept { return impl_->submittedSpeed; }
 bool WorkerDeck::retire() {
     auto& p = *impl_;
     uint64_t receipt = p.phase == Impl::Phase::Retiring ? p.retirementReceipt : 0;

@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -70,6 +71,7 @@ import androidx.compose.ui.window.SecureFlagPolicy
     onInfo:(()->Unit)?=null,
     modifier:Modifier=Modifier,
     compact:Boolean=false,
+    speed:SoundQSpeedCell?=null,
 ) {
     val color=SoundQ.colors.border
     val rule=with(LocalDensity.current){SoundQ.sizes.border.toPx()}
@@ -77,6 +79,7 @@ import androidx.compose.ui.window.SecureFlagPolicy
         drawLine(color,Offset.Zero,Offset(size.width,0f),rule)
     }) {
         PlayerUtility("Open listening queue",onQueue,true) {SoundQIcon(SoundQIcon.List,null)}
+        if(speed!=null)SpeedUtility(speed,false)
         if(onDevices!=null)PlayerUtility("Connected devices",onDevices,false) {SoundQIcon(SoundQPlayerIcon.Devices,null)}
         if(onInfo!=null)PlayerUtility("Song details",onInfo,false) {SoundQIcon(SoundQIcon.Info,null)}
     }
@@ -100,6 +103,8 @@ import androidx.compose.ui.window.SecureFlagPolicy
     onDevices:(()->Unit)?=null,onInfo:(()->Unit)?=null,artwork:(@Composable ()->Unit)?=null,error:String?=null,
     returnFocus:FocusRequester?=null,
     clockContent:(@Composable ()->Unit)?=null,
+    speedCell:SoundQSpeedCell?=null,
+    speedContent:(@Composable ()->Unit)?=null,
 ) {
     val latestReturnFocus by rememberUpdatedState(returnFocus)
     DisposableEffect(Unit) {onDispose {latestReturnFocus?.let {runCatching {it.requestFocus()}}}}
@@ -112,7 +117,7 @@ import androidx.compose.ui.window.SecureFlagPolicy
             // This host alone consumes bars. Content can also be mounted without platform insets in a gallery.
             SoundQFullPlayerContent(title,artist,playing,available,preparing,position,duration,selectedOccurrence,
                 onClose,onPrimary,onSeek,onQueue,onPrevious,onNext,canPrevious,canNext,shuffle,repeat,onShuffle,onRepeat,
-                onDevices,onInfo,artwork,error,Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),clockContent)
+                onDevices,onInfo,artwork,error,Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),clockContent,speedCell,speedContent)
         }
     }
 }
@@ -146,6 +151,8 @@ import androidx.compose.ui.window.SecureFlagPolicy
     onDevices:(()->Unit)?=null,onInfo:(()->Unit)?=null,artwork:(@Composable ()->Unit)?=null,error:String?=null,
     modifier:Modifier=Modifier,
     clockContent:(@Composable ()->Unit)?=null,
+    speedCell:SoundQSpeedCell?=null,
+    speedContent:(@Composable ()->Unit)?=null,
 ) {
     Column(modifier.background(SoundQ.colors.sheet).onPreviewKeyEvent {
         if(it.key==Key.Escape&&it.type==KeyEventType.KeyUp){onClose();true}else false
@@ -183,7 +190,15 @@ import androidx.compose.ui.window.SecureFlagPolicy
                     }
                     SoundQTransport(playing,available,preparing,onPrimary,onPrevious,onNext,canPrevious,canNext,
                         shuffle,repeat,onShuffle,onRepeat)
-                    SoundQPlayerUtilities(onQueue,onDevices,onInfo,compact=landscape)
+                    // The speed panel mounts directly under the utilities (no gap), like clockContent.
+                    Column(Modifier.fillMaxWidth()) {
+                        SoundQPlayerUtilities(onQueue,onDevices,onInfo,compact=landscape,speed=speedCell)
+                        if(speedCell?.expanded==true&&speedContent!=null) {
+                            val reveal=remember {androidx.compose.foundation.relocation.BringIntoViewRequester()}
+                            Box(Modifier.fillMaxWidth().bringIntoViewRequester(reveal)) {speedContent()}
+                            LaunchedEffect(reveal) {reveal.bringIntoView()}
+                        }
+                    }
                 }
             }
             // The minimum viewport centers a fitting composition; overflow scrolls below the fixed toolbar.

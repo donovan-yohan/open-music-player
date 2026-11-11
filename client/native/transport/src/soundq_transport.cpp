@@ -73,7 +73,7 @@ struct Ramp {
         else if (remaining != 0) value += step;
     }
 };
-enum class EnvelopeKind { Command, AssignPaged, Window, Unassign, ScheduleInstall, ScheduleBind, ScheduleTransport, Scratch, Sync, TempoHandoff, TempoUnchanged, Crossfade };
+enum class EnvelopeKind { Command, AssignPaged, Window, WindowRate, Unassign, ScheduleInstall, ScheduleBind, ScheduleTransport, Scratch, Sync, TempoHandoff, TempoUnchanged, Crossfade };
 struct Envelope {
     EnvelopeKind kind = EnvelopeKind::Command;
     Command command{};
@@ -129,6 +129,9 @@ struct Deck {
     double cursor = 0;
     Ramp rate{};
     Ramp gain{};
+    // Accepted ordinary listening speed (pitch-compensated pages). It sets pace
+    // only; rate attenuation is measured relative to it, never as a level cut.
+    double listening = 1;
     bool playing = false;
     bool scratching = false;
     bool savedPlaying = false;
@@ -181,6 +184,24 @@ struct Engine::Impl {
         if(!boundary.begun)return slot==boundary.in?0:1;
         const auto phase=std::min(1.,double(boundary.elapsed)/boundary.length)*1.57079632679489661923;
         return slot==boundary.out?std::cos(phase):slot==boundary.in?std::sin(phase):1;
+    }
+    // A listening-speed change on the outgoing deck of an accepted fade: keep the
+    // gain phase continuous and re-fit the remainder so it still ends at EOF.
+    void retimeBoundary(uint32_t slot, double previous) noexcept {
+        if(!boundaryCurrent() || slot!=boundary.out || !(previous>0))return;
+        const auto& a=decks[boundary.out];const double rate=a.rate.value;
+        if(!(rate>0) || a.cursor>=a.source.frames)return;
+        const auto remaining=static_cast<uint64_t>(std::ceil((a.source.frames-a.cursor)*outputRate/(a.source.sourceRate*rate)));
+        if(!boundary.begun) {
+            boundary.length=std::min(boundary.length,remaining);
+            boundary.start=a.source.frames-double(boundary.length)*rate*a.source.sourceRate/outputRate;
+            return;
+        }
+        if(boundary.elapsed>=boundary.length || remaining==0)return;
+        const double done=double(boundary.elapsed)/boundary.length;
+        const auto length=static_cast<uint64_t>(std::llround(double(remaining)/(1-done)));
+        boundary.length=std::max<uint64_t>(length,remaining);
+        boundary.elapsed=boundary.length-remaining;
     }
     bool boundarySample() noexcept {
         if(!boundaryCurrent()) {boundary={};return true;}
@@ -306,11 +327,14 @@ struct Engine::Impl {
                 if(!envelope.frame) {decks[in].playing=false;boundary={};}
                 else {
                     auto& a=decks[out];auto& b=decks[in];
-                    const auto remaining=static_cast<uint64_t>(std::ceil((a.source.frames-a.cursor)*outputRate/a.source.sourceRate));
-                    const auto incoming=static_cast<uint64_t>(std::floor(b.source.frames*double(outputRate)/b.source.sourceRate/2));
+                    // Ordinary listening speed changes wall-clock pace, not source
+                    // coordinates: the fade spans output frames and ends at EOF.
+                    const double ar=a.rate.target>0?a.rate.target:1,br=b.rate.target>0?b.rate.target:1;
+                    const auto remaining=static_cast<uint64_t>(std::ceil((a.source.frames-a.cursor)*outputRate/(a.source.sourceRate*ar)));
+                    const auto incoming=static_cast<uint64_t>(std::floor(b.source.frames*double(outputRate)/(b.source.sourceRate*br)/2));
                     const auto length=std::min({envelope.frame,remaining,incoming});
                     if(length && !b.playing && b.cursor==0 && !a.scratching && !b.scratching) {
-                        boundary={out,in,c.generation,c.gesture,length,0,a.source.frames-double(length)*a.source.sourceRate/outputRate,false};
+                        boundary={out,in,c.generation,c.gesture,length,0,a.source.frames-double(length)*ar*a.source.sourceRate/outputRate,false};
                     }
                 }
             }
@@ -396,8 +420,19 @@ struct Engine::Impl {
                 d = Deck{}; d.source = c.source; d.generation = c.generation;
                 d.traversalRevision = c.sequence;
                 d.paged = true; d.window = envelope.window;
+                d.rate.value = d.rate.target = d.listening = c.value; d.rate.remaining = 0;
             } else if (envelope.kind == EnvelopeKind::Window) {
                 d.window = envelope.window;
+            } else if (envelope.kind == EnvelopeKind::WindowRate) {
+                // Pages and pace change in this one block. Generation is fenced
+                // by the producer; a scratch admitted later in FIFO order owns
+                // rate afterwards. Not a traversal: cursor/EOF evidence remain.
+                if (d.generation == c.generation && !d.scratching) {
+                    const auto previous = d.rate.value;
+                    d.window = envelope.window;
+                    d.rate.value = d.rate.target = d.listening = c.value; d.rate.remaining = 0;
+                    retimeBoundary(c.deck, previous);
+                } else refused.fetch_add(1, std::memory_order_relaxed);
             } else {
                 d = Deck{}; d.generation = c.generation;
             }
@@ -674,12 +709,14 @@ bool Engine::assignPaged(uint32_t deck, uint64_t sequence, uint64_t generation,
     if (p.producerSchedule || deck >= 4 || sequence == 0 || sequence <= p.admittedSequence || generation == 0 ||
         generation <= p.producerDecks[deck].generation ||
         !validExtent(source.frames, source.sourceRate, source.identity) ||
+        !std::isfinite(source.speed) || source.speed < minListeningSpeed || source.speed > maxListeningSpeed ||
         !validWindow(window, source.frames)) return p.reject();
     Envelope envelope;
     envelope.kind = EnvelopeKind::AssignPaged;
     auto& c = envelope.command;
     c.deck = deck; c.sequence = sequence; c.generation = generation;
     c.source = {nullptr, source.frames, source.sourceRate, source.identity};
+    c.value = source.speed;
     envelope.window = window;
     ProducerDeck next;
     next.generation = generation; next.frames = source.frames; next.paged = true;
@@ -697,6 +734,21 @@ bool Engine::publishWindow(uint32_t deck, uint64_t sequence, uint64_t generation
     envelope.kind = EnvelopeKind::Window;
     envelope.command.deck = deck; envelope.command.sequence = sequence;
     envelope.command.generation = generation; envelope.window = window;
+    return p.enqueue(envelope, current);
+}
+bool Engine::publishWindowRate(uint32_t deck, uint64_t sequence, uint64_t generation,
+                               const PcmWindow& window, double rate) noexcept {
+    auto& p = *impl_;
+    if (p.producerSchedule || deck >= 4 || sequence == 0 || sequence <= p.admittedSequence || generation == 0 ||
+        !std::isfinite(rate) || rate < minListeningSpeed || rate > maxListeningSpeed)
+        return p.reject();
+    const auto& current = p.producerDecks[deck];
+    if (generation != current.generation || current.frames == 0 || !current.paged || current.gesture != 0 ||
+        !validWindow(window, current.frames)) return p.reject();
+    Envelope envelope;
+    envelope.kind = EnvelopeKind::WindowRate;
+    envelope.command.deck = deck; envelope.command.sequence = sequence;
+    envelope.command.generation = generation; envelope.command.value = rate; envelope.window = window;
     return p.enqueue(envelope, current);
 }
 bool Engine::unassign(uint32_t deck, uint64_t sequence, uint64_t generation) noexcept {
@@ -997,7 +1049,9 @@ void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
             const auto index = static_cast<uint64_t>(position);
             const auto next = std::min(index + 1, d.source.frames - 1);
             const auto fraction = position - static_cast<double>(index);
-            const auto level = d.gain.value * std::min(1.0, std::abs(d.rate.value)) * p.boundaryGain(static_cast<uint32_t>(&d-p.decks.data()));
+            // Scratch/varispeed slow motion attenuates; an accepted listening speed does not.
+            const auto slow = d.scratching ? std::abs(d.rate.value) : std::abs(d.rate.value) / d.listening;
+            const auto level = d.gain.value * std::min(1.0, slow) * p.boundaryGain(static_cast<uint32_t>(&d-p.decks.data()));
             const auto* firstTap = d.tap(index);
             const auto* nextTap = d.tap(next);
             if (!firstTap || !nextTap) { ++d.missingPcmFrames; continue; }

@@ -431,6 +431,7 @@ import com.soundq.android.product.imports.ImportsScreen
                         val openInfo:(()->Unit)?=if(selectedDevice!=null){{selectedPhone=selectedDevice;panel="PhoneTrack"}}else if(infoCapture==null)null else {{
                             if(playerEntry.get()&&panel=="Player")model.graph.trackDetails.open(infoCapture)?.let {detailsRoute=it;model.loadTrackDetails(it);panel="Details"}
                         }}
+                        val speed=rememberFullPlayerSpeed(playback,model.controller::setListeningSpeed)
                         SoundQFullPlayer(playback.title ?: "No track selected",playback.artist,playback.isPlaying,
                             playback.canPlay,playback.preparing,playback.positionMs,playback.durationMs,playback.selectedOccurrence,
                             onClose={panel=transportReturn;transportReturn=null},onPrimary=model.controller::toggle,onSeek=model.controller::seek,onQueue={transportReturn="Player";panel="Queue"},
@@ -438,6 +439,7 @@ import com.soundq.android.product.imports.ImportsScreen
                             shuffle=playback.shuffle,repeat=playback.repeat,onShuffle=model.controller::shuffle,onRepeat=model.controller::repeat,
                             onDevices=if(auth is AuthState.SignedIn){{panel="Devices"}}else null,onInfo=openInfo,error=playback.error,
                             clockContent=if(playback.source==com.soundq.android.playback.PlaybackSource.Queue&&playback.clockAuthority!=null){{FullPlayerClock(playback,model.controller::seekClock)}}else null,
+                            speedCell=speed.cell,speedContent=speed.content,
                             artwork={BoxWithConstraints(Modifier.fillMaxSize()) {
                                 com.soundq.android.product.artwork.PlayerArtwork(model.graph,playback,maxWidth,{playerEntry.get()&&panel=="Player"})
                             }})

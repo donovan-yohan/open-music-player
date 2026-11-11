@@ -18,8 +18,8 @@ struct TempoProcessor::Impl {
     int64_t previous=0, decodedFirst=-1;uint32_t decodedCount=0;
     unsigned inputLatency=0, outputLatency=0;
     int status=0;
-    Impl(const transport::ScheduleClip& clip,uint32_t rate):c(clip),outputRate(rate),extent(transport::preparedExtent(c,rate)),decoded(16384*2) {
-        stretch.presetDefault(2,c.sourceRate,true);stretch.setTransposeFactor(1);
+    Impl(const transport::ScheduleClip& clip,uint32_t rate,double transpose):c(clip),outputRate(rate),extent(transport::preparedExtent(c,rate)),decoded(16384*2) {
+        stretch.presetDefault(2,c.sourceRate,true);stretch.setTransposeFactor(static_cast<float>(transpose));
         inputLatency=stretch.inputLatency();outputLatency=stretch.outputLatency();
         for(auto& v:input)v.resize(std::max<unsigned>(inputLatency,512));
         for(auto& v:cache)v.resize(tempoPageFrames*2);
@@ -88,7 +88,7 @@ struct TempoProcessor::Impl {
         return 0;
     }
 };
-TempoProcessor::TempoProcessor(const transport::ScheduleClip& c,uint32_t outputRate):impl(std::make_unique<Impl>(c,outputRate)){}
+TempoProcessor::TempoProcessor(const transport::ScheduleClip& c,uint32_t outputRate,double transpose):impl(std::make_unique<Impl>(c,outputRate,transpose)){}
 TempoProcessor::~TempoProcessor()=default;
 int TempoProcessor::window(sq_file_decoder* d,uint64_t first,float* a,uint32_t& na,float* b,uint32_t& nb){return impl->window(d,first,a,na,b,nb);}
 }

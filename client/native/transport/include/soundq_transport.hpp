@@ -26,7 +26,13 @@ struct PagedSource {
     uint64_t frames = 0;
     uint32_t sourceRate = 0;
     uint64_t identity = 0;
+    // Initial ordinary listening speed, applied with the first window and no
+    // ramp. The producer must supply pages already prepared for this speed.
+    double speed = 1;
 };
+// Ordinary listening speed bounds accepted by the engine envelope. Products may
+// admit a narrower range; the engine never interprets speed as BPM/tempo law.
+constexpr double minListeningSpeed = 0.25, maxListeningSpeed = 4;
 constexpr uint32_t maxPcmPageFrames = 48000;
 struct PcmPage {
     const float* samples = nullptr;
@@ -203,6 +209,12 @@ public:
     // Replace residency only, preserving cursor/rate/gain/gesture and logical EOF.
     bool publishWindow(uint32_t deck, uint64_t sequence, uint64_t generation,
                        const PcmWindow& window) noexcept;
+    // Ordinary listening speed handoff: replace residency AND set the deck rate
+    // in the same consumed block, without a smoothing ramp. Source cursor,
+    // traversal revision, logical extent and EOF/natural-end evidence are
+    // unchanged; only consumption pace changes. Refused while scratching.
+    bool publishWindowRate(uint32_t deck, uint64_t sequence, uint64_t generation,
+                           const PcmWindow& window, double rate) noexcept;
     // Keeps generation tombstone, clears source/play/gesture. A newer assignment
     // must use a larger generation. Pending old decoder replies stay inadmissible.
     bool unassign(uint32_t deck, uint64_t sequence, uint64_t generation) noexcept;

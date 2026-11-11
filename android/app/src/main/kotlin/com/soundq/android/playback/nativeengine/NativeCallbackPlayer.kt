@@ -56,7 +56,8 @@ internal class NativeCallbackPlayer(
     private var sourceSequence = 0L
     private class Successor(val item: MediaItem, val grant: MediaGrant, val uri: String,
         val deck: Int, val identity: Long, val outgoing: MediaItem, val outgoingGrant: MediaGrant,
-        val outgoingUri: String, val outgoingDeck: Int, val outgoingIdentity: Long, val outgoingEof: Long) {
+        val outgoingUri: String, val outgoingDeck: Int, val outgoingIdentity: Long, val outgoingEof: Long,
+        val speed: Double = 1.0) {
         var armed = false
         var arming = false
         var completed = false
@@ -103,7 +104,7 @@ internal class NativeCallbackPlayer(
         val generation = epoch; val revision = successorRevision
         sourceSequence = maxOf(sourceSequence, epoch) + 2
         val c = Successor(item, grant, uri, 1 - ordinaryDeck, sourceSequence, selected() ?: return,
-            activeGrant ?: return, activeUri ?: return, ordinaryDeck, ordinaryIdentity, eofCount)
+            activeGrant ?: return, activeUri ?: return, ordinaryDeck, ordinaryIdentity, eofCount, loadSpeed(item))
         successor = c
         fun current() = !released && epoch == generation && successorRevision == revision && successorCurrent(c)
         val predecessor = tail
@@ -115,7 +116,7 @@ internal class NativeCallbackPlayer(
                 withContext(NonCancellable + Dispatchers.IO) { file = source.prepare(item, ::current) }
                 ensureActive(); check(current())
                 transferred = true
-                check(withContext(NonCancellable) { owner.loadDeck(c.deck, requireNotNull(file), c.identity, c.identity, 0, ::current) })
+                check(withContext(NonCancellable) { owner.loadDeck(c.deck, requireNotNull(file), c.identity, c.identity, 0, ::current, c.speed) })
                 check(current())
                 bindJournal(item,grant,requireNotNull(file),c.deck,c.identity,true,::current)
                 owner.controlDeck(c.deck, 7, volume.toDouble(), ::current)
@@ -211,6 +212,98 @@ internal class NativeCallbackPlayer(
     private val owner = NativeCallbackOwner(calls, ::observe)
     private val journal = NativeListeningJournal(graph,lifetime)
     private var explicitSeek=0L
+
+    // ---- Ordinary listening speed (never arrangement tempo/BPM) ----
+    /** Service-owned per-track preference consulted at each ordinary deck load. */
+    var speedFor: (MediaItem) -> Double = { 1.0 }
+    var onSpeedChanged: (() -> Unit)? = null
+    private var speedBounds = 1.0 to 1.0
+    /** Set when the native capability first arrives (or changes): a deck loaded before it
+     * could only start at 1.0, so the selected source re-applies its stored speed once. */
+    private var reconcileSpeed = false
+    private var observedSpeed: Pair<Long, Double>? = null // ordinary deck identity -> applied engine rate
+    private class SpeedRequest(val occurrence: String, val speed: Double, val done: (Boolean) -> Unit) {
+        var submittedIdentity = 0L
+        var finished = false
+        fun finish(ok: Boolean) { if (!finished) { finished = true; done(ok) } }
+    }
+    private var speedRequest: SpeedRequest? = null
+    private var speedDeadline: Job? = null
+    private fun loadSpeed(item: MediaItem): Double {
+        val (min, max) = speedBounds
+        // Jam occurrences follow the shared party clock; never a private listening pace.
+        if (item.mediaMetadata.extras?.getString("soundqJam") != null) return 1.0
+        val wanted = runCatching { speedFor(item) }.getOrDefault(1.0)
+        // Before the first native capability report only normal speed is admissible.
+        return if (wanted.isFinite() && (wanted == 1.0 || (min < 1.0 && max > 1.0 && wanted in min..max))) wanted else 1.0
+    }
+    private fun retireSpeedRequest() {
+        val request = speedRequest ?: return
+        speedRequest = null; speedDeadline?.cancel(); speedDeadline = null
+        request.finish(false)
+    }
+    /** Accepted speed for the selected occurrence: the native deck's applied rate once its
+     * source is assigned, otherwise the stored preference that will apply at load. */
+    internal fun listeningSpeed(): com.soundq.android.playback.ListeningSpeedState? {
+        val item = selected() ?: return null
+        val (min, max) = speedBounds
+        val reason = when {
+            arrangement != null -> com.soundq.android.playback.ListeningSpeedUnavailable.Arrangement
+            item.mediaMetadata.extras?.getString("soundqJam") != null -> com.soundq.android.playback.ListeningSpeedUnavailable.Jam
+            !(min < 1.0 && max > 1.0) -> com.soundq.android.playback.ListeningSpeedUnavailable.Source
+            else -> null
+        }
+        val applied = observedSpeed?.takeIf { selectedLoaded && it.first == ordinaryIdentity && arrangement == null }?.second
+        return com.soundq.android.playback.ListeningSpeedState(item.mediaId, if (reason != null && arrangement != null) 1.0 else applied ?: loadSpeed(item), min, max, reason)
+    }
+    /** One latest-wins request for exactly [occurrence]. Completion is the native applied-rate
+     * receipt (or, with no assigned source, acceptance of the preference for its next load).
+     * A selection change, refusal or timeout completes false and changes nothing audible. */
+    internal fun requestSpeed(occurrence: String, speed: Double, done: (Boolean) -> Unit) {
+        retireSpeedRequest()
+        val item = selected()
+        val state = listeningSpeed()
+        if (released || item == null || item.mediaId != occurrence || state == null || state.unavailable != null ||
+            !speed.isFinite() || speed !in state.min..state.max || !currentScope()) { done(false); return }
+        val request = SpeedRequest(occurrence, speed, done)
+        if (!selectedLoaded && pending == null) { request.finish(true); return } // applies at next load
+        speedRequest = request
+        speedDeadline = lifetime.launch { delay(8_000); if (speedRequest === request) retireSpeedRequest() }
+    }
+    /** Called after an accepted preference change; a prepared successor of the same track
+     * must not start at its stale speed. */
+    internal fun speedPreferenceChanged() {
+        val c = successor ?: return
+        if (loadSpeed(c.item) != c.speed) cancelSuccessor()
+    }
+    private fun observeSpeed(deck: NativeCallbackDeck) {
+        val previous = observedSpeed
+        if (reconcileSpeed && speedRequest == null && deck.ready && arrangement == null) {
+            reconcileSpeed = false
+            selected()?.let { item ->
+                val wanted = loadSpeed(item)
+                if (deck.speed != wanted) requestSpeed(item.mediaId, wanted) { invalidateState(); onSpeedChanged?.invoke() }
+            }
+        }
+        if (deck.rate.isFinite() && deck.rate > 0 && !deck.scratching) observedSpeed = ordinaryIdentity to deck.rate
+        val request = speedRequest
+        if (request != null) {
+            if (selected()?.mediaId != request.occurrence) retireSpeedRequest()
+            else if (deck.ready && deck.speed == request.speed && deck.rate == request.speed) {
+                speedRequest = null; speedDeadline?.cancel(); speedDeadline = null; request.finish(true)
+            } else if (deck.ready && request.submittedIdentity != ordinaryIdentity) {
+                request.submittedIdentity = ordinaryIdentity
+                val generation = epoch; val identity = ordinaryIdentity; val slot = ordinaryDeck
+                lifetime.launch {
+                    val admitted = owner.controlDeck(slot, 10, request.speed) {
+                        !released && generation == epoch && identity == ordinaryIdentity && speedRequest === request
+                    }
+                    if (!admitted && speedRequest === request) retireSpeedRequest()
+                }
+            }
+        }
+        if (previous != observedSpeed) { invalidateState(); onSpeedChanged?.invoke() }
+    }
     val nativeReleased get() = owner.released
     val preparationSettled get() = preparing.get() == 0
     @JvmName("nativeDiagnostics")
@@ -708,6 +801,9 @@ internal class NativeCallbackPlayer(
                 Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS else Player.PLAYBACK_SUPPRESSION_REASON_NONE)
             .setPlaybackState(playback).setIsLoading(playback == Player.STATE_BUFFERING)
             .setPlayerError(error).setRepeatMode(repeat).setShuffleModeEnabled(shuffle).setVolume(volume)
+            // Accepted listening pace only (controllers extrapolate source position with it).
+            // COMMAND_SET_SPEED_AND_PITCH is not offered: requests use the receipted service command.
+            .setPlaybackParameters(PlaybackParameters((listeningSpeed()?.takeIf { it.unavailable == null }?.accepted ?: 1.0).toFloat()))
             .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build())
         acknowledgedSeekPosition?.let { base.setPositionDiscontinuity(Player.DISCONTINUITY_REASON_SEEK, it) }
         if (acknowledgedSeekPosition == null) acknowledgedPausePosition?.let {
@@ -854,6 +950,7 @@ internal class NativeCallbackPlayer(
 
     /** Revocation is synchronous. The old acquisition then joins before any successor is admitted. */
     private fun retireSelection(natural:Boolean=false) {
+        retireSpeedRequest(); observedSpeed = null
         if(!natural)journal.freeze()
         cancelSuccessor(natural=natural)
         revokePerformance()
@@ -933,7 +1030,7 @@ internal class NativeCallbackPlayer(
                 check(current())
                 val initialPosition = position
                 transferred = true
-                val accepted = withContext(NonCancellable) { owner.load(requireNotNull(file), generation, generation, initialPosition, ::current) }
+                val accepted = withContext(NonCancellable) { owner.load(requireNotNull(file), generation, generation, initialPosition, ::current, loadSpeed(item)) }
                 check(current())
                 check(accepted)
                 bindJournal(item,grant,requireNotNull(file),ordinaryDeck,generation,position==0L&&explicitSeek==seekAtPreparation,::current)
@@ -1309,6 +1406,10 @@ internal class NativeCallbackPlayer(
             invalidateState()
             return
         }
+        if (snapshot.speedMax > snapshot.speedMin && (snapshot.speedMin to snapshot.speedMax) != speedBounds) {
+            speedBounds = snapshot.speedMin to snapshot.speedMax; reconcileSpeed = true
+            speedPreferenceChanged(); onSpeedChanged?.invoke()
+        }
         journal.observe(snapshot,allowNatural=intent&&desiredSeek==null)
         if (observeSuccessor(snapshot)) return
         val deck = snapshot.decks.getOrNull(ordinaryDeck) ?: return
@@ -1317,6 +1418,7 @@ internal class NativeCallbackPlayer(
         if (deck.error != 0) { fail("Audio format could not be decoded"); return }
         if (deck.sourceRate > 0 && deck.sourceFrames > 0) selected()?.let { durations[it.mediaId] = deck.durationMs }
         acknowledgedPlaying = deck.playing
+        observeSpeed(deck)
         val seekTarget = desiredSeek
         // JNI Seek is admission, not cursor ACK. Ignore an older EOF until native cursor arrives.
         if (seekTarget != null && submittedSeek == seekTarget && deck.ready &&

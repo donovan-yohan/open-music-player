@@ -82,7 +82,8 @@ private class Hardware {
  fun deck()=NativeCallbackDeck(identity,identity,position,601000,48000,28848000,true,false,plays>0,0,0,rate=1.0,traversalRevision=revision)
  suspend fun snapshot(current:()->Boolean)=if(current())NativeCallbackSnapshot("",0,deck())else null
  suspend fun recoverOutput(current:()->Boolean)=current()
- suspend fun load(file:File,id:Long,generation:Long,p:Long,current:()->Boolean):Boolean {if(!current())return false;loaded=file;identity=id;position=p;return true}
+ var loadedSpeed=0.0
+ suspend fun load(file:File,id:Long,generation:Long,p:Long,current:()->Boolean,speed:Double=1.0):Boolean {if(!current())return false;loaded=file;identity=id;position=p;loadedSpeed=speed;return true}
  suspend fun control(operation:Int,value:Double,current:()->Boolean)=current()
  suspend fun arrangement(operation:Int,value:Long,current:()->Boolean)=current()
  suspend fun controlDeck(slot:Int,operation:Int,value:Double=0.0,current:()->Boolean):Boolean {if(!current())return false;if(operation==3){position=value.toLong();revision++};return true}
@@ -91,6 +92,7 @@ private class CanonicalPrepare(val graph:Graph,val grants:ConcurrentHashMap<Stri
  var intent=true;var released=false;var pending:Job?=null;var tail:Job?=null;var selectedLoaded=false;var arrangement:Any?=null;var activeGrant:MediaGrant?=null;var activeUri:String?=null;var queueScope:AccountScope?=null
  var epoch=1L;var sourceSequence=0L;var ordinaryDeck=0;var ordinaryIdentity=0L;var playback=Player.STATE_IDLE;var error:Any?=null;var eofCount=0L;var position=0L;val preparing=AtomicInteger();var explicitSeek=0L;var seekRevision=0L;var submittedSeek:Long?=null;var desiredSeek:Long?=null;var acknowledgedSeekPosition:Long?=null;var outputUnavailable=false;val volume=1f
  val source=Source(graph,grants);val owner=Hardware();val journal=NativeListeningJournal(graph,lifetime)
+ fun loadSpeed(item:MediaItem)=1.0
  fun selected()=items.firstOrNull();fun validate(rows:List<MediaItem>){check(rows.all {grants[it.localConfiguration!!.uri.toString()]?.current(graph)==true})}
  fun assignmentCurrent()=activeGrant?.current(graph)==true
  fun retrySeek(target:Long){seekNative(target)}
