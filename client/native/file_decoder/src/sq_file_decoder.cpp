@@ -41,6 +41,7 @@ struct sq_file_decoder {
 namespace {
 uint16_t le16(const unsigned char *b) { return uint16_t(b[0] | uint16_t(b[1])<<8); }
 uint32_t le32(const unsigned char *b) { return uint32_t(b[0]) | uint32_t(b[1])<<8 | uint32_t(b[2])<<16 | uint32_t(b[3])<<24; }
+uint64_t le64(const unsigned char *b) { return uint64_t(le32(b)) | uint64_t(le32(b+4))<<32; }
 bool at(FILE *f, uint64_t offset, void *b, size_t n) {
   return fseeko(f, static_cast<off_t>(offset), SEEK_SET)==0 && fread(b,1,n,f)==n;
 }
@@ -137,6 +138,16 @@ int mp3_window(sq_file_decoder *d,int64_t start,uint32_t count,float *out) {
   }
   return SQ_FILE_OK;
 }
+int pcm64_open(sq_file_decoder *d, uint64_t size) {
+  unsigned char h[32];
+  if (!at(d->file,0,h,32) || memcmp(h,"SQP1",4) || le32(h+4)!=32 ||
+      le32(h+12)!=2 || le64(h+24)!=0) return SQ_FILE_INVALID_STREAM;
+  const uint64_t frames=le64(h+16); const uint32_t rate=le32(h+8);
+  if (rate<8000 || rate>192000 || !frames || frames>uint64_t(rate)*86400 ||
+      frames>(SQ_FILE_MAX_FILE_BYTES-32)/8 || size!=32+frames*8) return SQ_FILE_INVALID_STREAM;
+  d->rate=rate; d->source_channels=2; d->format=3; d->block=8;
+  d->data_offset=32; d->frames=static_cast<int64_t>(frames); return SQ_FILE_OK;
+}
 int wav_open(sq_file_decoder *d, uint64_t size) {
   unsigned char h[16];
   if (!at(d->file,0,h,12) || memcmp(h,"RIFF",4) || memcmp(h+8,"WAVE",4) || uint64_t(le32(h+4))+8!=size) return SQ_FILE_INVALID_STREAM;
@@ -182,9 +193,11 @@ int sq_file_decoder_open(const char *path, uint64_t max_bytes, sq_file_decoder *
   unsigned char magic[4]{};
   int status=SQ_FILE_INVALID_STREAM;
   if (at(file,0,magic,4)) {
-    if (!memcmp(magic,"RIFF",4)) status=wav_open(d,uint64_t(st.st_size));
+    if (!memcmp(magic,"SQP1",4)) status=pcm64_open(d,uint64_t(st.st_size));
+    else if (uint64_t(st.st_size)>SQ_FILE_MAX_ENCODED_BYTES) status=SQ_FILE_LIMIT;
+    else if (!memcmp(magic,"RIFF",4)) status=wav_open(d,uint64_t(st.st_size));
     else if (!memcmp(magic,"OggS",4)) {
-      status=sq_opus_decoder_open(path,max_bytes,&d->opus);
+      status=sq_opus_decoder_open(path,std::min<uint64_t>(max_bytes,SQ_FILE_MAX_ENCODED_BYTES),&d->opus);
       if (!status) { d->rate=sq_opus_decoder_sample_rate(d->opus); d->source_channels=2; d->frames=sq_opus_decoder_frame_count(d->opus); }
     } else if (!memcmp(magic,"ID3",3) || (magic[0]==255 && (magic[1]&224)==224)) status=mp3_open(d,uint64_t(st.st_size));
   }

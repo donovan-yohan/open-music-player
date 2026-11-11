@@ -18,6 +18,7 @@ resolve=block(service,'    private fun resolve(').replace('private fun resolve',
 # Boundaries are declared independently; no production callback bodies are rewritten.
 prelude='''package com.soundq.android.continuationprobe
 import com.soundq.android.data.*
+import com.soundq.android.playback.PlaybackRef
 import com.soundq.android.data.preferences.*
 import com.google.common.util.concurrent.*
 import kotlinx.coroutines.*
@@ -63,11 +64,11 @@ private class MediaGrant(val scope:AccountScope,val id:TrackId,val localOnly:Boo
 private class Jam {fun replaceOwner(){}}
 private class TimelinePort {fun cancelAudition(){}}
 private class ContextStartsBoundary {fun retire(){}}
-private class Graph(val session:AccountSession,val api:SoundQApi,val listeningPreferences:EndOfQueuePreferences){val contextStarts=ContextStartsBoundary();var trackRead:(()->Unit)?=null;val jamAdmission=Jam();val timeline=TimelinePort();val known=mutableMapOf<TrackId,Track>();fun rememberTracks(v:List<Track>){v.forEach{known[it.id]=it}};fun track(id:TrackId):Track? {trackRead?.invoke();return known[id]}}
+private class Graph(val session:AccountSession,val api:SoundQApi,val listeningPreferences:EndOfQueuePreferences){val endpoint=session.endpoint;val contextStarts=ContextStartsBoundary();var trackRead:(()->Unit)?=null;val jamAdmission=Jam();val timeline=TimelinePort();val known=mutableMapOf<TrackId,Track>();fun rememberTracks(v:List<Track>){v.forEach{known[it.id]=it}};fun track(id:TrackId):Track? {trackRead?.invoke();return known[id]}}
 private class Transport {private val counter=AtomicLong();val revision get()=counter.get();var onIntentChanged:()->Unit={};fun retire(){counter.incrementAndGet();onIntentChanged()};fun pause(){retire()}}
 private class ArrangementIdentity(val install:String)
 private class AcceptedArrangement(val identity:ArrangementIdentity)
-private class ExtractedService(val graph:Graph,val jobs:CoroutineScope) {
+private class ExtractedService(val graph:Graph,val jobs:CoroutineScope) {fun renewPhoneGrants(){};fun localAccess()=false;var undoVersion=-1L;fun resolveDevice(item:MediaItem):MediaItem=error("Phone source separately tested");fun grantFor(item:MediaItem,scope:AccountScope?)=MediaGrant(requireNotNull(scope),TrackId(item.mediaMetadata.extras!!.getLong("trackId")),item.mediaMetadata.extras!!.getBoolean("localOnly"));
  var clockRevision=0L
  fun validateSelection(items:List<MediaItem>,index:Int,position:Long){}
  fun updatePlaybackWakeLock(){} // OS power ownership is outside this continuation fixture.

@@ -510,6 +510,7 @@ struct Host final : Callbacks {
         for (const auto& w : scheduleWorkers) if (w) decoders += w->openDecoders();
         std::ostringstream out; out.imbue(std::locale::classic()); out << std::setprecision(17);
         out << "{\"error\":" << error.load() << ",\"sampleRate\":" << sampleRate
+            << ",\"naturalEndVersion\":1"
             << ",\"renderedFrames\":" << snap.renderedFrames << ",\"xRuns\":" << output->xRuns()
             << ",\"callbackOverruns\":" << overruns.load()
             << ",\"nonSilentCallbacks\":" << nonSilentCallbacks.load() << ",\"pcmPoolBytes\":" << fixedPoolBytes
@@ -552,6 +553,11 @@ struct Host final : Callbacks {
             const auto& intent = intents[i];
             const bool matching = w && d.identity != 0 && d.identity == w->identity() && d.generation == w->generation();
             const bool ready = coherent && matching && w->ready(snap) && !intent.unloading && error.load() == 0;
+            // Control intent can already name a replacement while the callback
+            // still owns the retiring worker. Never relabel its evidence.
+            const bool completionSource = coherent && matching && !intent.unloading &&
+                intent.identity == d.identity && intent.generation == d.generation &&
+                error.load() == 0 && stats.error == 0;
             const auto frame = matching ? d.sourceFrame : 0;
             const auto rate = w ? w->sourceRate() : 0;
             const auto extent = w ? w->sourceFrames() : 0;
@@ -560,9 +566,15 @@ struct Host final : Callbacks {
                 << ",\"sourceFrames\":" << extent << ",\"positionMs\":" << milliseconds(frame, rate)
                 << ",\"durationMs\":" << milliseconds(extent, rate)
                 << ",\"playing\":" << (matching && d.playing ? "true" : "false")
+                << ",\"rate\":" << d.rate << ",\"scratching\":" << (d.scratching ? "true" : "false")
                 << ",\"ready\":" << (ready ? "true" : "false")
                 << ",\"preparing\":" << (stats.preparing || intent.unloading ? "true" : "false")
                 << ",\"eofCount\":" << (matching ? d.eofCount : 0)
+                << ",\"traversalRevision\":" << (completionSource ? d.traversalRevision : 0)
+                << ",\"naturalEndCount\":" << (completionSource ? d.naturalEndCount : 0)
+                << ",\"naturalEndGeneration\":" << (completionSource ? d.naturalEndGeneration : 0)
+                << ",\"naturalEndIdentity\":" << (completionSource ? d.naturalEndIdentity : 0)
+                << ",\"naturalEndTraversalRevision\":" << (completionSource ? d.naturalEndTraversalRevision : 0)
                 << ",\"missingPcmFrames\":" << (matching ? d.missingPcmFrames : 0)
                 << ",\"openDecoders\":" << stats.openDecoders << ",\"error\":" << stats.error << '}';
         }

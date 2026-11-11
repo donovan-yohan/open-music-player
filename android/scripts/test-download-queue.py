@@ -18,12 +18,12 @@ tree=ast.parse((r/'scripts/test-device-play.py').read_text())
 pre=next(ast.literal_eval(n.value) for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='prelude' for t in n.targets))
 # Preserve existing Android/Media3 boundary declarations, use real domain/store/TLS owners.
 pre=pre[pre.index('class Bundle'):pre.index('interface TransferListener')]+ 'interface TransferListener\n'
-pre=pre.replace('fun getLong(k:String)', 'fun getString(k:String)=fields[k] as? String;fun getLong(k:String)')
+# getString is supplied by the shared facade; do not redeclare it.
 source=block('playback/SignedAudioDataSource.kt','    override fun open(').replace('override fun open','fun open')
 resolve=block('playback/SoundQLibraryService.kt','    private fun resolve(').replace('private fun resolve','fun resolve')
 enqueue=block('playback/ControllerProjection.kt','    fun enqueue(')
 service_text=(b/'playback/SoundQLibraryService.kt').read_text()
-undo_grants=service_text[service_text.index('            saved.forEach {item -> item.localConfiguration?.uri?.let {uri -> grants[uri.toString()]=MediaGrant(scope,TrackId(item.mediaMetadata.extras!!.getLong("trackId")),item.mediaMetadata.extras!!.getBoolean("localOnly"))}}'):].split('\n',1)[0]
+undo_grants=service_text[service_text.index('            saved.forEach {item -> item.localConfiguration?.uri?.let {uri -> grants[uri.toString()]=grantFor(item,scope)}}'):].split('\n',1)[0]
 vm=(b/'product/ProductViewModel.kt').read_text()
 action=block('product/ProductViewModel.kt','    fun enqueueDownload(') if '    fun enqueueDownload(' in vm else ''
 quick=vm[vm.index('    fun quickQueueDownload('):vm.index('    val queueSettings=',vm.index('    fun quickQueueDownload('))] if '    fun quickQueueDownload(' in vm else ''
@@ -32,6 +32,7 @@ import com.soundq.android.data.*
 import com.soundq.android.data.offline.*
 import com.soundq.android.data.preferences.*
 import com.soundq.android.playback.QueuePolicy
+import com.soundq.android.playback.PlaybackRef
 import kotlinx.coroutines.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -53,7 +54,7 @@ class OkHttpDataSource(private val client:okhttp3.OkHttpClient):DataSource {
  override fun close(){}
 }
 object HttpDataSource {class InvalidResponseCodeException(val responseCode:Int):Exception()}
-class Graph(val session:AccountSession,val downloads:DeviceDownloads,val api:SoundQApi,val mediaClient:okhttp3.OkHttpClient,val swipeQueuePreferences:SwipeQueuePreferences){
+class Graph(val session:AccountSession,val downloads:DeviceDownloads,val api:SoundQApi,val mediaClient:okhttp3.OkHttpClient,val swipeQueuePreferences:SwipeQueuePreferences){val endpoint=session.endpoint;
  val temporaryAudio=TemporaryCache();val storagePreferences=StoragePreferences();val known=mutableMapOf<TrackId,Track>()
  fun rememberTracks(t:List<Track>){t.forEach{known[it.id]=it}};fun track(id:TrackId)=known[id]
 }
@@ -61,7 +62,8 @@ class MediaGrant(val scope:AccountScope,val track:TrackId,val localOnly:Boolean=
 class Source(val graph:Graph,val grants:ConcurrentHashMap<String,MediaGrant>){var grant:MediaGrant?=null;var internalUri:Uri?=null;var upstream:DataSource?=null;var local:LocalAudioLease?=null;var remaining=0L;var writing:CacheWrite?=null;var expectedCacheBytes=0L;var readCacheBytes=0L;val listeners=mutableListOf<TransferListener>()
 SOURCE
 }
-class Service(val graph:Graph){fun validateSelection(items:List<MediaItem>,index:Int,position:Long){};fun supportsSourceActions()=true;val grants=ConcurrentHashMap<String,MediaGrant>()
+private fun grantFor(item:MediaItem,scope:AccountScope?)=MediaGrant(requireNotNull(scope),TrackId(item.mediaMetadata.extras!!.getLong("trackId")),item.mediaMetadata.extras!!.getBoolean("localOnly"))
+class Service(val graph:Graph){fun localAccess()=false;fun resolveDevice(item:MediaItem):MediaItem=error("Phone branch separately tested");fun grantFor(item:MediaItem,scope:AccountScope?)=MediaGrant(requireNotNull(scope),TrackId(item.mediaMetadata.extras!!.getLong("trackId")),item.mediaMetadata.extras!!.getBoolean("localOnly"));fun validateSelection(items:List<MediaItem>,index:Int,position:Long){};fun supportsSourceActions()=true;val grants=ConcurrentHashMap<String,MediaGrant>()
 RESOLVE
 }
 class Facade(val service:Service){
@@ -76,7 +78,7 @@ ENQUEUE
  // Same consuming fixture accepts the predecessor's existing two-argument ABI.
  fun device(track:Track,next:Boolean){val m=javaClass.declaredMethods.single{it.name=="enqueue"};if(m.parameterCount==3)m.invoke(this,track,next,true) else m.invoke(this,track,next)}
 }
-class Model(val graph:Graph,val controller:Controller):AutoCloseable {
+class Model(val graph:Graph,val controller:Controller):AutoCloseable {fun grantFor(item:MediaItem,scope:AccountScope?)=MediaGrant(requireNotNull(scope),TrackId(item.mediaMetadata.extras!!.getLong("trackId")),item.mediaMetadata.extras!!.getBoolean("localOnly"));
  val dispatcher=Executors.newSingleThreadExecutor{r->Thread(r,"download-queue-main")}.asCoroutineDispatcher()
  val viewModelScope=CoroutineScope(SupervisorJob()+dispatcher)
 ACTION

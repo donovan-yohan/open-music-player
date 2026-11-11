@@ -68,6 +68,7 @@ Snapshot snapshot(Engine& engine) {
     check(engine.snapshot(result), "snapshot readable without concurrent writer");
     return result;
 }
+#include "natural_end_tests.hpp"
 void ordinary_playback() {
     const std::vector<float> pcm{1, -1, 2, -2, 3, -3, 4, -4};
     Engine engine(48000);
@@ -552,7 +553,8 @@ void coalescing_and_callback_heap() {
 
 int main() {
     try {
-        const std::array<std::pair<const char*, void(*)()>, 10> families{{
+        const std::array<std::pair<const char*, void(*)()>, 11> families{{
+            {"natural_completion_receipts", natural_completion_receipts},
             {"ordinary_playback", ordinary_playback},
             {"endpoint_seek_completion", endpoint_seek_completion},
             {"fractional_pause_seek", fractional_pause_seek},

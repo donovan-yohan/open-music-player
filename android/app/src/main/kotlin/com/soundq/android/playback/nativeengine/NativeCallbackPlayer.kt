@@ -66,11 +66,11 @@ internal class NativeCallbackPlayer(
     private var successorRevision = 0L
     private var successorAttempt: String? = null
     private fun successorCurrent(c: Successor) = successor === c && currentScope() &&
-        grants[c.uri] === c.grant && graph.session.current(c.grant.scope) &&
-        grants[c.outgoingUri] === c.outgoingGrant && graph.session.current(c.outgoingGrant.scope)
+        grants[c.uri] === c.grant && c.grant.current(graph) &&
+        grants[c.outgoingUri] === c.outgoingGrant && c.outgoingGrant.current(graph)
 
     /** Explicit edits permit retry; a failed optional source stays latched across polls. */
-    private fun cancelSuccessor(preserveAttempt: Boolean = false) {
+    private fun cancelSuccessor(preserveAttempt: Boolean = false,natural:Boolean=false) {
         successorRevision++; successorJob?.cancel()
         if (!preserveAttempt) successorAttempt = null
         val c = successor; successor = null
@@ -78,6 +78,7 @@ internal class NativeCallbackPlayer(
             val keepDeck = ordinaryDeck; val keepIdentity = ordinaryIdentity
             val otherDeck = if (keepDeck == c.deck) c.outgoingDeck else c.deck
             val otherIdentity = if (keepDeck == c.deck) c.outgoingIdentity else c.identity
+            journal.retire(otherDeck,drain=natural)
             val predecessor = tail
             tail = lifetime.launch {
                 predecessor?.join()
@@ -116,6 +117,7 @@ internal class NativeCallbackPlayer(
                 transferred = true
                 check(withContext(NonCancellable) { owner.loadDeck(c.deck, requireNotNull(file), c.identity, c.identity, 0, ::current) })
                 check(current())
+                bindJournal(item,grant,requireNotNull(file),c.deck,c.identity,true,::current)
                 owner.controlDeck(c.deck, 7, volume.toDouble(), ::current)
             } catch (_: CancellationException) { }
             catch (_: Exception) { if (current()) cancelSuccessor(preserveAttempt = true) }
@@ -156,7 +158,10 @@ internal class NativeCallbackPlayer(
             }
         }
         if (!c.armed) return false
-        if ((b.playing || b.positionMs > 0) && b.boundaryGain >= a.boundaryGain - 1e-12 && ordinaryDeck != c.deck) {
+        // Native installs an overlap only from incoming cursor zero. A resumed successor whose seek
+        // landed first keeps both gains at 1; it stays paused until the outgoing EOF handoff below.
+        val overlap = a.boundaryGain < 1.0 || b.boundaryGain < 1.0
+        if (overlap && (b.playing || b.positionMs > 0) && b.boundaryGain >= a.boundaryGain - 1e-12 && ordinaryDeck != c.deck) {
             index = items.indexOfFirst { it.mediaId == c.item.mediaId }
             if (index < 0) { intent = false; retireSelection(); return true }
             ordinaryDeck = c.deck; ordinaryIdentity = c.identity; activeGrant = c.grant; activeUri = c.uri
@@ -177,7 +182,7 @@ internal class NativeCallbackPlayer(
         durations[c.item.mediaId] = b.durationMs
         position = b.positionMs; eofCount = b.eofCount; acknowledgedPlaying = b.playing
         playback = if (b.ready) Player.STATE_READY else Player.STATE_BUFFERING
-        cancelSuccessor() // keeps incoming; releases outgoing only after its unassign receipt
+        cancelSuccessor(natural=true) // keeps incoming; releases outgoing only after its unassign receipt
         // The callback can reach outgoing EOF between a readiness observation
         // and arm consumption. Reuse the prepared incoming source in that case;
         // only still-current explicit Play may start it, never Pause/revocation.
@@ -204,6 +209,8 @@ internal class NativeCallbackPlayer(
     // Intentionally not a child of service jobs. Cancellation may revoke IO, never native close.
     private val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val owner = NativeCallbackOwner(calls, ::observe)
+    private val journal = NativeListeningJournal(graph,lifetime)
+    private var explicitSeek=0L
     val nativeReleased get() = owner.released
     val preparationSettled get() = preparing.get() == 0
     @JvmName("nativeDiagnostics")
@@ -212,6 +219,7 @@ internal class NativeCallbackPlayer(
     private val accountJob = jobs.launch {
         combine(graph.session.state, graph.session.scopeRevision) { state, _ -> state }.collect { auth ->
             val scope = queueScope
+            if(items.isNotEmpty()&&scope==null&&!graph.phoneAudio.current(queueVersion)){clearQueue();invalidateState()}
             if (items.isNotEmpty() && scope != null && !graph.session.current(scope)) {
                 if (auth is AuthState.LocalLocked || graph.session.resumesLocal(scope)) {
                     retireSelection()
@@ -266,7 +274,7 @@ internal class NativeCallbackPlayer(
     private fun tempoOwnerCurrent(c: CapturedTempo): Boolean = tempoPreview === c && !released && epoch == c.epoch &&
         arrangement?.revision == c.schedule && performanceIdentity == c.lease.target.identity &&
         performanceLifetime == c.lease.transport && assignmentCurrent() && c.qualified() && c.callerCurrent() &&
-        c.grants.all { (uri, grant) -> grants[uri] === grant && graph.session.current(grant.scope) }
+        c.grants.all { (uri, grant) -> grants[uri] === grant && grant.current(graph) }
     internal suspend fun beginTempo(target: PerformanceTarget, source: TempoSourceIdentity, qualified: () -> Boolean,
         current: () -> Boolean): TempoPreviewLease? {
         val active = arrangement ?: return null
@@ -479,7 +487,7 @@ internal class NativeCallbackPlayer(
         !performanceTransportHeld && selectedLoaded && arrangement != null && assignmentCurrent() && desiredSeek == null && playback == Player.STATE_READY
     private fun performanceCurrent(capture: CapturedScratch): Boolean = !released && capture.epoch == epoch &&
         capture.lease.transport == performanceLifetime && performanceIdentity == capture.lease.target.identity &&
-        capture.grants.all { (uri, grant) -> grants[uri] === grant && graph.session.current(grant.scope) } && assignmentCurrent()
+        capture.grants.all { (uri, grant) -> grants[uri] === grant && grant.current(graph) } && assignmentCurrent()
     private fun instance(occurrence: String): Long? = arrangement?.document?.clips?.indexOfFirst { it.occurrence == occurrence }
         ?.takeIf { it >= 0 }?.let { it + 1L }
     private fun readyDeck(occurrence: String): PerformanceDeck? = performanceDecks[occurrence]?.takeIf {
@@ -632,10 +640,11 @@ internal class NativeCallbackPlayer(
     }
 
     private fun done(): ListenableFuture<*> = Futures.immediateVoidFuture()
-    private fun currentScope() = queueScope?.let(graph.session::current) == true
+    private var queueVersion=-1L
+    private fun currentScope() = if(queueScope!=null)queueScope?.let(graph.session::current)==true else graph.phoneAudio.current(queueVersion)
     private fun assignmentCurrent() = currentScope() && if (arrangement != null)
-        arrangementGrants.isNotEmpty() && arrangementGrants.all { (uri, grant) -> grants[uri] === grant && graph.session.current(grant.scope) }
-        else activeGrant?.let { grants[activeUri] === it } == true
+        arrangementGrants.isNotEmpty() && arrangementGrants.all { (uri, grant) -> grants[uri] === grant && grant.current(graph) }
+        else activeGrant?.let { grants[activeUri] === it && it.current(graph) } == true
     private fun selected() = items.getOrNull(index)
     private fun activeOrder() = if (shuffle) order else items.indices.toList()
     private fun duration(item: MediaItem): Long = durations[item.mediaId]
@@ -660,13 +669,19 @@ internal class NativeCallbackPlayer(
             require(metadataBytes<=QueuePolicy.MAX_METADATA_BYTES)
             require(item.mediaId.isNotBlank())
             val uri = requireNotNull(item.localConfiguration).uri
-            require(uri.scheme == "soundq") { "Native callback supports ordinary sources only" }
+            require(uri.scheme in setOf("soundq","soundqdevice")) { "Native callback supports ordinary sources only" }
             val grant = requireNotNull(grants[uri.toString()]) { "Source grant required" }
-            graph.session.checkScope(grant.scope)
-            if (scope == null) scope = grant.scope
-            require(scope.accountId == grant.scope.accountId && scope.epoch == grant.scope.epoch)
+            if(grant.device==null)check(grant.current(graph))
+            if(grant.device==null) {
+                if (scope == null) scope = grant.scope
+                require(scope.accountId == grant.scope.accountId && scope.epoch == grant.scope.epoch)
+            }
             val metadata = requireNotNull(item.mediaMetadata.extras)
-            require(metadata.getLong("trackId") == grant.track.value)
+            if(grant.device==null) {
+                require(metadata.getLong("trackId") == grant.track.value)
+                PlaybackRef.read(metadata.getString("playbackRef"))?.let {ref->require(ref is PlaybackRef.Server&&ref.endpoint==graph.endpoint.identity&&ref.account==grant.scope.accountId&&ref.trackId==grant.track)}
+            }
+            else require(uri.scheme=="soundqdevice"&&PlaybackRef.read(metadata.getString("playbackRef"))==grant.device)
             require(metadata.getBoolean("localOnly") == grant.localOnly)
         }
     }
@@ -734,7 +749,7 @@ internal class NativeCallbackPlayer(
         check(preparedArrangement == null)
         val captured = sourceItems.associate { it.localConfiguration!!.uri.toString() to grants.getValue(it.localConfiguration!!.uri.toString()) }
         val preparationEpoch = epoch
-        fun valid() = !released && epoch == preparationEpoch && current() && captured.all { (uri, grant) -> grants[uri] === grant && graph.session.current(grant.scope) }
+        fun valid() = !released && epoch == preparationEpoch && current() && captured.all { (uri, grant) -> grants[uri] === grant && grant.current(graph) }
         val revision = ++nativeScheduleRevision
         var candidate: NativeCallbackArrangement? = null
         // Settle the prior ordinary acquisition before reserving aggregate bytes.
@@ -827,7 +842,8 @@ internal class NativeCallbackPlayer(
         if (next.isEmpty()) intent = false
         index = selected
         position = next.getOrNull(index)?.let { bounded(it, if (startPositionMs == C.TIME_UNSET) 0 else startPositionMs) } ?: 0
-        queueScope = next.firstOrNull()?.localConfiguration?.uri?.toString()?.let { grants[it]?.scope }
+        queueVersion=graph.session.version()
+        queueScope = next.firstOrNull()?.localConfiguration?.uri?.toString()?.let { grants[it]?.takeIf {g->g.device==null}?.scope }
         order = if (restoredShuffle == true) NativeCallbackTraversal.permutation(next.size, index, random) else next.indices.toList()
         modeRestored = restoredShuffle != null && restoredShuffle != shuffle
         durations.keys.retainAll(next.map { it.mediaId }.toSet())
@@ -837,8 +853,9 @@ internal class NativeCallbackPlayer(
     }
 
     /** Revocation is synchronous. The old acquisition then joins before any successor is admitted. */
-    private fun retireSelection() {
-        cancelSuccessor()
+    private fun retireSelection(natural:Boolean=false) {
+        if(!natural)journal.freeze()
+        cancelSuccessor(natural=natural)
         revokePerformance()
         performanceIdentity = null; durablePerformanceDocument = null; syncQualifications.clear(); performanceDecks = emptyMap(); onPerformanceChanged?.invoke()
         epoch++
@@ -857,9 +874,18 @@ internal class NativeCallbackPlayer(
         acknowledgedSeekPosition = null
         pausePosition = null; acknowledgedPausePosition = null
         val retirement = epoch
+        val retiringDeck=ordinaryDeck;val retiringIdentity=ordinaryIdentity
         val predecessor = tail
         tail = lifetime.launch {
             predecessor?.join()
+            owner.controlDeck(retiringDeck,2) {true}
+            var final=owner.snapshot {true}
+            withTimeoutOrNull(2_000) {
+                while(final?.decks?.getOrNull(retiringDeck)?.let {it.identity==retiringIdentity&&it.playing}==true) {
+                    delay(10);final=owner.snapshot {true}
+                }
+            }
+            journal.finalCursor(final)
             if (!owner.unload() && !released && epoch == retirement) fail("Audio source could not be released")
         }
     }
@@ -881,12 +907,13 @@ internal class NativeCallbackPlayer(
         val grant = grants.getValue(uri)
         activeGrant = grant
         activeUri = uri
-        queueScope = grant.scope
+        queueScope = if(grant.device==null)grant.scope else null
         epoch = maxOf(epoch, sourceSequence) + 2
         val generation = epoch
         ordinaryDeck = 0; ordinaryIdentity = generation; sourceSequence = generation
         val predecessor = tail
-        fun current() = !released && generation == epoch && graph.session.current(grant.scope) && grants[uri] === grant
+        val seekAtPreparation=explicitSeek
+        fun current() = !released && generation == epoch && grant.current(graph) && grants[uri] === grant
         playback = Player.STATE_BUFFERING
         error = null
         eofCount = 0
@@ -909,15 +936,17 @@ internal class NativeCallbackPlayer(
                 val accepted = withContext(NonCancellable) { owner.load(requireNotNull(file), generation, generation, initialPosition, ::current) }
                 check(current())
                 check(accepted)
+                bindJournal(item,grant,requireNotNull(file),ordinaryDeck,generation,position==0L&&explicitSeek==seekAtPreparation,::current)
+                check(current())
                 selectedLoaded = true
-                desiredSeek = if (position != initialPosition) position else null
+                desiredSeek = if (position != initialPosition&&acknowledgedSeekPosition==null) position else null
                 withContext(NonCancellable) { owner.control(7, volume.toDouble(), ::current) }
                 // Play is deferred one main turn so existing focus listener can reject it first.
                 dispatchIntent(generation)
             } catch (_: CancellationException) {
                 // Superseded work cannot change the successor's error or play intent.
             } catch (_: Exception) {
-                if (current()) { fail("Audio source could not be prepared"); retireSelection() }
+                if (generation==epoch&&currentScope()&&grants[uri]===grant) { fail(if(grant.device!=null)"Audio source could not be prepared. Check Local audio access or choose the file again." else "Audio source could not be prepared. Try again when the server is available."); retireSelection() }
             } finally {
                 if (!transferred) withContext(NonCancellable + Dispatchers.IO) { file?.delete() }
                 if (generation == epoch) {
@@ -935,6 +964,38 @@ internal class NativeCallbackPlayer(
         tail = job
         job.start()
         return done()
+    }
+
+    private suspend fun bindJournal(item:MediaItem,grant:MediaGrant,file:File,slot:Int,identity:Long,allowResume:Boolean,current:()->Boolean) {
+        val ready=withTimeout(15_000) {
+            var value:NativeCallbackDeck?=null
+            while(value==null) {
+                check(current())
+                val d=owner.snapshot(current)?.decks?.getOrNull(slot)
+                if(d!=null&&d.identity==identity&&d.generation==identity) {
+                    check(d.error==0)
+                    if(d.ready&&!d.preparing&&d.sourceFrames>0&&d.sourceRate>0)value=d
+                }
+                if(value==null)delay(20)
+            }
+            value
+        }
+        val resume=try {journal.bind(item,grant,file,requireNotNull(ready),slot,current)}catch(failure:Exception){if(grant.device!=null)throw failure else {check(current());return}}
+        if(allowResume&&resume>0) {
+            journal.fenceSeek(slot)
+            check(journal.beginSeek(slot,2,ready.naturalEnd?.count ?: 0))
+            check(current()&&owner.controlDeck(slot,3,resume.toDouble(),current))
+            val acknowledged=withTimeout(8000) {
+                var d:NativeCallbackDeck?=null
+                while(d==null) {
+                    check(current());val next=owner.snapshot(current)?.decks?.getOrNull(slot)
+                    if(next!=null&&next.identity==identity&&next.generation==identity&&next.ready&&next.traversalRevision>ready.traversalRevision&&kotlin.math.abs(next.positionMs-resume)<=250)d=next
+                    else delay(20)
+                };requireNotNull(d)
+            }
+            journal.acknowledgeSeek(slot,acknowledged.traversalRevision,acknowledged.positionMs)
+            if(slot==ordinaryDeck){position=acknowledged.positionMs;acknowledgedSeekPosition=position}
+        }
     }
 
     private fun dispatchIntent(generation: Long = epoch, recoverOutput: Boolean = false) {
@@ -965,7 +1026,7 @@ internal class NativeCallbackPlayer(
                 } else if (outputUnavailable) return@launch
                 // Completion never revives the captured Play after Pause/Seek.
                 if (!current()) return@launch
-                if (arrangement != null && desiredSeek != null) { seekNative(requireNotNull(desiredSeek)); return@launch }
+                if (desiredSeek != null) { seekNative(requireNotNull(desiredSeek)); return@launch }
                 if (arrangement != null && intent && playback != Player.STATE_READY) return@launch
                 val accepted = if (arrangement != null) owner.arrangement(if (playing) 1 else 2, current = current)
                     else owner.controlDeck(ordinaryDeck, if (playing) 1 else 2, current = current)
@@ -983,6 +1044,7 @@ internal class NativeCallbackPlayer(
     }
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+        if(playWhenReady!=intent)journal.transportIntent(playWhenReady)
         revokePerformance()
         if (!playWhenReady && arrangement != null) { performanceTransportHeld = true; performanceDecks = emptyMap() }
         transportRevision++
@@ -1063,7 +1125,7 @@ internal class NativeCallbackPlayer(
         items = next
         order = nextOrder
         index = if (retained >= 0) retained else fallback.coerceIn(next.indices)
-        queueScope = grants.getValue(next.first().localConfiguration!!.uri.toString()).scope
+        queueScope = grants.getValue(next.first().localConfiguration!!.uri.toString()).let { if (it.device == null) it.scope else null }
         if (retained < 0) { position = 0; playback = Player.STATE_IDLE; error = null; if (needsPreparation) handlePrepare() }
         durations.keys.retainAll(next.map { it.mediaId }.toSet())
         return done()
@@ -1097,6 +1159,7 @@ internal class NativeCallbackPlayer(
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
         if (items.isEmpty()) return done()
+        explicitSeek++;journal.fenceSeek(ordinaryDeck)
         val traversal = activeOrder()
         val next = when (seekCommand) {
             Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> NativeCallbackTraversal.next(traversal, index, repeat, false) ?: return done()
@@ -1154,13 +1217,16 @@ internal class NativeCallbackPlayer(
         } finally {if(clockSeekReceipt===receipt)clockSeekReceipt=null}
     }
 
-    private fun seekNative(target: Long) {
+    private fun seekNative(target: Long,naturalRepeat:Boolean=false) {
         if (submittedSeek == target) return
         val generation = epoch
         val revision = ++seekRevision
         submittedSeek = target
+        val journalDeck=ordinaryDeck;val journalStamp=journal.stamp(journalDeck)
         lifetime.launch {
             val current = { !released && generation == epoch && revision == seekRevision && assignmentCurrent() }
+            if(naturalRepeat&&!journal.fenceNaturalRepeat(journalDeck,journalStamp,current)){if(generation==epoch&&revision==seekRevision)submittedSeek=null;return@launch}
+            if(arrangement==null&&!journal.beginSeek(ordinaryDeck,revision+2,eofCount)){if(generation==epoch&&revision==seekRevision)submittedSeek=null;return@launch}
             val accepted = if (arrangement != null) owner.arrangement(3, target, current)
                 else { tail?.join(); owner.controlDeck(ordinaryDeck, 3, target.toDouble(), current) }
             if (!accepted && generation == epoch && revision == seekRevision) submittedSeek = null
@@ -1243,6 +1309,7 @@ internal class NativeCallbackPlayer(
             invalidateState()
             return
         }
+        journal.observe(snapshot,allowNatural=intent&&desiredSeek==null)
         if (observeSuccessor(snapshot)) return
         val deck = snapshot.decks.getOrNull(ordinaryDeck) ?: return
         if (!selectedLoaded || deck.identity != ordinaryIdentity || deck.generation != ordinaryIdentity) return
@@ -1257,6 +1324,8 @@ internal class NativeCallbackPlayer(
             desiredSeek = null
             submittedSeek = null
             acknowledgedSeekPosition = deck.positionMs.coerceAtLeast(0)
+            journal.acknowledgeSeek(ordinaryDeck,deck.traversalRevision,deck.positionMs)
+            if(intent)dispatchIntent()
             // Backward seeks fence an older EOF. Endpoint seek completion can
             // arrive in this same snapshot and still belongs to queue policy.
             if (seekTarget < deck.durationMs) eofCount = maxOf(eofCount, deck.eofCount)
@@ -1278,9 +1347,9 @@ internal class NativeCallbackPlayer(
             if (epoch != generation || transportRevision != revision) return
             val successor = NativeCallbackTraversal.next(activeOrder(), index, repeat, true)
             if (successor == null) playback = Player.STATE_ENDED
-            else if (successor == index) { desiredSeek = 0; seekNative(0); dispatchIntent() }
+            else if (successor == index) { desiredSeek = 0; seekNative(0,naturalRepeat=true); dispatchIntent() }
             else {
-                retireSelection(); index = successor; position = 0; playback = Player.STATE_IDLE
+                retireSelection(natural=true); index = successor; position = 0; playback = Player.STATE_IDLE
                 handlePrepare()
             }
         }

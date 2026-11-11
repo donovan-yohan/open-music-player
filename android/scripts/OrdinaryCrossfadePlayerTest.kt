@@ -32,11 +32,13 @@ internal class OrdinaryCrossfadePlayerTest {
         @Volatile var replayState:String?=null
         @Volatile var replays=0
         @Volatile var observations=0
+        /** Incoming cursor already moved (bookmark resume acknowledged) before native crossfade processing. */
+        @Volatile var incomingCursor=0L
         @Synchronized override fun open()=1L
         @Synchronized override fun load(handle:Long,deck:Int,path:String,identity:Long,generation:Long,positionMs:Long):Boolean {
             check(d[deck].id==0L);loads.add(deck)
             if(deck==1&&refuseIncomingLoad)return false
-            d[deck]=Deck(identity,generation,positionMs,error=if(deck==1&&failIncoming)7 else 0);return true
+            d[deck]=Deck(identity,generation,if(deck==1)incomingCursor else positionMs,error=if(deck==1&&failIncoming)7 else 0);return true
         }
         @Synchronized override fun control(handle:Long,operation:Int,deck:Int,value:Double,eventNanos:Long):Boolean {
             val slot=d[deck]
@@ -46,7 +48,8 @@ internal class OrdinaryCrossfadePlayerTest {
         @Synchronized override fun crossfade(handle:Long,outgoing:Int,outgoingGeneration:Long,incoming:Int,incomingGeneration:Long,milliseconds:Long):Boolean {
             check(d[outgoing].gen==outgoingGeneration&&d[incoming].gen==incomingGeneration)
             pairs.add(listOf(outgoing.toLong(),incoming.toLong(),milliseconds))
-            if(milliseconds==0L){d[incoming].play=false;d[outgoing].gain=1.0}else {d[outgoing].gain=1.0;d[incoming].gain=0.0}
+            // Native accepts the command but installs a boundary only from incoming cursor zero.
+            if(milliseconds==0L){d[incoming].play=false;d[outgoing].gain=1.0}else if(d[incoming].pos==0L){d[outgoing].gain=1.0;d[incoming].gain=0.0}
             return true
         }
         @Synchronized fun sample(outPosition:Long,inPosition:Long,outGain:Double,inGain:Double,eof:Boolean=false) {
@@ -142,6 +145,22 @@ internal class OrdinaryCrossfadePlayerTest {
             f.drain{f.player.currentMediaItem!!.mediaId=="b"&&f.player.preparationSettled&&f.player.isPlaying==playing}
             assertEquals(listOf("a-first"),completed.toList());assertEquals(listOf("a-first","b"),f.requests.toList())
             assertEquals(playing,f.player.playWhenReady);assertEquals(0L,f.player.currentPosition)
+        }
+    }
+    @Test fun resumedSuccessorWithoutNativeBoundaryKeepsOutgoingUntilEofHandoff() {
+        Fixture(count=2).use {f->
+            val completed=CopyOnWriteArrayList<String>();f.player.addCompletionListener{completed.add(it.mediaId)}
+            f.hardware.incomingCursor=1200;f.armed();f.player.play();f.drain{f.player.isPlaying}
+            // Accepted crossfade command, no installed boundary: incoming stays paused at its resume cursor.
+            synchronized(f.hardware){f.hardware.d[1].play=false;f.hardware.d[0].pos=4500}
+            f.poll()
+            assertEquals(1.0,f.hardware.d[1].gain,0.0)
+            assertEquals("Outgoing deck still plays; selection must not move to the paused successor","a-first",f.player.currentMediaItem!!.mediaId)
+            assertEquals(4500L,f.player.currentPosition);assertTrue(completed.isEmpty())
+            synchronized(f.hardware){f.hardware.d[0].pos=6000;f.hardware.d[0].play=false;f.hardware.d[0].eof++}
+            f.drain{f.player.currentMediaItem!!.mediaId=="b"&&f.player.preparationSettled&&f.player.isPlaying}
+            assertEquals(listOf("a-first"),completed.toList());assertEquals(1200L,f.player.currentPosition)
+            assertTrue("EOF handoff starts the retained resume position",f.hardware.d[1].play)
         }
     }
     @Test fun cancelledIncomingAcquisitionDrainsBeforeFreshPreparation() {
