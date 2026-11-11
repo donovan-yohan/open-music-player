@@ -435,7 +435,7 @@ impl Core {
         let (mut ok, mut code, audio, mut credentials) = match result {
             Ok((audio, credentials)) => (true, "ok", audio, credentials),
             Err(code) => {
-                if code != "cancelled" {
+                if code != "cancelled" && !import_command {
                     state.snapshot.error = Some(code.into());
                 }
                 (false, code, None, None)
@@ -613,9 +613,14 @@ impl Core {
         epoch: u64,
     ) -> Result<(Option<AudioEffect>, Option<Credentials>)> {
         self.check(epoch)?;
+        // Import outcomes live in import replies; they neither set nor clear
+        // the shared Library/status error.
         if !matches!(
             &command,
-            Command::Snapshot {} | Command::Credentials {} | Command::AudioReport { .. }
+            Command::Snapshot {}
+                | Command::Credentials {}
+                | Command::AudioReport { .. }
+                | Command::ImportLink { .. }
         ) {
             s.snapshot.error = None;
         }

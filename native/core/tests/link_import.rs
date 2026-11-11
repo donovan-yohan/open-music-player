@@ -82,6 +82,64 @@ fn invalid_urls_and_unauthenticated_submission_are_not_sent() {
     no_extra(l);
     fs::remove_dir_all(root).unwrap();
 }
+#[test]
+fn soundcloud_profile_subpages_are_not_sent() {
+    let (c, root, l) = fixture();
+    for (i, page) in [
+        "likes",
+        "tracks",
+        "reposts",
+        "albums",
+        "popular-tracks",
+        "followers",
+        "following",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let url = format!("https://soundcloud.com/artist/{page}");
+        let r = c.execute(post(i as u64 + 1, &url));
+        assert_eq!(r.code, "invalid_import_url", "{url}");
+    }
+    no_extra(l);
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn import_failures_stay_in_import_replies_not_shared_snapshot_error() {
+    let (c, root, l) = fixture();
+    let library = || Command::Library {
+        offset: 0,
+        query: "".into(),
+        sort: "injection".into(),
+        order: "asc".into(),
+    };
+    // Import failures never become the shared Library/status error.
+    let r = c.execute(post(1, "https://soundcloud.com/artist/sets"));
+    assert_eq!(r.code, "invalid_import_url");
+    assert_eq!(c.execute(Command::Snapshot {}).snapshot.error, None);
+    assert_eq!(
+        c.execute(cmd(json!({"command":"import_jobs"}))).code,
+        "unauthenticated"
+    );
+    assert_eq!(c.execute(Command::Snapshot {}).snapshot.error, None);
+    // An import submission or read also does not clear an unrelated error.
+    assert_eq!(c.execute(library()).code, "invalid_query");
+    assert_eq!(
+        c.execute(post(2, "https://soundcloud.com/artist/sets"))
+            .code,
+        "invalid_import_url"
+    );
+    assert_eq!(
+        c.execute(cmd(json!({"command":"import_jobs"}))).code,
+        "unauthenticated"
+    );
+    assert_eq!(
+        c.execute(Command::Snapshot {}).snapshot.error.as_deref(),
+        Some("invalid_query")
+    );
+    no_extra(l);
+    fs::remove_dir_all(root).unwrap();
+}
 const ID: &str = "12345678-1234-4234-8234-123456789abc";
 #[test]
 fn strict_ack_fields_and_oversized_results_stay_uncertain() {

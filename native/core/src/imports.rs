@@ -71,7 +71,18 @@ fn source(raw: &str) -> Result<(&str, &'static str)> {
                 "terms", "privacy", "imprint",
             ]
             .contains(&parts[0])
-            && parts[1] != "sets"
+            // Profile tabs are collections, not one original track.
+            && ![
+                "sets",
+                "likes",
+                "tracks",
+                "reposts",
+                "albums",
+                "popular-tracks",
+                "followers",
+                "following",
+            ]
+            .contains(&parts[1])
         {
             return Ok((text, "soundcloud"));
         }
