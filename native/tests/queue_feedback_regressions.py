@@ -605,6 +605,7 @@ enum ItemStatus {case failed,readyToPlay}
  var status=Field();var loginArea=Field();var libraryArea=Field();var logout=Field();var titleLabel=Field();var transportLabel=Field();var play=Field();var slider=Field();var table=Field()
  var libraryDock:LibraryDockView?;var dockTrackID:Int64?
  func updateLibraryAvailability(){};func retireLibraryDetails(){};func reconcileLibraryDetails(_ s:Snapshot){}
+ func retireLinkImport(){};func drainImportLibraryRefresh(){}
  var effects=[AudioEffect]()
  func closeQueueName(){};func reconcileQueueName(_ s:Snapshot){};func deleteCredentials(){};func keychainQuery()->[String:Any] {[:]}
  func applyAudio(_ effect:AudioEffect){effects.append(effect);if effect.action=="load" {player=Player()};if effect.action=="pause" {player?.pause()};if effect.action=="play" {player?.rate=1};if effect.action=="seek" {player?.time.seconds=Double(effect.position_ms)/1000};if effect.action=="stop" {player=nil}}

@@ -183,6 +183,7 @@ class App:NSObject__VALIDATION__ {
  var libraryDock:LibraryDockView?;var dockTrackID:Int64?
  func updateLibraryAvailability(){};func retireLibraryDetails(){};func libraryDetailsMenuAvailable(_ item:NSMenuItem)->Bool {false};@objc func openLibraryDetailsFromMenu(_ item:NSMenuItem){};func closeLibraryDetails(){};func reconcileLibraryDetails(_ s:Snapshot){}
 __DETAIL_FIELDS__
+ func retireLinkImport(){};func drainImportLibraryRefresh(){}
  func deleteCredentials() {credentialDeletes+=1}
  func storeCredentials(_ credentials:Credentials,epoch:UInt64) {}
  func applyAudio(_ effect:AudioEffect) {}
