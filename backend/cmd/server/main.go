@@ -898,12 +898,12 @@ func runServer() int {
 		// Recovery happens before workers start. It restores only durable,
 		// nonterminal source-decision jobs from their persisted snapshots and is
 		// idempotent when Redis already contains the same job ID.
-		if recovered, err := sourceSelectionLifecycle.RecoverWithPlayback(ctx, downloadService, sourceSelectionPlaybackRecovery{service: queueService}, 0); err != nil {
+		if recovered, err := sourceSelectionLifecycle.RecoverAndStart(ctx, downloadService, sourceSelectionPlaybackRecovery{service: queueService}, 0); err != nil {
 			log.Error(ctx, "Failed to recover source-selection downloads", nil, err)
+			return 1
 		} else if recovered > 0 {
 			log.Info(ctx, "Recovered source-selection downloads", map[string]interface{}{"jobs": recovered})
 		}
-		downloadService.Start()
 		log.Info(ctx, "Started download service", map[string]interface{}{
 			"workers": cfg.WorkerCount,
 		})
@@ -944,6 +944,10 @@ func runServer() int {
 	healthHandler := health.NewHandler(healthChecker)
 
 	jamHandlers, jamRepo := newJamHandlers(database, redisCache)
+	if jamRepo != nil && downloadService != nil {
+		jamRepo.Searcher = discoveryService
+		jamRepo.Downloads = downloadService
+	}
 	stopJamCleanup := startJamCleanup(jamRepo)
 	defer stopJamCleanup()
 

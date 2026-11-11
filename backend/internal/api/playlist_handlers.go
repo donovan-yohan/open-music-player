@@ -127,6 +127,8 @@ type PlaylistResponse struct {
 }
 
 type PlaylistWithTracksResponse struct {
+	// This owner-only projection is emitted only after the route's ownership check.
+	CanManage   bool            `json:"canManage"`
 	ID          int64           `json:"id"`
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
@@ -658,6 +660,7 @@ func newPlaylistResponse(p db.Playlist, trackCount int, durationMs int64) Playli
 // playlist and its already-mapped track responses.
 func newPlaylistWithTracksResponse(p *db.PlaylistWithTracks, tracks []TrackResponse) PlaylistWithTracksResponse {
 	resp := PlaylistWithTracksResponse{
+		CanManage:  true,
 		ID:         p.ID,
 		Name:       p.Name,
 		IsPublic:   p.IsPublic,

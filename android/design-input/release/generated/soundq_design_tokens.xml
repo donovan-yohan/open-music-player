@@ -1,0 +1,249 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated; CSS px -> dp, font-size -> sp; durations ms. -->
+<resources>
+  <dimen name="soundq_component_button_corner">0dp</dimen>
+  <color name="soundq_component_button_disabled_background">#FF191714</color>
+  <item name="soundq_component_button_disabled_opacity" type="dimen" format="float">0.65</item>
+  <color name="soundq_component_button_disabled_text">#FFA89F90</color>
+  <integer name="soundq_component_button_duration">120</integer>
+  <color name="soundq_component_button_primary_background">#FFFF5A00</color>
+  <color name="soundq_component_button_primary_hover">#FFFF7D38</color>
+  <color name="soundq_component_button_primary_text">#FF050505</color>
+  <dimen name="soundq_component_button_target_min">48dp</dimen>
+  <dimen name="soundq_component_compact_player_art">40dp</dimen>
+  <dimen name="soundq_component_compact_player_min_height">56dp</dimen>
+  <dimen name="soundq_component_compact_player_progress_height">2dp</dimen>
+  <dimen name="soundq_component_icon_min_height">48dp</dimen>
+  <dimen name="soundq_component_icon_min_width">48dp</dimen>
+  <dimen name="soundq_component_icon_padding">12dp</dimen>
+  <item name="soundq_component_icon_stroke_width" type="dimen" format="float">1.7</item>
+  <dimen name="soundq_component_masthead_compact_height">56dp</dimen>
+  <dimen name="soundq_component_masthead_gap">10dp</dimen>
+  <dimen name="soundq_component_masthead_min_height">64dp</dimen>
+  <dimen name="soundq_component_navigation_compact_height">60dp</dimen>
+  <dimen name="soundq_component_navigation_gap">5dp</dimen>
+  <dimen name="soundq_component_navigation_min_height">72dp</dimen>
+  <dimen name="soundq_component_navigation_scaled_height">56dp</dimen>
+  <color name="soundq_component_navigation_selected_text">#FFFF5A00</color>
+  <dimen name="soundq_component_player_art_max">320dp</dimen>
+  <color name="soundq_component_player_background">#FF211A13</color>
+  <integer name="soundq_component_player_duration">280</integer>
+  <dimen name="soundq_component_player_gap">16dp</dimen>
+  <color name="soundq_component_player_progress">#FFFF5A00</color>
+  <dimen name="soundq_component_player_transport">56dp</dimen>
+  <integer name="soundq_component_queue_duration">180</integer>
+  <dimen name="soundq_component_row_art">48dp</dimen>
+  <color name="soundq_component_row_current_background">#FF14110D</color>
+  <color name="soundq_component_row_current_title">#FFFF5A00</color>
+  <integer name="soundq_component_row_duration">180</integer>
+  <dimen name="soundq_component_row_gap">12dp</dimen>
+  <dimen name="soundq_component_row_min_height">80dp</dimen>
+  <dimen name="soundq_component_row_scaled_min_height">96dp</dimen>
+  <color name="soundq_component_row_selected_border">#FFFF5A00</color>
+  <dimen name="soundq_component_row_wide_art">56dp</dimen>
+  <dimen name="soundq_component_row_wide_min_height">88dp</dimen>
+  <color name="soundq_component_search_border">#FF827565</color>
+  <color name="soundq_component_search_focus">#FF39C6B6</color>
+  <dimen name="soundq_component_search_icon_inset">14dp</dimen>
+  <dimen name="soundq_component_search_input_min_height">50dp</dimen>
+  <dimen name="soundq_component_search_min_height">52dp</dimen>
+  <color name="soundq_component_sheet_background">#FF14110D</color>
+  <dimen name="soundq_component_sheet_body_gap">16dp</dimen>
+  <dimen name="soundq_component_sheet_body_padding">20dp</dimen>
+  <dimen name="soundq_component_sheet_choice_min_height">52dp</dimen>
+  <integer name="soundq_component_sheet_duration">260</integer>
+  <dimen name="soundq_component_state_padding">32dp</dimen>
+  <integer name="soundq_motion_duration_exit">160</integer>
+  <integer name="soundq_motion_duration_list">180</integer>
+  <integer name="soundq_motion_duration_page">280</integer>
+  <integer name="soundq_motion_duration_quick">120</integer>
+  <integer name="soundq_motion_duration_reduced">0</integer>
+  <integer name="soundq_motion_duration_settle">180</integer>
+  <integer name="soundq_motion_duration_sheet">260</integer>
+  <string name="soundq_motion_easing_exit" translatable="false">0.4,0,1,1</string>
+  <string name="soundq_motion_easing_standard" translatable="false">0.2,0,0,1</string>
+  <item name="soundq_motion_gesture_axis_ratio" type="dimen" format="float">1.25</item>
+  <dimen name="soundq_motion_gesture_slop">8dp</dimen>
+  <item name="soundq_motion_row_commit_progress" type="dimen" format="float">0.5</item>
+  <dimen name="soundq_motion_row_reveal">112dp</dimen>
+  <item name="soundq_motion_scrim_opacity" type="dimen" format="float">0.64</item>
+  <item name="soundq_motion_sheet_dismiss_progress" type="dimen" format="float">0.22</item>
+  <item name="soundq_motion_sheet_dismiss_velocity" type="dimen" format="float">0.6</item>
+  <item name="soundq_motion_sheet_full" type="dimen" format="float">0.94</item>
+  <item name="soundq_motion_sheet_medium" type="dimen" format="float">0.62</item>
+  <color name="soundq_primitive_color_art">#FF1E1C19</color>
+  <color name="soundq_primitive_color_bg">#FF050505</color>
+  <color name="soundq_primitive_color_black">#FF000000</color>
+  <color name="soundq_primitive_color_cyan">#FF39C6B6</color>
+  <color name="soundq_primitive_color_disabled_border">#FF6E6254</color>
+  <color name="soundq_primitive_color_disabled_ink">#FFA89F90</color>
+  <color name="soundq_primitive_color_disabled_surface">#FF191714</color>
+  <color name="soundq_primitive_color_error">#FFFF8D83</color>
+  <color name="soundq_primitive_color_hover">#FF342C23</color>
+  <color name="soundq_primitive_color_ink">#FFF4EDDC</color>
+  <color name="soundq_primitive_color_input">#FF827565</color>
+  <color name="soundq_primitive_color_muted">#FFB5AC9F</color>
+  <color name="soundq_primitive_color_orange">#FFFF5A00</color>
+  <color name="soundq_primitive_color_primary_hover">#FFFF7D38</color>
+  <color name="soundq_primitive_color_progress">#FF554535</color>
+  <color name="soundq_primitive_color_raised">#FF211A13</color>
+  <color name="soundq_primitive_color_rule">#FF493E32</color>
+  <color name="soundq_primitive_color_subtle_rule">#FF29231C</color>
+  <color name="soundq_primitive_color_surface">#FF14110D</color>
+  <dimen name="soundq_primitive_dimension_px0">0dp</dimen>
+  <dimen name="soundq_primitive_dimension_px1">1dp</dimen>
+  <dimen name="soundq_primitive_dimension_px10">10dp</dimen>
+  <dimen name="soundq_primitive_dimension_px100">100dp</dimen>
+  <dimen name="soundq_primitive_dimension_px112">112dp</dimen>
+  <dimen name="soundq_primitive_dimension_px12">12dp</dimen>
+  <dimen name="soundq_primitive_dimension_px14">14dp</dimen>
+  <dimen name="soundq_primitive_dimension_px16">16dp</dimen>
+  <dimen name="soundq_primitive_dimension_px2">2dp</dimen>
+  <dimen name="soundq_primitive_dimension_px20">20dp</dimen>
+  <dimen name="soundq_primitive_dimension_px22">22dp</dimen>
+  <dimen name="soundq_primitive_dimension_px220">220dp</dimen>
+  <dimen name="soundq_primitive_dimension_px24">24dp</dimen>
+  <dimen name="soundq_primitive_dimension_px28">28dp</dimen>
+  <dimen name="soundq_primitive_dimension_px32">32dp</dimen>
+  <dimen name="soundq_primitive_dimension_px320">320dp</dimen>
+  <dimen name="soundq_primitive_dimension_px36">36dp</dimen>
+  <dimen name="soundq_primitive_dimension_px4">4dp</dimen>
+  <dimen name="soundq_primitive_dimension_px40">40dp</dimen>
+  <dimen name="soundq_primitive_dimension_px460">460dp</dimen>
+  <dimen name="soundq_primitive_dimension_px48">48dp</dimen>
+  <dimen name="soundq_primitive_dimension_px480">480dp</dimen>
+  <dimen name="soundq_primitive_dimension_px5">5dp</dimen>
+  <dimen name="soundq_primitive_dimension_px50">50dp</dimen>
+  <dimen name="soundq_primitive_dimension_px52">52dp</dimen>
+  <dimen name="soundq_primitive_dimension_px56">56dp</dimen>
+  <dimen name="soundq_primitive_dimension_px6">6dp</dimen>
+  <dimen name="soundq_primitive_dimension_px60">60dp</dimen>
+  <dimen name="soundq_primitive_dimension_px64">64dp</dimen>
+  <dimen name="soundq_primitive_dimension_px640">640dp</dimen>
+  <dimen name="soundq_primitive_dimension_px700">700dp</dimen>
+  <dimen name="soundq_primitive_dimension_px72">72dp</dimen>
+  <dimen name="soundq_primitive_dimension_px8">8dp</dimen>
+  <dimen name="soundq_primitive_dimension_px80">80dp</dimen>
+  <dimen name="soundq_primitive_dimension_px88">88dp</dimen>
+  <dimen name="soundq_primitive_dimension_px96">96dp</dimen>
+  <integer name="soundq_primitive_duration_ms0">0</integer>
+  <integer name="soundq_primitive_duration_ms100">100</integer>
+  <integer name="soundq_primitive_duration_ms120">120</integer>
+  <integer name="soundq_primitive_duration_ms160">160</integer>
+  <integer name="soundq_primitive_duration_ms180">180</integer>
+  <integer name="soundq_primitive_duration_ms260">260</integer>
+  <integer name="soundq_primitive_duration_ms280">280</integer>
+  <string name="soundq_primitive_easing_exit" translatable="false">0.4,0,1,1</string>
+  <string name="soundq_primitive_easing_standard" translatable="false">0.2,0,0,1</string>
+  <string name="soundq_primitive_font_family_display" translatable="false">Space Grotesk</string>
+  <string name="soundq_primitive_font_family_technical" translatable="false">IBM Plex Mono</string>
+  <integer name="soundq_primitive_font_weight_regular">400</integer>
+  <integer name="soundq_primitive_font_weight_semibold">600</integer>
+  <dimen name="soundq_primitive_font_size_artist">12.48sp</dimen>
+  <dimen name="soundq_primitive_font_size_badge">11.2sp</dimen>
+  <dimen name="soundq_primitive_font_size_body">16sp</dimen>
+  <dimen name="soundq_primitive_font_size_brand">18.88sp</dimen>
+  <dimen name="soundq_primitive_font_size_compact_artist">11.52sp</dimen>
+  <dimen name="soundq_primitive_font_size_compact_title">13.6sp</dimen>
+  <dimen name="soundq_primitive_font_size_h1">32sp</dimen>
+  <dimen name="soundq_primitive_font_size_h2">20.8sp</dimen>
+  <dimen name="soundq_primitive_font_size_intro">13.12sp</dimen>
+  <dimen name="soundq_primitive_font_size_mono">11.52sp</dimen>
+  <dimen name="soundq_primitive_font_size_nav">12sp</dimen>
+  <dimen name="soundq_primitive_font_size_playing">10.56sp</dimen>
+  <dimen name="soundq_primitive_font_size_sort">12.8sp</dimen>
+  <dimen name="soundq_primitive_font_size_state_body">14.4sp</dimen>
+  <dimen name="soundq_primitive_font_size_state_heading">19.2sp</dimen>
+  <dimen name="soundq_primitive_font_size_tab">14.08sp</dimen>
+  <dimen name="soundq_primitive_font_size_title">15.04sp</dimen>
+  <dimen name="soundq_primitive_letter_spacing_brand">-0.8496sp</dimen>
+  <dimen name="soundq_primitive_letter_spacing_heading">-1.28sp</dimen>
+  <dimen name="soundq_primitive_letter_spacing_mono">0.1152sp</dimen>
+  <dimen name="soundq_primitive_letter_spacing_playing">0.4224sp</dimen>
+  <item name="soundq_primitive_line_height_body" type="dimen" format="float">1.5</item>
+  <item name="soundq_primitive_line_height_button" type="dimen" format="float">1.4</item>
+  <item name="soundq_primitive_line_height_heading" type="dimen" format="float">1.12</item>
+  <item name="soundq_primitive_line_height_navigation" type="dimen" format="float">1.35</item>
+  <item name="soundq_primitive_line_height_subheading" type="dimen" format="float">1.25</item>
+  <item name="soundq_primitive_line_height_title" type="dimen" format="float">1.45</item>
+  <item name="soundq_primitive_number_disabled_opacity" type="dimen" format="float">0.65</item>
+  <item name="soundq_primitive_number_dismiss_progress" type="dimen" format="float">0.22</item>
+  <item name="soundq_primitive_number_dismiss_velocity" type="dimen" format="float">0.6</item>
+  <item name="soundq_primitive_number_full_sheet" type="dimen" format="float">0.94</item>
+  <item name="soundq_primitive_number_half" type="dimen" format="float">0.5</item>
+  <item name="soundq_primitive_number_icon_stroke" type="dimen" format="float">1.7</item>
+  <item name="soundq_primitive_number_medium_sheet" type="dimen" format="float">0.62</item>
+  <item name="soundq_primitive_number_regular" type="dimen" format="float">400</item>
+  <item name="soundq_primitive_number_scrim_opacity" type="dimen" format="float">0.64</item>
+  <item name="soundq_primitive_number_semibold" type="dimen" format="float">600</item>
+  <item name="soundq_primitive_number_slop_ratio" type="dimen" format="float">1.25</item>
+  <item name="soundq_primitive_number_zero" type="dimen" format="float">0</item>
+  <color name="soundq_semantic_color_art">#FF1E1C19</color>
+  <color name="soundq_semantic_color_background">#FF050505</color>
+  <color name="soundq_semantic_color_border">#FF493E32</color>
+  <color name="soundq_semantic_color_border_input">#FF827565</color>
+  <color name="soundq_semantic_color_disabled_background">#FF191714</color>
+  <color name="soundq_semantic_color_disabled_border">#FF6E6254</color>
+  <color name="soundq_semantic_color_disabled_text">#FFA89F90</color>
+  <color name="soundq_semantic_color_error">#FFFF8D83</color>
+  <color name="soundq_semantic_color_focus">#FF39C6B6</color>
+  <color name="soundq_semantic_color_hover">#FF342C23</color>
+  <color name="soundq_semantic_color_primary">#FFFF5A00</color>
+  <color name="soundq_semantic_color_primary_hover">#FFFF7D38</color>
+  <color name="soundq_semantic_color_progress_track">#FF554535</color>
+  <color name="soundq_semantic_color_raised">#FF211A13</color>
+  <color name="soundq_semantic_color_scrim">#FF000000</color>
+  <color name="soundq_semantic_color_secondary">#FF39C6B6</color>
+  <color name="soundq_semantic_color_selected">#FFFF5A00</color>
+  <color name="soundq_semantic_color_subtle_border">#FF29231C</color>
+  <color name="soundq_semantic_color_surface">#FF14110D</color>
+  <color name="soundq_semantic_color_text">#FFF4EDDC</color>
+  <color name="soundq_semantic_color_text_muted">#FFB5AC9F</color>
+  <dimen name="soundq_semantic_dimension_app_max">640dp</dimen>
+  <dimen name="soundq_semantic_dimension_app_min_height">480dp</dimen>
+  <dimen name="soundq_semantic_dimension_border">1dp</dimen>
+  <dimen name="soundq_semantic_dimension_corner">0dp</dimen>
+  <dimen name="soundq_semantic_dimension_focus_width">2dp</dimen>
+  <dimen name="soundq_semantic_dimension_icon">24dp</dimen>
+  <dimen name="soundq_semantic_dimension_icon_art">22dp</dimen>
+  <dimen name="soundq_semantic_dimension_icon_padding">12dp</dimen>
+  <dimen name="soundq_semantic_dimension_icon_small">20dp</dimen>
+  <dimen name="soundq_semantic_dimension_icon_tiny">16dp</dimen>
+  <dimen name="soundq_semantic_dimension_page_gutter">20dp</dimen>
+  <dimen name="soundq_semantic_dimension_rhythm">4dp</dimen>
+  <dimen name="soundq_semantic_dimension_safe_bottom">24dp</dimen>
+  <dimen name="soundq_semantic_dimension_safe_compact">8dp</dimen>
+  <dimen name="soundq_semantic_dimension_safe_top">24dp</dimen>
+  <dimen name="soundq_semantic_dimension_target_min">48dp</dimen>
+  <string name="soundq_semantic_font_family_display" translatable="false">Space Grotesk</string>
+  <string name="soundq_semantic_font_family_technical" translatable="false">IBM Plex Mono</string>
+  <integer name="soundq_semantic_font_weight_regular">400</integer>
+  <integer name="soundq_semantic_font_weight_semibold">600</integer>
+  <dimen name="soundq_semantic_font_size_artist">12.48sp</dimen>
+  <dimen name="soundq_semantic_font_size_badge">11.2sp</dimen>
+  <dimen name="soundq_semantic_font_size_body">16sp</dimen>
+  <dimen name="soundq_semantic_font_size_brand">18.88sp</dimen>
+  <dimen name="soundq_semantic_font_size_compact_artist">11.52sp</dimen>
+  <dimen name="soundq_semantic_font_size_compact_title">13.6sp</dimen>
+  <dimen name="soundq_semantic_font_size_h1">32sp</dimen>
+  <dimen name="soundq_semantic_font_size_h2">20.8sp</dimen>
+  <dimen name="soundq_semantic_font_size_intro">13.12sp</dimen>
+  <dimen name="soundq_semantic_font_size_mono">11.52sp</dimen>
+  <dimen name="soundq_semantic_font_size_nav">12sp</dimen>
+  <dimen name="soundq_semantic_font_size_playing">10.56sp</dimen>
+  <dimen name="soundq_semantic_font_size_sort">12.8sp</dimen>
+  <dimen name="soundq_semantic_font_size_state_body">14.4sp</dimen>
+  <dimen name="soundq_semantic_font_size_state_heading">19.2sp</dimen>
+  <dimen name="soundq_semantic_font_size_tab">14.08sp</dimen>
+  <dimen name="soundq_semantic_font_size_title">15.04sp</dimen>
+  <dimen name="soundq_semantic_letter_spacing_brand">-0.8496sp</dimen>
+  <dimen name="soundq_semantic_letter_spacing_heading">-1.28sp</dimen>
+  <dimen name="soundq_semantic_letter_spacing_mono">0.1152sp</dimen>
+  <dimen name="soundq_semantic_letter_spacing_playing">0.4224sp</dimen>
+  <item name="soundq_semantic_line_height_body" type="dimen" format="float">1.5</item>
+  <item name="soundq_semantic_line_height_button" type="dimen" format="float">1.4</item>
+  <item name="soundq_semantic_line_height_heading" type="dimen" format="float">1.12</item>
+  <item name="soundq_semantic_line_height_navigation" type="dimen" format="float">1.35</item>
+  <item name="soundq_semantic_line_height_subheading" type="dimen" format="float">1.25</item>
+  <item name="soundq_semantic_line_height_title" type="dimen" format="float">1.45</item>
+</resources>

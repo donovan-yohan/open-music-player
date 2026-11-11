@@ -1,0 +1,8 @@
+#!/bin/sh
+# Run from any directory; caller supplies JDK, Android SDK and private TMPDIR.
+set -eu
+cd "$(dirname "$0")/.."
+: "${JAVA_HOME:?Set JAVA_HOME to a compatible JDK}"
+: "${ANDROID_HOME:?Set ANDROID_HOME to the Android SDK}"
+: "${TMPDIR:?Set TMPDIR to a private scratch directory}"
+exec python3 ../scripts/android-product check "$@"

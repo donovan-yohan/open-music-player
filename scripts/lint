@@ -6,6 +6,9 @@ TARGET="${1:-all}"
 
 run_delivery() {
   "$ROOT/scripts/agentic-harness"
+  python3 "$ROOT/scripts/test-android-product.py"
+  python3 "$ROOT/scripts/test-native-publication.py"
+  python3 "$ROOT/scripts/check-native-payload.py"
   "$ROOT/scripts/agentic-cycle" --self-test
   "$ROOT/scripts/release-audit" --self-test
 }
@@ -76,6 +79,9 @@ run_extension() {
 }
 
 case "$TARGET" in
+  android-product)
+    python3 "$ROOT/scripts/android-product" lint "${@:2}"
+    ;;
   native)
     python3 "$ROOT/scripts/native-client" test
     ;;
@@ -110,7 +116,7 @@ case "$TARGET" in
     run_extension
     ;;
   *)
-    echo "usage: scripts/lint [native|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
+    echo "usage: scripts/lint [android-product|native|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
     exit 2
     ;;
 esac

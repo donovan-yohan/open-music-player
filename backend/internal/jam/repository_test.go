@@ -380,6 +380,15 @@ func TestPostgresRequestRacesAndLifetimeCap(t *testing.T) {
 		t.Fatalf("duplicate raced: %+v %v", snap, e)
 	}
 	for len(snap.Requests) < 49 {
+		// Terminal decline releases the one-unresolved slot; lifetime tombstones remain.
+		last := snap.Requests[len(snap.Requests)-1]
+		if _, e = r.Decide(ctx, o, id, p, last.RequestID, DecisionInput{ExpectedVersion: snap.Version, Status: "declined"}); e != nil {
+			t.Fatal(e)
+		}
+		snap, e = r.GuestSnapshot(ctx, id, secret)
+		if e != nil {
+			t.Fatal(e)
+		}
 		in.RequestID = uuid.New()
 		in.ExpectedVersion = snap.Version
 		if _, e = r.AddRequest(ctx, id, secret, in); e != nil {
@@ -389,6 +398,14 @@ func TestPostgresRequestRacesAndLifetimeCap(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
+	}
+	last := snap.Requests[len(snap.Requests)-1]
+	if _, e = r.Decide(ctx, o, id, p, last.RequestID, DecisionInput{ExpectedVersion: snap.Version, Status: "declined"}); e != nil {
+		t.Fatal(e)
+	}
+	snap, e = r.GuestSnapshot(ctx, id, secret)
+	if e != nil {
+		t.Fatal(e)
 	}
 	results = make(chan error, 2)
 	start = make(chan struct{})
@@ -421,6 +438,14 @@ func TestPostgresRequestRacesAndLifetimeCap(t *testing.T) {
 	snap, e = r.GuestSnapshot(ctx, id, secret)
 	if e != nil || len(snap.Requests) != 50 {
 		t.Fatal("lifetime cap")
+	}
+	last = snap.Requests[len(snap.Requests)-1]
+	if _, e = r.Decide(ctx, o, id, p, last.RequestID, DecisionInput{ExpectedVersion: snap.Version, Status: "declined"}); e != nil {
+		t.Fatal(e)
+	}
+	snap, e = r.GuestSnapshot(ctx, id, secret)
+	if e != nil {
+		t.Fatal(e)
 	}
 	in.RequestID = uuid.New()
 	in.ExpectedVersion = snap.Version

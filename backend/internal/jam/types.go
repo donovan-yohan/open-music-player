@@ -1,5 +1,5 @@
 // Package jam implements bounded host-only music requests. It never plays,
-// acquires or grants access to audio. Public projections are explicit DTOs.
+// grants access to audio. Explicit host-approved acquisition uses existing download owners.
 package jam
 
 import (
@@ -45,7 +45,8 @@ type Proof struct {
 type CreateInput struct {
 	JamID uuid.UUID `json:"jamId"`
 	Proof
-	TrackIDs []int64 `json:"trackIds"`
+	TrackIDs              []int64 `json:"trackIds"`
+	AllowOutsideDiscovery bool    `json:"allowOutsideDiscovery,omitempty"`
 }
 type CatalogItem struct {
 	CatalogItemID uuid.UUID `json:"catalogItemId"`
@@ -61,31 +62,45 @@ type NowPlaying struct {
 	DurationMS int64  `json:"durationMs"`
 }
 type Request struct {
-	RequestID     uuid.UUID `json:"requestId"`
-	CatalogItemID uuid.UUID `json:"catalogItemId"`
-	DisplayName   string    `json:"displayName"`
-	Status        string    `json:"status"`
+	RequestID     uuid.UUID     `json:"requestId"`
+	CatalogItemID uuid.UUID     `json:"catalogItemId"`
+	DisplayName   string        `json:"displayName"`
+	Status        string        `json:"status"`
+	Source        *SourceChoice `json:"source,omitempty"`
 }
 type Snapshot struct {
-	JamID      uuid.UUID     `json:"jamId"`
-	Version    int64         `json:"version"`
-	State      string        `json:"state"`
-	ServerTime time.Time     `json:"serverTime"`
-	ExpiresAt  time.Time     `json:"expiresAt"`
-	HostSeenAt time.Time     `json:"hostSeenAt"`
-	NowPlaying *NowPlaying   `json:"nowPlaying"`
-	Catalog    []CatalogItem `json:"catalog"`
-	Requests   []Request     `json:"requests"`
+	JamID                 uuid.UUID     `json:"jamId"`
+	Version               int64         `json:"version"`
+	State                 string        `json:"state"`
+	ServerTime            time.Time     `json:"serverTime"`
+	ExpiresAt             time.Time     `json:"expiresAt"`
+	HostSeenAt            time.Time     `json:"hostSeenAt"`
+	AllowOutsideDiscovery bool          `json:"allowOutsideDiscovery"`
+	NowPlaying            *NowPlaying   `json:"nowPlaying"`
+	Catalog               []CatalogItem `json:"catalog"`
+	Requests              []Request     `json:"requests"`
 }
 type HostRequest struct {
 	Request
-	TrackID int64             `json:"trackId"`
-	Receipt *AdmissionReceipt `json:"receipt,omitempty"`
+	TrackID        int64             `json:"trackId"`
+	MemberID       uuid.UUID         `json:"memberId"`
+	SelectedSource json.RawMessage   `json:"selectedSource,omitempty"`
+	ApprovalOrder  int64             `json:"approvalOrder"`
+	AdmissionKey   string            `json:"admissionKey,omitempty"`
+	HostSessionID  string            `json:"hostSessionId,omitempty"`
+	CanAdmit       bool              `json:"canAdmit"`
+	DownloadJobID  uuid.UUID         `json:"downloadJobId,omitempty"`
+	Receipt        *AdmissionReceipt `json:"receipt,omitempty"`
 }
 type HostView struct {
+	OwnerUserID         uuid.UUID `json:"ownerUserId"`
+	OwnerAuthGeneration int64     `json:"ownerAuthGeneration"`
+	HostDeviceID        uuid.UUID `json:"hostDeviceId"`
+	LeaseID             uuid.UUID `json:"leaseId"`
 	Snapshot
 	HostRequests []HostRequest `json:"hostRequests"`
 	MemberCount  int           `json:"memberCount"`
+	Members      []HostMember  `json:"members"`
 }
 type Invite struct {
 	JoinToken       string    `json:"joinToken"`

@@ -3,10 +3,16 @@
 ## Purpose
 
 Open Music Player is a self-hosted music library and playback system. Production
-means the Go backend, Flutter client, browser extension, Docker/dev stack, and
+means the Go backend, native Android Compose product, supported Flutter client, browser extension, Docker/dev stack, and
 physical mobile dogfood path continue to work together.
 
 ## Domain Map
+
+- Active Android product -> `android/` (`:app`, `:designsystem`),
+  `scripts/android-product`, `android/README.md`,
+  `docs/adr/0014-platform-native-android-client.md`. This independent Compose
+  Gradle root is not `native/android/` or Flutter's `client/android/`.
+  Go remains API/schema authority; `SoundQLibraryService` owns native playback.
 
 - Auth/session/API contracts -> `backend/internal/auth/`, `backend/internal/api/`, `client/lib/core/api/`, `client/lib/core/auth/`, `extension/src/`.
 - Library, playlists, queue, downloads -> `backend/internal/db/`, `backend/internal/queue/`, `backend/internal/download/`, `backend/internal/processor/`, `client/lib/providers/`, `client/lib/screens/`.
@@ -63,8 +69,15 @@ See `docs/context-map.md` for the fuller map and harness table.
 - Deterministic dev-cycle evidence path:
   `scripts/agentic-cycle --run --evidence /tmp/omp-cycle.json`
 - Release/closeout audit: `scripts/release-audit --pr <number> --issue <number>`
-- Build checks: `scripts/build client` builds the Android arm64 debug APK;
-  native experimental clients use `scripts/test native`,
+- Native Compose checks: `scripts/test android-product`,
+  `scripts/lint android-product`, `scripts/build android-product`, or
+  `python3 scripts/android-product check` for all three. Explicit SDK/JDK,
+  private Gradle home, temporary root and API/build identity are required.
+  `python3 scripts/android-product preflight` verifies setup without compilation.
+  CI `Native Clients / Android Compose product` uploads debug/test APKs only.
+  This does not alter signed3-image production qualification or authorize install.
+- Build checks: `scripts/build client` builds the Flutter Android arm64 debug APK;
+  retained native experimental clients use `scripts/test native`,
   `scripts/build native-macos`, and `scripts/build native-android`; see
   `docs/adr/0013-native-client-application-core.md`. These never install apps.
   `scripts/build analyzer` verifies the pinned Beat This/librosa image and

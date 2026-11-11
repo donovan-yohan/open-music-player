@@ -1,0 +1,17 @@
+{
+  "kind": "consumed-subset-not-full-release",
+  "immutableRelease": "integrated-r1-3a4f3205f09a5fec",
+  "releaseManifestSha256": "3a4f3205f09a5fec17dcb5a9789a7f0da11c0a5bd82772194be8196a8ccd55f6",
+  "files": {
+    "tokens/soundq.tokens.json": "68015c1afa0bd52efee6df854be0e9d9c64d6a339d2430f95201830390e0487c",
+    "scripts/build_tokens.py": "913b24c7c988792da6a4466d0a2e172ea5b374d621c0d8dcf1cf9c8b2b2b2f8c",
+    "generated/SoundQComposeTokens.kt": "b3dfaa002c68e5d7a39c68eb06819632269a45345e358c5699545e1b3be9392b",
+    "assets/icons/source.json": "d07f9a2b64d625986f60aa196cdea8392571bdee6c970af449a2a81bdcbaa15c",
+    "scripts/build_icons.py": "a4a268ffe4447c0eebc05689873e2206fdde6dd1d68faf4dbc6e395fdfe1f9bd",
+    "generated/SoundQIcons.kt": "f85bd2710b6a475a971643dfdbca0241f0b87744ab0cddc9492fa35eca7972f8",
+    "components/QUEUE_REORDER.md": "519f1110ed01539a1483379b9d6846b835d6cb2cfa7464edffa3d70bade8d9ef",
+    "components/compose/SoundQQueueVisuals.kt": "2c33fd34280d34c53abb8ca749b78852c6c634ef56b9d36681209bb087b2aef1",
+    "components/MOTION.md": "ea594d100a1f3f9ecbe87c1fabdb63c0e515a5d1807525e410f962443f5fbc3a",
+    "reference/queue-drag.js": "19e45d0b7b1ad62b0293e6905cce22dc3ad60bbabd81cb81046613925600adb4"
+  }
+}

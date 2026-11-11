@@ -1,0 +1,138 @@
+{
+  "repository": "https://github.com/google/fonts",
+  "commit": "45e3d5269e4a17d823f6d84470bc084dc5ae46f6",
+  "files": [
+    {
+      "path": "assets/fonts/spacegrotesk/SpaceGrotesk-Regular.ttf",
+      "source": "https://raw.githubusercontent.com/google/fonts/45e3d5269e4a17d823f6d84470bc084dc5ae46f6/ofl/spacegrotesk/SpaceGrotesk%5Bwght%5D.ttf",
+      "source_sha256": "acad6de1fc93436f5c0f1f4137751ef04f1aea3063e7036535970ffcfbd79f72",
+      "source_bytes": 136676,
+      "sha256": "28af0332e262e4953efdf5159fb8426f8218a84ab2f22453f85d258c62773fcd",
+      "bytes": 88324,
+      "generation": {
+        "tool": "fontTools.varLib.instancer.instantiateVariableFont",
+        "version": "4.60.1",
+        "axes": {
+          "wght": 400
+        },
+        "updateFontNames": false,
+        "recalcTimestamp": false,
+        "static_names": {
+          "1": "Space Grotesk",
+          "2": "Regular",
+          "3": "2.000;FK;SpaceGrotesk-Regular",
+          "4": "Space Grotesk Regular",
+          "6": "SpaceGrotesk-Regular",
+          "16": "Space Grotesk",
+          "17": "Regular"
+        },
+        "reason": "Pinned STAT omits a named 600; instantiated outlines and OS/2 weights are real."
+      }
+    },
+    {
+      "path": "assets/fonts/spacegrotesk/SpaceGrotesk-Medium.ttf",
+      "source": "https://raw.githubusercontent.com/google/fonts/45e3d5269e4a17d823f6d84470bc084dc5ae46f6/ofl/spacegrotesk/SpaceGrotesk%5Bwght%5D.ttf",
+      "source_sha256": "acad6de1fc93436f5c0f1f4137751ef04f1aea3063e7036535970ffcfbd79f72",
+      "source_bytes": 136676,
+      "sha256": "170fc655be8d0ec0c6e07b62299670cfbe2b3455730b43b97c553d19ac0839d5",
+      "bytes": 88328,
+      "generation": {
+        "tool": "fontTools.varLib.instancer.instantiateVariableFont",
+        "version": "4.60.1",
+        "axes": {
+          "wght": 500
+        },
+        "updateFontNames": false,
+        "recalcTimestamp": false,
+        "static_names": {
+          "1": "Space Grotesk Medium",
+          "2": "Regular",
+          "3": "2.000;FK;SpaceGrotesk-Medium",
+          "4": "Space Grotesk Medium",
+          "6": "SpaceGrotesk-Medium",
+          "16": "Space Grotesk",
+          "17": "Medium"
+        },
+        "reason": "Pinned STAT omits a named 600; instantiated outlines and OS/2 weights are real."
+      }
+    },
+    {
+      "path": "assets/fonts/spacegrotesk/SpaceGrotesk-SemiBold.ttf",
+      "source": "https://raw.githubusercontent.com/google/fonts/45e3d5269e4a17d823f6d84470bc084dc5ae46f6/ofl/spacegrotesk/SpaceGrotesk%5Bwght%5D.ttf",
+      "source_sha256": "acad6de1fc93436f5c0f1f4137751ef04f1aea3063e7036535970ffcfbd79f72",
+      "source_bytes": 136676,
+      "sha256": "a3916fb4a0f1362c88e0918eda2e1fc5bab2fde1ad3e102a5e3c89713c2b09bb",
+      "bytes": 88240,
+      "generation": {
+        "tool": "fontTools.varLib.instancer.instantiateVariableFont",
+        "version": "4.60.1",
+        "axes": {
+          "wght": 600
+        },
+        "updateFontNames": false,
+        "recalcTimestamp": false,
+        "static_names": {
+          "1": "Space Grotesk SemiBold",
+          "2": "Regular",
+          "3": "2.000;FK;SpaceGrotesk-SemiBold",
+          "4": "Space Grotesk SemiBold",
+          "6": "SpaceGrotesk-SemiBold",
+          "16": "Space Grotesk",
+          "17": "SemiBold"
+        },
+        "reason": "Pinned STAT omits a named 600; instantiated outlines and OS/2 weights are real."
+      }
+    },
+    {
+      "path": "assets/fonts/spacegrotesk/SpaceGrotesk-Bold.ttf",
+      "source": "https://raw.githubusercontent.com/google/fonts/45e3d5269e4a17d823f6d84470bc084dc5ae46f6/ofl/spacegrotesk/SpaceGrotesk%5Bwght%5D.ttf",
+      "source_sha256": "acad6de1fc93436f5c0f1f4137751ef04f1aea3063e7036535970ffcfbd79f72",
+      "source_bytes": 136676,
+      "sha256": "ecab4b0a0d1d0f9ad6d056fa966b642f25addb75111f22b4a194cf3ca54fbb49",
+      "bytes": 88224,
+      "generation": {
+        "tool": "fontTools.varLib.instancer.instantiateVariableFont",
+        "version": "4.60.1",
+        "axes": {
+          "wght": 700
+        },
+        "updateFontNames": false,
+        "recalcTimestamp": false,
+        "static_names": {
+          "1": "Space Grotesk",
+          "2": "Bold",
+          "3": "2.000;FK;SpaceGrotesk-Bold",
+          "4": "Space Grotesk Bold",
+          "6": "SpaceGrotesk-Bold",
+          "16": "Space Grotesk",
+          "17": "Bold"
+        },
+        "reason": "Pinned STAT omits a named 600; instantiated outlines and OS/2 weights are real."
+      }
+    },
+    {
+      "path": "assets/fonts/spacegrotesk/OFL.txt",
+      "source": "https://raw.githubusercontent.com/google/fonts/45e3d5269e4a17d823f6d84470bc084dc5ae46f6/ofl/spacegrotesk/OFL.txt",
+      "sha256": "564ce565c371c5e5bbf286006565a7c9aa55a9f56e7ca58d56e05d649dd61a72",
+      "bytes": 4495
+    },
+    {
+      "path": "assets/fonts/ibmplexmono/IBMPlexMono-Regular.ttf",
+      "source": "https://raw.githubusercontent.com/google/fonts/45e3d5269e4a17d823f6d84470bc084dc5ae46f6/ofl/ibmplexmono/IBMPlexMono-Regular.ttf",
+      "sha256": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46",
+      "bytes": 135580
+    },
+    {
+      "path": "assets/fonts/ibmplexmono/IBMPlexMono-Medium.ttf",
+      "source": "https://raw.githubusercontent.com/google/fonts/45e3d5269e4a17d823f6d84470bc084dc5ae46f6/ofl/ibmplexmono/IBMPlexMono-Medium.ttf",
+      "sha256": "a9b4c49bb299e05b5f6c481e7fb5e78943d2793249a0c8874ab574a2d1ea6755",
+      "bytes": 136704
+    },
+    {
+      "path": "assets/fonts/ibmplexmono/OFL.txt",
+      "source": "https://raw.githubusercontent.com/google/fonts/45e3d5269e4a17d823f6d84470bc084dc5ae46f6/ofl/ibmplexmono/OFL.txt",
+      "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da",
+      "bytes": 4456
+    }
+  ]
+}

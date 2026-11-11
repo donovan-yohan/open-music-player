@@ -132,7 +132,9 @@ def is_test_path(path: str) -> bool:
 def components_for(files: Iterable[str]) -> set[str]:
     components: set[str] = set()
     for path in files:
-        if path.startswith("native/"):
+        if path.startswith("android/") or path in {"scripts/android-product", "scripts/test-android-product.py", "scripts/check-native-payload.py", "scripts/test-native-publication.py"}:
+            components.add("android-product")
+        elif path.startswith("native/"):
             components.add("native")
         elif path.startswith("backend/"):
             components.add("backend")
@@ -140,6 +142,8 @@ def components_for(files: Iterable[str]) -> set[str]:
                 components.add("analyzer")
         elif path.startswith("client/"):
             components.add("client")
+            if path.startswith("client/native/"):
+                components.add("android-product")
         elif path.startswith("extension/"):
             components.add("extension")
         elif path.startswith("docker-compose"):
@@ -159,6 +163,8 @@ def components_for(files: Iterable[str]) -> set[str]:
 def needs_mobile_audio_device(files: Iterable[str]) -> bool:
     markers = (
         "native/",
+        "android/",
+        "client/native/",
         "client/android/",
         "client/lib/core/audio/",
         "client/lib/core/engine/",
@@ -270,6 +276,15 @@ def plan_gates(
                 )
             )
 
+    if "android-product" in components:
+        gates.extend([
+            Gate("Android Compose tests", ("scripts/test", "android-product"), "Host JNI fixtures and Compose product unit tests"),
+            Gate("Android Compose lint", ("scripts/lint", "android-product"), "Product and design-system Android lint"),
+        ])
+        if include_build:
+            gates.append(Gate("Android Compose APKs", ("scripts/build", "android-product"), "Product and instrumentation assembly, never installation"))
+        manual.append(Gate("Android Compose runtime", ("python3", "scripts/android-product", "--help"), "See android/README.md for separately authorized exact-artifact native fixture/device journeys; Flutter dogfood is not this app"))
+
     if "native" in components:
         gates.append(Gate("native core tests", ("scripts/test", "native"), "Rust ABI/lifecycle regression suite"))
         manual.append(Gate("native platform qualification", ("python3", "scripts/native-client", "all"), "Native build/test only; separate Mac and explicitly selected emulator runtime/performance receipts required; never installs automatically"))
@@ -298,7 +313,7 @@ def plan_gates(
                 Gate("extension build", ("scripts/build", "extension"), "extension package build")
             )
 
-    if include_device and ("client" in components or "native" not in components):
+    if include_device and ("client" in components or not components.intersection({"native", "android-product"})):
         gates.append(
             Gate(
                 "android dogfood",
@@ -306,7 +321,7 @@ def plan_gates(
                 "physical Android playback/device evidence",
             )
         )
-    elif requires_android_dogfood and ("client" in components or "native" not in components):
+    elif requires_android_dogfood and ("client" in components or not components.intersection({"native", "android-product"})):
         manual.append(
             Gate(
                 "android dogfood",
@@ -426,6 +441,8 @@ def build_payload(args: argparse.Namespace) -> tuple[dict, list[Gate], list[Gate
 
 def self_test() -> int:
     cases = [
+        (["android/app/src/main/kotlin/com/soundq/android/product/ProductApp.kt"], "mobile-audio-device", {"android-product"}, True),
+        (["client/native/transport/src/soundq_transport.cpp"], "mobile-audio-device", {"client", "android-product"}, True),
         (["native/core/src/lib.rs"], "mobile-audio-device", {"native"}, True),
         (["native/macos/Sources/main.swift"], "mobile-audio-device", {"native"}, True),
         (["native/android/app/src/main/java/MainActivity.kt"], "mobile-audio-device", {"native"}, True),
