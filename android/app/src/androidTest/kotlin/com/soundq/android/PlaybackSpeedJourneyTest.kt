@@ -62,6 +62,23 @@ class PlaybackSpeedJourneyTest {
         val assigned=(0 until decks.length()).map {decks.getJSONObject(it)}.filter {it.getLong("identity")!=0L&&it.getBoolean("ready")}
         return assigned.firstOrNull {it.getBoolean("playing")} ?: assigned.firstOrNull()
     }
+    private fun decksSummary():String {
+        val decks=native().getJSONArray("decks")
+        return (0 until decks.length()).map {decks.getJSONObject(it)}.filter {it.getLong("identity")!=0L}
+            .joinToString(";") {"id=${it.getLong("identity")} ready=${it.getBoolean("ready")} playing=${it.getBoolean("playing")} pos=${it.getLong("positionMs")} rate=${it.getDouble("rate")}"}
+    }
+    /** After a selection change the retiring deck can stay assigned for a few blocks; wait
+     * until one playing assignment is stable before measuring the new occurrence. */
+    private fun awaitSettledDeck(message:String) {
+        var last=-1L;var stable=0
+        await(message) {
+            val d=deck()?.takeIf {it.getBoolean("playing")}
+            val id=d?.getLong("identity") ?: -1L
+            if(id!=last) {println("SPEED_EVIDENCE decks while settling: ${decksSummary()}");last=id;stable=0} else if(id>0)stable++
+            Thread.sleep(100)
+            stable>=5
+        }
+    }
     /** Source-time advance per wall second from native acknowledgements only. */
     private fun measuredRate(wallMs:Long=3000):Double {
         val a=deck()!!;val t0=SystemClock.elapsedRealtime()
@@ -177,6 +194,7 @@ class PlaybackSpeedJourneyTest {
         assertEquals(1.5,prefs().speed(ListeningSpeedKey.device(a))!!,0.0)
         main {c.seekToNextMediaItem()}
         await("B selected and advancing") {current()!=first&&deck()?.getBoolean("playing")==true}
+        awaitSettledDeck("B assignment settled")
         val second=current()
         assertEquals("never-configured B starts normal",1.0,speedState()!!.accepted,0.0)
         val bRate=measuredRate(2000);println("SPEED_EVIDENCE B rate=$bRate")
@@ -192,6 +210,7 @@ class PlaybackSpeedJourneyTest {
         }
         val code=pending.get(15,TimeUnit.SECONDS).resultCode
         await("A selected and advancing") {current()==first&&deck()?.getBoolean("playing")==true}
+        awaitSettledDeck("A assignment settled")
         println("SPEED_EVIDENCE in-flight retirement result=$code")
         assertEquals("A restores its own accepted speed",1.5,speedState()!!.accepted,0.0)
         val restored=measuredRate(2000);println("SPEED_EVIDENCE A restored rate=$restored")
