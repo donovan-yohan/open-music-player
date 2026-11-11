@@ -1,0 +1,1076 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+
+	"github.com/openmusicplayer/backend/internal/aiassist"
+	"github.com/openmusicplayer/backend/internal/analyzer"
+	"github.com/openmusicplayer/backend/internal/api"
+	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/cache"
+	"github.com/openmusicplayer/backend/internal/config"
+	"github.com/openmusicplayer/backend/internal/connect"
+	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/discovery"
+	"github.com/openmusicplayer/backend/internal/download"
+	"github.com/openmusicplayer/backend/internal/health"
+	"github.com/openmusicplayer/backend/internal/jam"
+	"github.com/openmusicplayer/backend/internal/listenbrainz"
+	"github.com/openmusicplayer/backend/internal/logger"
+	"github.com/openmusicplayer/backend/internal/matcher"
+	"github.com/openmusicplayer/backend/internal/metrics"
+	"github.com/openmusicplayer/backend/internal/musicbrainz"
+	"github.com/openmusicplayer/backend/internal/observability"
+	"github.com/openmusicplayer/backend/internal/playlistimport"
+	"github.com/openmusicplayer/backend/internal/processor"
+	"github.com/openmusicplayer/backend/internal/queue"
+	"github.com/openmusicplayer/backend/internal/research"
+	"github.com/openmusicplayer/backend/internal/search"
+	"github.com/openmusicplayer/backend/internal/stems"
+	"github.com/openmusicplayer/backend/internal/storage"
+	"github.com/openmusicplayer/backend/internal/websocket"
+)
+
+const version = "1.0.0"
+
+// Reuse the configured cache client: Redis-off remains a registered, private,
+// fail-closed feature, without a second destination or memory fallback.
+func newConnectHandlers(redisCache *cache.Cache) *api.ConnectHandlers {
+	if redisCache == nil {
+		return api.NewConnectHandlers(nil)
+	}
+	return api.NewConnectHandlers(connect.NewService(redisCache.Client()))
+}
+
+// Jam uses the same configured Redis client as Connect. Missing dependencies
+// remain registered and fail closed, without an in-memory capability fallback.
+func newJamHandlers(database *db.DB, redisCache *cache.Cache) (*api.JamHandlers, *jam.Repository) {
+	if database == nil || database.DB == nil {
+		return api.NewJamHandlers(nil, nil, nil, nil), nil
+	}
+	repo := jam.NewRepository(database.DB)
+	if redisCache == nil {
+		return api.NewJamHandlers(nil, nil, nil, nil), repo
+	}
+	writer := connect.NewService(redisCache.Client())
+	return api.NewJamHandlers(repo, jam.NewRedisLimiter(redisCache.Client()),
+		func(req *http.Request) (jam.Owner, error) {
+			user := auth.GetUserFromContext(req.Context())
+			if user == nil {
+				return jam.Owner{}, jam.ErrDenied
+			}
+			// Signed claims are inputs only; Jam SQL checks the current generation
+			// within each operation's own users -> jams transaction.
+			return jam.Owner{UserID: user.UserID, Generation: user.ConnectGeneration}, nil
+		},
+		func(ctx context.Context, owner jam.Owner, proof jam.Proof) error {
+			err := writer.ValidateWriter(ctx, owner.UserID, owner.Generation, proof.HostDeviceID.String(), proof.LeaseID.String(), proof.WriterSecret)
+			if errors.Is(err, connect.ErrUnavailable) {
+				return jam.ErrUnavailable
+			}
+			if err != nil {
+				return jam.ErrDenied
+			}
+			return nil
+		}), repo
+}
+
+// There is no perpetual server-wide maintenance loop (analyzer startup work
+// exits after reconciliation), so Jam owns one focused, cancellable timer.
+func startJamCleanup(repo *jam.Repository) func() {
+	if repo == nil {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	ticker := time.NewTicker(15 * time.Minute)
+	done := runJamCleanup(ctx, repo, ticker.C)
+	var once sync.Once
+	return func() { once.Do(func() { ticker.Stop(); cancel(); <-done }) }
+}
+
+func runJamCleanup(ctx context.Context, repo *jam.Repository, ticks <-chan time.Time) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case _, ok := <-ticks:
+				if !ok || ctx.Err() != nil {
+					return
+				}
+				batchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				_, err := repo.PurgeRetired(batchCtx)
+				cancel()
+				if err != nil && ctx.Err() == nil {
+					logger.Default().Error(ctx, "Jam retention cleanup failed", nil, err)
+				}
+			}
+		}
+	}()
+	return done
+}
+
+const (
+	// Startup drains stale rows in repeated bounded batches so queue pressure and
+	// database transactions stay predictable without requiring another restart.
+	startupAnalyzerRepairLimit   = 50
+	startupAnalyzerRepairWorkers = 4
+	startupAnalyzerRepairTimeout = 15 * time.Second
+	startupAnalyzerRetryInterval = 30 * time.Second
+)
+
+type analyzerInfoClient interface {
+	Info(ctx context.Context) (analyzer.Info, error)
+}
+
+type analyzerVersionStore interface {
+	MarkStaleByAnalyzerVersion(ctx context.Context, analyzerName, analyzerVersion string) (int64, error)
+}
+
+type analyzerMaintenanceTrackStore interface {
+	GetMaintenanceCandidates(ctx context.Context, includeMetadata, includeAnalysis bool, staleAfter time.Duration, limit int) ([]db.Track, error)
+}
+
+type analyzerMaintenanceProcessor interface {
+	SetAnalyzerIdentity(analyzerName, analyzerVersion string)
+	RequestAnalysisRepair(ctx context.Context, track *db.Track, opts processor.AnalysisRepairOptions) (processor.AnalysisRepairResult, error)
+}
+
+// sourceSelectionPlaybackRecovery adapts the Redis playback queue to the
+// database lifecycle without creating a db -> queue package dependency.
+type sourceSelectionPlaybackRecovery struct {
+	service *queue.Service
+}
+
+func (r sourceSelectionPlaybackRecovery) EnsureSourceCandidateWithID(ctx context.Context, userID, queueItemID string, candidate download.SourceCandidate, downloadJobID, position string) error {
+	_, err := r.service.EnsureSourceCandidateWithID(ctx, userID, queueItemID, queue.SourceCandidate{
+		CandidateID: candidate.CandidateID, Provider: candidate.Provider, SourceID: candidate.SourceID,
+		SourceURL: candidate.SourceURL, Title: candidate.Title, Artist: candidate.Artist, Album: candidate.Album,
+		Uploader: candidate.Uploader, DurationMs: candidate.DurationMs, ThumbnailURL: candidate.ThumbnailURL,
+		Downloadable: true, Metadata: candidate.Metadata,
+	}, downloadJobID, position)
+	return err
+}
+
+type analyzerMaintenanceReport struct {
+	Analyzer        string
+	AnalyzerVersion string
+	MarkedStale     int64
+	Candidates      int
+	Queued          int
+	Skipped         int
+	Failures        int
+	Batches         int
+}
+
+// newSourceQualityJudge creates the optional discovery dependency exclusively
+// from the loaded server configuration. A disabled config produces nil, which
+// keeps discovery on deterministic ranking.
+func newSourceQualityJudge(cfg *config.Config) discovery.SourceQualityJudge {
+	if cfg == nil {
+		return nil
+	}
+	judge := discovery.NewOllamaSourceQualityJudge(discovery.OllamaSourceQualityConfig{
+		Enabled: cfg.SourceQualityLLMEnabled,
+		BaseURL: cfg.SourceQualityLLMBaseURL,
+		Model:   cfg.SourceQualityLLMModel,
+		Timeout: cfg.SourceQualityLLMTimeout,
+		APIKey:  cfg.SourceQualityLLMAPIKey,
+	})
+	if judge == nil {
+		return nil
+	}
+	return judge
+}
+
+// discoveryServiceConfigFromEnv reads the production-only discovery timeout
+// overrides. Invalid and absent values deliberately retain library defaults.
+func discoveryServiceConfigFromEnv(getenv func(string) string) discovery.ServiceConfig {
+	perProviderTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS", discovery.DefaultPerProviderTimeout)
+	soundCloudTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_SOUNDCLOUD_TIMEOUT_SECONDS", discovery.DefaultSoundCloudTimeout)
+	overallTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_OVERALL_TIMEOUT_SECONDS", discovery.DefaultOverallTimeout)
+	metadataTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_YOUTUBE_MUSIC_METADATA_TIMEOUT_SECONDS", discovery.DefaultYouTubeMusicMetadataEnrichmentTimeout)
+	metadataConcurrency := discoveryPositiveIntFromEnv(
+		getenv,
+		"DISCOVERY_YOUTUBE_MUSIC_METADATA_CONCURRENCY",
+		discovery.DefaultYouTubeMusicMetadataEnrichmentConcurrency,
+		discovery.MaxYouTubeMusicMetadataEnrichmentConcurrency,
+	)
+	return discovery.NormalizeServiceConfig(discovery.ServiceConfig{
+		PerProviderTimeout:                        perProviderTimeout,
+		SoundCloudTimeout:                         soundCloudTimeout,
+		OverallTimeout:                            overallTimeout,
+		YouTubeMusicMetadataEnrichmentTimeout:     metadataTimeout,
+		YouTubeMusicMetadataEnrichmentConcurrency: metadataConcurrency,
+	})
+}
+
+func discoveryTimeoutFromEnv(getenv func(string) string, key string, fallback time.Duration) time.Duration {
+	seconds, err := strconv.ParseInt(strings.TrimSpace(getenv(key)), 10, 64)
+	if err != nil || seconds <= 0 || seconds > (1<<63-1)/int64(time.Second) {
+		return fallback
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func discoveryPositiveIntFromEnv(getenv func(string) string, key string, fallback, maximum int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(getenv(key)))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
+
+// newAgentToolsHandler wires the private research gateway independently from
+// ordinary discovery. A missing service token returns nil, so no gateway route
+// is registered and deterministic discovery remains untouched.
+func newAgentToolsHandler(cfg *config.Config, search *discovery.Service) *discovery.AgentToolsHandler {
+	if cfg == nil {
+		return nil
+	}
+	return discovery.NewAgentToolsHandler(discovery.AgentToolsConfig{
+		ServiceToken:    cfg.AgentServiceToken,
+		FirecrawlAPIKey: cfg.FirecrawlAPIKey,
+		Search:          search,
+	})
+}
+
+type researchRuntime struct {
+	handlers *api.ResearchHandlers
+	worker   *research.Worker
+}
+
+func maintenanceStartupConfig(cfg *config.Config) (api.MaintenanceConfig, error) {
+	if err := cfg.ValidateMaintenance(); err != nil {
+		return api.MaintenanceConfig{}, err
+	}
+	return api.MaintenanceConfig{AdminUserIDs: cfg.MaintenanceAdminUserIDs}, nil
+}
+
+func validateResearchStartup(cfg *config.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("research rollout config is required")
+	}
+	return cfg.ValidateResearchRollout()
+}
+
+func shouldStartResearchWorker(cfg *config.Config) bool {
+	return cfg != nil && cfg.ResearchEnabled && cfg.ResearchWorkerEnabled
+}
+
+// newResearchRuntime keeps durable research independent from Redis, download,
+// playback, and the private agent-tools gateway. The HTTP baseline uses the
+// existing discovery service; model enhancement remains a bounded child process.
+func newResearchRuntime(cfg *config.Config, database *db.DB, search *discovery.Service, observer api.ResearchObserver) (*researchRuntime, error) {
+	if cfg == nil || database == nil || search == nil {
+		return nil, fmt.Errorf("research runtime requires config, database, and discovery")
+	}
+	if err := validateResearchStartup(cfg); err != nil {
+		return nil, err
+	}
+	validator := research.NewPayloadValidator()
+	baseline, err := research.NewBaselineBuilder(research.BaselineBuilderConfig{
+		Search:        search,
+		Providers:     []string{"youtube", "soundcloud"},
+		MaxProviders:  2,
+		MaxCandidates: cfg.ResearchMaxCandidatesIn,
+	})
+	if err != nil {
+		return nil, err
+	}
+	repository := research.NewPostgresRepository(database, research.PostgresRepositoryConfig{
+		DailyUnitsPerAttempt:      int64(cfg.ResearchDailyUnitsPerAttempt),
+		DailyLimit:                int64(cfg.ResearchDailyLimit),
+		MaxConcurrentRunsPerUser:  cfg.ResearchMaxConcurrentPerUser,
+		SurfaceDeepAgentRevisions: cfg.ResearchDeepAgentSurfaceRevisions,
+	})
+	runner, err := newResearchRunner(cfg)
+	if err != nil {
+		return nil, err
+	}
+	assigner, err := research.NewRolloutVariantAssigner(research.RolloutConfig{
+		ResearchEnabled:     cfg.ResearchEnabled,
+		DirectJudgeEnabled:  cfg.ResearchDirectJudgeEnabled,
+		DeepAgentEnabled:    cfg.ResearchDeepAgentEnabled,
+		DeepAgentDarkLaunch: cfg.ResearchDeepAgentDarkLaunchEnabled,
+		DeepAgentCohortBPS:  cfg.ResearchDeepAgentCohortBPS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	service := research.NewService(research.ServiceConfig{Repository: repository, Validator: validator, VariantAssigner: assigner})
+	return &researchRuntime{
+		handlers: api.NewResearchHandlers(service, baseline, cfg.ResearchMaxAttempts, observer),
+		worker: research.NewWorker(research.WorkerConfig{
+			Repository: repository,
+			Runner:     runner,
+			Validator:  validator,
+			WorkerID:   cfg.ResearchWorkerID,
+			Capabilities: research.WorkerCapabilities{
+				DirectJudge: cfg.ResearchDirectJudgeEnabled,
+				DeepAgent:   cfg.ResearchDeepAgentEnabled,
+			},
+			PollInterval:  cfg.ResearchPollInterval,
+			LeaseDuration: cfg.ResearchLeaseDuration,
+			RenewInterval: cfg.ResearchRenewInterval,
+			RunTimeout:    cfg.ResearchRunTimeout,
+		}),
+	}, nil
+}
+
+func newResearchRunner(cfg *config.Config) (research.Runner, error) {
+	if cfg == nil || !cfg.ResearchEnabled || (!cfg.ResearchDirectJudgeEnabled && !cfg.ResearchDeepAgentEnabled) {
+		return research.DisabledRunner{}, nil
+	}
+	return research.NewCommandRunner(researchCommandRunnerConfig(cfg))
+}
+
+func researchCommandRunnerConfig(cfg *config.Config) research.CommandRunnerConfig {
+	return research.CommandRunnerConfig{
+		Command:     cfg.ResearchCommand,
+		Args:        append([]string(nil), cfg.ResearchCommandArgs...),
+		Environment: cfg.ResearchChildEnvironment(),
+		Budgets: research.WorkerBudgetConfig{
+			MaxToolCalls:           cfg.ResearchMaxToolCalls,
+			MaxModelCalls:          cfg.ResearchMaxModelCalls,
+			RecursionLimit:         cfg.ResearchRecursionLimit,
+			MaxCandidatesIn:        cfg.ResearchMaxCandidatesIn,
+			MaxRecommendations:     cfg.ResearchMaxRecommendations,
+			WallClockMs:            int(cfg.ResearchWallClock.Milliseconds()),
+			MaxRequestBytes:        cfg.ResearchMaxRequestBytes,
+			MaxResponseBytes:       cfg.ResearchMaxResponseBytes,
+			MaxTokensPerCompletion: cfg.ResearchMaxTokens,
+		},
+		Stages: research.WorkerStageConfig{
+			DirectJudge: cfg.ResearchDirectJudgeEnabled,
+			DeepAgent:   cfg.ResearchDeepAgentEnabled,
+		},
+		CancelGrace: cfg.ResearchCancelGrace,
+	}
+}
+
+// reconcileAnalyzerVersion invalidates rows owned by another analyzer version,
+// then drains stale work in bounded batches. Analysis overrides are owned by
+// the repository and are never modified by this reconciliation.
+func reconcileAnalyzerVersion(
+	ctx context.Context,
+	client analyzerInfoClient,
+	analysisStore analyzerVersionStore,
+	tracks analyzerMaintenanceTrackStore,
+	repairs analyzerMaintenanceProcessor,
+) (analyzerMaintenanceReport, error) {
+	report := analyzerMaintenanceReport{}
+	if client == nil || analysisStore == nil || tracks == nil || repairs == nil {
+		return report, nil
+	}
+	infoCtx, infoCancel := context.WithTimeout(ctx, startupAnalyzerRepairTimeout)
+	defer infoCancel()
+	info, err := client.Info(infoCtx)
+	if err != nil {
+		return report, err
+	}
+	report.Analyzer = info.Analyzer
+	report.AnalyzerVersion = info.AnalyzerVersion
+	repairs.SetAnalyzerIdentity(info.Analyzer, info.AnalyzerVersion)
+	markNewlyStale := func() (int64, error) {
+		marked, markErr := analysisStore.MarkStaleByAnalyzerVersion(ctx, info.Analyzer, info.AnalyzerVersion)
+		report.MarkedStale += marked
+		return marked, markErr
+	}
+	if _, err := markNewlyStale(); err != nil {
+		return report, err
+	}
+	for {
+		candidates, err := tracks.GetMaintenanceCandidates(ctx, false, true, 0, startupAnalyzerRepairLimit)
+		if err != nil {
+			return report, err
+		}
+		if len(candidates) == 0 {
+			marked, err := markNewlyStale()
+			if err != nil {
+				return report, err
+			}
+			if marked == 0 {
+				return report, nil
+			}
+			continue
+		}
+		if len(candidates) > startupAnalyzerRepairLimit {
+			candidates = candidates[:startupAnalyzerRepairLimit]
+		}
+		report.Batches++
+		report.Candidates += len(candidates)
+		batchQueued, batchSkipped, batchFailures := queueAnalyzerRepairBatch(ctx, repairs, candidates, info)
+		report.Queued += batchQueued
+		report.Skipped += batchSkipped
+		report.Failures += batchFailures
+		if batchFailures > 0 {
+			return report, fmt.Errorf("%d analyzer repairs failed to queue", batchFailures)
+		}
+		if batchQueued == 0 {
+			marked, err := markNewlyStale()
+			if err != nil {
+				return report, err
+			}
+			if marked == 0 {
+				return report, nil
+			}
+		}
+	}
+}
+
+// queueAnalyzerRepairBatch claims stale rows with bounded concurrency. The
+// repository claim is idempotent, so concurrent startup retries can safely
+// race without turning a stale batch into duplicate analyzer work.
+func queueAnalyzerRepairBatch(ctx context.Context, repairs analyzerMaintenanceProcessor, candidates []db.Track, info analyzer.Info) (queued, skipped, failures int) {
+	type outcome struct {
+		queued bool
+		err    error
+	}
+	workers := startupAnalyzerRepairWorkers
+	if workers > len(candidates) {
+		workers = len(candidates)
+	}
+	if workers == 0 {
+		return 0, 0, 0
+	}
+
+	semaphore := make(chan struct{}, workers)
+	outcomes := make(chan outcome, len(candidates))
+	var wg sync.WaitGroup
+	for index := range candidates {
+		semaphore <- struct{}{}
+		track := candidates[index]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-semaphore }()
+			result, err := repairs.RequestAnalysisRepair(ctx, &track, processor.AnalysisRepairOptions{
+				OnlyStale:               true,
+				ExpectedAnalyzer:        info.Analyzer,
+				ExpectedAnalyzerVersion: info.AnalyzerVersion,
+			})
+			outcomes <- outcome{queued: result.Queued, err: err}
+		}()
+	}
+	wg.Wait()
+	close(outcomes)
+	for outcome := range outcomes {
+		if outcome.err != nil {
+			failures++
+		} else if outcome.queued {
+			queued++
+		} else {
+			skipped++
+		}
+	}
+	return queued, skipped, failures
+}
+
+func main() { os.Exit(runServer()) }
+
+func runServer() int {
+	// Initialize structured logger
+	log := logger.Default()
+	ctx := context.Background()
+
+	log.Info(ctx, "Starting OpenMusicPlayer server", map[string]interface{}{
+		"version": version,
+	})
+
+	telemetryConfig, err := observability.ConfigFromEnv()
+	if err != nil {
+		log.Error(ctx, "Invalid telemetry configuration", nil, err)
+		return 1
+	}
+	if telemetryConfig.ServiceVersion == "unknown" {
+		telemetryConfig.ServiceVersion = version
+	}
+	telemetry, err := observability.New(ctx, telemetryConfig)
+	if err != nil {
+		log.Error(ctx, "Telemetry initialization failed", nil, err)
+		return 1
+	}
+	log = telemetry.Logger(&logger.Config{Level: logger.ParseLevel(os.Getenv("LOG_LEVEL"))})
+	defer func() {
+		if err := telemetry.Shutdown(context.Background()); err != nil {
+			log.Error(ctx, "Telemetry shutdown failed", nil, err)
+		}
+	}()
+	cfg := config.Load()
+	maintenanceConfig, err := maintenanceStartupConfig(cfg)
+	if err != nil {
+		log.Error(ctx, "Invalid maintenance configuration", nil, err)
+		return 1
+	}
+	if err := validateResearchStartup(cfg); err != nil {
+		log.Error(ctx, "Invalid research rollout configuration", nil, err)
+		return 1
+	}
+
+	// Initialize metrics before the research handlers so their aggregate,
+	// allowlisted lifecycle observer is available from startup.
+	appMetrics := metrics.New()
+
+	// Initialize database
+	database, err := db.New(cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName)
+	if err != nil {
+		log.Error(ctx, "Failed to connect to database", nil, err)
+		return 1
+	}
+	defer database.Close()
+	log.Info(ctx, "Connected to database", map[string]interface{}{
+		"host": cfg.DBHost,
+		"port": cfg.DBPort,
+		"name": cfg.DBName,
+	})
+
+	if err := database.Migrate(); err != nil {
+		log.Error(ctx, "Failed to run migrations", nil, err)
+		return 1
+	}
+	log.Info(ctx, "Database migrations completed", nil)
+
+	// Initialize optional Redis cache/queue support.
+	var redisCache *cache.Cache
+	if cfg.RedisEnabled {
+		redisCache, err = cache.New(cfg.RedisAddr)
+		if err != nil {
+			log.Error(ctx, "Failed to connect to Redis", map[string]interface{}{
+				"addr": cfg.RedisAddr,
+			}, err)
+			return 1
+		}
+		defer redisCache.Close()
+		log.Info(ctx, "Connected to Redis", map[string]interface{}{
+			"addr": cfg.RedisAddr,
+		})
+	} else {
+		log.Info(ctx, "Redis disabled; queue, download, and cached pub/sub features will return SERVICE_DISABLED", nil)
+	}
+
+	// Initialize repositories
+	userRepo := db.NewUserRepository(database)
+	tokenRepo := db.NewTokenRepository(database)
+	trackRepo := db.NewTrackRepository(database)
+	libraryRepo := db.NewLibraryRepository(database)
+	analysisRepo := db.NewAnalysisRepository(database)
+	playlistRepo := db.NewPlaylistRepository(database)
+	playlistSourceRepo := db.NewPlaylistSourceRepository(database)
+	playlistImportRepo := playlistimport.NewImportRepository(database)
+	trackSourceRepo := playlistimport.NewTrackSourceRepository(database)
+	mixPlanRepo := db.NewMixPlanRepository(database)
+	playEventRepo := db.NewPlayEventRepository(database)
+	djLineupRepo := db.NewDJLineupRepository(database)
+	djPinRepo := db.NewDJPinRepository(database)
+	sourceSelectionRepo := db.NewSourceSelectionRepository(database)
+	metadataOverrideRepo := db.NewTrackMetadataOverrideRepository(database)
+
+	// Initialize services
+	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
+	authHandlers := auth.NewHandlers(authService)
+	searchHandlers := search.NewHandlersWithMetadataOverrides(trackRepo, metadataOverrideRepo)
+	mbClient := musicbrainz.NewClient(redisCache)
+	mbHandlers := musicbrainz.NewHandlers(mbClient)
+	sourceQualityJudge := newSourceQualityJudge(cfg)
+	discoveryConfig := discoveryServiceConfigFromEnv(os.Getenv)
+	discoveryConfig.MusicCatalog = mbClient
+	discoveryConfig.SourceQualityJudge = sourceQualityJudge
+	// AcousticBrainz candidate hints (issue #400): a pure read of the local
+	// dump-loaded cache that attaches advisory ab_* metadata to discovery
+	// candidates. Hint-only — it never blocks, rejects, reorders, or delays a
+	// download, and a nil source is the documented off state.
+	discoveryConfig.AcousticBrainzHints = analysisRepo
+	discoveryService := discovery.NewDefaultServiceWithConfig(discoveryConfig)
+	researchRuntime, err := newResearchRuntime(cfg, database, discoveryService, appMetrics)
+	if err != nil {
+		log.Error(ctx, "Failed to initialize durable research", nil, err)
+		return 1
+	}
+	// Start research worker only when both RESEARCH_ENABLED and RESEARCH_WORKER_ENABLED are true.
+	// This ensures the worker respects the production configuration boundary.
+	if shouldStartResearchWorker(cfg) {
+		researchRuntime.worker.Start()
+		log.Info(ctx, "Started durable research worker", map[string]interface{}{
+			"research_enabled": cfg.ResearchEnabled,
+			"worker_id":        cfg.ResearchWorkerID,
+		})
+	} else {
+		log.Info(ctx, "Durable research worker disabled by configuration", map[string]interface{}{
+			"research_enabled":        cfg.ResearchEnabled,
+			"research_worker_enabled": cfg.ResearchWorkerEnabled,
+		})
+	}
+	agentToolsHandler := newAgentToolsHandler(cfg, discoveryService)
+	// AI assist is grounded against discovery/resolution; a nil client (unset or
+	// disabled config) degrades to the disabled envelope without breaking search.
+	assistClient := aiassist.NewClient(aiassist.Config{
+		Enabled: cfg.AIAssistEnabled,
+		BaseURL: cfg.AIAssistBaseURL,
+		APIKey:  cfg.AIAssistAPIKey,
+		Model:   cfg.AIAssistModel,
+		Timeout: cfg.AIAssistTimeout,
+	})
+	assistService := discovery.NewAssistService(discovery.AssistConfig{
+		Client:  assistClient,
+		Search:  discoveryService,
+		Timeout: cfg.AIAssistTimeout,
+	})
+	discoveryHandlers := discovery.NewHandlersWithAssistAndSelectionStore(discoveryService, assistService, sourceSelectionRepo)
+	sourceSelectionHandlers := api.NewSourceSelectionHandlers(sourceSelectionRepo)
+	log.Info(ctx, "Initialized discovery assist", map[string]interface{}{
+		"ai_assist_enabled": assistClient != nil,
+		"ai_assist_model":   cfg.AIAssistModel,
+	})
+	log.Info(ctx, "Initialized private agent research tools", map[string]interface{}{
+		"agent_tools_enabled": agentToolsHandler != nil,
+		"firecrawl_enabled":   agentToolsHandler != nil && cfg.FirecrawlAPIKey != "",
+	})
+	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
+	trackOverrideHandlers := api.NewTrackMetadataOverrideHandlers(metadataOverrideRepo, libraryRepo)
+	// trackRepo wires the AcousticBrainz backfill into the analysis detail
+	// response (issue #390): the handler resolves the track's recording MBID to
+	// look up cached external reference values.
+	analysisHandlers := api.NewAnalysisHandlersWithTrackRepo(analysisRepo, libraryRepo, trackRepo)
+	playlistHandlers := api.NewPlaylistHandlersWithMetadataOverrides(playlistRepo, trackRepo, metadataOverrideRepo)
+	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
+	mixExchangeHandlers := api.NewMixExchangeHandlers(mixPlanRepo, db.NewMixExchangeRepository(database))
+	playlistMixHandlers := api.NewPlaylistMixHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
+	autoBlendHandlers := api.NewPlaylistAutoBlendHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
+	smartReorderHandlers := api.NewPlaylistSmartReorderHandlers(playlistRepo, playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
+	nearbyTracksHandlers := api.NewNearbyTracksHandlers(libraryRepo, cfg.EnablePlaylistMix)
+
+	// ListenBrainz similar-artist candidate expansion (issue #392), mirroring
+	// the save-playlist-as-mix convention: always constructed, gated by
+	// ENABLE_LISTENBRAINZ_MIX so a disabled handler answers 404 after auth.
+	// The labs client targets the pinned algorithm; every upstream failure mode
+	// degrades to empty expansion inside ExpansionService.
+	expansionService := listenbrainz.NewExpansionService(listenbrainz.NewClient(), analysisRepo)
+	listenBrainzHandlers := api.NewListenBrainzHandlers(expansionService, cfg.EnableListenBrainzMix)
+	playEventHandlers := api.NewPlayEventHandlersWithMetadataOverrides(playEventRepo, trackRepo, metadataOverrideRepo)
+	// libraryRepo supplies the harmonic nearby+affinity candidate read behind
+	// ENABLE_HARMONIC_LINEUP (issue #401); with the flag off the lineup is
+	// byte-identical to the themed lineup.
+	djLineupHandlers := api.NewDJLineupHandlersWithHarmonicCandidates(djLineupRepo, djPinRepo, playEventRepo, libraryRepo, cfg.EnableHarmonicLineup)
+	djPinHandlers := api.NewDJPinHandlers(djPinRepo, djLineupRepo)
+
+	// Initialize storage client
+	storageClient, err := storage.New(&storage.Config{
+		Endpoint:       cfg.MinioEndpoint,
+		PublicEndpoint: cfg.MinioPublicEndpoint,
+		Region:         cfg.S3Region,
+		AccessKey:      cfg.MinioAccessKey,
+		SecretKey:      cfg.MinioSecretKey,
+		Bucket:         cfg.MinioBucket,
+		UseSSL:         cfg.MinioUseSSL,
+	})
+	if err != nil {
+		log.Error(ctx, "Failed to initialize storage client", nil, err)
+		return 1
+	}
+	log.Info(ctx, "Initialized storage client", map[string]interface{}{
+		"endpoint":        cfg.MinioEndpoint,
+		"public_endpoint": cfg.MinioPublicEndpoint,
+		"bucket":          cfg.MinioBucket,
+	})
+
+	// Initialize playback URL handlers. Normal audio bytes are served by object
+	// storage/CDN through short-lived signed URLs; the backend does not register a
+	// byte-proxy streaming route in the normal playback path.
+	playbackHandlers := api.NewPlaybackHandlers(trackRepo, libraryRepo, storageClient)
+
+	// Initialize WebSocket hub and handler
+	wsHub := websocket.NewHub()
+	go wsHub.Run()
+	wsHandler := websocket.NewHandler(wsHub, authService)
+
+	// Initialize matcher service. The Ollama disambiguator is optional and only
+	// selects among MusicBrainz candidates; unavailable local providers fall back
+	// to normal deterministic matching.
+	metadataDisambiguator := matcher.NewOllamaDisambiguator(matcher.OllamaConfig{
+		Enabled: cfg.MetadataLLMEnabled,
+		BaseURL: cfg.MetadataLLMBaseURL,
+		Model:   cfg.MetadataLLMModel,
+		Timeout: cfg.MetadataLLMTimeout,
+	})
+	matcherService := matcher.NewMatcherWithDisambiguator(mbClient, metadataDisambiguator)
+	log.Info(ctx, "Initialized metadata disambiguator", map[string]interface{}{
+		"metadata_llm_enabled": metadataDisambiguator != nil,
+		"metadata_llm_model":   cfg.MetadataLLMModel,
+	})
+	matcherHandlers := matcher.NewHandler(matcherService, trackRepo)
+	serviceAnalyzerClient, err := analyzer.NewServiceClient(analyzer.ServiceConfig{
+		Enabled:   cfg.AnalyzerEnabled,
+		BaseURL:   cfg.AnalyzerBaseURL,
+		AuthToken: cfg.AnalyzerAuthToken,
+		Timeout:   cfg.AnalyzerTimeout,
+	})
+	if err != nil {
+		log.Error(ctx, "Failed to initialize analyzer client", map[string]interface{}{
+			"base_url": cfg.AnalyzerBaseURL,
+		}, err)
+		return 1
+	}
+	var analyzerClient analyzer.Client
+	if serviceAnalyzerClient != nil {
+		analyzerClient = serviceAnalyzerClient
+	}
+	log.Info(ctx, "Initialized audio analyzer client", map[string]interface{}{
+		"analyzer_enabled": analyzerClient != nil,
+		"base_url":         cfg.AnalyzerBaseURL,
+	})
+
+	// Initialize job processor with matching integration
+	jobProcessor := processor.New(&processor.ProcessorConfig{
+		Matcher:                 matcherService,
+		TrackRepo:               trackRepo,
+		LibraryRepo:             libraryRepo,
+		PlaylistRepo:            playlistRepo,
+		ImportRepo:              playlistImportRepo,
+		SourceRepo:              trackSourceRepo,
+		PlaylistSourceRepo:      playlistSourceRepo,
+		AnalysisRepo:            analysisRepo,
+		AnalyzerClient:          analyzerClient,
+		AnalysisConcurrency:     cfg.AnalyzerConcurrency,
+		RequireAnalyzerIdentity: serviceAnalyzerClient != nil,
+		Storage:                 storageClient,
+	})
+	stopAnalyzerMaintenance := func() {}
+	if serviceAnalyzerClient != nil {
+		maintenanceCtx, maintenanceCancel := context.WithCancel(context.Background())
+		stopAnalyzerMaintenance = maintenanceCancel
+		go func() {
+			for {
+				report, err := reconcileAnalyzerVersion(
+					maintenanceCtx,
+					serviceAnalyzerClient,
+					analysisRepo,
+					trackRepo,
+					jobProcessor,
+				)
+				if err == nil {
+					log.Info(ctx, "Analyzer version reconciliation completed", map[string]interface{}{
+						"analyzer":         report.Analyzer,
+						"analyzer_version": report.AnalyzerVersion,
+						"marked_stale":     report.MarkedStale,
+						"batches":          report.Batches,
+						"candidates":       report.Candidates,
+						"queued":           report.Queued,
+						"skipped":          report.Skipped,
+						"failures":         report.Failures,
+					})
+					return
+				}
+				log.Error(ctx, "Analyzer version reconciliation will retry", nil, err)
+				select {
+				case <-maintenanceCtx.Done():
+					return
+				case <-time.After(startupAnalyzerRetryInterval):
+				}
+			}
+		}()
+	}
+	maintenanceHandlers := api.NewMaintenanceHandlers(trackRepo, jobProcessor, maintenanceConfig)
+
+	// Optional on-demand stem separation. Every failure path here degrades to the
+	// router's unavailable handler: a missing worker, a malformed base URL, or an
+	// unreachable Redis must never block server startup, because separation is an
+	// opt-in enhancement and the rest of the library keeps working without it.
+	var stemsHandlers *api.StemsHandlers
+	var stemsWorkers *stems.WorkerPool
+	stemsRepo := db.NewTrackStemsRepository(database)
+	switch {
+	case !cfg.StemsEnabled:
+		log.Info(ctx, "Stem separation disabled by configuration", nil)
+	case !cfg.RedisEnabled:
+		log.Info(ctx, "Stem separation disabled: the stems queue class requires Redis", nil)
+	default:
+		// The service client is constructed at startup so a malformed
+		// STEMS_BASE_URL surfaces here rather than on a user's first trigger. It
+		// is also the seam the worker pool consumes.
+		stemsServiceClient, stemsErr := stems.NewServiceClient(stems.ServiceConfig{
+			Enabled:   cfg.StemsEnabled,
+			BaseURL:   cfg.StemsBaseURL,
+			AuthToken: cfg.StemsAuthToken,
+			Timeout:   cfg.StemsTimeout,
+		})
+		switch {
+		case stemsErr != nil:
+			log.Error(ctx, "Stem separation unavailable: invalid worker configuration", map[string]interface{}{
+				"base_url": cfg.StemsBaseURL,
+			}, stemsErr)
+		case stemsServiceClient == nil:
+			log.Info(ctx, "Stem separation unavailable: worker client not configured", nil)
+		default:
+			// Do this before opening the queue or exposing trigger handlers. A
+			// reachable but stale/misconfigured worker would otherwise accept jobs
+			// whose artifact identity this server cannot safely persist.
+			healthCtx, cancelStemsHealth := context.WithTimeout(ctx, 15*time.Second)
+			stemsInfo, healthErr := stemsServiceClient.Info(healthCtx)
+			cancelStemsHealth()
+			if healthErr != nil {
+				log.Error(ctx, "Stem separation unavailable: worker health check failed", map[string]interface{}{
+					"base_url": cfg.StemsBaseURL,
+				}, healthErr)
+				break
+			}
+			if healthErr = stems.ValidateInfo(stemsInfo); healthErr != nil {
+				log.Error(ctx, "Stem separation unavailable: worker identity does not match this server", map[string]interface{}{
+					"base_url": cfg.StemsBaseURL,
+				}, healthErr)
+				break
+			}
+			stemsQueue, queueErr := stems.NewQueue(cfg.RedisURL, stems.QueueConfig{MaxDepth: cfg.StemsQueueMaxDepth})
+			if queueErr != nil {
+				log.Error(ctx, "Stem separation unavailable: queue could not be initialized", nil, queueErr)
+				break
+			}
+			defer stemsQueue.Close()
+			// The Postgres row is the durable authority for a separation, so a
+			// restart reclaims requests abandoned mid-run instead of stranding
+			// them. Start runs that reconciliation before the first worker
+			// dequeues, and repeats it on a timer, because a row abandoned by
+			// this process only becomes reclaimable once it has been untouched
+			// long enough that no live worker can still own it.
+			pool, poolErr := stems.NewWorkerPool(stemsQueue, stemsServiceClient, stemsRepo, stems.WorkerPoolConfig{
+				Concurrency: cfg.StemsConcurrency,
+				JobTimeout:  cfg.StemsTimeout,
+				Tracks:      trackRepo,
+			})
+			if poolErr != nil {
+				log.Error(ctx, "Stem separation unavailable: worker pool could not be initialized", nil, poolErr)
+				break
+			}
+			stemsWorkers = pool
+			stemsWorkers.Start(ctx)
+			// Handlers go live only once something is consuming the queue.
+			// Exposing the trigger without a consumer would accept work that
+			// nothing can ever finish, which is worse than reporting 503.
+			stemsHandlers = api.NewStemsHandlers(stemsRepo, stemsQueue, trackRepo, libraryRepo, storageClient)
+			log.Info(ctx, "Initialized stem separation", map[string]interface{}{
+				"base_url":        cfg.StemsBaseURL,
+				"concurrency":     cfg.StemsConcurrency,
+				"queue_max_depth": cfg.StemsQueueMaxDepth,
+			})
+		}
+	}
+
+	// Initialize Redis-backed download and playback queue services only when enabled.
+	var downloadService *download.Service
+	var downloadHandlers *api.DownloadHandlers
+	var queueHandlers *queue.Handlers
+	var playlistImportHandlers *api.PlaylistImportHandlers
+
+	if cfg.RedisEnabled {
+		sourceSelectionLifecycle := db.NewSourceSelectionDownloadLifecycle(database)
+		sourceSelectionIngestion := db.NewSourceSelectionIngestion(database, sourceSelectionRepo)
+		downloadService, err = download.NewService(&download.ServiceConfig{
+			RedisURL:    cfg.RedisURL,
+			WorkerCount: cfg.WorkerCount,
+		}, jobProcessor.Process, sourceSelectionLifecycle)
+		if err != nil {
+			log.Error(ctx, "Failed to initialize download service", nil, err)
+			return 1
+		}
+		queueService, err := queue.NewService(cfg.RedisURL)
+		if err != nil {
+			log.Error(ctx, "Failed to initialize queue service", nil, err)
+			return 1
+		}
+		defer queueService.Close()
+		// Recovery happens before workers start. It restores only durable,
+		// nonterminal source-decision jobs from their persisted snapshots and is
+		// idempotent when Redis already contains the same job ID.
+		if recovered, err := sourceSelectionLifecycle.RecoverWithPlayback(ctx, downloadService, sourceSelectionPlaybackRecovery{service: queueService}, 0); err != nil {
+			log.Error(ctx, "Failed to recover source-selection downloads", nil, err)
+		} else if recovered > 0 {
+			log.Info(ctx, "Recovered source-selection downloads", map[string]interface{}{"jobs": recovered})
+		}
+		downloadService.Start()
+		log.Info(ctx, "Started download service", map[string]interface{}{
+			"workers": cfg.WorkerCount,
+		})
+		downloadHandlers = api.NewDownloadHandlers(downloadService, sourceSelectionIngestion)
+		ytdlpEnumerator := playlistimport.NewYTDLPEnumerator()
+		playlistImportService := playlistimport.NewService(playlistimport.Config{
+			Store:          playlistImportRepo,
+			Playlists:      playlistRepo,
+			Tracks:         trackSourceRepo,
+			Library:        libraryRepo,
+			Downloader:     downloadService,
+			Selections:     sourceSelectionRepo,
+			Ingestion:      sourceSelectionIngestion,
+			Enumerator:     ytdlpEnumerator,
+			SourceAdapter:  ytdlpEnumerator,
+			SourceBindings: playlistSourceRepo,
+		})
+		playlistImportHandlers = api.NewPlaylistImportHandlers(playlistImportService)
+
+		queueHandlers = queue.NewHandlersWithPlaylistTargets(queueService, downloadService, analysisRepo, sourceSelectionRepo, database, playlistRepo)
+	}
+
+	var redisClient *redis.Client
+	if redisCache != nil {
+		redisClient = redisCache.Client()
+	}
+
+	// Initialize health checker
+	healthChecker := health.NewChecker(&health.CheckerConfig{
+		DB:    database.DB,
+		Redis: redisClient,
+		StorageCheck: func(ctx context.Context) error {
+			return storageClient.Ping(ctx)
+		},
+		Version: version,
+		Timeout: 5 * time.Second,
+	})
+	healthHandler := health.NewHandler(healthChecker)
+
+	jamHandlers, jamRepo := newJamHandlers(database, redisCache)
+	if jamRepo != nil && downloadService != nil {
+		jamRepo.Searcher = discoveryService
+		jamRepo.Downloads = downloadService
+	}
+	stopJamCleanup := startJamCleanup(jamRepo)
+	defer stopJamCleanup()
+
+	// Create router with all handlers
+	router := api.NewRouterWithConfig(&api.RouterConfig{
+		Telemetry:               telemetry,
+		Logger:                  log,
+		ResponseTransforms:      true,
+		JamHandlers:             jamHandlers,
+		ConnectHandlers:         newConnectHandlers(redisCache),
+		AuthHandlers:            authHandlers,
+		AuthService:             authService,
+		SearchHandlers:          searchHandlers,
+		MBClient:                mbClient,
+		MBHandlers:              mbHandlers,
+		WSHandler:               wsHandler,
+		MatcherHandlers:         matcherHandlers,
+		LibraryHandlers:         libraryHandlers,
+		TrackOverrideHandlers:   trackOverrideHandlers,
+		AnalysisHandlers:        analysisHandlers,
+		StemsHandlers:           stemsHandlers,
+		PlaybackHandlers:        playbackHandlers,
+		QueueHandlers:           queueHandlers,
+		DiscoveryHandlers:       discoveryHandlers,
+		AgentToolsHandler:       agentToolsHandler,
+		PlaylistHandlers:        playlistHandlers,
+		PlaylistImportHandlers:  playlistImportHandlers,
+		PlaylistMixHandlers:     playlistMixHandlers,
+		AutoBlendHandlers:       autoBlendHandlers,
+		SmartReorderHandlers:    smartReorderHandlers,
+		NearbyTracksHandlers:    nearbyTracksHandlers,
+		ListenBrainzHandlers:    listenBrainzHandlers,
+		MixPlanHandlers:         mixPlanHandlers,
+		MixExchangeHandlers:     mixExchangeHandlers,
+		DownloadHandlers:        downloadHandlers,
+		SourceSelectionHandlers: sourceSelectionHandlers,
+		MaintenanceHandlers:     maintenanceHandlers,
+		PlayEventHandlers:       playEventHandlers,
+		DJLineupHandlers:        djLineupHandlers,
+		DJPinHandlers:           djPinHandlers,
+		ResearchHandlers:        researchRuntime.handlers,
+		HealthHandler:           healthHandler,
+		Metrics:                 appMetrics,
+		CORSAllowedOrigins:      cfg.CORSAllowedOrigins,
+	})
+
+	// Router owns the single request/recovery/logging chain and records both
+	// OTel HTTP metrics and the existing Prometheus request aggregates.
+
+	server := &http.Server{
+		Addr:    cfg.ServerAddr,
+		Handler: router,
+	}
+
+	// Graceful shutdown handling
+	shutdownComplete := make(chan struct{})
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
+	abortSignalWait := make(chan struct{})
+	defer close(abortSignalWait)
+	go func() {
+		defer close(shutdownComplete)
+		var sig os.Signal
+		select {
+		case sig = <-sigChan:
+		case <-abortSignalWait:
+			return
+		}
+
+		log.Info(ctx, "Received shutdown signal", map[string]interface{}{
+			"signal": sig.String(),
+		})
+		stopAnalyzerMaintenance()
+		stopJamCleanup()
+
+		// Stop accepting new requests
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Error(ctx, "HTTP server shutdown error", nil, err)
+			_ = server.Close()
+		}
+		if researchRuntime.worker != nil {
+			researchShutdownCtx, researchShutdownCancel := context.WithTimeout(shutdownCtx, cfg.ResearchShutdownTimeout)
+			if err := researchRuntime.worker.Stop(researchShutdownCtx); err != nil {
+				log.Error(ctx, "Research worker shutdown error", nil, err)
+			}
+			researchShutdownCancel()
+		}
+		// Stop download workers (waits for current jobs to finish)
+		if downloadService != nil {
+			if err := downloadService.Stop(shutdownCtx); err != nil {
+				log.Error(ctx, "Download service shutdown error", nil, err)
+			}
+		}
+		// A separation in flight can legitimately outlive the shutdown budget.
+		// Canceling it leaves its row in `separating`, which the next process's
+		// recovery sweep reclaims, so a timeout here is not data loss.
+		if stemsWorkers != nil {
+			if err := stemsWorkers.Stop(shutdownCtx); err != nil {
+				log.Error(ctx, "Stems worker pool shutdown error", nil, err)
+			}
+		}
+		if err := jobProcessor.Shutdown(shutdownCtx); err != nil {
+			log.Error(ctx, "Analysis worker shutdown error", nil, err)
+		}
+
+		log.Info(ctx, "Server shutdown complete", nil)
+	}()
+
+	log.Info(ctx, "Server starting", map[string]interface{}{
+		"addr": cfg.ServerAddr,
+	})
+
+	serveErr := server.ListenAndServe()
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		log.Error(ctx, "Server failed to start", nil, serveErr)
+		return 1
+	}
+	if serveErr == http.ErrServerClosed {
+		<-shutdownComplete
+	}
+	return 0
+}

@@ -1,0 +1,850 @@
+{
+ "baseCommit": "ea4275ca680092ca978e022535921ed9531e1baa",
+ "purpose": "Alternate versions of files found in other 2026-11-06 Jam worktrees that differ from the authoritative composed candidate (soundq-default-parity-overnight-20261106, committed in the preceding commit at their real paths). Layout: recovery-variants/<sha256-prefix-12>/<repo path>. Not built or wired; reference only.",
+ "variants": {
+  "0863d08c1c71/android/app/src/main/cpp/nativeengine/callback_host.hpp": {
+   "defaultParitySha256_12": "9c8b6ca8783a",
+   "path": "android/app/src/main/cpp/nativeengine/callback_host.hpp",
+   "sha256_12": "0863d08c1c71",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "09a3bacb3608/android/app/src/main/kotlin/com/soundq/android/product/ProductApp.kt": {
+   "defaultParitySha256_12": "bb9c122b3eb8",
+   "path": "android/app/src/main/kotlin/com/soundq/android/product/ProductApp.kt",
+   "sha256_12": "09a3bacb3608",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "0a1c9351116f/android/app/src/main/cpp/nativeengine/callback_host.cpp": {
+   "defaultParitySha256_12": "95abc8314530",
+   "path": "android/app/src/main/cpp/nativeengine/callback_host.cpp",
+   "sha256_12": "0a1c9351116f",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "0db33faa96c0/android/app/src/test/kotlin/com/soundq/android/playback/ContextAdmissionTest.kt": {
+   "defaultParitySha256_12": "a65794253ae2",
+   "path": "android/app/src/test/kotlin/com/soundq/android/playback/ContextAdmissionTest.kt",
+   "sha256_12": "0db33faa96c0",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "0e3ec6251c19/android/scripts/test-download-queue.py": {
+   "defaultParitySha256_12": "ebccd44a46b6",
+   "path": "android/scripts/test-download-queue.py",
+   "sha256_12": "0e3ec6251c19",
+   "worktrees": [
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "10561ed50f6e/backend/internal/api/playlist_ordinary_management_integration_test.go": {
+   "defaultParitySha256_12": "87f0df715116",
+   "path": "backend/internal/api/playlist_ordinary_management_integration_test.go",
+   "sha256_12": "10561ed50f6e",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "124640e313e2/android/scripts/test-output-recovery.py": {
+   "defaultParitySha256_12": "1cf029f15366",
+   "path": "android/scripts/test-output-recovery.py",
+   "sha256_12": "124640e313e2",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "15ed68084176/android/scripts/test-timeline-observer.py": {
+   "defaultParitySha256_12": "cc4094dd8a34",
+   "path": "android/scripts/test-timeline-observer.py",
+   "sha256_12": "15ed68084176",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "17150ec9d356/android/app/src/main/kotlin/com/soundq/android/data/jam/JamHostRepository.kt": {
+   "defaultParitySha256_12": "badb7e0e8081",
+   "path": "android/app/src/main/kotlin/com/soundq/android/data/jam/JamHostRepository.kt",
+   "sha256_12": "17150ec9d356",
+   "worktrees": [
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "182dce99396d/android/app/src/main/kotlin/com/soundq/android/SoundQApplication.kt": {
+   "defaultParitySha256_12": "b2fc899653e5",
+   "path": "android/app/src/main/kotlin/com/soundq/android/SoundQApplication.kt",
+   "sha256_12": "182dce99396d",
+   "worktrees": [
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "195d6a28c30a/android/app/src/main/cpp/nativeengine/schedule_worker.hpp": {
+   "defaultParitySha256_12": "29bc01c5882d",
+   "path": "android/app/src/main/cpp/nativeengine/schedule_worker.hpp",
+   "sha256_12": "195d6a28c30a",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "1ddd3df64c9c/backend/cmd/server/main.go": {
+   "defaultParitySha256_12": "606cf09be7f6",
+   "path": "backend/cmd/server/main.go",
+   "sha256_12": "1ddd3df64c9c",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "2390509a5ad8/android/app/src/main/kotlin/com/soundq/android/playback/ControllerProjection.kt": {
+   "defaultParitySha256_12": "e2519187b27d",
+   "path": "android/app/src/main/kotlin/com/soundq/android/playback/ControllerProjection.kt",
+   "sha256_12": "2390509a5ad8",
+   "worktrees": [
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "33737ee780c6/android/scripts/test-arrangement-lifecycle.py": {
+   "defaultParitySha256_12": "d88316b10929",
+   "path": "android/scripts/test-arrangement-lifecycle.py",
+   "sha256_12": "33737ee780c6",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "39f45842a0df/android/app/src/main/kotlin/com/soundq/android/playback/nativeengine/NativeCallbackBridge.kt": {
+   "defaultParitySha256_12": "c07344ce7808",
+   "path": "android/app/src/main/kotlin/com/soundq/android/playback/nativeengine/NativeCallbackBridge.kt",
+   "sha256_12": "39f45842a0df",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "3c8033c99e78/android/scripts/test-ordinary-queue-player.py": {
+   "defaultParitySha256_12": "b1b839c645d3",
+   "path": "android/scripts/test-ordinary-queue-player.py",
+   "sha256_12": "3c8033c99e78",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "3d645c448822/android/designsystem/src/main/kotlin/com/soundq/designsystem/PlayerComponents.kt": {
+   "defaultParitySha256_12": "e8f5bc03ae83",
+   "path": "android/designsystem/src/main/kotlin/com/soundq/designsystem/PlayerComponents.kt",
+   "sha256_12": "3d645c448822",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "3eb9e7a79cff/android/scripts/test-notification-like.py": {
+   "defaultParitySha256_12": "f130db1bb820",
+   "path": "android/scripts/test-notification-like.py",
+   "sha256_12": "3eb9e7a79cff",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "3f7b04123fc3/android/app/src/main/kotlin/com/soundq/android/data/jam/JamHostRepository.kt": {
+   "defaultParitySha256_12": "badb7e0e8081",
+   "path": "android/app/src/main/kotlin/com/soundq/android/data/jam/JamHostRepository.kt",
+   "sha256_12": "3f7b04123fc3",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "4153486acbd3/android/app/src/test/kotlin/com/soundq/android/data/PlaylistCapacityTest.kt": {
+   "defaultParitySha256_12": "3da47dfa4eb0",
+   "path": "android/app/src/test/kotlin/com/soundq/android/data/PlaylistCapacityTest.kt",
+   "sha256_12": "4153486acbd3",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "4800a27e00a9/android/app/src/androidTest/kotlin/com/soundq/android/DeviceOnlyNavigationJourneyTest.kt": {
+   "defaultParitySha256_12": "dd76be27cc4d",
+   "path": "android/app/src/androidTest/kotlin/com/soundq/android/DeviceOnlyNavigationJourneyTest.kt",
+   "sha256_12": "4800a27e00a9",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "559eef6f6b92/android/app/src/main/kotlin/com/soundq/android/data/timeline/TimelineOwner.kt": {
+   "defaultParitySha256_12": "a8f77b6e5186",
+   "path": "android/app/src/main/kotlin/com/soundq/android/data/timeline/TimelineOwner.kt",
+   "sha256_12": "559eef6f6b92",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "5b1f9345a5d5/android/app/src/test/kotlin/com/soundq/android/data/TimelineRepositoryTest.kt": {
+   "defaultParitySha256_12": "0d3388b2164c",
+   "path": "android/app/src/test/kotlin/com/soundq/android/data/TimelineRepositoryTest.kt",
+   "sha256_12": "5b1f9345a5d5",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "5bc2ba58c948/backend/internal/jam/web/app.js": {
+   "defaultParitySha256_12": "6c44dca7024b",
+   "path": "backend/internal/jam/web/app.js",
+   "sha256_12": "5bc2ba58c948",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "5e0bb3241c3b/android/app/src/main/kotlin/com/soundq/android/data/LibraryRepository.kt": {
+   "defaultParitySha256_12": "5f187c7f6a0a",
+   "path": "android/app/src/main/kotlin/com/soundq/android/data/LibraryRepository.kt",
+   "sha256_12": "5e0bb3241c3b",
+   "worktrees": [
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "606fc23649a5/android/app/src/main/kotlin/com/soundq/android/data/timeline/TimelineRepository.kt": {
+   "defaultParitySha256_12": "a1acfa51b2ab",
+   "path": "android/app/src/main/kotlin/com/soundq/android/data/timeline/TimelineRepository.kt",
+   "sha256_12": "606fc23649a5",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "61756ac45fbb/android/app/src/main/kotlin/com/soundq/android/playback/ControllerProjection.kt": {
+   "defaultParitySha256_12": "e2519187b27d",
+   "path": "android/app/src/main/kotlin/com/soundq/android/playback/ControllerProjection.kt",
+   "sha256_12": "61756ac45fbb",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "61faa143a815/android/scripts/test-arrangement-source.py": {
+   "defaultParitySha256_12": "b3694ec88d58",
+   "path": "android/scripts/test-arrangement-source.py",
+   "sha256_12": "61faa143a815",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "621a9c051fc5/android/app/src/main/cpp/nativeengine/tests/tempo_reservation_tests.cpp": {
+   "defaultParitySha256_12": "b7bc898631dc",
+   "path": "android/app/src/main/cpp/nativeengine/tests/tempo_reservation_tests.cpp",
+   "sha256_12": "621a9c051fc5",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "64ff7b34be00/android/app/src/main/kotlin/com/soundq/android/product/ProductViewModel.kt": {
+   "defaultParitySha256_12": "cfd4cf0b4f2c",
+   "path": "android/app/src/main/kotlin/com/soundq/android/product/ProductViewModel.kt",
+   "sha256_12": "64ff7b34be00",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "6619f9206741/android/app/src/main/kotlin/com/soundq/android/playback/nativeengine/NativeCallbackPlayer.kt": {
+   "defaultParitySha256_12": "920652fd8982",
+   "path": "android/app/src/main/kotlin/com/soundq/android/playback/nativeengine/NativeCallbackPlayer.kt",
+   "sha256_12": "6619f9206741",
+   "worktrees": [
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "667696d1f979/backend/internal/db/source_selection_download_lifecycle_integration_test.go": {
+   "defaultParitySha256_12": "ebd42739bf0c",
+   "path": "backend/internal/db/source_selection_download_lifecycle_integration_test.go",
+   "sha256_12": "667696d1f979",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery"
+   ]
+  },
+  "687e40264359/android/app/src/androidTest/kotlin/com/soundq/android/NativeJamBackendRunner.kt": {
+   "defaultParitySha256_12": "52be958501d0",
+   "path": "android/app/src/androidTest/kotlin/com/soundq/android/NativeJamBackendRunner.kt",
+   "sha256_12": "687e40264359",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "6b1a210f7b9c/android/app/src/main/kotlin/com/soundq/android/data/LibraryRepository.kt": {
+   "defaultParitySha256_12": "5f187c7f6a0a",
+   "path": "android/app/src/main/kotlin/com/soundq/android/data/LibraryRepository.kt",
+   "sha256_12": "6b1a210f7b9c",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "6bb665834a36/android/scripts/test-download-queue.py": {
+   "defaultParitySha256_12": "ebccd44a46b6",
+   "path": "android/scripts/test-download-queue.py",
+   "sha256_12": "6bb665834a36",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "6fcb01020e82/android/scripts/test-ordinary-queue-player.py": {
+   "defaultParitySha256_12": "b1b839c645d3",
+   "path": "android/scripts/test-ordinary-queue-player.py",
+   "sha256_12": "6fcb01020e82",
+   "worktrees": [
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "730b69c2398e/backend/internal/api/jam_native_backend_test.go": {
+   "defaultParitySha256_12": "37a971071f01",
+   "path": "backend/internal/api/jam_native_backend_test.go",
+   "sha256_12": "730b69c2398e",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "778d56be2279/android/scripts/test-notification-like.py": {
+   "defaultParitySha256_12": "f130db1bb820",
+   "path": "android/scripts/test-notification-like.py",
+   "sha256_12": "778d56be2279",
+   "worktrees": [
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "794fa4387e6e/client/native/transport/include/soundq_transport.hpp": {
+   "defaultParitySha256_12": "2dc2ba15ec48",
+   "path": "client/native/transport/include/soundq_transport.hpp",
+   "sha256_12": "794fa4387e6e",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "80842b34e366/android/app/src/main/kotlin/com/soundq/android/data/jam/JamAdmissionPort.kt": {
+   "defaultParitySha256_12": "f6fde3155506",
+   "path": "android/app/src/main/kotlin/com/soundq/android/data/jam/JamAdmissionPort.kt",
+   "sha256_12": "80842b34e366",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "82994cc7932d/backend/internal/db/source_selection_download_lifecycle.go": {
+   "defaultParitySha256_12": "22302ca1e143",
+   "path": "backend/internal/db/source_selection_download_lifecycle.go",
+   "sha256_12": "82994cc7932d",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery"
+   ]
+  },
+  "8c50f9d2d234/android/app/src/main/kotlin/com/soundq/android/playback/QueueSnapshot.kt": {
+   "defaultParitySha256_12": "53c9731e7680",
+   "path": "android/app/src/main/kotlin/com/soundq/android/playback/QueueSnapshot.kt",
+   "sha256_12": "8c50f9d2d234",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "8cf4194956e1/android/app/src/main/kotlin/com/soundq/android/playback/ServiceLibraryContinuation.kt": {
+   "defaultParitySha256_12": "a27a841b8d8b",
+   "path": "android/app/src/main/kotlin/com/soundq/android/playback/ServiceLibraryContinuation.kt",
+   "sha256_12": "8cf4194956e1",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "92b85bca8349/android/app/src/test/kotlin/com/soundq/android/data/jam/JamModernHostTlsTest.kt": {
+   "defaultParitySha256_12": "46095cad5e6a",
+   "path": "android/app/src/test/kotlin/com/soundq/android/data/jam/JamModernHostTlsTest.kt",
+   "sha256_12": "92b85bca8349",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "9460d17d7570/android/scripts/test-queue-mode-persistence.py": {
+   "defaultParitySha256_12": "fd03dd413f29",
+   "path": "android/scripts/test-queue-mode-persistence.py",
+   "sha256_12": "9460d17d7570",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "95119a91044f/backend/internal/download/source_completion.go": {
+   "defaultParitySha256_12": "bd7a09ede3ca",
+   "path": "backend/internal/download/source_completion.go",
+   "sha256_12": "95119a91044f",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery"
+   ]
+  },
+  "9680af7d3f5c/android/scripts/test-compact-song-timing.py": {
+   "defaultParitySha256_12": "d5939ed63cd5",
+   "path": "android/scripts/test-compact-song-timing.py",
+   "sha256_12": "9680af7d3f5c",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "9db61b9a7df4/backend/internal/jam/web/app.test.cjs": {
+   "defaultParitySha256_12": "7092b0708da0",
+   "path": "backend/internal/jam/web/app.test.cjs",
+   "sha256_12": "9db61b9a7df4",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "9f52c9cb0fdf/backend/internal/jam/web/app.css": {
+   "defaultParitySha256_12": "b38f74d5000f",
+   "path": "backend/internal/jam/web/app.css",
+   "sha256_12": "9f52c9cb0fdf",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "a0f042776af4/backend/internal/jam/acquisition_restart_test.go": {
+   "defaultParitySha256_12": "94df89c96fdb",
+   "path": "backend/internal/jam/acquisition_restart_test.go",
+   "sha256_12": "a0f042776af4",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery"
+   ]
+  },
+  "a22a039c2af2/android/scripts/test-device-play.py": {
+   "defaultParitySha256_12": "df9cdc069299",
+   "path": "android/scripts/test-device-play.py",
+   "sha256_12": "a22a039c2af2",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "a2630e311c98/android/scripts/test-mix-selection.py": {
+   "defaultParitySha256_12": "1774e54ccde0",
+   "path": "android/scripts/test-mix-selection.py",
+   "sha256_12": "a2630e311c98",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "a5eb9fca3146/android/app/src/androidTest/kotlin/com/soundq/android/NativeJamBackendJourneyTest.kt": {
+   "defaultParitySha256_12": "c36be9363139",
+   "path": "android/app/src/androidTest/kotlin/com/soundq/android/NativeJamBackendJourneyTest.kt",
+   "sha256_12": "a5eb9fca3146",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "a761c0aad878/android/app/src/main/kotlin/com/soundq/android/playback/SoundQLibraryService.kt": {
+   "defaultParitySha256_12": "b779a27b99e4",
+   "path": "android/app/src/main/kotlin/com/soundq/android/playback/SoundQLibraryService.kt",
+   "sha256_12": "a761c0aad878",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "a7f7c7011b65/client/native/transport/src/soundq_transport.cpp": {
+   "defaultParitySha256_12": "6228d10ff82f",
+   "path": "client/native/transport/src/soundq_transport.cpp",
+   "sha256_12": "a7f7c7011b65",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "a8ff530ec44f/android/app/src/main/kotlin/com/soundq/android/playback/QueuePolicy.kt": {
+   "defaultParitySha256_12": "c857455dc53a",
+   "path": "android/app/src/main/kotlin/com/soundq/android/playback/QueuePolicy.kt",
+   "sha256_12": "a8ff530ec44f",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "a91525a0c8b3/android/app/src/main/cpp/nativeengine/tests/long_queue_tempo_tests.cpp": {
+   "defaultParitySha256_12": "169bcea05999",
+   "path": "android/app/src/main/cpp/nativeengine/tests/long_queue_tempo_tests.cpp",
+   "sha256_12": "a91525a0c8b3",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "af58694081a0/android/app/src/main/kotlin/com/soundq/android/playback/SoundQLibraryService.kt": {
+   "defaultParitySha256_12": "b779a27b99e4",
+   "path": "android/app/src/main/kotlin/com/soundq/android/playback/SoundQLibraryService.kt",
+   "sha256_12": "af58694081a0",
+   "worktrees": [
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "b3f5eea26061/android/app/src/test/kotlin/com/soundq/android/data/jam/JamModernHostTlsTest.kt": {
+   "defaultParitySha256_12": "46095cad5e6a",
+   "path": "android/app/src/test/kotlin/com/soundq/android/data/jam/JamModernHostTlsTest.kt",
+   "sha256_12": "b3f5eea26061",
+   "worktrees": [
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "be4f375c512a/android/app/src/main/cpp/nativeengine/tests/live_tempo_host_tests.cpp": {
+   "defaultParitySha256_12": "70929d86bb6c",
+   "path": "android/app/src/main/cpp/nativeengine/tests/live_tempo_host_tests.cpp",
+   "sha256_12": "be4f375c512a",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "cdb0c372b25c/android/app/src/main/kotlin/com/soundq/android/SoundQApplication.kt": {
+   "defaultParitySha256_12": "b2fc899653e5",
+   "path": "android/app/src/main/kotlin/com/soundq/android/SoundQApplication.kt",
+   "sha256_12": "cdb0c372b25c",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "cdd97bc837f7/android/app/src/test/kotlin/com/soundq/android/data/timeline/TimelineOwnerTest.kt": {
+   "defaultParitySha256_12": "d8f63b48df73",
+   "path": "android/app/src/test/kotlin/com/soundq/android/data/timeline/TimelineOwnerTest.kt",
+   "sha256_12": "cdd97bc837f7",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "d31352f5a6f5/android/app/build.gradle.kts": {
+   "defaultParitySha256_12": "39ebe76fd8f7",
+   "path": "android/app/build.gradle.kts",
+   "sha256_12": "d31352f5a6f5",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "d6f1c599ba64/android/app/src/main/kotlin/com/soundq/android/product/timeline/StackedTimeline.kt": {
+   "defaultParitySha256_12": "302ac60b681c",
+   "path": "android/app/src/main/kotlin/com/soundq/android/product/timeline/StackedTimeline.kt",
+   "sha256_12": "d6f1c599ba64",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "dd1e610b7fbf/android/app/src/main/kotlin/com/soundq/android/data/jam/AdmissionHistory.kt": {
+   "defaultParitySha256_12": "f218d6c994c1",
+   "path": "android/app/src/main/kotlin/com/soundq/android/data/jam/AdmissionHistory.kt",
+   "sha256_12": "dd1e610b7fbf",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "deleted": {
+   ".env.example": [
+    "soundq-parallel-q-backend-jam-recovery-r2"
+   ],
+   "deploy/.env.example": [
+    "soundq-parallel-q-backend-jam-recovery-r2"
+   ],
+   "deploy/observability/.env.example": [
+    "soundq-parallel-q-backend-jam-recovery-r2"
+   ]
+  },
+  "e23efa34dcc9/android/app/src/test/kotlin/com/soundq/android/data/jam/JamCanonicalEvidenceTest.kt": {
+   "defaultParitySha256_12": "2df2ea292024",
+   "path": "android/app/src/test/kotlin/com/soundq/android/data/jam/JamCanonicalEvidenceTest.kt",
+   "sha256_12": "e23efa34dcc9",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "e49270a079f8/android/app/src/main/cpp/nativeengine/worker_deck.cpp": {
+   "defaultParitySha256_12": "7100426c5406",
+   "path": "android/app/src/main/cpp/nativeengine/worker_deck.cpp",
+   "sha256_12": "e49270a079f8",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "e5cba5ad048b/android/app/src/main/cpp/nativeengine/worker_deck.hpp": {
+   "defaultParitySha256_12": "ee4557ecb8a6",
+   "path": "android/app/src/main/cpp/nativeengine/worker_deck.hpp",
+   "sha256_12": "e5cba5ad048b",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "ea3342a51b9c/android/scripts/test-quick-queue-effects.py": {
+   "defaultParitySha256_12": "59c0192eca10",
+   "path": "android/scripts/test-quick-queue-effects.py",
+   "sha256_12": "ea3342a51b9c",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "ec6661c2c099/android/app/src/main/kotlin/com/soundq/android/playback/nativeengine/NativeCallbackPlayer.kt": {
+   "defaultParitySha256_12": "920652fd8982",
+   "path": "android/app/src/main/kotlin/com/soundq/android/playback/nativeengine/NativeCallbackPlayer.kt",
+   "sha256_12": "ec6661c2c099",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "ee947ff7a566/android/app/src/main/cpp/nativeengine/jni_bridge.cpp": {
+   "defaultParitySha256_12": "c134738be0f6",
+   "path": "android/app/src/main/cpp/nativeengine/jni_bridge.cpp",
+   "sha256_12": "ee947ff7a566",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "f2042f5ea5fc/android/scripts/test-player-details-source.py": {
+   "defaultParitySha256_12": "fbdbe7fd9fd2",
+   "path": "android/scripts/test-player-details-source.py",
+   "sha256_12": "f2042f5ea5fc",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "f317e17b709a/android/scripts/test-player-details-source.py": {
+   "defaultParitySha256_12": "fbdbe7fd9fd2",
+   "path": "android/scripts/test-player-details-source.py",
+   "sha256_12": "f317e17b709a",
+   "worktrees": [
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "f666e95b878f/android/app/src/test/kotlin/com/soundq/android/data/jam/ConnectJamTlsTest.kt": {
+   "defaultParitySha256_12": "588aa8e4a54f",
+   "path": "android/app/src/test/kotlin/com/soundq/android/data/jam/ConnectJamTlsTest.kt",
+   "sha256_12": "f666e95b878f",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "f727728ed38b/android/app/src/main/kotlin/com/soundq/android/product/preferences/PreferencesScreen.kt": {
+   "defaultParitySha256_12": "9b27d0c0a30f",
+   "path": "android/app/src/main/kotlin/com/soundq/android/product/preferences/PreferencesScreen.kt",
+   "sha256_12": "f727728ed38b",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "f76d706a196f/android/scripts/test-library-continuation.py": {
+   "defaultParitySha256_12": "b6d251fb4165",
+   "path": "android/scripts/test-library-continuation.py",
+   "sha256_12": "f76d706a196f",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "f908e8aa3c96/android/app/src/main/kotlin/com/soundq/android/playback/nativeengine/NativeCallbackOwner.kt": {
+   "defaultParitySha256_12": "26f40a64e8dd",
+   "path": "android/app/src/main/kotlin/com/soundq/android/playback/nativeengine/NativeCallbackOwner.kt",
+   "sha256_12": "f908e8aa3c96",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  },
+  "fa554742d93f/android/scripts/test-library-continuation.py": {
+   "defaultParitySha256_12": "b6d251fb4165",
+   "path": "android/scripts/test-library-continuation.py",
+   "sha256_12": "fa554742d93f",
+   "worktrees": [
+    "soundq-parallel-q-ordinary-composition"
+   ]
+  },
+  "fc90e8e16d83/android/app/src/main/cpp/nativeengine/CMakeLists.txt": {
+   "defaultParitySha256_12": "d089a8546441",
+   "path": "android/app/src/main/cpp/nativeengine/CMakeLists.txt",
+   "sha256_12": "fc90e8e16d83",
+   "worktrees": [
+    "soundq-parallel-q-backend-jam-recovery-r2",
+    "soundq-parallel-q-backend-jam-recovery",
+    "soundq-parallel-q-guest-mobile",
+    "soundq-parallel-q-native-jam-recovery"
+   ]
+  }
+ }
+}
