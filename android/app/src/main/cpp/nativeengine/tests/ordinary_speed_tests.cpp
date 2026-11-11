@@ -90,8 +90,47 @@ void crossfadeAtSpeed() {
     CHECK(std::abs(s.decks[1].sourceFrame-480)<=1);
 }
 
+void listeningSpeedKeepsLevel() {
+    // Ordinary listening speed is a pace, not a gain: a 0.5x or 0.75x track plays
+    // at the same level as 1x (scratch/varispeed attenuation is separate).
+    Engine e(48000);std::vector<float> a(4800*2,.25f);
+    PcmWindow w{};w.count=1;w.pages[0]={a.data(),0,4800};
+    std::array<float,512> pcm{};
+    CHECK(e.assignPaged(0,1,1,{4800,48000,11,0.5},w));CHECK(e.submit({Operation::Play,0,2,1}));
+    e.render(pcm.data(),64);
+    std::cout<<"0.5x output level "<<pcm[2*63]<<" (source .25)\n";
+    CHECK(std::abs(pcm[2*63]-.25f)<1e-6&&std::abs(pcm[2*63+1]-.25f)<1e-6);
+    CHECK(e.publishWindowRate(0,3,1,w,0.75));e.render(pcm.data(),64);
+    CHECK(std::abs(pcm[2*63]-.25f)<1e-6);
+    CHECK(e.publishWindowRate(0,4,1,w,1.5));e.render(pcm.data(),64);
+    CHECK(std::abs(pcm[2*63]-.25f)<1e-6);
+}
+
+void crossfadeRetimedBySpeedChange() {
+    // A speed change on the outgoing deck mid-fade keeps the fade continuous and
+    // still completes exactly at outgoing EOF, so the incoming deck ends at unity.
+    Engine e(48000);std::vector<float> a(4800*2,.25f),b(9600*2,.5f);
+    PcmWindow aw{},bw{};aw.count=bw.count=1;aw.pages[0]={a.data(),0,4800};bw.pages[0]={b.data(),0,9600};
+    std::array<float,8192> pcm{};
+    CHECK(e.assignPaged(0,1,1,{4800,48000,11,1},aw));CHECK(e.assignPaged(1,2,2,{9600,48000,12,1},bw));
+    e.render(pcm.data(),1);CHECK(e.crossfade(3,0,1,1,2,960));CHECK(e.submit({Operation::Play,0,4,1}));
+    Snapshot s;uint64_t outputs=0;
+    // Into the fade: 4800-960 = 3840 frames before it begins, then 480 frames of it.
+    for(;outputs<3840+480;++outputs)e.render(pcm.data(),1);
+    CHECK(e.snapshot(s));const double before=s.decks[1].boundaryGain;CHECK(before>0.1&&before<0.9);
+    CHECK(e.publishWindowRate(0,5,1,aw,2));e.render(pcm.data(),1);++outputs;
+    CHECK(e.snapshot(s));CHECK(std::abs(s.decks[1].boundaryGain-before)<0.01); // no gain jump
+    for(;;){e.render(pcm.data(),1);++outputs;CHECK(e.snapshot(s));if(s.decks[0].eofCount)break;CHECK(outputs<9000);}
+    // 480 source frames remained at 2x = 240 output frames.
+    std::cout<<"retimed fade: outgoing EOF after "<<outputs<<" outputs, incoming gain "<<s.decks[1].boundaryGain<<"\n";
+    CHECK(outputs>=3840+480+239&&outputs<=3840+480+242);
+    e.render(pcm.data(),1);CHECK(e.snapshot(s));
+    CHECK(std::abs(s.decks[1].boundaryGain-1)<1e-9);
+    CHECK(std::abs(pcm[0]-.5f)<1e-6);
+}
+
 int main() {
-    exactCore();crossfadeAtSpeed();
+    exactCore();crossfadeAtSpeed();listeningSpeedKeepsLevel();crossfadeRetimedBySpeedChange();
     Registry registry;auto output=std::make_unique<Controlled>();auto* out=output.get();
     const auto h=registry.open(std::move(output));CHECK(h);
     CHECK(field(registry.state(h),"speedMin")==0.5&&field(registry.state(h),"speedMax")==2);

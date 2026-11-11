@@ -295,9 +295,13 @@ class SoundQLibraryService : MediaLibraryService() {
         val result=SettableFuture.create<SessionResult>()
         native.requestSpeed(occurrence,speed) {ok->
             val accepted=ok&&player.currentMediaItem?.mediaId==occurrence
-            if(accepted){speeds.set(key,speed);native.speedPreferenceChanged()}
+            // Applied speed and saved preference are distinct: a failed file write still
+            // plays at the accepted speed but reports persisted=false.
+            val persisted=accepted&&speeds.set(key,speed)
+            if(accepted)native.speedPreferenceChanged()
             publishSessionExtras()
-            result.set(SessionResult(if(accepted)SessionResult.RESULT_SUCCESS else SessionError.ERROR_INVALID_STATE))
+            result.set(if(accepted)SessionResult(SessionResult.RESULT_SUCCESS,Bundle().apply {putBoolean("persisted",persisted)})
+                else SessionResult(SessionError.ERROR_INVALID_STATE))
         }
         return result
     }

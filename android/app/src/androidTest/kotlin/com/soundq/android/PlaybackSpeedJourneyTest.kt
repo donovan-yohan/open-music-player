@@ -79,13 +79,33 @@ class PlaybackSpeedJourneyTest {
             stable>=5
         }
     }
-    /** Source-time advance per wall second from native acknowledgements only. */
+    /** Playing ordinary deck plus the output clock, from ONE native snapshot. Selected by
+     * assignment, not by the momentary `ready` coverage flag, which can flap during a
+     * refill (observed at 1x too) while the cursor and its PCM stay valid. */
+    private fun clocked():Pair<JSONObject,JSONObject> {
+        val root=native();val decks=root.getJSONArray("decks")
+        val assigned=(0 until decks.length()).map {decks.getJSONObject(it)}.filter {it.getLong("identity")!=0L}
+        return root to checkNotNull(assigned.firstOrNull {it.getBoolean("playing")} ?: assigned.firstOrNull {it.getBoolean("ready")}) {"no assigned deck"}
+    }
+    /** Source seconds advanced per OUTPUT second, from native acknowledgements only. Both
+     * cursors come from the same snapshot as the engine's rendered-frame clock, so the
+     * 50 ms diagnostics poll and host scheduling cannot skew the ratio; a PCM stall still
+     * lowers it (the cursor holds while output frames render). Wall pace is logged too. */
     private fun measuredRate(wallMs:Long=3000):Double {
-        val a=deck()!!;val t0=SystemClock.elapsedRealtime()
+        val (r0,a)=clocked();val t0=SystemClock.elapsedRealtime()
         Thread.sleep(wallMs)
-        val b=deck()!!;val t1=SystemClock.elapsedRealtime()
+        val (r1,b)=clocked();val t1=SystemClock.elapsedRealtime()
         assertEquals("same assignment",a.getLong("identity"),b.getLong("identity"))
-        return (b.getDouble("sourceFrame")-a.getDouble("sourceFrame"))/b.getDouble("sourceRate")*1000.0/(t1-t0)
+        val source=(b.getDouble("sourceFrame")-a.getDouble("sourceFrame"))/b.getDouble("sourceRate")
+        val output=(r1.getLong("renderedFrames")-r0.getLong("renderedFrames")).toDouble()/r1.getLong("sampleRate")
+        assertTrue("output clock advanced",output>wallMs/2000.0)
+        val rate=source/output
+        println("SPEED_EVIDENCE measured id=${a.getLong("identity")} pos ${a.getLong("positionMs")}->${b.getLong("positionMs")} "+
+            "output ${"%.3f".format(output)}s wall ${t1-t0}ms wallRate=${source*1000.0/(t1-t0)} "+
+            "missingPcm ${a.getLong("missingPcmFrames")}->${b.getLong("missingPcmFrames")} rate=$rate")
+        // The output clock really runs at wall pace (coarse: the poll is up to 50 ms stale).
+        assertEquals("wall pace follows the output clock",rate,source*1000.0/(t1-t0),rate*0.15)
+        return rate
     }
     private fun speedState():ListeningSpeedState? = main {c.sessionExtras.getString(LISTENING_SPEED_STATE)}?.let {Json.decodeFromString<ListeningSpeedState>(it)}
     private fun setSpeed(occurrence:String,speed:Double):Int {
@@ -109,11 +129,13 @@ class PlaybackSpeedJourneyTest {
     /** Unique bytes each run, so a previous run's per-track preference never applies. */
     private fun phoneFile(seconds:Int,frequency:Int):PlaybackRef.Device {
         val version=app.graph.session.version()
-        val rate=16000;val frames=rate*seconds;val bytes=frames*2;val salt=Random.nextInt(1,64)
+        // 64 random bits in the final samples: content (and so the preference key) is unique per run.
+        val rate=16000;val frames=rate*seconds;val bytes=frames*2;val salt=Random.nextLong()
         val wave=ByteBuffer.allocate(44+bytes).order(ByteOrder.LITTLE_ENDIAN).apply {
             put("RIFF".toByteArray()).putInt(36+bytes).put("WAVEfmt ".toByteArray()).putInt(16)
             putShort(1).putShort(1).putInt(rate).putInt(rate*2).putShort(2).putShort(16).put("data".toByteArray()).putInt(bytes)
-            repeat(frames){i->putShort(((kotlin.math.sin(i*2*Math.PI*frequency/rate)*4000).toInt()+if(i==frames-1)salt else 0).toShort())}
+            repeat(frames){i->val tail=frames-1-i
+                putShort(if(tail<4)(salt ushr (16*tail)).toShort() else (kotlin.math.sin(i*2*Math.PI*frequency/rate)*4000).toInt().toShort())}
         }.array()
         val values=ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME,"soundq-speed-${UUID.randomUUID()}.wav")

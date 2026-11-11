@@ -83,6 +83,34 @@ class PlaybackSpeedPanelTest {
         compose.runOnIdle {assertEquals(listOf(1.2),requests)}
     }
 
+    @Test fun accessibilityReportsTheDraftSoStepsAccumulate() {
+        val accepted=mutableStateOf(1.0);val requested=mutableStateOf<Double?>(null)
+        val requests=mutableListOf<Double>();val resets=mutableListOf<Unit>()
+        compose.mainClock.autoAdvance=false
+        mount(accepted,requested,requests,resets)
+        val slider=compose.onNodeWithTag("player-speed-slider")
+        slider.performSemanticsAction(SemanticsActions.SetProgress) {it(1.05f)}
+        // A few frames (well inside the 500 ms debounce) for the action's state write to recompose.
+        repeat(6) {compose.mainClock.advanceTimeByFrame();compose.waitForIdle()}
+        // The next accessibility step starts from the draft, not from accepted 1.0x.
+        slider.assert(SemanticsMatcher("current is draft") {node->node.config[SemanticsProperties.ProgressBarRangeInfo].current==1.05f})
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"1 times, selecting 1.05 times"))
+        compose.onNodeWithTag("player-speed-accepted").assertTextEquals("1.0x")
+        compose.mainClock.advanceTimeBy(600)
+        compose.runOnIdle {assertEquals(listOf(1.05),requests)}
+    }
+
+    @Test fun unavailableOwnerWithoutRangeRendersCentredAndFinite() {
+        assertEquals(0.5f,SoundQSpeedScale.fractionOf(1.0,1.0,1.0))
+        assertEquals(1.0,SoundQSpeedScale.rateAt(0.2f,1.0,1.0),0.0)
+        compose.setContent {SoundQTheme {Column {
+            SoundQPlaybackSpeedPanel(1.0,null,1.0,1.0,SoundQSpeedPanelState.Unavailable,"Speed follows the Jam host.",{},{})
+        }}}
+        compose.onNodeWithTag("player-speed-slider").assertIsNotEnabled()
+            .assert(SemanticsMatcher("finite range info") {node->node.config[SemanticsProperties.ProgressBarRangeInfo].current.isFinite()})
+        compose.onNodeWithTag("player-speed-status").assertTextEquals("Speed follows the Jam host.")
+    }
+
     @Test fun rejectionAndUnavailableAreExplicitAndIdentityRetiresDraft() {
         val accepted=mutableStateOf(1.0);val requested=mutableStateOf<Double?>(null);val rejected=mutableStateOf<Double?>(1.5)
         val state=mutableStateOf(SoundQSpeedPanelState.Rejected);val identity=mutableStateOf("a")

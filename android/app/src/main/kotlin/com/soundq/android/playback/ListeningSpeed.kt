@@ -59,7 +59,10 @@ internal class ListeningSpeedPreferences(private val file: File, private val cap
         }.onFailure { speeds.clear() }
     }
     @Synchronized fun speed(key: ListeningSpeedKey): Double? = speeds[key.value]
-    @Synchronized fun set(key: ListeningSpeedKey, speed: Double) {
+    /** Updates the preference and atomically replaces the file. Returns false when the
+     * file could not be replaced; the previous file is then left untouched (never
+     * truncated) and the in-memory value still applies for this process. */
+    @Synchronized fun set(key: ListeningSpeedKey, speed: Double): Boolean {
         speeds.remove(key.value)
         if (speed != 1.0) speeds[key.value] = speed
         while (speeds.size > capacity) speeds.remove(speeds.keys.first())
@@ -67,11 +70,13 @@ internal class ListeningSpeedPreferences(private val file: File, private val cap
             put("version", 1)
             put("speeds", buildJsonObject { speeds.forEach { (k, v) -> put(k, v) } })
         }.toString()
-        runCatching {
+        val temporary = File(file.parentFile, file.name + ".tmp")
+        val replaced = runCatching {
             file.parentFile?.mkdirs()
-            val temporary = File(file.parentFile, file.name + ".tmp")
             temporary.writeText(text)
-            if (!temporary.renameTo(file)) { file.writeText(text); temporary.delete() }
-        }
+            temporary.renameTo(file)
+        }.getOrDefault(false)
+        if (!replaced) temporary.delete()
+        return replaced
     }
 }

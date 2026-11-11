@@ -56,6 +56,20 @@ class ListeningSpeedTest {
         assertNull(ListeningSpeedPreferences(file).speed(key))
     }
 
+    @Test fun failedReplacementReportsUnsavedAndKeepsThePreviousFile() {
+        val file = folder.root.resolve("listening-speed.json")
+        val store = ListeningSpeedPreferences(file)
+        val a = ListeningSpeedKey.device(device)
+        assertTrue(store.set(a, 1.5))
+        val saved = file.readBytes()
+        // The replacement temporary cannot be written: report unsaved, never truncate.
+        folder.root.resolve("listening-speed.json.tmp").apply { mkdirs(); resolve("held").writeText("x") }
+        assertFalse(store.set(a, 0.75))
+        assertArrayEquals(saved, file.readBytes())
+        assertEquals("applies for this process", 0.75, store.speed(a)!!, 0.0)
+        assertEquals(1.5, ListeningSpeedPreferences(file).speed(a)!!, 0.0)
+    }
+
     @Test fun storeIsBoundedOldestFirst() {
         val store = ListeningSpeedPreferences(folder.root.resolve("s.json"), capacity = 3)
         val keys = (1..4).map { ListeningSpeedKey.server("https://e.test/api/v1", "x", it.toLong()) }

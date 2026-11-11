@@ -40,10 +40,12 @@ enum class SoundQSpeedPanelState { Ready, Pending, Rejected, Unavailable }
 object SoundQSpeedScale {
     const val STEP = 0.05
     fun rateAt(fraction:Float,min:Double,max:Double):Double {
+        if(!(min<1.0&&max>1.0))return 1.0 // no adjustable range (unavailable owner)
         val f=fraction.toDouble().coerceIn(0.0,1.0)
         return if(f<0.5)min+(1-min)*(f/0.5) else 1+(max-1)*((f-0.5)/0.5)
     }
     fun fractionOf(rate:Double,min:Double,max:Double):Float {
+        if(!(min<1.0&&max>1.0)||!rate.isFinite())return 0.5f // centred, never NaN
         val r=rate.coerceIn(min,max)
         return (if(r<1)0.5*(r-min)/(1-min) else 0.5+0.5*(r-1)/(max-1)).toFloat()
     }
@@ -143,8 +145,15 @@ private fun Modifier.drawBehindRule(first:Boolean,color:Color,rule:Float)=this.d
         if(status!=null)Text(status,Modifier.fillMaxWidth().padding(horizontal=8.dp).testTag("player-speed-status").semantics {liveRegion=LiveRegionMode.Polite},
             style=SoundQ.typography.caption,color=if(state==SoundQSpeedPanelState.Rejected&&enabled)colors.error else colors.muted)
         val pending=state==SoundQSpeedPanelState.Pending&&requested!=null
+        // Accessibility adjusts from the reported value: report the draft while one is
+        // pending its debounce so successive steps accumulate. The header stays accepted.
+        val selecting=draft?.takeIf {enabled&&it!=accepted}
         val spoken=if(!enabled)"Unavailable. ${reason ?: "Speed changes aren't available for this track."}"
-            else SoundQSpeedScale.spoken(accepted)+if(pending)", applying ${SoundQSpeedScale.spoken(requested)}" else ""
+            else SoundQSpeedScale.spoken(accepted)+when {
+                selecting!=null->", selecting ${SoundQSpeedScale.spoken(selecting)}"
+                pending->", applying ${SoundQSpeedScale.spoken(requested)}"
+                else->""
+            }
         val steps=((max-min)/SoundQSpeedScale.STEP).roundToLong().toInt()-1
         Slider(SoundQSpeedScale.fractionOf(shown,min,max),{f->
                 if(!enabled)return@Slider
@@ -159,7 +168,7 @@ private fun Modifier.drawBehindRule(first:Boolean,color:Color,rule:Float)=this.d
             },
             Modifier.fillMaxWidth().heightIn(min=48.dp).padding(horizontal=8.dp).testTag("player-speed-slider").clearAndSetSemantics {
                 contentDescription="Playback speed";stateDescription=spoken
-                progressBarRangeInfo=ProgressBarRangeInfo(accepted.toFloat(),min.toFloat()..max.toFloat(),steps.coerceAtLeast(0))
+                progressBarRangeInfo=ProgressBarRangeInfo((selecting ?: accepted).toFloat(),min.toFloat()..max.toFloat(),steps.coerceAtLeast(0))
                 if(enabled) {
                     setProgress {v->keyboardPending=SoundQSpeedScale.quantise(v.toDouble(),min,max);draft=keyboardPending;true}
                     customActions=listOf(CustomAccessibilityAction("Reset to normal speed") {draft=null;keyboardPending=null;if(accepted!=1.0||requested!=null)onReset();true})

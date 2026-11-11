@@ -218,6 +218,9 @@ internal class NativeCallbackPlayer(
     var speedFor: (MediaItem) -> Double = { 1.0 }
     var onSpeedChanged: (() -> Unit)? = null
     private var speedBounds = 1.0 to 1.0
+    /** Set when the native capability first arrives (or changes): a deck loaded before it
+     * could only start at 1.0, so the selected source re-applies its stored speed once. */
+    private var reconcileSpeed = false
     private var observedSpeed: Pair<Long, Double>? = null // ordinary deck identity -> applied engine rate
     private class SpeedRequest(val occurrence: String, val speed: Double, val done: (Boolean) -> Unit) {
         var submittedIdentity = 0L
@@ -275,6 +278,13 @@ internal class NativeCallbackPlayer(
     }
     private fun observeSpeed(deck: NativeCallbackDeck) {
         val previous = observedSpeed
+        if (reconcileSpeed && speedRequest == null && deck.ready && arrangement == null) {
+            reconcileSpeed = false
+            selected()?.let { item ->
+                val wanted = loadSpeed(item)
+                if (deck.speed != wanted) requestSpeed(item.mediaId, wanted) { invalidateState(); onSpeedChanged?.invoke() }
+            }
+        }
         if (deck.rate.isFinite() && deck.rate > 0 && !deck.scratching) observedSpeed = ordinaryIdentity to deck.rate
         val request = speedRequest
         if (request != null) {
@@ -1397,7 +1407,8 @@ internal class NativeCallbackPlayer(
             return
         }
         if (snapshot.speedMax > snapshot.speedMin && (snapshot.speedMin to snapshot.speedMax) != speedBounds) {
-            speedBounds = snapshot.speedMin to snapshot.speedMax; onSpeedChanged?.invoke()
+            speedBounds = snapshot.speedMin to snapshot.speedMax; reconcileSpeed = true
+            speedPreferenceChanged(); onSpeedChanged?.invoke()
         }
         journal.observe(snapshot,allowNatural=intent&&desiredSeek==null)
         if (observeSuccessor(snapshot)) return
