@@ -42,7 +42,8 @@ internal class AuthFormState {
     fun finish(ticket: Ticket, ok: Boolean, code: String, epoch: Long, account: Long): Boolean {
         if (pending != ticket) return false
         val current = owns(ticket) && ticket.epoch == epoch && ticket.account == account
-        pending = null
+        // Retirement suppresses only this held ticket's publication.
+        pending = null; publicationRetired = false
         if (!current) return false
         succeeded = ok
         failure = if(ok) null else feedback(code,mode)

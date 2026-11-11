@@ -136,6 +136,7 @@ def run(root, output, platform, terminal_only=False):
         if platform=='macos':names+=['register-current-success-existing-library','register-durable-success-actually-requests-library']
         names+=['register-terminal-'+code for code in ['authentication_refused','network_unavailable','invalid_auth_response','binding_failure']]
         names+=['register-submit-backpressure-no-owner-replacement']+['register-retired-'+kind+'-no-stale-publication' for kind in ['detach','edit','account']]
+        names+=['register-retired-'+kind+'-terminal-releases-later-publication' for kind in ['detach','edit','account']]
         names+=(['register-secure-store-failure-no-ack','register-secure-store-explicit-recovery-ack'] if platform=='macos' else ['register-account-replaced-by-publication-listener-terminal','register-secure-store-failure-no-ack-explicit-recovery'])
         if platform=='macos':names += [prefix+kind for kind in ['detach','edit','account'] for prefix in ['retired-held-still-disabled-','retired-terminal-reenables-form-']]
         names+=['vector-'+v['name'] for v in vectors()]

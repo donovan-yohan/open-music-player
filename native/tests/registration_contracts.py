@@ -47,6 +47,16 @@ ANDROID_CASES=r'''
   check(a.storedCredentialVersion==if(kind=="account") 0L else 1L)
   check(a.bridge.calls.count {it.optString("command")=="acknowledge_credentials"}==if(kind=="account") 0 else 1)
  }
+ // Retirement suppresses only the retired ticket's own publication; once it is
+ // terminal, a later authenticated core observation must reach presentation.
+ for(kind in listOf("detach","edit","account")) test("register-retired-$kind-terminal-releases-later-publication") {
+  val a=registration();a.submitAuth("abc","a@b.co","secret-123","secret-123");a.bridge.replies.add(reply(a,credentials=true));a.worker.one()
+  if(kind=="account") {a.credentialEpoch++;a.epoch=a.bridge.revoke(a.core)} else if(kind=="edit") a.authForm.edited() else a.retireAuthPresentation()
+  a.drain();check(a.authForm.pending==null && !a.snapshot.optBoolean("authenticated"))
+  a.bridge.replies.add(JSONObject().put("ok",true).put("code","ok").put("snapshot",JSONObject().put("epoch",a.epoch).put("authenticated",true)))
+  a.command(JSONObject().put("command","library"));a.drain()
+  check(a.snapshot.optBoolean("authenticated")){"terminal retired ticket still discards later authenticated snapshots"}
+ }
  test("register-account-replaced-by-publication-listener-terminal") {
   val a=registration();a.submitAuth("abc","a@b.co","secret-123","secret-123");a.bridge.replies.add(reply(a,credentials=true))
   a.listener={s,_->if(s.optBoolean("authenticated")){a.credentialEpoch++;a.epoch=a.bridge.revoke(a.core)}}
@@ -120,6 +130,11 @@ MAC_CASES=r'''
    a.bridge.release(wire(a,credentials:true));await settle(a)
    check("register-retired-"+kind+"-no-stale-publication",a.authForm.pending==nil && a.authForm.failure==nil && !a.authForm.succeeded && a.libraryLoads==0 && a.snapshot==nil && a.storedCredentialVersion==(kind=="account" ? 0:1))
    check("retired-terminal-reenables-form-"+kind,!a.loginArea.disabled)
+   // Only the retired ticket's own publication is suppressed; a later
+   // authenticated observation after its terminal must reach presentation.
+   if a.bridge.pending != nil {a.bridge.release(Data(#"{"ok":true,"code":"ok"}"#.utf8));await settle(a)}
+   let later=a.command(["command":"library_refresh_probe"],result:nil);a.bridge.release(wire(a));await settle(a)
+   check("register-retired-"+kind+"-terminal-releases-later-publication",later && a.busy==0 && a.snapshot?.authenticated==true)
   }
   let storage=registration();secureResult = -1;storage.signIn();storage.bridge.release(wire(storage,credentials:true));await settle(storage)
   check("register-secure-store-failure-no-ack",storage.storedCredentialVersion==0 && storage.bridge.values.allSatisfy {$0["command"] as? String != "acknowledge_credentials"} && storage.status.stringValue=="Could not save session")
