@@ -22,6 +22,8 @@ import (
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
+
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/download"
@@ -29,7 +31,6 @@ import (
 	"github.com/openmusicplayer/backend/internal/playlistimport"
 	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/storage"
-	"github.com/redis/go-redis/v9"
 )
 
 const restartSource = "https://www.youtube.com/watch?v=partyrestart"
