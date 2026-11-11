@@ -106,7 +106,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
     var dockTrackID: Int64?
     var nativeAssets: NativeAssets?
     var slider = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
-    var loginArea = NSStackView()
+    var loginArea = AuthFormView()
+    var authForm = AuthFormState()
     var libraryArea = NSStackView()
     var play = SoundQButton(title: "Play", target: nil, action: nil)
     var logout = SoundQButton(title: "Sign out", target: nil, action: nil)
@@ -216,9 +217,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
     func mountLibraryDock(in host: NSView, assets: NativeAssets) {
         logout.target = self;logout.action = #selector(signOut);logout.setAccessibilityLabel("Sign out")
         email.placeholderString = "Email";password.placeholderString = "Password";endpoint.placeholderString = "API base URL";endpoint.isEditable = false
-        loginArea.orientation = .vertical;loginArea.alignment = .leading;loginArea.spacing = 8
-        for field in [endpoint,email,password] {field.widthAnchor.constraint(equalToConstant:420).isActive = true;loginArea.addArrangedSubview(field)}
-        let signIn = SoundQButton(title:"Sign in",target:self,action:#selector(signIn));signIn.keyEquivalent = "\r";loginArea.addArrangedSubview(signIn)
+        loginArea.configure(endpoint:endpoint,email:email,password:password,target:self,submitAction:#selector(signIn),modeAction:#selector(changeAuthMode))
+        loginArea.onEdit = { [weak self] in self?.authEdited() }
         search.placeholderString = "Search your library";search.delegate = self
         let refresh = SoundQButton(title:"Refresh",target:self,action:#selector(refresh))
         let more = SoundQButton(title:"Load more",target:self,action:#selector(loadMore))
@@ -248,11 +248,15 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         // single scale input so runtime QA can qualify the actual mounted fonts.
         shell.textScale = max(1,NSFont.preferredFont(forTextStyle:.body).pointSize/13)
         for field in [endpoint,email,password] {field.font = NativeAssets.font(14,scale:shell.textScale)}
-        signIn.font = NativeAssets.font(14,weight:500,scale:shell.textScale)
+        loginArea.applyAuthTypography(shell.textScale)
     }
     @discardableResult
-    func command(_ value: [String:Any], result: (@MainActor (Reply) -> Void)?, completion: (@MainActor () -> Void)? = nil) -> Bool {
+    func command(_ value: [String:Any], result: (@MainActor (Reply) -> Void)?, presentation: (@MainActor () -> Bool)? = nil, completion: (@MainActor () -> Void)? = nil) -> Bool {
         let kind = value["command"] as? String ?? ""
+        // Refused authentication must not replace the current account owner,
+        // but still retires an existing account disclosure before admission.
+        if ["login","register"].contains(kind) {closeQueueName();retireLibraryDetails()}
+        if ["login","register"].contains(kind), busy >= 32 {status.stringValue = "Playback is busy. Try again.";return false}
         if (pendingLibraryRead != nil || libraryReadInvalid) && ["select","queue_append","set_favorite"].contains(kind) {return false}
         if let intent = pendingLibraryRead, intent.epoch != epoch || intent.account != accountScope {retireLibraryRead()}
         if ["queue_restore","queue_play","next","previous","queue_clear"].contains(kind) {retireLibraryRead()}
@@ -267,7 +271,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         }
         guard busy < 32 else {status.stringValue = "Playback is busy. Try again.";return false}
         if ["select","queue_play","next","previous","resume","retry"].contains(kind) || kind == "queue_remove" && (value["occurrence_id"] as? UInt64) == snapshot?.selected_occurrence {wantsPlayback = true}
-        if ["pause","queue_clear","queue_restore","logout","login"].contains(kind) {wantsPlayback = false;player?.pause()}
+        if ["pause","queue_clear","queue_restore","logout","login","register"].contains(kind) {wantsPlayback = false;player?.pause()}
         var scopedValue = value;scopedValue["account_scope_v1"] = accountScope
         guard JSONSerialization.isValidJSONObject(scopedValue), let data = try? JSONSerialization.data(withJSONObject:scopedValue) else {status.stringValue = "Invalid native command";return false}
         let admittedEpoch = epoch
@@ -277,7 +281,19 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
             Task { @MainActor in
                 guard let self else{return};self.busy -= 1
                 if let readIntent {self.libraryReadRetired.remove(readIntent.serial)}
-                guard admittedEpoch == self.epoch, admittedAccount == self.accountScope else{self.reportPending = false;return}
+                guard admittedEpoch == self.epoch, admittedAccount == self.accountScope else {
+                    if ["login","register"].contains(kind) {
+                        result?(Reply(ok:false,code:"cancelled",snapshot:nil,audio:nil,credentials:nil));completion?()
+                    }
+                    self.reportPending = false;return
+                }
+                if presentation?() == false {
+                    if let reply = try? JSONDecoder().decode(Reply.self,from:data) {
+                        if let credentials = reply.credentials, ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_FIXTURE_HOME"] == nil {self.storeCredentials(credentials,epoch:admittedEpoch)}
+                        result?(reply)
+                    } else {result?(Reply(ok:false,code:"binding_failure",snapshot:nil,audio:nil,credentials:nil))}
+                    completion?();return
+                }
                 if let readIntent, self.pendingLibraryRead != readIntent {
                     // A superseded read cannot publish rows/mode, but a committed
                     // same-account credential rotation still needs durable ACK.
@@ -288,15 +304,27 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
                 guard let reply = try? JSONDecoder().decode(Reply.self,from:data) else {
                     self.status.stringValue = "Invalid native response";self.reportPending = false
                     if let readIntent {self.finishLibraryRead(readIntent,reply:nil)}
+                    // Auth forms need one terminal outcome even when decoding fails.
+                    // Keep unrelated legacy callback semantics unchanged.
+                    if ["login","register"].contains(kind) {
+                        result?(Reply(ok:false,code:"binding_failure",snapshot:nil,audio:nil,credentials:nil))
+                        completion?()
+                    }
                     return
                 }
                 // Only this admitted read may acknowledge a new Library publication.
                 if let readIntent {self.finishLibraryRead(readIntent,reply:reply)}
-                if let snapshot = reply.snapshot, snapshot.epoch == self.epoch {self.apply(snapshot)}
+                if let snapshot = reply.snapshot, snapshot.epoch == self.epoch, !self.authForm.publicationRetired || !snapshot.authenticated {self.apply(snapshot)}
                 if !reply.ok, readIntent == nil || self.libraryReadFailure == nil {self.status.stringValue = reply.code.replacingOccurrences(of:"_",with:" ")}
                 if let effect = reply.audio, effect.epoch == self.epoch {self.applyAudio(effect)}
+                // Auth success admits the ordinary Library read before the
+                // synchronous store enqueues its ACK (which otherwise makes
+                // readLibrary's busy admission silently refuse that destination).
+                // Durable store still precedes credential ACK on the same actor.
+                let authentication = ["login","register"].contains(kind)
+                if authentication {result?(reply)}
                 if let credentials = reply.credentials, ProcessInfo.processInfo.environment["SOUNDQ_NATIVE_FIXTURE_HOME"] == nil {self.storeCredentials(credentials,epoch:admittedEpoch)}
-                result?(reply)
+                if !authentication {result?(reply)}
                 completion?()
             }
         }
@@ -458,15 +486,48 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         libraryDock?.libraryReadFailed = libraryReadFailure != nil
         libraryDock?.updateContent(empty:pendingLibraryRead == nil && libraryReadFailure == nil && snapshot?.library.isEmpty == true)
     }
+    func authEdited() {
+        let forced = authForm.pending != nil
+        authForm.retire();if forced {loginArea.clearSecrets()};loginArea.update(authForm)
+    }
+    @objc func changeAuthMode() {
+        guard authForm.changeMode(authForm.mode == .signIn ? .register:.signIn) else {return}
+        loginArea.clearSecrets();loginArea.update(authForm)
+    }
+    func retireAuthPresentation() {authForm.retire();loginArea.clearSecrets();loginArea.update(authForm)}
     @objc func signIn() {
-        retireLibraryDetails()
-        closeQueueName()
-        player?.pause();player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke()
-
-        command(["command":"login","email":email.stringValue.trimmingCharacters(in:.whitespacesAndNewlines),"password":password.stringValue]) { [weak self] in
-            guard let self,self.snapshot?.authenticated == true else{return}
-            self.password.stringValue = "";self.loadLibrary()
+        guard authForm.pending == nil else {return}
+        let username = loginArea.username.stringValue, p = password.stringValue, confirmation = loginArea.confirmation.stringValue
+        let registration = authForm.mode == .register
+        let invalid = registration ? !AuthFormState.validate(username:username,email:email.stringValue,password:p,confirmation:confirmation).isEmpty : email.stringValue.isEmpty || p.isEmpty
+        if invalid {
+            _ = authForm.begin(username:username,email:email.stringValue,password:p,confirmation:confirmation,epoch:epoch,account:accountScope)
+            loginArea.update(authForm);return
         }
+        if busy >= 32 {
+            if let ticket = authForm.begin(username:username,email:email.stringValue,password:p,confirmation:confirmation,epoch:epoch,account:accountScope) {
+                authForm.finish(ticket,ok:false,code:"command_backpressure",epoch:epoch,account:accountScope)
+            }
+            loginArea.update(authForm);return
+        }
+        retireLibraryDetails();closeQueueName()
+        player?.pause();player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke()
+        guard let ticket = authForm.begin(username:username,email:email.stringValue,password:p,confirmation:confirmation,epoch:epoch,account:accountScope+1) else {return}
+        var value: [String:Any] = ["command":registration ? "register":"login","email":AuthFormState.trimmed(email.stringValue),"password":p]
+        if registration {value["username"] = AuthFormState.trimmed(username)}
+        let admitted = command(value,result:{ [weak self] reply in
+            guard let self else {return}
+            let published = self.authForm.finish(ticket,ok:reply.ok && reply.snapshot?.authenticated == true,code:reply.code,epoch:self.epoch,account:self.accountScope)
+            self.loginArea.update(self.authForm)
+            if published {
+                self.loginArea.clearSecrets();self.loginArea.update(self.authForm)
+                // Existing destination; no native caller supplies a return URL.
+                if self.authForm.succeeded {self.loadLibrary()}
+            }
+        },presentation:{ [weak self] in self?.authForm.owns(ticket) == true })
+        loginArea.clearSecrets()
+        if !admitted {authForm.finish(ticket,ok:false,code:"command_backpressure",epoch:epoch,account:accountScope+1)}
+        loginArea.update(authForm)
     }
     @objc func signOut() {retireLibraryDetails();closeQueueName();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;epoch = bridge.revoke();deleteCredentials();command(["command":"logout"])}
     @objc func toggleLibraryLiked() {readLibrary(liked:!libraryLiked)}
@@ -683,7 +744,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewD
         }
         retireLibraryDetails();closeQueueName();timer?.invalidate();player?.pause();observation = nil;player?.replaceCurrentItem(with:nil);player = nil;_ = bridge.revoke()
     }
-    func windowWillClose(_ notification:Notification) {retireLibraryDetails()}
+    func windowWillClose(_ notification:Notification) {retireAuthPresentation();retireLibraryDetails()}
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {true}
 }
 

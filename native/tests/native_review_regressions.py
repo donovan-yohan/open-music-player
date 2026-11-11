@@ -521,6 +521,11 @@ check(failed==0){"$failed Android service regressions"}}
 '''.replace('__METHODS__', methods).replace('__TERMINAL_FIELDS__', '\n'.join(
         line.strip().removeprefix('private ') for line in source.splitlines()
         if line.strip().startswith('private var endedReportAcknowledged =')))
+    helper = root / 'native/android/app/src/main/java/com/soundq/nativepreview/AuthFormState.kt'
+    if helper.exists():
+        auth = '\n'.join(line for line in helper.read_text().splitlines() if not line.startswith(('package ', 'import ')))
+        harness = harness.replace('class PlaybackService {', 'class PlaybackService {\ninternal val authForm=AuthFormState()\n', 1)
+        harness = harness.replace('class JSONObject {', auth+'\nclass JSONObject {', 1)
     return harness
 
 
