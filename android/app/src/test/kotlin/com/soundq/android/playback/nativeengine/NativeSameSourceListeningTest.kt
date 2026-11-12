@@ -15,7 +15,7 @@ class NativeSameSourceListeningTest {
         val store = DeviceListeningStore(file)
         val account = if (server) ServerAccount("fixture", "account") else null
         val access = store.unlock(account)
-        val grant = ScanGrant(ScanGrantId(UUID.randomUUID()), GrantKind.FILE, "fixture", ProviderLocator("fixture", "one"), true)
+        val grant = ScanGrant(ScanGrantId(UUID.randomUUID()), GrantKind.INDEXED, "fixture", ProviderLocator("fixture", "one"), true)
         val revision = ContentRevision("a".repeat(64), 64)
         init {
             if (!server) {

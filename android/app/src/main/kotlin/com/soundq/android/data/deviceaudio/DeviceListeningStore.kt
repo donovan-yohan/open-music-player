@@ -33,7 +33,7 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
     private fun commit(next: DomainState): Mutation = if (next == state) Mutation.UNCHANGED else if (disk.commit(next)) Mutation.APPLIED else Mutation.REFUSED
 
     @Synchronized fun putGrant(access: AccessCapture, grant: ScanGrant): Mutation {
-        if (!current(access)) return Mutation.REFUSED
+        if (!current(access) || grant.kind != GrantKind.INDEXED) return Mutation.REFUSED
         val old = state.grants.find { it.id == grant.id }
         // Changing the identity behind an existing grant is not reselection. Mint a new grant ID.
         if (old != null && (old.locator != grant.locator || old.kind != grant.kind)) return Mutation.REFUSED
@@ -46,12 +46,32 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
         if (result == Mutation.APPLIED || newSession) accessChanged()
         return result
     }
-    @Synchronized fun removeGrant(access: AccessCapture, id: ScanGrantId): Mutation {
-        val g = if (current(access)) state.grants.find { it.id == id } else null
-        return g?.let { putGrant(access, it.copy(state = AccessState.REMOVED)) } ?: Mutation.REFUSED
+    /** Object ids of rows an older build's file/folder picker reached. The platform may prove some name a row of the
+     * audio index; the indexed scan then publishes those keys as former keys and folds the rows into it. */
+    @Synchronized fun legacyObjects(access: AccessCapture): Set<ProviderObjectId>? {
+        if (!current(access)) return null
+        val legacy = legacyGrants()
+        return state.files.filter { f -> f.aliases.any { it.grantId in legacy } }.map { it.objectId }.toSet()
     }
+    /** Retires picker grants from older builds. Call only after a complete indexed publication, so every row the
+     * provider could prove has already folded into its audio-index row. A row left with no audio-index route was
+     * not proved and is dropped with its listening state; rows of the audio index lose only their picker routes.
+     * Repeating this is UNCHANGED. */
+    @Synchronized fun retireLegacyAccess(access: AccessCapture): Mutation {
+        if (!current(access)) return Mutation.REFUSED
+        val legacy = legacyGrants()
+        if (legacy.isEmpty()) return Mutation.UNCHANGED
+        val files = state.files.map { f -> f.copy(aliases = f.aliases.filterNot { it.grantId in legacy }) }.filter { it.aliases.isNotEmpty() }
+        val kept = files.map { it.id }.toSet()
+        val result = commit(state.copy(grants = state.grants.filterNot { it.id in legacy }, files = files,
+            journal = state.journal.filter { val key = it.key; key !is HistoryKey.Device || key.id in kept },
+            retired = state.retired.filter { it.into in kept }))
+        if (result == Mutation.APPLIED) accessChanged()
+        return result
+    }
+    private fun legacyGrants() = state.grants.filter { it.kind != GrantKind.INDEXED }.map { it.id }.toSet()
     @Synchronized fun beginScan(access: AccessCapture, grant: ScanGrantId): ScanCapture? {
-        if (!current(access) || state.grants.none { it.id == grant && it.state == AccessState.AVAILABLE && (it.persisted || it.id in sessionGrants) }) return null
+        if (!current(access) || state.grants.none { it.id == grant && it.kind == GrantKind.INDEXED && it.state == AccessState.AVAILABLE && (it.persisted || it.id in sessionGrants) }) return null
         scanSequence = Math.addExact(scanSequence, 1); scans[grant] = scanSequence
         return ScanCapture(access, grant, scanSequence)
     }
@@ -73,14 +93,9 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
             val at = files.indexOfFirst { it.objectId == d.objectId }
             val old = files.getOrNull(at)
             val alias = LocatorAccess(capture.grantId, d.locator, d.state)
-            // One object reached through several grants is presented by the best-ranked grant reaching it
-            // (the audio index, then folders, then files). Routes report tags differently; alternating them
-            // would rewrite the store on every refresh. Changed content always takes the fresh metadata.
-            val shared = old != null && old.revision == d.revision && old.aliases.any { it.grantId != capture.grantId && it.state == AccessState.AVAILABLE && presents(it.grantId, capture.grantId) }
             val next = DeviceAudio(old?.id ?: DeviceFileId(UUID.randomUUID()), d.objectId, d.revision,
                 if (old == null) 1 else if (old.revision == d.revision) old.incarnation else Math.addExact(old.incarnation, 1),
-                if (shared) old!!.metadata else d.metadata, if (shared) old!!.durationMs else d.durationMs,
-                (old?.aliases.orEmpty().filterNot { it.grantId == alias.grantId && it.locator == alias.locator } + alias))
+                d.metadata, d.durationMs, (old?.aliases.orEmpty().filterNot { it.grantId == alias.grantId && it.locator == alias.locator } + alias))
             if (at < 0) files.add(next) else files[at] = next
         }
         files = files.map { f -> f.copy(aliases = f.aliases.sortedWith(compareBy({ it.grantId.value.toString() }, { it.locator.provider }, { it.locator.value }))) }.toMutableList()
@@ -93,16 +108,23 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
         if (result != Mutation.REFUSED) scans.remove(capture.grantId)
         return result
     }
-    private fun rank(id: ScanGrantId) = state.grants.find { it.id == id }?.kind?.let { listOf(GrantKind.INDEXED, GrantKind.FOLDER, GrantKind.FILE).indexOf(it) } ?: Int.MAX_VALUE
-    /** Whether [other] outranks [publisher] for presenting a shared object. */
-    private fun presents(other: ScanGrantId, publisher: ScanGrantId): Boolean =
-        compareValuesBy(other, publisher, { rank(it) }, { it.value.toString() }) < 0
+    /** Rows and routes of the audio index only. Rows an older build's picker reached stay out of view until the
+     * indexed scan folds them or [retireLegacyAccess] drops them; they are never shown as unavailable. */
     @Synchronized fun snapshot(access: AccessCapture): DeviceListeningSnapshot? {
         if (!current(access)) return null
-        val grants = state.grants.map { if (!it.persisted && it.state == AccessState.AVAILABLE && !sessionGrants.contains(it.id)) it.copy(state = AccessState.REVOKED) else it }
+        val grants = state.grants.filter { it.kind == GrantKind.INDEXED }
+            .map { if (!it.persisted && it.state == AccessState.AVAILABLE && !sessionGrants.contains(it.id)) it.copy(state = AccessState.REVOKED) else it }
+        val indexed = grants.map { it.id }.toSet()
         val usable = grants.filter { it.state == AccessState.AVAILABLE }.map { it.id }.toSet()
-        return DeviceListeningSnapshot(state.revision, state.files.map { f -> f.copy(aliases = f.aliases.map { if (it.grantId !in usable && it.state == AccessState.AVAILABLE) it.copy(state = AccessState.REVOKED) else it }) }, grants.toList(),
-            state.journal.filter { permitted(it.key) }.map { ListeningHistory(it.key, it.playedAt, it.bookmark) }, state.retired)
+        val files = state.files.mapNotNull { f ->
+            f.aliases.filter { it.grantId in indexed }.takeIf { it.isNotEmpty() }?.let { routes ->
+                f.copy(aliases = routes.map { if (it.grantId !in usable && it.state == AccessState.AVAILABLE) it.copy(state = AccessState.REVOKED) else it })
+            }
+        }
+        val shown = files.map { it.id }.toSet()
+        return DeviceListeningSnapshot(state.revision, files, grants,
+            state.journal.filter { permitted(it.key) && (it.key !is HistoryKey.Device || (it.key as HistoryKey.Device).id in shown) }.map { ListeningHistory(it.key, it.playedAt, it.bookmark) },
+            state.retired.filter { it.into in shown })
     }
     private data class Active(val capture: TraversalCapture, val duration: Long, val admissionOrder: Long, val played: Boolean = false)
     // Prepared occurrences coexist. Only successful advancing playback acquires the durable journal.

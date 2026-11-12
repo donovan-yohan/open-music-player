@@ -23,15 +23,14 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 
-/** Real MainActivity and Library route. Changing all files access (or revoking a runtime permission) kills the
- * app process, so the runner sets access with `appops`/`pm` between methods and passes fixture names as
- * instrumentation arguments. Fixtures that MediaStore has not indexed are placed by the runner on the lower
- * filesystem (`/data/media/0`), which an app cannot do. */
+/** Real MainActivity and Library route. All files access is the only phone-audio grant; changing it kills the app
+ * process, so the runner sets it with `appops` between methods and passes fixture names as instrumentation arguments.
+ * Fixtures that MediaStore has not indexed are placed by the runner on the lower filesystem (`/data/media/0`), which
+ * an app cannot do. The upgrade cases start from a store and URI grant an older build's pickers left behind. */
 class LocalAudioAccessJourneyTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
     private val instrumentation get()=InstrumentationRegistry.getInstrumentation()
     private val packageName get()=instrumentation.targetContext.packageName
-    private val mediaPermission=if(Build.VERSION.SDK_INT>=33)android.Manifest.permission.READ_MEDIA_AUDIO else android.Manifest.permission.READ_EXTERNAL_STORAGE
     private fun arg(name:String)=checkNotNull(InstrumentationRegistry.getArguments().getString(name)) {"Missing instrumentation argument $name"}
 
     private fun model(fileAccess:Boolean):ProductViewModel {
@@ -42,10 +41,16 @@ class LocalAudioAccessJourneyTest {
             compose.onAllNodesWithContentDescription("Library search query").fetchSemanticsNodes().isNotEmpty()}
         return model
     }
-    private fun accessOff():ProductViewModel {
-        assertEquals("Runner must revoke $mediaPermission",PackageManager.PERMISSION_DENIED,instrumentation.targetContext.checkSelfPermission(mediaPermission))
-        return model(fileAccess=false)
+    private fun accessOff()=model(fileAccess=false)
+    /** No media permission is requested or held: all files access alone lists and plays phone audio. */
+    private fun noMediaPermission() {
+        @Suppress("DEPRECATION") val requested=instrumentation.targetContext.packageManager.getPackageInfo(packageName,PackageManager.GET_PERMISSIONS).requestedPermissions.orEmpty().toSet()
+        assertFalse(requested.toString(),"android.permission.READ_MEDIA_AUDIO" in requested)
+        if(Build.VERSION.SDK_INT>=33)assertEquals(PackageManager.PERMISSION_DENIED,instrumentation.targetContext.checkSelfPermission("android.permission.READ_MEDIA_AUDIO"))
+        if(Build.VERSION.SDK_INT>=30)assertFalse("android.permission.READ_EXTERNAL_STORAGE" in requested)
     }
+    private val noPickerCopy=listOf("Add folder","Open audio file","Choose file again","Available for this session","Manage local audio")
+    private fun noPickerActions()=noPickerCopy.forEach {compose.onAllNodes(hasText(it,substring=true)).assertCountEquals(0)}
     private fun appearance(model:ProductViewModel,choice:Appearance) {
         compose.waitUntil(10000){model.graph.appearancePreferences.state.value.ready}
         assertTrue(model.graph.appearancePreferences.setChoice(model.graph.appearancePreferences.capture()!!,choice){true})
@@ -128,6 +133,8 @@ class LocalAudioAccessJourneyTest {
         openLocalAudioSettings()
         compose.onNode(hasText("File access") and hasText("Off")).assertIsDisplayed()
         compose.onNodeWithText("Allow file access").performScrollTo().assertIsDisplayed()
+        compose.onAllNodes(hasText("Allow file access")).assertCountEquals(1)
+        noPickerActions()
         appearance(model,Appearance.Light);capture("settings-access-off-light")
         appearance(model,Appearance.Dark);capture("settings-access-off-dark")
         appearance(model,Appearance.System)
@@ -146,8 +153,10 @@ class LocalAudioAccessJourneyTest {
     @Test fun afterFileAccessGrantLocalFilesListsSharedStorageAudio() {
         val downloadStem=arg("downloadStem");val unindexedStem=arg("unindexedStem");val unindexedPath=arg("unindexedPath")
         val model=model(fileAccess=true)
+        noMediaPermission()
         compose.onNodeWithContentDescription("Local files").performClick()
         for(stem in listOf(downloadStem,unindexedStem))rowAppears(model,stem)
+        noPickerActions()
         compose.onNodeWithText("File access is off").assertDoesNotExist()
         compose.onNodeWithText("Allow file access").assertDoesNotExist()
         @Suppress("DEPRECATION") val data=MediaStore.MediaColumns.DATA
@@ -157,23 +166,17 @@ class LocalAudioAccessJourneyTest {
         openLocalAudioSettings()
         compose.onNode(hasText("File access") and hasText("Allowed")).assertIsDisplayed()
         compose.onNodeWithText("Allow file access").assertDoesNotExist()
+        compose.waitUntil(60000){!model.graph.phoneAudio.state.value.refreshing&&compose.onAllNodes(hasText("Songs")).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("Scan again").performScrollTo().assertIsDisplayed()
+        noPickerActions()
         capture("settings-access-on")
-    }
-
-    /** Resume without a process restart (the silent media-permission baseline changing) still rescans. */
-    @Test fun returningWithMediaAccessRefreshesLibraryWithoutRestart() {
-        val model=accessOff()
-        withMusicOriginal {name->
-            localFilesShowsAccessOff(hidden=name)
-            instrumentation.uiAutomation.grantRuntimePermission(packageName,mediaPermission)
-            compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
-            compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
-            rowAppears(model,name.removeSuffix(".wav"))
-        }
+        appearance(model,Appearance.Light);capture("settings-access-on-light")
+        appearance(model,Appearance.Dark);capture("settings-access-on-dark")
+        appearance(model,Appearance.System)
     }
 
     @Test fun undecodablePhoneFileStaysVisibleAsUnplayableAfterTap() {
-        instrumentation.uiAutomation.grantRuntimePermission(packageName,mediaPermission)
+        assertTrue("Runner must allow all files access",Environment.isExternalStorageManager())
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
         compose.runOnIdle {model.graph.session.retire()}
         compose.waitUntil(15000){model.graph.session.state.value is AuthState.SignedOut&&model.graph.phoneAudio.state.value.ready}
@@ -203,5 +206,59 @@ class LocalAudioAccessJourneyTest {
             compose.runOnIdle {model.controller.pause();model.controller.clear()}
             assertEquals(1,resolver.delete(uri,null,null))
         }
+    }
+
+    /** After the upgrade, with all files access: startup released the picker grant; the picked file the provider
+     * proves is the audio-index row keeps its row id, recency and resume; unproven picker rows and their state are
+     * gone, never shown as unavailable. Runs twice across a restart: the migration is idempotent. */
+    @Test fun upgradeReleasesPickerGrantsAndFoldsOrDropsTheirRows() {
+        val pickedId=java.util.UUID.fromString(arg("pickedId"));val stem=arg("pickedStem")
+        val dropped=arg("droppedIds").split(',').map(java.util.UUID::fromString)
+        val playedAt=arg("playedAt").toLong();val resumeMs=arg("resumeMs").toLong()
+        val model=model(fileAccess=true)
+        val resolver=instrumentation.targetContext.contentResolver
+        assertTrue("Startup releases every persisted URI grant: ${resolver.persistedUriPermissions.map {it.uri}}",waitFor(10000){resolver.persistedUriPermissions.isEmpty()})
+        val phone=model.graph.phoneAudio
+        compose.waitUntil(120000){phone.state.value.let {!it.refreshing&&it.scan?.complete==true}}
+        val snapshot=phone.state.value.snapshot!!
+        val picked=snapshot.files.single {it.id.value==pickedId}
+        assertTrue(picked.available)
+        assertEquals("$stem.mp3",picked.metadata.filename)
+        assertTrue(picked.objectId.objectId,picked.objectId.objectId.startsWith("media:"))
+        assertEquals(listOf(com.soundq.android.data.deviceaudio.GrantKind.INDEXED),snapshot.grants.map {it.kind})
+        assertEquals(1,snapshot.files.count {it.metadata.filename=="$stem.mp3"})
+        assertTrue(snapshot.files.none {it.id.value in dropped})
+        val history=snapshot.history.single {it.key==com.soundq.android.data.deviceaudio.HistoryKey.Device(picked.id)}
+        assertEquals(playedAt,history.playedAtEpochMs)
+        assertEquals(resumeMs,history.bookmark?.takeIf {it.owner==picked.owner}?.positionMs)
+        assertTrue(snapshot.history.none {(it.key as? com.soundq.android.data.deviceaudio.HistoryKey.Device)?.id?.value in dropped})
+        // The store itself no longer holds picker grants or the dropped rows.
+        val stored=java.io.File(model.graph.directory,"phone-listening.v1.json").readText()
+        for(gone in listOf("\"FILE\"","\"FOLDER\"")+dropped.map {it.toString()})assertFalse(gone,stored.contains(gone))
+        compose.onNodeWithContentDescription("Local files").performClick()
+        rowAppears(model,stem)
+        // The folded row keeps its resume point.
+        compose.onAllNodes(hasText(stem,substring=true) and hasText("Resume at 0:${"%02d".format(resumeMs/1000)}",substring=true)).assertCountEquals(1)
+        capture("upgrade-folded-row")
+        // All tracks also lists unavailable phone rows: none are left from the pickers.
+        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.waitForIdle()
+        compose.onAllNodes(hasText("Unavailable",substring=true)).assertCountEquals(0)
+        compose.onAllNodes(hasText(stem,substring=true) and hasClickAction() and !hasSetTextAction()).assertCountEquals(1)
+        noPickerActions()
+        capture("upgrade-all-tracks")
+    }
+
+    /** Capture only: what Local files shows on the first start after the upgrade (the RED run uses the older app). */
+    @Test fun upgradeLocalFilesAsShown() {
+        val model=model(fileAccess=true)
+        compose.waitUntil(120000){model.graph.phoneAudio.state.value.let {!it.refreshing&&it.scan!=null}}
+        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.waitForIdle();Thread.sleep(500)
+        capture("upgrade-local-files")
+        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.waitForIdle();Thread.sleep(500)
+        capture("upgrade-all-tracks")
+        android.util.Log.i("SoundQUpgrade","rows=${model.graph.phoneAudio.state.value.snapshot?.files?.map {it.metadata.filename to it.available}} grants=${model.graph.phoneAudio.state.value.snapshot?.grants?.map {it.kind to it.state}} persisted=${instrumentation.targetContext.contentResolver.persistedUriPermissions.map {it.uri}}")
     }
 }

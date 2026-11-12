@@ -30,11 +30,10 @@ internal fun localAudioSongs(state:PhoneAudioState):Int = state.snapshot?.files?
     val alive = remember(version) { java.util.concurrent.atomic.AtomicBoolean(true) }
     DisposableEffect(alive) { onDispose { alive.set(false) } }
     val valid = { alive.get() && owner.current(version) }
-    val pickers = rememberAudioPickers(graph,
-        { uri, flags, current -> owner.selected(uri, flags, false) { valid() && current() } },
-        { uri, flags, current -> owner.selected(uri, flags, true) { valid() && current() } },
-        // Resume re-reads OS access; a rescan runs only when access changed since the last finished scan.
-        { if (valid() && com.soundq.android.product.localAudioAccessChanged(owner.state.value, owner.platform.storageAllowed(), owner.platform.indexedAllowed())) owner.refresh(valid) })
+    // Resume re-reads OS access; a rescan runs only when access changed since the last finished scan.
+    val allowFileAccess = rememberFileAccess(graph) {
+        if (valid() && com.soundq.android.product.localAudioAccessChanged(owner.state.value, owner.platform.storageAllowed())) owner.refresh(valid)
+    }
     val status = localAudioStatus(state)
     SoundQSettingsSectionLabel("Access", first = true)
     SoundQSettingsRow("File access", value = if (!state.ready) "Loading…" else if (state.permission) "Allowed" else "Off")
@@ -47,7 +46,7 @@ internal fun localAudioSongs(state:PhoneAudioState):Int = state.snapshot?.files?
         null -> { if (state.ready) scanAgain(); return } // Allowed, no finished scan yet: unknown, not zero songs.
         LocalAudioStatus.Off -> {
             SoundQSettingsBlock(Modifier.padding(top = SoundQ.spacing.large)) {
-                SoundQButton("Allow file access", pickers.permission, Modifier.fillMaxWidth())
+                SoundQButton("Allow file access", allowFileAccess, Modifier.fillMaxWidth())
             }
             return
         }

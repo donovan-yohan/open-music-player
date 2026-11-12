@@ -55,7 +55,7 @@ private class MediaItem {class Local(val uri:Uri);class Request(val extras:Bundl
 private class Store:SessionStore {override fun load(endpoint:ApiEndpoint):SecretTokens?=null;override fun save(endpoint:ApiEndpoint,tokens:SecretTokens){};override fun clear(){}}
 private class Phone(val graph:Graph) {
  val store=DeviceListeningStore(File(graph.directory,"journal.json"));var access=store.unlock();val mutex=Mutex();var authorityVersion=0L;var available=true;var stageCalls=0;var stageGate:java.util.concurrent.CountDownLatch?=null;val stageEntered=java.util.concurrent.CountDownLatch(1);var journalGate:java.util.concurrent.CountDownLatch?=null;val journalEntered=java.util.concurrent.CountDownLatch(1)
- val grant=ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.FILE,"Phone file",ProviderLocator("fixture","fixture:source"),true)
+ val grant=ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.INDEXED,"Phone file",ProviderLocator("fixture","fixture:source"),true)
  val original=File(graph.directory,"original.wav").apply{writeBytes(ByteArray(64){it.toByte()})}
  val row:DeviceAudio
  init {store.putGrant(access,grant);store.publishScan(store.beginScan(access,grant.id)!!,listOf(DiscoveredAudio(ProviderObjectId("fixture","one"),grant.locator,ContentRevision("a".repeat(64),64),OriginalMetadata("one.wav","Original title","Original artist","Original album"),601000)));row=store.snapshot(access)!!.files.single()}

@@ -17,7 +17,7 @@ class DeviceListeningAndroidPersistenceTest {
         assertTrue(directory.mkdir())
         val path = File(directory, "listening.json")
         val id = ScanGrantId(UUID.randomUUID())
-        val grant = ScanGrant(id, GrantKind.FILE, "Synthetic", ProviderLocator("synthetic", "object-1"), true)
+        val grant = ScanGrant(id, GrantKind.INDEXED, "Synthetic", ProviderLocator("synthetic", "object-1"), true)
         try {
             DeviceListeningStore(path).use { store ->
                 assertEquals(LoadState.READY, store.loadState)

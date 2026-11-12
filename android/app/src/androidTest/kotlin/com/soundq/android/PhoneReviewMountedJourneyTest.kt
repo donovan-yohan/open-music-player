@@ -1,7 +1,6 @@
 package com.soundq.android
 
 import android.content.ContentValues
-import android.content.Intent
 import android.os.Environment
 import android.provider.MediaStore
 import androidx.compose.ui.test.*
@@ -9,7 +8,6 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import com.soundq.android.data.AuthState
-import com.soundq.android.data.deviceaudio.AccessState
 import com.soundq.android.data.deviceaudio.GrantKind
 import com.soundq.android.product.ProductViewModel
 import org.junit.Assert.*
@@ -34,18 +32,14 @@ class PhoneReviewMountedJourneyTest {
         val out=java.io.File(i.targetContext.filesDir,"pr533-review-captures").apply {mkdirs()}
         try {java.io.File(out,"$name.png").outputStream().use {assertTrue(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it))}}finally{bitmap.recycle()}
     }
-    /** The item is reached both by the file grant and by the audio index (two routes to one MediaStore row).
-     * Waiting for both makes a duplicate Library row deterministic rather than a refresh-order race. */
-    private fun awaitBothRoutes(model:ProductViewModel,name:String):String {
-        compose.waitUntil(30000){
-            val snapshot=model.graph.phoneAudio.state.value.snapshot
-            val kinds=snapshot?.grants.orEmpty().associate {it.id to it.kind}
-            snapshot?.files.orEmpty().filter {it.metadata.filename==name}.flatMap {f->f.aliases.filter {it.state==AccessState.AVAILABLE}.mapNotNull {kinds[it.grantId]}}.toSet()
-                .containsAll(setOf(GrantKind.FILE,GrantKind.INDEXED))
-        }
+    /** All files access (allowed by the runner) lists the test-owned original through the audio index only. */
+    private fun awaitIndexed(model:ProductViewModel,uri:android.net.Uri,name:String):String {
+        val row=model.graph.phoneAudio.awaitIndexed(uri)
+        assertEquals(name,row.metadata.filename)
         val rows=model.graph.phoneAudio.state.value.snapshot!!.files.filter {it.metadata.filename==name}
         assertEquals("One Local files row per MediaStore item",1,rows.size)
-        return rows.single().metadata.displayTitle // The audio index presents the row (its title, not the filename).
+        assertEquals(listOf(GrantKind.INDEXED),model.graph.phoneAudio.state.value.snapshot!!.grants.map {it.kind})
+        return row.metadata.displayTitle // The audio index presents the row (its title, not the filename).
     }
     private fun withPhoneOriginal(model:ProductViewModel,body:(name:String,title:String)->Unit) {
         val resolver=InstrumentationRegistry.getInstrumentation().targetContext.contentResolver
@@ -63,8 +57,7 @@ class PhoneReviewMountedJourneyTest {
             }.array()
             resolver.openOutputStream(uri,"w")!!.use {it.write(bytes)}
             assertEquals(1,resolver.update(uri,ContentValues().apply {put(MediaStore.MediaColumns.IS_PENDING,0)},null,null))
-            model.graph.phoneAudio.selected(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION,false){true}
-            body(name,awaitBothRoutes(model,name))
+            body(name,awaitIndexed(model,uri,name))
         }finally {
             compose.runOnIdle {model.controller.pause();model.controller.clear()}
             assertEquals(1,resolver.delete(uri,null,null))
@@ -123,8 +116,7 @@ class PhoneReviewMountedJourneyTest {
             }.array()
             resolver.openOutputStream(uri,"w")!!.use {it.write(bytes)}
             resolver.update(uri,ContentValues().apply {put(MediaStore.MediaColumns.IS_PENDING,0)},null,null)
-            model.graph.phoneAudio.selected(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION,false){true}
-            awaitBothRoutes(model,name)
+            awaitIndexed(model,uri,name)
             val row=model.graph.phoneAudio.state.value.snapshot!!.files.single {it.metadata.filename==name}
             compose.runOnIdle {model.controller.playDevice(model.graph.phoneAudio.reference(row)){true}}
             compose.waitUntil(15000){model.playback.value.isPlaying&&model.playback.value.positionMs>100}

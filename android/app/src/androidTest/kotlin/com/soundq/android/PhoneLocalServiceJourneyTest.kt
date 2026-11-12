@@ -2,7 +2,6 @@ package com.soundq.android
 
 import android.content.ComponentName
 import android.content.ContentValues
-import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -62,9 +61,7 @@ class PhoneLocalServiceJourneyTest {
         try {
             resolver.openOutputStream(uri,"w")!!.use {it.write(bytes)}
             resolver.update(uri,ContentValues().apply {put(MediaStore.MediaColumns.IS_PENDING,0)},null,null)
-            app.graph.phoneAudio.selected(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION,false){app.graph.session.owns(version)}
-            await("Provider file acknowledged") {app.graph.phoneAudio.state.value.snapshot?.files?.any {f->f.available&&f.aliases.any {it.locator.value==uri.toString()}}==true}
-            val row=app.graph.phoneAudio.state.value.snapshot!!.files.single {f->f.available&&f.aliases.any {it.locator.value==uri.toString()}}
+            val row=app.graph.phoneAudio.awaitIndexed(uri,{app.graph.session.owns(version)})
             val ref=app.graph.phoneAudio.reference(row)
             future=main {MediaController.Builder(context,SessionToken(context,ComponentName(context,SoundQLibraryService::class.java))).buildAsync()}
             controller=requireNotNull(future).get(15,TimeUnit.SECONDS)

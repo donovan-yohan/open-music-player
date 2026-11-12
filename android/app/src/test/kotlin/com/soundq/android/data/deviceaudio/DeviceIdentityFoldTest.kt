@@ -8,8 +8,8 @@ import java.util.UUID
 import org.junit.Assert.*
 import org.junit.Test
 
-/** One MediaStore row stored twice: once by the indexed scan, once under the legacy key its file grant
- * produced. The next file-grant scan proves the legacy key is a former key of the indexed object. */
+/** One MediaStore row stored twice by an older build: once by the indexed scan, once under the key its file picker
+ * grant produced. The indexed scan publishes the picker key as a proven former key and folds the row into itself. */
 class DeviceIdentityFoldTest {
     private fun target(): File {
         val base = System.getProperty("device.domain.fixtures") ?: System.getProperty("java.io.tmpdir")
@@ -22,45 +22,43 @@ class DeviceIdentityFoldTest {
     private val fileLocator = ProviderLocator("media", "content://media/external/downloads/41")
     private val indexed = ScanGrant(ScanGrantId(UUID.nameUUIDFromBytes("indexed".toByteArray())), GrantKind.INDEXED, "Android audio index", ProviderLocator("android", "indexed:external-audio"), false)
     private val file = ScanGrant(ScanGrantId(UUID.nameUUIDFromBytes("file".toByteArray())), GrantKind.FILE, "song.wav", fileLocator, true)
+    private val keptId = DeviceFileId(UUID.nameUUIDFromBytes("kept".toByteArray()))
+    private val oldId = DeviceFileId(UUID.nameUUIDFromBytes("old".toByteArray()))
+    private val metadata = OriginalMetadata("song.wav", "Song", null, null, null)
+    private fun row(id: DeviceFileId, objectId: ProviderObjectId, grant: ScanGrant, locator: ProviderLocator, revision: ContentRevision = content) =
+        DeviceAudio(id, objectId, revision, 1, metadata, 1_200_000, listOf(LocatorAccess(grant.id, locator, AccessState.AVAILABLE)))
+    private val kept = row(keptId, canonical, indexed, indexedLocator)
+    private val old = row(oldId, legacy, file, fileLocator)
+    private fun listened(row: DeviceAudio, at: Long, position: Long?) =
+        JournalEntry(HistoryKey.Device(row.id), at, position?.let { Bookmark(row.owner, it) }, UUID.randomUUID(), 2)
+    /** An upgraded phone's store, exactly as the older build wrote it. */
+    private fun written(path: File, files: List<DeviceAudio>, journal: List<JournalEntry> = emptyList(), grants: List<ScanGrant> = listOf(indexed, file)) {
+        path.parentFile.mkdirs()
+        path.writeBytes(encodeDomain(DomainState(9, grants, files, emptyList(), journal)).toString().toByteArray(Charsets.UTF_8))
+    }
     private fun found(id: ProviderObjectId, locator: ProviderLocator, former: Set<ProviderObjectId> = emptySet(), revision: ContentRevision = content) =
         DiscoveredAudio(id, locator, revision, OriginalMetadata("song.wav", "Song", null, null, locator.value), 1_200_000, formerObjectIds = former)
-    private fun publish(store: DeviceListeningStore, access: AccessCapture, grant: ScanGrant, vararg rows: DiscoveredAudio) =
-        store.publishScan(store.beginScan(access, grant.id)!!, rows.toList())
-    /** Plays [row] at [at] and checkpoints [position]; returns the source. */
-    private fun listen(store: DeviceListeningStore, access: AccessCapture, row: DeviceAudio, at: Long, position: Long?) {
-        val source = store.captureSource(access, row.id)!!
-        val t = store.beginTraversal(source, UUID.randomUUID(), 1, 0, 0, 1_200_000)!!
-        assertEquals(Mutation.APPLIED, store.played(SuccessfulPlaybackReceipt(t, 1, at)))
-        if (position != null) assertEquals(Mutation.APPLIED, store.checkpoint(SourcePositionCheckpoint(t, 2, position)))
-        assertEquals(Mutation.APPLIED, store.retireTraversal(t))
-    }
-    /** Today's duplicate: the indexed row and the file-grant row for one MediaStore item. */
-    private fun duplicated(store: DeviceListeningStore): Triple<AccessCapture, DeviceAudio, DeviceAudio> {
+    /** The production refresh order: this session's index grant, the scan with proven former keys, then retirement. */
+    private fun indexedScan(store: DeviceListeningStore, vararg rows: DiscoveredAudio): AccessCapture {
         val access = store.unlock()
-        assertEquals(Mutation.APPLIED, store.putGrant(access, indexed))
-        assertEquals(Mutation.APPLIED, store.putGrant(access, file))
-        assertEquals(Mutation.APPLIED, publish(store, access, indexed, found(canonical, indexedLocator)))
-        assertEquals(Mutation.APPLIED, publish(store, access, file, found(legacy, fileLocator)))
-        val files = store.snapshot(access)!!.files
-        assertEquals(2, files.size)
-        return Triple(access, files.single { it.objectId == canonical }, files.single { it.objectId == legacy })
+        assertNotEquals(Mutation.REFUSED, store.putGrant(access, indexed.copy(state = AccessState.AVAILABLE)))
+        assertNotEquals(Mutation.REFUSED, store.publishScan(store.beginScan(access, indexed.id)!!, rows.toList()))
+        assertNotEquals(Mutation.REFUSED, store.retireLegacyAccess(access))
+        return access
     }
 
-    @Test fun fileGrantScanFoldsTheLegacyRowIntoTheIndexedRowAndKeepsTheLatestListening() {
+    @Test fun indexedScanFoldsTheLegacyRowIntoTheIndexedRowAndKeepsTheLatestListening() {
         val path = target()
-        lateinit var survivor: DeviceAudio; lateinit var retired: DeviceAudio
+        written(path, listOf(kept, old), listOf(listened(kept, 1_000, 100_000), listened(old, 2_000, 300_000)))
         DeviceListeningStore(path).use { store ->
-            val (access, kept, old) = duplicated(store); survivor = kept; retired = old
-            listen(store, access, kept, at = 1_000, position = 100_000)
-            listen(store, access, old, at = 2_000, position = 300_000)
-            assertEquals(Mutation.APPLIED, publish(store, access, file, found(canonical, fileLocator, setOf(legacy))))
+            val access = indexedScan(store, found(canonical, indexedLocator, setOf(legacy)))
             val snapshot = store.snapshot(access)!!
             val row = snapshot.files.single()
             assertEquals(kept.id, row.id)
             assertEquals(canonical, row.objectId)
             assertEquals(kept.owner, row.owner)
-            assertEquals("The indexed row keeps presenting itself", kept.metadata, row.metadata)
-            assertEquals(setOf(indexed.id to indexedLocator, file.id to fileLocator), row.aliases.filter { it.state == AccessState.AVAILABLE }.map { it.grantId to it.locator }.toSet())
+            assertEquals("Only the audio index reaches it now", listOf(indexed.id to indexedLocator), row.aliases.map { it.grantId to it.locator })
+            assertEquals(listOf(indexed.id), snapshot.grants.map { it.id })
             // Recency keeps the later play; resume keeps the most recent listening's position.
             val history = snapshot.history.single()
             assertEquals(HistoryKey.Device(kept.id), history.key)
@@ -71,25 +69,26 @@ class DeviceIdentityFoldTest {
             assertNull(snapshot.resolve(old.id, old.revision, old.incarnation + 1))
             assertNull(snapshot.resolve(old.id, ContentRevision("d".repeat(64), 1), old.incarnation))
             // Idempotent on the next refresh.
-            assertEquals(Mutation.UNCHANGED, publish(store, access, file, found(canonical, fileLocator, setOf(legacy))))
-            assertEquals(Mutation.UNCHANGED, publish(store, access, indexed, found(canonical, indexedLocator)))
+            assertEquals(Mutation.UNCHANGED, store.publishScan(store.beginScan(access, indexed.id)!!, listOf(found(canonical, indexedLocator, setOf(legacy)))))
+            assertEquals(Mutation.UNCHANGED, store.retireLegacyAccess(access))
         }
         assertTrue(path.readText().startsWith("{\"version\":2,"))
+        assertFalse(path.readText().contains("\"FILE\""))
         DeviceListeningStore(path).use { store ->
             val access = store.unlock()
+            store.putGrant(access, indexed) // this session's index access
             val snapshot = store.snapshot(access)!!
-            assertEquals(listOf(survivor.id), snapshot.files.map { it.id })
-            assertEquals(300_000L, store.bookmark(store.captureSource(access, survivor.id)!!)!!.positionMs)
-            assertEquals(survivor.id, snapshot.resolve(retired.id, retired.revision, retired.incarnation)!!.id)
+            assertEquals(listOf(kept.id), snapshot.files.map { it.id })
+            assertEquals(300_000L, store.bookmark(store.captureSource(access, kept.id)!!)!!.positionMs)
+            assertEquals(kept.id, snapshot.resolve(old.id, old.revision, old.incarnation)!!.id)
         }
     }
 
     @Test fun anOlderLegacyListeningDoesNotReplaceANewerIndexedOne() {
-        DeviceListeningStore(target()).use { store ->
-            val (access, kept, old) = duplicated(store)
-            listen(store, access, old, at = 1_000, position = 300_000)
-            listen(store, access, kept, at = 2_000, position = 100_000)
-            assertEquals(Mutation.APPLIED, publish(store, access, file, found(canonical, fileLocator, setOf(legacy))))
+        val path = target()
+        written(path, listOf(kept, old), listOf(listened(old, 1_000, 300_000), listened(kept, 2_000, 100_000)))
+        DeviceListeningStore(path).use { store ->
+            val access = indexedScan(store, found(canonical, indexedLocator, setOf(legacy)))
             val history = store.snapshot(access)!!.history.single()
             assertEquals(2_000L, history.playedAtEpochMs)
             assertEquals(100_000L, store.bookmark(store.captureSource(access, kept.id)!!)!!.positionMs)
@@ -97,10 +96,10 @@ class DeviceIdentityFoldTest {
     }
 
     @Test fun historyOnlyOnTheLegacyRowMovesToTheSurvivor() {
-        DeviceListeningStore(target()).use { store ->
-            val (access, kept, old) = duplicated(store)
-            listen(store, access, old, at = 5_000, position = 700_000)
-            assertEquals(Mutation.APPLIED, publish(store, access, file, found(canonical, fileLocator, setOf(legacy))))
+        val path = target()
+        written(path, listOf(kept, old), listOf(listened(old, 5_000, 700_000)))
+        DeviceListeningStore(path).use { store ->
+            val access = indexedScan(store, found(canonical, indexedLocator, setOf(legacy)))
             val history = store.snapshot(access)!!.history.single()
             assertEquals(HistoryKey.Device(kept.id) to 5_000L, history.key to history.playedAtEpochMs)
             assertEquals(700_000L, store.bookmark(store.captureSource(access, kept.id)!!)!!.positionMs)
@@ -109,16 +108,17 @@ class DeviceIdentityFoldTest {
 
     @Test fun aLegacyRowAloneIsRekeyedInPlace() {
         val path = target()
+        written(path, listOf(old), listOf(listened(old, 1_000, 200_000)), listOf(file))
         DeviceListeningStore(path).use { store ->
-            val access = store.unlock()
-            assertEquals(Mutation.APPLIED, store.putGrant(access, file))
-            assertEquals(Mutation.APPLIED, publish(store, access, file, found(legacy, fileLocator)))
-            val before = store.snapshot(access)!!.files.single()
-            listen(store, access, before, at = 1_000, position = 200_000)
-            assertEquals(Mutation.APPLIED, publish(store, access, file, found(canonical, fileLocator, setOf(legacy))))
+            val access = indexedScan(store, found(canonical, indexedLocator, setOf(legacy)))
             val after = store.snapshot(access)!!
-            assertEquals(before.copy(objectId = canonical), after.files.single())
-            assertEquals(200_000L, store.bookmark(store.captureSource(access, before.id)!!)!!.positionMs)
+            val row = after.files.single()
+            assertEquals(old.id, row.id)
+            assertEquals(canonical, row.objectId)
+            assertEquals(old.owner, row.owner)
+            assertEquals(listOf(indexed.id to indexedLocator), row.aliases.map { it.grantId to it.locator })
+            assertEquals(1_000L, after.history.single().playedAtEpochMs)
+            assertEquals(200_000L, store.bookmark(store.captureSource(access, old.id)!!)!!.positionMs)
             assertEquals(emptyList<RetiredDeviceIdentity>(), after.retired)
         }
         // Nothing folded away: still the format older builds read.
@@ -126,11 +126,11 @@ class DeviceIdentityFoldTest {
     }
 
     @Test fun aChangedFileKeepsHistoryButNotAPositionInOtherContent() {
-        DeviceListeningStore(target()).use { store ->
-            val (access, kept, old) = duplicated(store)
-            listen(store, access, old, at = 3_000, position = 300_000)
+        val path = target()
+        written(path, listOf(kept, old), listOf(listened(old, 3_000, 300_000)))
+        DeviceListeningStore(path).use { store ->
             val edited = ContentRevision("e".repeat(64), 960100)
-            assertEquals(Mutation.APPLIED, publish(store, access, file, found(canonical, fileLocator, setOf(legacy), edited)))
+            val access = indexedScan(store, found(canonical, indexedLocator, setOf(legacy), edited))
             val snapshot = store.snapshot(access)!!
             val row = snapshot.files.single()
             assertEquals(edited, row.revision)
@@ -142,42 +142,21 @@ class DeviceIdentityFoldTest {
     }
 
     @Test fun aFormerKeyPublishedAsItsOwnObjectIsNotFolded() {
-        DeviceListeningStore(target()).use { store ->
-            val (access, _, _) = duplicated(store)
-            val other = ProviderLocator("media", "content://media/external/downloads/99")
-            assertEquals(Mutation.APPLIED, publish(store, access, file, found(canonical, fileLocator, setOf(legacy)), found(legacy, other)))
+        val path = target()
+        written(path, listOf(kept, old))
+        DeviceListeningStore(path).use { store ->
+            val access = store.unlock()
+            store.putGrant(access, indexed)
+            val other = ProviderLocator("media", "content://media/external_primary/audio/media/99")
+            assertEquals(Mutation.APPLIED, store.publishScan(store.beginScan(access, indexed.id)!!, listOf(found(canonical, indexedLocator, setOf(legacy)), found(legacy, other))))
             assertEquals(2, store.snapshot(access)!!.files.size)
         }
     }
 
-    @Test fun theAudioIndexPresentsASharedRowWhicheverScanRanFirst() {
-        DeviceListeningStore(target()).use { store ->
-            val access = store.unlock()
-            assertEquals(Mutation.APPLIED, store.putGrant(access, indexed))
-            assertEquals(Mutation.APPLIED, store.putGrant(access, file))
-            val viaFile = found(canonical, fileLocator); val viaIndex = found(canonical, indexedLocator)
-            assertEquals(Mutation.APPLIED, publish(store, access, file, viaFile))
-            assertEquals(viaFile.metadata, store.snapshot(access)!!.files.single().metadata)
-            assertEquals(Mutation.APPLIED, publish(store, access, indexed, viaIndex))
-            assertEquals(viaIndex.metadata, store.snapshot(access)!!.files.single().metadata)
-            // Later refreshes neither alternate the presentation nor rewrite the store.
-            assertEquals(Mutation.UNCHANGED, publish(store, access, file, viaFile))
-            assertEquals(Mutation.UNCHANGED, publish(store, access, indexed, viaIndex))
-            assertEquals(viaIndex.metadata, store.snapshot(access)!!.files.single().metadata)
-            // Once the index no longer reaches it, the file grant presents it again.
-            assertEquals(Mutation.APPLIED, store.putGrant(access, indexed.copy(state = AccessState.REVOKED)))
-            assertEquals(Mutation.APPLIED, publish(store, access, file, viaFile))
-            assertEquals(viaFile.metadata, store.snapshot(access)!!.files.single().metadata)
-        }
-    }
-
     @Test fun perTrackSpeedIsSharedByBothRowsBecauseItIsKeyedByContent() {
-        DeviceListeningStore(target()).use { store ->
-            val (_, kept, old) = duplicated(store)
-            fun ref(row: DeviceAudio) = PlaybackRef.Device(row.id.value.toString(), row.revision.sha256, row.revision.byteLength, row.incarnation)
-            assertNotEquals(kept.id, old.id)
-            assertEquals(ListeningSpeedKey.device(ref(kept)), ListeningSpeedKey.device(ref(old)))
-        }
+        fun ref(row: DeviceAudio) = PlaybackRef.Device(row.id.value.toString(), row.revision.sha256, row.revision.byteLength, row.incarnation)
+        assertNotEquals(kept.id, old.id)
+        assertEquals(ListeningSpeedKey.device(ref(kept)), ListeningSpeedKey.device(ref(old)))
     }
 
     @Test fun combinePrefersTheLatestResumeStateAndFallsBackToTheOtherBookmark() {
@@ -197,10 +176,8 @@ class DeviceIdentityFoldTest {
 
     @Test fun retiredIdentitiesAreStrictlyDecoded() {
         val path = target()
-        DeviceListeningStore(path).use { store ->
-            val (access, _, _) = duplicated(store)
-            assertEquals(Mutation.APPLIED, publish(store, access, file, found(canonical, fileLocator, setOf(legacy))))
-        }
+        written(path, listOf(kept, old))
+        DeviceListeningStore(path).use { store -> indexedScan(store, found(canonical, indexedLocator, setOf(legacy))) }
         val text = path.readText()
         val retired = decodeDomain(text.toByteArray()).retired.single()
         // A retired identity may not point at a missing row, appear in format 1, or be an empty format 2 list.

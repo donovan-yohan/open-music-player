@@ -3,6 +3,7 @@ package com.soundq.android.data.device
 import android.content.ContentValues
 import android.os.Environment
 import android.provider.MediaStore
+import com.soundq.android.awaitIndexed
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.*
@@ -13,7 +14,7 @@ import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.CancellationException
 
-/** Real app-owned provider reads, no media permission or direct catalog publication. */
+/** Real provider reads, no media permission or direct catalog publication. Index-listing cases need all files access. */
 @RunWith(AndroidJUnit4::class)
 @androidx.test.filters.SdkSuppress(minSdkVersion=29)
 class AudioProviderAdmissionTest {
@@ -53,7 +54,8 @@ class AudioProviderAdmissionTest {
             } finally {assertTrue(stage.delete())}
         }
     }
-    @Test fun healthySelectionSurvivesAnUnavailablePreviouslySelectedFile() {
+    /** A deleted earlier original does not keep a later one out of the Library. Needs all files access (runner appops). */
+    @Test fun healthyIndexedFileSurvivesAnUnavailableEarlierFile() {
         val app=context.applicationContext as com.soundq.android.FixtureApplication
         instrumentation.runOnMainSync {app.graph.session.retire()}
         fun await(message:String, ready:()->Boolean) {
@@ -64,38 +66,42 @@ class AudioProviderAdmissionTest {
         await("Signed-out provider catalog ready") {app.graph.phoneAudio.state.value.ready&&app.graph.session.state.value is com.soundq.android.data.AuthState.SignedOut}
         val version=app.graph.session.version()
         val bytes=instrumentation.context.assets.open("local-audio/tone.flac").use {it.readBytes()}
-        fun select(uri:android.net.Uri) {
-            app.graph.phoneAudio.selected(uri,android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,false){app.graph.session.owns(version)}
-            await("Healthy selected file acknowledged despite unavailable sibling") {app.graph.phoneAudio.state.value.snapshot?.files?.any {f->f.available&&f.aliases.any {it.locator.value==uri.toString()}}==true}
-        }
-        withSource(bytes) {select(it)} // Deletes only the first owned source, retaining its real catalog grant.
+        withSource(bytes) {app.graph.phoneAudio.awaitIndexed(it,{app.graph.session.owns(version)})} // Deleted afterwards; its row stays known.
         withSource(bytes) {uri->
-            select(uri)
+            app.graph.phoneAudio.awaitIndexed(uri,{app.graph.session.owns(version)})
             assertArrayEquals(bytes,context.contentResolver.openInputStream(uri)!!.use {it.readBytes()})
         }
     }
-    /** The indexed scan and a file grant reach one MediaStore row through different collections. */
-    @Test fun oneMediaStoreRowHasOneIdentityThroughEachRoute() {
+    /** Older builds' file and folder pickers keyed a MediaStore item by the route they reached it through. With all
+     * files access the real provider proves those keys name the audio-index row; unproven keys stay unmapped. */
+    @androidx.test.filters.SdkSuppress(minSdkVersion=30)
+    @Test fun pickerKeysOfAnIndexedItemAreProvedAndOthersAreNot() {
         val bytes=instrumentation.context.assets.open("local-audio/tone.flac").use {it.readBytes()}
         withSource(bytes) {uri->
             val access=AndroidAudioAccess(context)
-            assertTrue("Audio index read access required",access.indexedAllowed())
+            assertTrue("Runner must allow all files access",access.storageAllowed())
             val id=android.content.ContentUris.parseId(uri)
             var indexed:AudioAccessObservation?=null
             val deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(30)
             while(indexed==null&&System.nanoTime()<deadline) {
-                indexed=access.discover(emptyList(),{true}).observations.singleOrNull {android.net.Uri.parse(it.locator).lastPathSegment==id.toString()}
+                indexed=access.discover({true}).observations.singleOrNull {it.locator.endsWith("/audio/media/$id")}
                 if(indexed==null)Thread.sleep(100)
             }
             val listed=checkNotNull(indexed) {"Audio index never listed the item"}
-            val granted=access.metadata(uri,uri.toString())
-            android.util.Log.i("SoundQIdentity","indexed=${listed.locator} granted=${granted.locator} key=${granted.providerObject} former=${granted.aliases-granted.providerObject}")
-            assertNotEquals(listed.locator,granted.locator)
-            assertEquals(listed.providerObject,granted.providerObject)
-            assertEquals(setOf(listed.providerObject),listed.aliases)
-            // The file grant's earlier key stays provable so stored rows under it fold into this one.
-            assertEquals(1,(granted.aliases-granted.providerObject).size)
-            assertTrue((granted.aliases-granted.providerObject).single().contains(uri.toString()))
+            @Suppress("DEPRECATION") val data=MediaStore.MediaColumns.DATA
+            val (path,generation)=context.contentResolver.query(uri,arrayOf(data,MediaStore.MediaColumns.GENERATION_ADDED),null,null,null)!!.use {it.moveToFirst();it.getString(0) to it.getLong(1)}
+            @Suppress("DEPRECATION") val primary=Environment.getExternalStorageDirectory().path
+            assertTrue(path.startsWith("$primary/"))
+            // The keys a file grant on the Downloads collection, a folder grant and a downloads document produced.
+            val fileGrant="media:${MediaStore.getVersion(context,"external")}:$uri:$generation"
+            val folderGrant="document:com.android.externalstorage.documents:primary:${path.removePrefix("$primary/")}"
+            val downloadsDocument="document:com.android.providers.downloads.documents:raw:$path"
+            val replaced="media:${MediaStore.getVersion(context,"external")}:$uri:${generation+1}"
+            val elsewhere="document:com.android.externalstorage.documents:primary:Music/soundq-absent-${UUID.randomUUID()}.flac"
+            val cloud="document:com.google.android.apps.docs.storage:acc=1;doc=encoded"
+            val proven=access.provenIndexKeys(listOf(fileGrant,folderGrant,downloadsDocument,replaced,elsewhere,cloud,listed.providerObject))
+            android.util.Log.i("SoundQIdentity","index=${listed.providerObject} proven=$proven")
+            assertEquals(mapOf(fileGrant to listed.providerObject,folderGrant to listed.providerObject,downloadsDocument to listed.providerObject),proven)
         }
     }
     @Test fun emptyMissingAndRetiredProviderReadsAreRefused() {

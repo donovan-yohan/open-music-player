@@ -17,51 +17,44 @@ import java.util.UUID
 import java.io.File
 import org.junit.Assert.*
 import org.junit.Test
-private class Uri(val value:String) {companion object {fun parse(v:String)=Uri(v)};override fun toString()=value}
+private class Uri(val value:String) {companion object {fun parse(v:String)=Uri(v)};override fun toString()=value;val authority:String? get()=null}
 private class Session {@Volatile var version=1L;fun version()=version}
-private class Resolver {@Volatile var persistedUriPermissions=emptyList<Permission>()}
-private class Permission(val uri:Uri,val isReadPermission:Boolean=true)
-private class Context {val contentResolver=Resolver()}
-private class Graph {val session=Session();val applicationContext=Context()}
+private class Graph {val session=Session()}
 private data class Observation(val locator:String,val providerObject:String=locator,val filename:String=locator,val title:String=locator,val artist:String?=null,val album:String?=null,val durationMs:Long?=601000,val aliases:Set<String> = setOf(providerObject))
-private data class Coverage(val observations:List<Observation>,val indexedComplete:Boolean=true,val truncated:Boolean=false,val unavailableGrants:Set<String> = emptySet())
+private data class Coverage(val complete:Boolean,val observations:List<Observation>,val truncated:Boolean=false)
 private data class Proof(val sha256:String="a".repeat(64),val bytes:Long=123)
 private class Platform {
  var rows=listOf(Observation("one"));var complete=true;var fail:String?=null;var gate:java.util.concurrent.CountDownLatch?=null
  val entered=java.util.concurrent.CountDownLatch(1);var proofs=0;var discoveries=0;var cancelled=0
- @Volatile var allowed=true
- @Volatile var storage=false
+ @Volatile var storage=true
  @Volatile var indexing=true
+ @Volatile var accessRevision=0
+ /** Picker keys the provider proves name an audio-index object: old key -> index key. */
+ @Volatile var proven=emptyMap<String,String>()
+ val asked=java.util.Collections.synchronizedList(mutableListOf<Collection<String>>())
  val order=java.util.Collections.synchronizedList(mutableListOf<String>())
  fun storageAllowed()=storage
  fun indexUnlisted(current:()->Boolean):Boolean {order+="index-unlisted";return indexing}
- @Volatile var trees=emptyList<String>()
- @Volatile var accessRevision=0
- fun indexedAllowed()=allowed
- fun persistedTrees()=trees
- val identities=java.util.concurrent.ConcurrentHashMap<String,Observation>()
- fun metadata(uri:Uri,value:String=uri.toString()):Observation=identities[uri.toString()] ?: Observation(value)
- fun validTree(uri:Uri)=uri.toString().startsWith("tree:")
- fun persist(uri:Uri,flags:Int,folder:Boolean){error("Fixture uses session-only selected file")}
- fun folderLabel(value:String)=value
- fun release(value:String){trees=trees.filterNot {it==value}}
- fun discover(trees:List<String>,current:()->Boolean,includeIndexed:Boolean=true):Coverage {discoveries++;order+="discover";return Coverage(rows,indexedComplete=complete)}
+ fun discover(current:()->Boolean):Coverage {discoveries++;order+="discover";return Coverage(complete,rows)}
+ fun provenIndexKeys(ids:Collection<String>):Map<String,String> {asked+=ids.toList();return proven.filterKeys {it in ids}}
  fun proof(uri:String,current:()->Boolean):Proof {proofs++;entered.countDown();gate?.await();if(!current()){cancelled++;throw CancellationException()};if(uri==fail)error("Unreadable original");return Proof()}
 }
-private data class State(val refreshing:Boolean=false,val permission:Boolean=true,val message:String?=null,val indexedAccess:Boolean=true)
+private data class State(val refreshing:Boolean=false,val permission:Boolean=true,val message:String?=null)
 // Record attempted obsolete publications, not merely domain refusal or eventual trailing state.
 private class RecordingStore(val domain:DeviceListeningStore,val platform:Platform) {
- val scans=mutableMapOf<ScanCapture,Int>();var obsoletePublications=0;var publications=0
+ val scans=mutableMapOf<ScanCapture,Int>();var obsoletePublications=0;var publications=0;var retirements=0
  @Volatile var publishGate:java.util.concurrent.CountDownLatch?=null;val publishing=java.util.concurrent.CountDownLatch(1)
  fun snapshot(a:AccessCapture)=domain.snapshot(a)
- fun putGrant(a:AccessCapture,g:ScanGrant)=domain.putGrant(a,g)
- fun removeGrant(a:AccessCapture,g:ScanGrantId)=domain.removeGrant(a,g)
+ @Volatile var grantGate:java.util.concurrent.CountDownLatch?=null;val granting=java.util.concurrent.CountDownLatch(1)
+ fun putGrant(a:AccessCapture,g:ScanGrant):Mutation {granting.countDown();grantGate?.await();return domain.putGrant(a,g)}
  fun beginScan(a:AccessCapture,g:ScanGrantId)=domain.beginScan(a,g)?.also {scans[it]=platform.accessRevision}
  fun publishScan(s:ScanCapture,rows:List<DiscoveredAudio>,complete:Boolean=true):Mutation {
   publications++;if(scans[s]!=platform.accessRevision)obsoletePublications++
   publishing.countDown();publishGate?.await()
   return domain.publishScan(s,rows,complete)
  }
+ fun legacyObjects(a:AccessCapture)=domain.legacyObjects(a)
+ fun retireLegacyAccess(a:AccessCapture):Mutation {retirements++;return domain.retireLegacyAccess(a)}
 }
 private class Repository(domain:DeviceListeningStore,val jobs:CoroutineScope) {
  val graph=Graph();val platform=Platform();val store=RecordingStore(domain,platform);val access=domain.unlock();val mutable=MutableStateFlow(State())
@@ -75,45 +68,41 @@ private class Repository(domain:DeviceListeningStore,val jobs:CoroutineScope) {
 REFRESH
  suspend fun settled(){withTimeout(10000){while(jobs.coroutineContext[Job]!!.children.any {it.isActive})delay(1)}}
 }
+/** An upgraded phone's store as an older build wrote it: an indexed row, a file-picker row of the same MediaStore
+ * object under its picker key, and a folder-picker row nothing proves. Each has listening history. */
+private object Legacy {
+ fun id(n:String)=UUID.nameUUIDFromBytes(n.toByteArray())
+ val indexed=ScanGrant(ScanGrantId(id("indexed:external-audio")),GrantKind.INDEXED,"Android audio index",ProviderLocator("android","indexed:external-audio"),false)
+ val file=ScanGrant(ScanGrantId(id("file")),GrantKind.FILE,"picked.wav",ProviderLocator("fixture","picked"),true)
+ val folder=ScanGrant(ScanGrantId(id("folder")),GrantKind.FOLDER,"Mixes",ProviderLocator("fixture","tree"),true)
+ val content=ContentRevision("a".repeat(64),123)
+ fun row(n:String,key:String,grant:ScanGrant,at:String)=DeviceAudio(DeviceFileId(id(n)),ProviderObjectId("android-content",key),content,1,OriginalMetadata("$n.wav",n),601000,listOf(LocatorAccess(grant.id,ProviderLocator("fixture",at),AccessState.AVAILABLE)))
+ val picked=row("picked","picker-key",file,"picked")
+ val unproven=row("unproven","unproven-key",folder,"tree/unproven")
+ val heard=row("heard","heard-key",indexed,"indexed:9")
+ fun entry(r:DeviceAudio,at:Long,pos:Long)=JournalEntry(HistoryKey.Device(r.id),at,Bookmark(r.owner,pos),id("t$at"),2)
+ fun write(file:File){file.writeBytes(encodeDomain(DomainState(5,listOf(indexed,this.file,folder),listOf(heard,picked,unproven),emptyList(),
+  listOf(entry(heard,1000,700000),entry(picked,3000,650000),entry(unproven,2000,610000)))).toString().toByteArray())}
+}
 class PhoneRefreshTest {
- private suspend fun accessCase(kind:GrantKind,aba:Boolean) {
+ @Test fun indexedObservedRevokeRegrantCannotReviveHeldProof()=runBlocking {
   val root=java.nio.file.Files.createTempDirectory("refresh-scope-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
   val gate=java.util.concurrent.CountDownLatch(1)
   try {DeviceListeningStore(File(root,"domain.json")).use {store->
-   val repo=Repository(store,jobs);val route=if(kind==GrantKind.FOLDER)"tree:one" else "file:one"
-   if(kind!=GrantKind.INDEXED) {
-    repo.platform.allowed=false
-    repo.platform.trees=if(kind==GrantKind.FOLDER)listOf(route) else emptyList()
-    repo.graph.applicationContext.contentResolver.persistedUriPermissions=listOf(Permission(Uri(route)))
-    assertNotEquals(Mutation.REFUSED,store.putGrant(repo.access,ScanGrant(ScanGrantId(UUID.randomUUID()),kind,"owned",ProviderLocator("fixture",route),true)))
-   }
+   val repo=Repository(store,jobs)
    repo.platform.gate=gate;repo.refresh()
    assertTrue(repo.platform.entered.await(5,java.util.concurrent.TimeUnit.SECONDS))
-   if(kind==GrantKind.INDEXED)repo.platform.allowed=false else {
-    repo.platform.trees=emptyList();repo.graph.applicationContext.contentResolver.persistedUriPermissions=emptyList()
-   }
-   repo.platform.accessRevision++;repo.refresh()
-   if(aba) {
-    if(kind==GrantKind.INDEXED)repo.platform.allowed=true else {
-     repo.platform.trees=if(kind==GrantKind.FOLDER)listOf(route) else emptyList()
-     repo.graph.applicationContext.contentResolver.persistedUriPermissions=listOf(Permission(Uri(route)))
-    }
-    repo.platform.accessRevision++;repeat(20){repo.refresh()}
-   }
+   repo.platform.storage=false;repo.platform.accessRevision++;repo.refresh()
+   repo.platform.storage=true;repo.platform.accessRevision++;repeat(20){repo.refresh()}
    gate.countDown();repo.settled()
    assertEquals("Retired proof must never invoke publishScan",0,repo.store.obsoletePublications)
    assertEquals(1,repo.platform.cancelled)
    val snapshot=store.snapshot(repo.access)!!
-   assertEquals(if(aba)1 else 0,snapshot.files.size)
-   assertEquals(if(aba)AccessState.AVAILABLE else AccessState.REVOKED,snapshot.grants.single {it.kind==kind}.state)
-   assertEquals(if(aba)1 else 0,repo.store.publications)
+   assertEquals(1,snapshot.files.size)
+   assertEquals(AccessState.AVAILABLE,snapshot.grants.single().state)
+   assertEquals(1,repo.store.publications)
   }}finally{gate.countDown();jobs.cancel();root.deleteRecursively()}
  }
- @Test fun indexedObservedRevokeRegrantCannotReviveHeldProof()=runBlocking {accessCase(GrantKind.INDEXED,true)}
- @Test fun persistedFolderRevocationRetiresHeldProof()=runBlocking {accessCase(GrantKind.FOLDER,false)}
- @Test fun persistedFolderObservedRevokeRegrantCannotReviveHeldProof()=runBlocking {accessCase(GrantKind.FOLDER,true)}
- @Test fun persistedFileRevocationRetiresHeldProof()=runBlocking {accessCase(GrantKind.FILE,false)}
- @Test fun persistedFileObservedRevokeRegrantCannotReviveHeldProof()=runBlocking {accessCase(GrantKind.FILE,true)}
  @Test fun changedOwnerRetiresProofAndRetainsOnlyOneFreshTrailingScan()=runBlocking {
   val root=java.nio.file.Files.createTempDirectory("refresh-owner-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO);val gate=java.util.concurrent.CountDownLatch(1)
   try {DeviceListeningStore(File(root,"domain.json")).use {store->
@@ -122,49 +111,13 @@ class PhoneRefreshTest {
    assertEquals(0,repo.store.obsoletePublications);assertEquals(1,repo.platform.cancelled);assertEquals(2,repo.platform.discoveries);assertEquals(1,repo.store.publications)
   }}finally{gate.countDown();jobs.cancel();root.deleteRecursively()}
  }
- @Test fun reorderedAndWriteOnlyPersistedPermissionsAreSameEffectiveScope()=runBlocking {
-  val root=java.nio.file.Files.createTempDirectory("refresh-order-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO);val gate=java.util.concurrent.CountDownLatch(1)
-  try {DeviceListeningStore(File(root,"domain.json")).use {store->
-   val repo=Repository(store,jobs);val resolver=repo.graph.applicationContext.contentResolver
-   resolver.persistedUriPermissions=listOf(Permission(Uri("a")),Permission(Uri("b")))
-   repo.platform.gate=gate;repo.refresh();assertTrue(repo.platform.entered.await(5,java.util.concurrent.TimeUnit.SECONDS))
-   resolver.persistedUriPermissions=listOf(Permission(Uri("b")),Permission(Uri("write-only"),false),Permission(Uri("a")))
-   repeat(20){repo.refresh()};gate.countDown();repo.settled()
-   assertEquals(0,repo.platform.cancelled);assertEquals(2,repo.platform.discoveries);assertEquals(2,repo.store.publications)
-  }}finally{gate.countDown();jobs.cancel();root.deleteRecursively()}
- }
- @Test fun selectedSessionFileRetiresPriorScanEvenWithoutPersistedPermissionChange()=runBlocking {
-  val root=java.nio.file.Files.createTempDirectory("refresh-selected-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO);val gate=java.util.concurrent.CountDownLatch(1)
-  try {DeviceListeningStore(File(root,"domain.json")).use {store->
-   val repo=Repository(store,jobs);repo.platform.gate=gate;repo.refresh();assertTrue(repo.platform.entered.await(5,java.util.concurrent.TimeUnit.SECONDS))
-   repo.platform.accessRevision++;repo.selected(Uri("selected:one"),1,false){true}
-   withTimeout(5000){while(store.snapshot(repo.access)!!.grants.none {it.kind==GrantKind.FILE})delay(1)}
-   gate.countDown();repo.settled()
-   assertEquals(0,repo.store.obsoletePublications);assertEquals(1,repo.platform.cancelled)
-   assertTrue(store.snapshot(repo.access)!!.files.any {it.metadata.filename=="selected:one"&&it.available})
-  }}finally{gate.countDown();jobs.cancel();root.deleteRecursively()}
- }
- @Test fun removeRetiresPriorScanAndCannotResurrectGrantFromItsOldSnapshot()=runBlocking {
-  val root=java.nio.file.Files.createTempDirectory("refresh-remove-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO);val gate=java.util.concurrent.CountDownLatch(1)
-  try {DeviceListeningStore(File(root,"domain.json")).use {store->
-   val repo=Repository(store,jobs);val grant=ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.FILE,"session",ProviderLocator("fixture","session:one"),false)
-   assertNotEquals(Mutation.REFUSED,store.putGrant(repo.access,grant))
-   repo.platform.gate=gate;repo.refresh();assertTrue(repo.platform.entered.await(5,java.util.concurrent.TimeUnit.SECONDS))
-   repo.platform.accessRevision++;repo.remove(grant){true}
-   withTimeout(5000){while(store.snapshot(repo.access)!!.grants.single {it.id==grant.id}.state!=AccessState.REMOVED)delay(1)}
-   gate.countDown();repo.settled()
-   assertEquals(0,repo.store.obsoletePublications);assertEquals(1,repo.platform.cancelled)
-   assertEquals(AccessState.REMOVED,store.snapshot(repo.access)!!.grants.single {it.id==grant.id}.state)
-   assertTrue(store.snapshot(repo.access)!!.files.isEmpty())
-  }}finally{gate.countDown();jobs.cancel();root.deleteRecursively()}
- }
- @Test fun indexedAccessChangeRetiresHeldProofBeforeAnyPublication()=runBlocking {
+ @Test fun accessChangeRetiresHeldProofBeforeAnyPublication()=runBlocking {
   val root=java.nio.file.Files.createTempDirectory("refresh-access-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
   val gate=java.util.concurrent.CountDownLatch(1)
   try {DeviceListeningStore(File(root,"domain.json")).use {store->
    val repo=Repository(store,jobs);repo.platform.gate=gate;repo.refresh()
    assertTrue(repo.platform.entered.await(5,java.util.concurrent.TimeUnit.SECONDS))
-   repo.platform.allowed=false;repo.platform.accessRevision++;repo.refresh()
+   repo.platform.storage=false;repo.platform.accessRevision++;repo.refresh()
    gate.countDown();repo.settled()
    assertEquals("No obsolete publishScan invocation",0,repo.store.obsoletePublications)
    assertEquals(1,repo.platform.cancelled)
@@ -184,18 +137,20 @@ class PhoneRefreshTest {
    assertTrue(repo.mutable.value.message!!.contains("Some audio"))
   }}finally{jobs.cancel();root.deleteRecursively()}
  }
- @Test fun finishedRefreshRecordsObservedIndexedAccessAndRetiredRefreshDoesNot()=runBlocking {
+ @Test fun finishedRefreshRecordsObservedAccessAndRetiredRefreshDoesNot()=runBlocking {
   val root=java.nio.file.Files.createTempDirectory("refresh-observed-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
   try {DeviceListeningStore(File(root,"domain.json")).use {store->
    val repo=Repository(store,jobs)
-   repo.platform.allowed=false;repo.refresh();repo.settled()
-   assertEquals(PhoneScanObservation(indexed=false,complete=true),repo.lastScan)
-   repo.platform.allowed=true;repo.refresh();repo.settled()
-   assertEquals(PhoneScanObservation(indexed=true,complete=true),repo.lastScan)
+   repo.platform.storage=false;repo.refresh();repo.settled()
+   assertEquals(PhoneScanObservation(indexed=false,complete=true,storage=false),repo.lastScan)
+   assertEquals("Without all files access nothing is read",0,repo.platform.discoveries)
+   repo.platform.storage=true;repo.refresh();repo.settled()
+   assertEquals(PhoneScanObservation(indexed=true,complete=true,storage=true),repo.lastScan)
+   assertNull("A whole scan carries no message",repo.mutable.value.message)
    repo.platform.rows=listOf(Observation("healthy"),Observation("bad"));repo.platform.fail="bad";repo.refresh();repo.settled()
-   assertEquals(PhoneScanObservation(indexed=true,complete=false),repo.lastScan)
+   assertEquals(PhoneScanObservation(indexed=true,complete=false,storage=true),repo.lastScan)
    repo.platform.fail=null;repo.platform.complete=false;repo.refresh();repo.settled()
-   assertEquals("Incomplete enumeration observed access without full coverage",PhoneScanObservation(indexed=true,complete=false),repo.lastScan)
+   assertEquals("Incomplete enumeration observed access without full coverage",PhoneScanObservation(indexed=true,complete=false,storage=true),repo.lastScan)
    // A retired refresh persists an AVAILABLE grant before proving; it must not record an observation.
    repo.lastScan=null;repo.platform.complete=true;val gate=java.util.concurrent.CountDownLatch(1);repo.platform.gate=gate;var valid=true
    val before=repo.platform.proofs
@@ -206,29 +161,29 @@ class PhoneRefreshTest {
  @Test fun runningRefreshPublishesTheAccessItWasAdmittedWith()=runBlocking {
   val root=java.nio.file.Files.createTempDirectory("refresh-admitted-").toFile()
   val executor=java.util.concurrent.Executors.newSingleThreadExecutor();val jobs=CoroutineScope(SupervisorJob()+executor.asCoroutineDispatcher())
-  val hold=java.util.concurrent.CountDownLatch(1);val gate=java.util.concurrent.CountDownLatch(1)
+  val hold=java.util.concurrent.CountDownLatch(1)
   try {DeviceListeningStore(File(root,"domain.json")).use {store->
-   val repo=Repository(store,jobs)
-   assertNotEquals(Mutation.REFUSED,store.putGrant(repo.access,ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.FILE,"session",ProviderLocator("fixture","session:one"),false)))
-   repo.platform.storage=false;repo.platform.allowed=false;repo.platform.gate=gate
+   val repo=Repository(store,jobs);val gate=java.util.concurrent.CountDownLatch(1)
+   repo.platform.storage=false;repo.store.grantGate=gate
    executor.submit {hold.await()}
    repo.refresh()   // admits without all files access; its worker is queued behind the held executor
-   repo.platform.storage=true;repo.platform.allowed=true;hold.countDown()
-   assertTrue(repo.platform.entered.await(5,java.util.concurrent.TimeUnit.SECONDS))
-   assertTrue(repo.mutable.value.refreshing)
-   assertFalse("A running refresh must publish its admitted access, not access granted after admission",repo.mutable.value.permission)
-   assertFalse("Admitted media read access is published too",repo.mutable.value.indexedAccess)
-   gate.countDown();repo.settled()
-  }}finally{hold.countDown();gate.countDown();jobs.cancel();executor.shutdownNow();root.deleteRecursively()}
+   repo.platform.storage=true;hold.countDown()
+   try {
+    assertTrue(repo.store.granting.await(5,java.util.concurrent.TimeUnit.SECONDS))
+    assertTrue(repo.mutable.value.refreshing)
+    assertFalse("A running refresh must publish its admitted access, not access granted after admission",repo.mutable.value.permission)
+   } finally {gate.countDown()}
+   repo.settled()
+   assertEquals("It finished as the scan it was admitted as",PhoneScanObservation(false,true,false),repo.lastScan)
+  }}finally{hold.countDown();jobs.cancel();executor.shutdownNow();root.deleteRecursively()}
  }
  @Test fun allFilesAccessIndexesUnlistedAudioBeforeReadingTheIndex()=runBlocking {
   val root=java.nio.file.Files.createTempDirectory("refresh-storage-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
   try {DeviceListeningStore(File(root,"domain.json")).use {store->
    val repo=Repository(store,jobs)
-   repo.refresh();repo.settled()
-   assertEquals("Media-only access never walks storage",listOf("discover"),repo.platform.order.toList())
-   assertEquals(PhoneScanObservation(indexed=true,complete=true,storage=false),repo.lastScan)
-   repo.platform.order.clear();repo.platform.storage=true;repo.refresh();repo.settled()
+   repo.platform.storage=false;repo.refresh();repo.settled()
+   assertEquals("No access: no walk, no index read",emptyList<String>(),repo.platform.order.toList())
+   repo.platform.storage=true;repo.refresh();repo.settled()
    assertEquals(listOf("index-unlisted","discover"),repo.platform.order.toList())
    assertEquals(PhoneScanObservation(indexed=true,complete=true,storage=true),repo.lastScan)
    // Incomplete indexing still publishes what the index lists, but is not whole coverage.
@@ -254,7 +209,7 @@ class PhoneRefreshTest {
   try {DeviceListeningStore(File(root,"domain.json")).use {store->
    val repo=Repository(store,jobs);repo.store.publishGate=gate;repo.refresh()
    assertTrue(repo.store.publishing.await(5,java.util.concurrent.TimeUnit.SECONDS))
-   // Production callers are UI/picker callbacks. Publication holds the refresh lock while it commits the catalog.
+   // Production callers are UI callbacks. Publication holds the refresh lock while it commits the catalog.
    val caller=Thread {repo.refresh()};caller.start();caller.join(2000);val blocked=caller.isAlive
    gate.countDown();caller.join(5000);repo.settled()
    assertFalse("refresh() caller waited for the held catalog publication",blocked)
@@ -262,22 +217,45 @@ class PhoneRefreshTest {
    assertEquals(0,repo.store.obsoletePublications);assertEquals(1,store.snapshot(repo.access)!!.files.size)
   }}finally{gate.countDown();jobs.cancel();root.deleteRecursively()}
  }
- @Test fun fileGrantProvingAFormerKeyFoldsItsRowIntoTheIndexedRow()=runBlocking {
-  val root=java.nio.file.Files.createTempDirectory("refresh-fold-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
-  try {DeviceListeningStore(File(root,"domain.json")).use {store->
+ @Test fun wholeScanFoldsProvenPickerRowsAndDropsTheRest()=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-legacy-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+  try {val path=File(root,"domain.json");Legacy.write(path);DeviceListeningStore(path).use {store->
    val repo=Repository(store,jobs)
-   repo.platform.rows=listOf(Observation("indexed:41",providerObject="canonical",filename="song.wav"))
-   // Before canonical identity, the file grant keyed the same provider row by its own route.
-   repo.platform.identities["selected:41"]=Observation("selected:41",providerObject="legacy",filename="song.wav")
-   repo.selected(Uri("selected:41"),1,false){true}
-   withTimeout(5000){while(store.snapshot(repo.access)!!.files.count {it.available}<2)delay(1)};repo.settled()
-   assertEquals(2,store.snapshot(repo.access)!!.files.size)
-   repo.platform.identities["selected:41"]=Observation("selected:41",providerObject="canonical",filename="song.wav",aliases=setOf("canonical","legacy"))
+   repo.platform.rows=listOf(Observation("indexed:9",providerObject="heard-key",filename="heard.wav",title="heard"),Observation("indexed:41",providerObject="index-key",filename="picked.wav",title="picked"))
+   repo.platform.proven=mapOf("picker-key" to "index-key")
    repo.refresh();repo.settled()
-   val row=store.snapshot(repo.access)!!.files.single()
-   assertEquals(ProviderObjectId("android-content","canonical"),row.objectId)
-   assertEquals(setOf("indexed:41","selected:41"),row.aliases.filter {it.state==AccessState.AVAILABLE}.map {it.locator.value}.toSet())
-   assertEquals(1,store.snapshot(repo.access)!!.retired.size)
+   assertEquals(setOf("picker-key","unproven-key"),repo.platform.asked.single().toSet())
+   val snapshot=store.snapshot(repo.access)!!
+   assertEquals("The picked row is re-keyed in place; the unproven one is gone",setOf(Legacy.heard.id,Legacy.picked.id),snapshot.files.map {it.id}.toSet())
+   val picked=snapshot.files.single {it.id==Legacy.picked.id}
+   assertEquals(ProviderObjectId("android-content","index-key"),picked.objectId)
+   assertEquals(listOf("indexed:41"),picked.aliases.map {it.locator.value})
+   assertEquals(mapOf(Legacy.heard.id to 1000L,Legacy.picked.id to 3000L),snapshot.history.associate {(it.key as HistoryKey.Device).id to it.playedAtEpochMs})
+   assertEquals(650000L,snapshot.history.single {it.key==HistoryKey.Device(Legacy.picked.id)}.bookmark!!.positionMs)
+   assertEquals(700000L,snapshot.history.single {it.key==HistoryKey.Device(Legacy.heard.id)}.bookmark!!.positionMs)
+   assertEquals(emptySet<ProviderObjectId>(),store.legacyObjects(repo.access))
+   assertEquals(listOf(GrantKind.INDEXED),decodeDomain(path.readBytes()).grants.map {it.kind})
+   // Idempotent: the next refresh neither asks again nor rewrites the store.
+   val bytes=path.readBytes();repo.refresh();repo.settled()
+   assertEquals(emptyList<String>(),repo.platform.asked.last().toList());assertArrayEquals(bytes,path.readBytes())
+  }}finally{jobs.cancel();root.deleteRecursively()}
+ }
+ @Test fun pickerRowsWaitForAccessAndForWholeCoverageBeforeAnyIsDropped()=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-legacy-wait-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+  try {val path=File(root,"domain.json");Legacy.write(path);DeviceListeningStore(path).use {store->
+   val repo=Repository(store,jobs)
+   repo.platform.rows=listOf(Observation("indexed:9",providerObject="heard-key",filename="heard.wav",title="heard"))
+   repo.platform.storage=false;repo.refresh();repo.settled()
+   assertEquals("Without access nothing can be proved, so nothing is dropped",2,store.legacyObjects(repo.access)!!.size)
+   assertEquals(listOf(Legacy.heard.id),store.snapshot(repo.access)!!.files.map {it.id})
+   repo.platform.storage=true;repo.platform.indexing=false;repo.refresh();repo.settled()
+   assertEquals("An incomplete walk may not have indexed a picked file yet",2,store.legacyObjects(repo.access)!!.size)
+   assertEquals(0,repo.store.retirements)
+   repo.platform.indexing=true;repo.platform.fail="indexed:9";repo.refresh();repo.settled()
+   assertEquals("An unproved index row keeps them too",2,store.legacyObjects(repo.access)!!.size)
+   repo.platform.fail=null;repo.refresh();repo.settled()
+   assertEquals(emptySet<ProviderObjectId>(),store.legacyObjects(repo.access))
+   assertEquals(listOf(Legacy.heard.id),decodeDomain(path.readBytes()).files.map {it.id})
   }}finally{jobs.cancel();root.deleteRecursively()}
  }
  @Test fun partialEnumerationAndRetiredProofNeverReplaceAcknowledgedCorpus()=runBlocking {

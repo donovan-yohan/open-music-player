@@ -11,7 +11,7 @@ class NativeListeningJournalTest {
         for(duration in listOf(600000L,601000L)) {
             val root=Files.createTempDirectory("journal-short-io-").toFile();val path=java.io.File(root,"journal.json")
             try {DeviceListeningStore(path).use {store->
-                val access=store.unlock();val grant=ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.FILE,"Source",ProviderLocator("fixture","one"),true)
+                val access=store.unlock();val grant=ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.INDEXED,"Source",ProviderLocator("fixture","one"),true)
                 store.putGrant(access,grant);store.publishScan(store.beginScan(access,grant.id)!!,listOf(DiscoveredAudio(ProviderObjectId("fixture","one"),grant.locator,ContentRevision("a".repeat(64),32),OriginalMetadata("source.wav"),duration)))
                 val row=store.snapshot(access)!!.files.single();val source=store.captureSource(access,row.id)!!
                 val journal=NativeListeningBinding(store,source,UUID.randomUUID(),51,0,0,duration){true}
@@ -25,7 +25,7 @@ class NativeListeningJournalTest {
     @Test fun acknowledgedAdvanceCheckpointSeekFenceAndConsumedEnd() {
         val root=Files.createTempDirectory("service-journal-").toFile()
         try {DeviceListeningStore(java.io.File(root,"journal.json")).use {store->
-            val access=store.unlock();val grant=ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.FILE,"Recording",ProviderLocator("fixture","fixture:one"),true)
+            val access=store.unlock();val grant=ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.INDEXED,"Recording",ProviderLocator("fixture","fixture:one"),true)
             store.putGrant(access,grant);val scan=store.beginScan(access,grant.id)!!
             store.publishScan(scan,listOf(DiscoveredAudio(ProviderObjectId("fixture","one"),grant.locator,ContentRevision("a".repeat(64),800),OriginalMetadata("one.wav","Original title"),601000)))
             val row=store.snapshot(access)!!.files.single();val source=store.captureSource(access,row.id)!!
@@ -52,7 +52,7 @@ class NativeListeningJournalTest {
         for(duration in listOf(600000L,601000L)) {
             val root=Files.createTempDirectory("journal-edge-").toFile()
             try {DeviceListeningStore(java.io.File(root,"journal.json")).use {store->
-                val access=store.unlock();val grant=ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.FILE,"Source",ProviderLocator("fixture","one"),true)
+                val access=store.unlock();val grant=ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.INDEXED,"Source",ProviderLocator("fixture","one"),true)
                 store.putGrant(access,grant);store.publishScan(store.beginScan(access,grant.id)!!,listOf(DiscoveredAudio(ProviderObjectId("fixture","one"),grant.locator,ContentRevision("b".repeat(64),32),OriginalMetadata("source.wav"),duration)))
                 val row=store.snapshot(access)!!.files.single();val source=store.captureSource(access,row.id)!!
                 val journal=NativeListeningBinding(store,source,UUID.randomUUID(),51,1,0,duration){true}

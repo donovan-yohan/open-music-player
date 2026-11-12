@@ -20,6 +20,9 @@ internal data class OriginalMetadata(
     init { bounded(filename); listOf(title, artist, album, artworkReference).filterNotNull().forEach { bounded(it, true) } }
     val displayTitle: String get() = title?.takeIf { it.isNotBlank() } ?: filename
 }
+/** [INDEXED] (the Android audio index, read with all files access) is the only grant SoundQ creates. FILE and
+ * FOLDER are file/folder picker grants written by older builds: they are decoded only so
+ * [DeviceListeningStore.retireLegacyAccess] can fold their rows into the index or drop them. */
 internal enum class GrantKind { INDEXED, FILE, FOLDER }
 internal enum class AccessState { AVAILABLE, REVOKED, REMOVED, MISSING, UNREADABLE, UNSUPPORTED }
 internal data class ScanGrant(
