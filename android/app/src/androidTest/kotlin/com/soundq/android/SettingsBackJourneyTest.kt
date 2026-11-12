@@ -18,8 +18,8 @@ class SettingsBackJourneyTest {
         compose.onNodeWithContentDescription("Settings").performClick()
         compose.onNode(hasText("End of queue") and hasClickAction()).performScrollTo().performClick()
         compose.onAllNodes(hasText("End of queue") and isHeading()).onFirst().assertIsDisplayed()
-        // No idle wait between presses: the second arrives before the first pop has recomposed.
-        repeat(2){InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)}
+        // Both presses in one main-thread turn: the second runs before the first pop can recompose.
+        compose.runOnUiThread {repeat(2){compose.activity.onBackPressedDispatcher.onBackPressed()}}
         compose.waitForIdle()
         compose.onNode(hasText("Settings") and isHeading()).assertDoesNotExist()
         compose.onNodeWithContentDescription("Library search query").assertIsDisplayed()
