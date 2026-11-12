@@ -8,6 +8,7 @@ s=(root/'app/src/main/kotlin/com/soundq/android/data/device/PhoneAudioRepository
 refresh=s[s.index('    private val refreshEpoch='):s.index('    fun observed(')]
 header='''package com.soundq.android.refreshprobe
 import com.soundq.android.data.deviceaudio.*
+import com.soundq.android.data.device.PhoneScanObservation
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -59,6 +60,7 @@ private class RecordingStore(val domain:DeviceListeningStore,val platform:Platfo
 private class Repository(domain:DeviceListeningStore,val jobs:CoroutineScope) {
  val graph=Graph();val platform=Platform();val store=RecordingStore(domain,platform);val access=domain.unlock();val mutable=MutableStateFlow(State())
  val serial=Mutex();var authorityVersion=0L
+ @Volatile var lastScan:PhoneScanObservation?=null
  fun current(version:Long)=version==graph.session.version()
  fun publish(message:String?=null){mutable.value=State(message=message)}
  fun fail(message:String){mutable.value=State(message=message)}
@@ -174,6 +176,25 @@ class PhoneRefreshTest {
    assertEquals(setOf("retained","healthy"),rows.map {it.metadata.filename}.toSet())
    assertEquals(old,rows.single {it.id==old.id})
    assertTrue(repo.mutable.value.message!!.contains("Some audio"))
+  }}finally{jobs.cancel();root.deleteRecursively()}
+ }
+ @Test fun finishedRefreshRecordsObservedIndexedAccessAndRetiredRefreshDoesNot()=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-observed-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+  try {DeviceListeningStore(File(root,"domain.json")).use {store->
+   val repo=Repository(store,jobs)
+   repo.platform.allowed=false;repo.refresh();repo.settled()
+   assertEquals(PhoneScanObservation(indexed=false,complete=true),repo.lastScan)
+   repo.platform.allowed=true;repo.refresh();repo.settled()
+   assertEquals(PhoneScanObservation(indexed=true,complete=true),repo.lastScan)
+   repo.platform.rows=listOf(Observation("healthy"),Observation("bad"));repo.platform.fail="bad";repo.refresh();repo.settled()
+   assertEquals(PhoneScanObservation(indexed=true,complete=false),repo.lastScan)
+   repo.platform.fail=null;repo.platform.complete=false;repo.refresh();repo.settled()
+   assertEquals("Incomplete enumeration observed access without full coverage",PhoneScanObservation(indexed=true,complete=false),repo.lastScan)
+   // A retired refresh persists an AVAILABLE grant before proving; it must not record an observation.
+   repo.lastScan=null;repo.platform.complete=true;val gate=java.util.concurrent.CountDownLatch(1);repo.platform.gate=gate;var valid=true
+   val before=repo.platform.proofs
+   repo.refresh {valid};withTimeout(5000){while(repo.platform.proofs<=before)delay(1)};valid=false;gate.countDown();repo.settled()
+   assertNull(repo.lastScan)
   }}finally{jobs.cancel();root.deleteRecursively()}
  }
  @Test fun refreshBurstDoesNotCancelProofAndHasOnlyOneTrailingScan()=runBlocking {

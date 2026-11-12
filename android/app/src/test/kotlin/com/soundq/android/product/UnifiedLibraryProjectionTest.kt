@@ -30,6 +30,24 @@ class UnifiedLibraryProjectionTest {
         assertEquals(listOf("Beta"),unifiedLibraryRows("endpoint",null,emptyList(),emptyList(),snapshot,LibraryQuery(text="beta"),true,true).map {it.title})
         assertEquals(2,unifiedLibraryRows("endpoint",null,emptyList(),emptyList(),snapshot,LibraryQuery(),false,true).size)
     }
+    private fun phone(id:Int,title:String,vararg states:Pair<ScanGrantId,AccessState>)=DeviceAudio(DeviceFileId(UUID(0,id.toLong())),ProviderObjectId("fixture","$id"),ContentRevision("a".repeat(64),40),1,
+        OriginalMetadata("$id.mp3",title),null,states.map {(grant,state)->LocatorAccess(grant,ProviderLocator("fixture","$id"),state)})
+    @Test fun undecodablePhoneFileStaysVisibleInLocalFilesAsUnplayable() {
+        val indexed=ScanGrant(ScanGrantId(UUID(2,1)),GrantKind.INDEXED,"Android audio index",ProviderLocator("android","indexed:external-audio"),false,AccessState.REVOKED)
+        val folder=ScanGrant(ScanGrantId(UUID(2,2)),GrantKind.FOLDER,"Music",ProviderLocator("fixture","tree"),true,AccessState.REVOKED)
+        val undecodable=phone(1,"Encrypted",indexed.id to AccessState.UNREADABLE)
+        val unsupported=phone(2,"Protected",indexed.id to AccessState.UNSUPPORTED)
+        val revoked=phone(3,"Revoked",indexed.id to AccessState.REVOKED)
+        val lostFolder=phone(4,"Folder",folder.id to AccessState.REVOKED)
+        val snapshot=DeviceListeningSnapshot(1,listOf(undecodable,unsupported,revoked,lostFolder),listOf(indexed,folder),emptyList())
+        // A file that is present but cannot be decoded must not silently vanish from Local files after a failed tap.
+        assertEquals(listOf("Encrypted","Protected"),unifiedLibraryRows("e",null,emptyList(),emptyList(),snapshot,LibraryQuery(),true,false).map {it.title}.sorted())
+        assertEquals("Can’t play this file",phoneRowUnavailableLabel(undecodable,snapshot.grants))
+        assertEquals("Can’t play this file",phoneRowUnavailableLabel(unsupported,snapshot.grants))
+        // Indexed access off is not fixed by choosing the file again.
+        assertEquals("Unavailable · Audio access is off",phoneRowUnavailableLabel(revoked,snapshot.grants))
+        assertEquals("Unavailable · Choose file again",phoneRowUnavailableLabel(lostFolder,snapshot.grants))
+    }
     @Test fun downloadsNeverDuplicateAcknowledgedServerIdentityAndPhoneCannotBecomeLiked() {
         val track=Track(TrackId(1),"Same",liked=true);val phone=file(1,"Same")
         val snapshot=DeviceListeningSnapshot(1,listOf(phone),emptyList(),emptyList())
