@@ -70,8 +70,8 @@ class NativeJamBackendJourneyTest {
             val before=model.playback.value
             assertEquals(listOf(hostId),before.queue.map {it.trackId})
             captureListeningStage("native-go-host-paused")
-            compose.onNodeWithContentDescription("Account and settings").performClick()
-            click("Jam")
+            compose.onNodeWithContentDescription("Settings").performClick()
+            click("Music tools");click("Jam")
             compose.waitUntil(15000){app.graph.presence.capture()!=null}
             compose.onNode(hasText(track.title) and hasClickAction() and hasAnyAncestor(isDialog()) and
                 SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Not selected for Jam")).performScrollTo().performClick()

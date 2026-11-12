@@ -101,10 +101,9 @@ class LocalAudioAccessJourneyTest {
         }
     }
     private fun openLocalAudioSettings() {
-        compose.onNodeWithContentDescription("Account and settings").performClick()
-        compose.onNodeWithText("Settings").performScrollTo().performClick()
-        compose.onNodeWithText("Local audio").performScrollTo().performClick()
-        compose.onNodeWithText("Phone audio").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Settings").performClick()
+        compose.onNode(hasText("Local audio") and hasClickAction()).performScrollTo().performClick()
+        compose.onNode(hasText("Local audio") and isHeading()).assertIsDisplayed()
     }
 
     @Test fun allowFileAccessLaunchesAllFilesAccessSettings() {
@@ -124,10 +123,10 @@ class LocalAudioAccessJourneyTest {
             assertTrue("Allow file access did not request the all files access page",waitFor(5000){launched.get()!=null})
             assertEquals("package:$packageName",launched.get()!!.dataString)
         } finally {instrumentation.removeMonitor(monitor)}
-        // Settings > Local audio offers the same single action (Local files off so only the sheet shows it).
+        // Settings > Local audio offers the same single action (Local files off so only Settings shows it).
         compose.onNodeWithContentDescription("Local files").performClick()
         openLocalAudioSettings()
-        compose.onNodeWithText("File access is off").assertIsDisplayed()
+        compose.onNode(hasText("File access") and hasText("Off")).assertIsDisplayed()
         compose.onNodeWithText("Allow file access").performScrollTo().assertIsDisplayed()
         appearance(model,Appearance.Light);capture("settings-access-off-light")
         appearance(model,Appearance.Dark);capture("settings-access-off-dark")
@@ -156,7 +155,7 @@ class LocalAudioAccessJourneyTest {
         assertEquals("The walk asked MediaStore to index the unlisted file",1,indexed)
         capture("access-granted-rows")
         openLocalAudioSettings()
-        compose.onNodeWithText("File access allowed").assertIsDisplayed()
+        compose.onNode(hasText("File access") and hasText("Allowed")).assertIsDisplayed()
         compose.onNodeWithText("Allow file access").assertDoesNotExist()
         capture("settings-access-on")
     }

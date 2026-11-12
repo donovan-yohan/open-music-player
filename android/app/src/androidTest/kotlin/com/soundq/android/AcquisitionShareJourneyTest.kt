@@ -63,7 +63,8 @@ class AcquisitionShareJourneyTest {
             compose.waitUntil(10000){compose.onAllNodesWithText("Shared fixture").fetchSemanticsNodes().isNotEmpty()}
             assertEquals(queue,model.playback.value.queue);assertEquals(selected,model.playback.value.selectedOccurrence);assertFalse(model.playback.value.isPlaying)
             compose.onNode(hasScrollToIndexAction()).performScrollToIndex(0)
-            compose.onNodeWithContentDescription("Account and settings").performClick()
+            compose.onNodeWithContentDescription("Settings").performClick()
+            compose.onNodeWithText("Music tools").performScrollTo().performClick()
             compose.onNodeWithText("Server import jobs and research").performClick()
             compose.onNodeWithText("YouTube playlist").performScrollTo().performClick().assertIsSelected()
             val playlistUrl=hasText("YouTube playlist URL") and hasSetTextAction()

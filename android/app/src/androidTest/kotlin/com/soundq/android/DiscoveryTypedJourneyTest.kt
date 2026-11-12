@@ -82,7 +82,7 @@ class DiscoveryTypedJourneyTest {
                 val count=reads.get()
                 compose.onNodeWithContentDescription("Discover options").assertIsDisplayed().performClick()
                 compose.onNodeWithText("Server tools").assertIsDisplayed()
-                compose.onNodeWithText("Account and settings").assertIsDisplayed()
+                compose.onNodeWithText("Settings").assertIsDisplayed()
                 captureListeningStage(label)
                 instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
                 compose.waitForIdle()

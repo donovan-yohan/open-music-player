@@ -63,7 +63,8 @@ class ConnectJamJourneyTest {
             compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
             compose.waitUntil(10000){app.graph.library.state.value.rows.isNotEmpty()&&app.graph.presence.capture()!=null}
             val initial=app.graph.controller.state.value
-            compose.onNodeWithContentDescription("Account and preview information").performClick()
+            compose.onNodeWithContentDescription("Settings").performClick()
+            compose.onNodeWithText("Music tools").performScrollTo().performClick()
             compose.onNodeWithText("Connected devices").performScrollTo().performClick()
             compose.onNodeWithText("Host a Jam").performScrollTo().performClick()
             val offeredSong=hasText(app.graph.library.state.value.rows.first().title) and hasClickAction() and hasAnyAncestor(isDialog())

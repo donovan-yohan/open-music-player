@@ -82,8 +82,7 @@ class HarmonicPlaylistJourneyTest {
             assertFalse(model.playback.value.isPlaying);assertEquals(before.selectedOccurrence,model.playback.value.selectedOccurrence)
             compose.onNodeWithContentDescription("Back to playlists").performScrollTo().performClick()
             compose.onNodeWithText("Library").performClick()
-            compose.onNodeWithContentDescription("Account and settings").performClick()
-            compose.onNodeWithText("Settings").performScrollTo().assertIsDisplayed().assertIsEnabled().performClick()
+            compose.onNodeWithContentDescription("Settings").performClick()
             compose.onNode(hasText("DJ mode")and hasClickAction()).performScrollTo().performClick()
             compose.waitUntil(10000){!app.graph.djModePreferences.state.value.enabled}
             val restored=com.soundq.android.data.preferences.DjModePreferences(java.io.File(app.graph.directory,"dj-mode.v1.json"));restored.load();assertFalse(restored.enabled())

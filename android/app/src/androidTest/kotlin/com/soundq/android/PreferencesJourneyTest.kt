@@ -22,9 +22,9 @@ class PreferencesJourneyTest {
         compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
         compose.waitUntil(10000){graph.library.state.value.rows.size>=3&&graph.storagePreferences.state.value.ready}
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
-        compose.onNodeWithContentDescription("Account and settings").performClick()
-        compose.onNodeWithText("Settings").performClick()
-        compose.onNodeWithText("Temporary audio").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Settings").performClick()
+        compose.onNodeWithText("Storage").performScrollTo().performClick()
+        compose.onNode(hasText("Temporary audio") and isToggleable()).performScrollTo().performClick()
         compose.waitUntil(10000){!graph.storagePreferences.state.value.temporaryAudioEnabled}
         val restored=StoragePreferences(graph.directory.resolve("storage-preferences.v1.json"));restored.load();assertFalse(restored.state.value.temporaryAudioEnabled)
         compose.onNodeWithText("Clear temporary audio").performScrollTo().performClick()
@@ -32,14 +32,14 @@ class PreferencesJourneyTest {
         compose.onNodeWithText("Clear temporary audio").performClick()
         compose.onNodeWithText("Clear").performClick()
         compose.waitUntil(10000){compose.onAllNodesWithText("Temporary audio cleared").fetchSemanticsNodes().isNotEmpty()}
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        repeat(2){InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)}
         compose.runOnIdle {model.play(0,graph.library.state.value.rows)}
         compose.waitUntil(15000){model.playback.value.isPlaying}
         val selected=model.playback.value.selectedOccurrence
         compose.runOnIdle {graph.session.lockLocal()}
         compose.waitUntil(10000){!model.playback.value.isPlaying}
         compose.onNodeWithText("SoundQ is locked").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Account and settings").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Settings").assertDoesNotExist()
         compose.onNodeWithText("Unlock with device").assertIsDisplayed()
         assertEquals(selected,model.playback.value.selectedOccurrence)
         // Explicitly inject only a successful OS callback at the existing native session boundary.

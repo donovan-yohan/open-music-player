@@ -24,15 +24,15 @@ class LibraryContinuationJourneyTest {
         compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
         compose.waitUntil(10000){graph.library.state.value.rows.size==3&&graph.listeningPreferences.state.value.ready}
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
-        compose.onNodeWithContentDescription("Account and preview information").performClick()
-        compose.onNodeWithText("Settings").performClick()
+        compose.onNodeWithContentDescription("Settings").performClick()
+        compose.onNodeWithText("End of queue").performScrollTo().performClick()
         compose.onNodeWithText("Off",useUnmergedTree=true).performScrollTo().performClick()
         compose.waitUntil(10000){graph.listeningPreferences.state.value.mode==EndOfQueue.Off}
         val reconstructed=EndOfQueuePreferences(graph.directory.resolve("end-of-queue.v1.json"))
         reconstructed.load();assertEquals(EndOfQueue.Off,reconstructed.state.value.mode)
         compose.onNodeWithText("Shuffle library",useUnmergedTree=true).performScrollTo().performClick()
         compose.waitUntil(10000){graph.listeningPreferences.state.value.mode==EndOfQueue.ShuffleLibrary}
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        repeat(2){InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)}
         try {
             // Refine through the mounted Library so its row callback owns the accepted list.
             val title="Fixture 1"

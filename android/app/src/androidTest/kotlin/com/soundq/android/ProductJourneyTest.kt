@@ -71,9 +71,11 @@ class ProductJourneyTest {
         assertEquals(2,duplicates.map {it.occurrenceId}.toSet().size)
         captureMountedStage("listening-queue-duplicates")
         compose.onNodeWithContentDescription("Close Queue").performClick()
-        compose.onNodeWithContentDescription("Account and preview information").performClick()
+        compose.onNodeWithContentDescription("Settings").performClick()
+        compose.onNode(hasText("Account") and hasClickAction()).performClick()
         val logoutBefore=ProductTransportFixture.requests.size
         compose.onNodeWithText("Sign out").performClick()
+        compose.onAllNodesWithText("Sign out").filterToOne(hasAnyAncestor(isDialog())).performClick()
         compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Email").fetchSemanticsNodes().isNotEmpty()&&app.graph.session.capture()==null&&model.playback.value.queue.isEmpty()&&ProductTransportFixture.requests.drop(logoutBefore).contains("POST /api/v1/auth/logout")}
         assertNull(app.graph.session.capture())
         assertTrue(model.playback.value.queue.isEmpty())

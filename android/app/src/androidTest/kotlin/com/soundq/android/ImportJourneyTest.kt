@@ -36,7 +36,8 @@ class ImportJourneyTest {
             val queueBefore=model.playback.value.queue
             assertTrue(queueBefore.isNotEmpty())
             val selectedBefore=model.playback.value.selectedOccurrence
-            compose.onNodeWithContentDescription("Account and settings").performClick()
+            compose.onNodeWithContentDescription("Settings").performClick()
+            compose.onNodeWithText("Music tools").performScrollTo().performClick()
             compose.onNodeWithText("Imports").performClick()
             compose.onNodeWithContentDescription("Source URL").performTextInput("https://youtu.be/import-fixture")
             val beforeTap=compose.onNodeWithText("Import").fetchSemanticsNode().config[com.soundq.android.product.imports.ImportSubmitBindingKey]
@@ -61,8 +62,9 @@ class ImportJourneyTest {
             assertFalse(model.playback.value.isPlaying)
             // Imported-row reveal scrolls the lazy Library to its row; enlarged text retires header0.
             compose.onNode(hasScrollToIndexAction()).performScrollToIndex(0)
-            // Account is in the fixed Library header, outside the scrollable tracks.
-            compose.onNodeWithContentDescription("Account and settings").assertIsDisplayed().performClick()
+            // Settings is in the fixed Library header, outside the scrollable tracks.
+            compose.onNodeWithContentDescription("Settings").assertIsDisplayed().performClick()
+            compose.onNodeWithText("Music tools").performScrollTo().performClick()
             compose.onNodeWithText("Imports").performClick()
             compose.onNodeWithContentDescription("Refresh recent imports").performScrollTo().performClick()
             compose.waitUntil(10000){app.graph.imports.state.value.recent.size==1}

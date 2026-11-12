@@ -27,7 +27,7 @@ internal val ImportSubmitBindingKey=SemanticsPropertyKey<ImportSubmitBinding>("I
     LazyColumn(Modifier.fillMaxWidth(),contentPadding=PaddingValues(0.dp)) {
         importBand {Row {
             Text("Imports",Modifier.weight(1f).semantics {heading()},style=SoundQ.typography.heading)
-            SoundQIconButton(SoundQIcon.Settings,"Account and settings",onAccount,outlined=false)
+            SoundQIconButton(SoundQIcon.Settings,"Settings",onAccount,outlined=false)
             SoundQIconButton(SoundQIcon.Close,"Close Imports",onClose,outlined=false)
         }}
         state.durableReceipt?.let {receipt->importBand {

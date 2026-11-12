@@ -63,10 +63,10 @@ class PhoneReviewMountedJourneyTest {
         try {
             compose.waitUntil(5000){compose.onAllNodesWithContentDescription("Review shared link").fetchSemanticsNodes().isNotEmpty()}
             compose.onNodeWithContentDescription("Review shared link").performClick()
-            compose.onNodeWithText("Settings").assertExists()
+            compose.onNode(hasText("Sign in") and isHeading()).assertExists()
             capture("shared-link-account")
-            compose.onNodeWithText("Back to Library").performScrollTo().performClick()
-            compose.onNodeWithText("Settings").assertDoesNotExist()
+            compose.onNodeWithContentDescription("Back").performClick();compose.onNodeWithContentDescription("Back").performClick()
+            compose.onNode(hasText("Account") and isHeading()).assertDoesNotExist()
             compose.onNodeWithContentDescription("Library search query").performTextReplacement(name)
             compose.onNodeWithContentDescription("Search library").performClick()
             compose.onNode(hasText(name) and hasClickAction() and !hasSetTextAction()).performScrollTo().assertIsDisplayed().performClick()

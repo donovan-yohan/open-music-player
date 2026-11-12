@@ -101,7 +101,8 @@ class JamApprovalJourneyTest {
                 val initial=acknowledgedQueueObservation(model).readback
                 assertTrue(initial.acknowledged(0,null))
             }
-            compose.onNodeWithContentDescription("Account and settings").assertIsDisplayed().performClick()
+            compose.onNodeWithContentDescription("Settings").assertIsDisplayed().performClick()
+            compose.onNodeWithText("Music tools").performScrollTo().performClick()
             compose.onNodeWithText("Connected devices").performScrollTo().assertIsDisplayed().performClick()
             compose.onNodeWithText("Host a Jam").performScrollTo().assertIsDisplayed().performClick()
             val offered=hasText("Fixture 1")and hasClickAction()and hasAnyAncestor(isDialog())

@@ -45,11 +45,11 @@ class LibraryMetadataJourneyTest {
             val captured=graph.library.captureTrack(graph.library.state.value.rows.single())!!
             val hydratedPages=pages.get()
             for(choice in listOf(KeyNotation.Musical,KeyNotation.Camelot)) {
-                compose.onNodeWithContentDescription("Account and settings").assertIsDisplayed().assertIsEnabled().performClick()
-                compose.onNode(hasText("Settings") and hasClickAction()).performScrollTo().performClick()
+                compose.onNodeWithContentDescription("Settings").assertIsDisplayed().assertIsEnabled().performClick()
+                compose.onNode(hasText("Key notation") and hasClickAction()).performScrollTo().performClick()
                 compose.onNode(hasText(if(choice==KeyNotation.Musical)"Musical key" else "Camelot") and hasClickAction()).performScrollTo().performClick()
                 compose.waitUntil(10000){graph.keyNotationPreferences.state.value.choice==choice&&graph.keyNotationPreferences.state.value.error==null}
-                compose.onNodeWithContentDescription("Close Settings").performScrollTo().performClick()
+                compose.onNodeWithContentDescription("Back").performClick();compose.onNodeWithContentDescription("Back").performClick()
                 reveal(row)
                 compose.onNodeWithContentDescription(speech(if(choice==KeyNotation.Musical)"A minor" else "8A"),useUnmergedTree=true).assertIsDisplayed()
                 compose.runOnIdle {

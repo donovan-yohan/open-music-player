@@ -44,7 +44,7 @@ class HistoryRefinementJourneyTest {
         compose.waitUntil(10000){compose.onAllNodes(hasText("Search library") and hasSetTextAction()).fetchSemanticsNodes().isNotEmpty()}
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
         compose.onAllNodesWithText("Home").filterToOne(hasClickAction()).performClick()
-        compose.onNodeWithContentDescription("Account and settings").assertExists()
+        compose.onNodeWithContentDescription("Settings").assertExists()
         compose.onNodeWithContentDescription("Refresh recent").assertExists()
         compose.onNodeWithContentDescription("Listening history").performClick()
         compose.waitUntil(10000){model.home.history.value.rows.size==50&&!model.home.history.value.loading}

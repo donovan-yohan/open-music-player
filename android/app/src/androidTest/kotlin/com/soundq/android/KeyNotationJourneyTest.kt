@@ -49,12 +49,12 @@ class KeyNotationJourneyTest {
             compose.runOnIdle {assertFalse(model.playback.value.isPlaying)}
             val before=compose.runOnIdle {model.playback.value}
             for(choice in listOf(KeyNotation.Musical,KeyNotation.Camelot)) {
-                reveal(hasContentDescription("Account and preview information")).performClick();click("Settings")
+                reveal(hasContentDescription("Settings")).performClick();click("Key notation")
                 click(if(choice==KeyNotation.Musical)"Musical key" else "Camelot")
                 compose.waitUntil(10000){graph.keyNotationPreferences.state.value.choice==choice&&graph.keyNotationPreferences.state.value.error==null}
                 val rebuilt=KeyNotationPreferences(graph.directory.resolve("key-notation.v1.json"));rebuilt.load()
                 assertEquals(choice,rebuilt.state.value.choice)
-                compose.onNodeWithContentDescription("Close Settings").performScrollTo().assertIsDisplayed().assertIsEnabled().performClick()
+                compose.onNodeWithContentDescription("Back").performClick();compose.onNodeWithContentDescription("Back").performClick()
                 reveal(hasContentDescription("More for Fixture 1")).performClick();click("Song details")
                 compose.waitUntil(10000){graph.trackDetails.state.value.analysis!=null&&!graph.trackDetails.state.value.loading}
                 compose.onNodeWithText(if(choice==KeyNotation.Musical)"Am" else "8A").assertExists()

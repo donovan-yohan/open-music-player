@@ -120,10 +120,9 @@ class SettingsReturnAdmissionJourneyTest {
             }
             openDetails("before-settings-control")
             repeat(3) {cycle ->
-                reveal(hasContentDescription("Account and preview information")).performClick()
-                click("Settings")
+                reveal(hasContentDescription("Settings")).performClick()
                 observe("settings-$cycle-mounted",graph)
-                compose.onNodeWithContentDescription("Close Settings").performScrollTo().assertIsDisplayed().assertIsEnabled().performClick()
+                compose.onNodeWithContentDescription("Back").assertIsDisplayed().assertIsEnabled().performClick()
                 openDetails("after-settings-$cycle")
                 compose.runOnIdle {
                     assertFalse(model.playback.value.isPlaying)

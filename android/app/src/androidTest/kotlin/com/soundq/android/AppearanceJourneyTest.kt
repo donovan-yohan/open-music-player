@@ -75,16 +75,15 @@ class AppearanceJourneyTest {
             compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
             compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
             compose.waitUntil(10000){graph.library.state.value.rows.size>=3&&graph.appearancePreferences.state.value.ready}
-            compose.onNodeWithContentDescription("Account and settings").assertIsDisplayed().assertIsEnabled().performClick()
-            compose.onNode(hasText("Settings") and hasClickAction()).performScrollTo().assertIsDisplayed().assertIsEnabled().performClick()
-            val opener=compose.onNodeWithContentDescription("Choose appearance").performScrollTo().assertIsDisplayed().assertIsEnabled()
+            compose.onNodeWithContentDescription("Settings").assertIsDisplayed().assertIsEnabled().performClick()
+            val opener=compose.onNode(hasText("Theme") and hasClickAction()).performScrollTo().assertIsDisplayed().assertIsEnabled()
             val settingsRoot=opener.fetchSemanticsNode().root;val settingsBounds=opener.fetchSemanticsNode().boundsInRoot
-            fun offset()=compose.onNode(hasScrollAction() and hasAnyDescendant(hasContentDescription("Choose appearance")))
+            fun offset()=compose.onNode(hasScrollAction() and hasAnyDescendant(hasText("Theme")))
                 .fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
             val settingsOffset=offset();assertTrue("Appearance opener requires nonzero Settings scroll",settingsOffset>0f)
             fun assertReturn(stage:String) {
-                compose.onNodeWithText("Choose how SoundQ looks on this device.").assertDoesNotExist()
-                compose.onNodeWithContentDescription("Close Appearance").assertDoesNotExist()
+                compose.onNode(hasText("Theme") and isHeading()).assertDoesNotExist()
+                compose.onNodeWithText("Dark").assertDoesNotExist()
                 val heading=compose.onNode(hasText("Settings") and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading)).assertExists()
                 opener.assertIsDisplayed().assertIsEnabled().assertIsFocused()
                 val returned=opener.fetchSemanticsNode()
@@ -95,17 +94,17 @@ class AppearanceJourneyTest {
             }
             observe("before-open")
             opener.performClick()
-            compose.onNodeWithText("Choose how SoundQ looks on this device.").assertExists()
+            compose.onNode(hasText("Theme") and isHeading()).assertExists()
             instrumentation.setInTouchMode(false)
-            val close=compose.onNodeWithContentDescription("Close Appearance").assertIsDisplayed().assertIsEnabled()
+            val close=compose.onNodeWithContentDescription("Back").assertIsDisplayed().assertIsEnabled()
             close.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus){assertTrue(it())}
             close.assertIsFocused()
             observe("before-close")
             instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
             observe("after-close");assertReturn("Close")
             instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
-            compose.onNodeWithText("Choose how SoundQ looks on this device.").assertExists()
-            compose.onNodeWithContentDescription("Close Appearance").assertExists()
+            compose.onNode(hasText("Theme") and isHeading()).assertExists()
+            compose.onNodeWithContentDescription("Back").assertExists()
             observe("before-back")
             instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
             observe("after-back");assertReturn("Back")
@@ -123,16 +122,17 @@ class AppearanceJourneyTest {
         }
     }
     private fun assertMountedSheetPaint(dark:Boolean) {
-        // Measure only the empty layout spacing between the heading and instruction text.
-        // Reject an empty/clipped region rather than sampling glyphs or radio-row focus paint.
-        val headingNode=compose.onNode(hasText("Appearance") and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading)).fetchSemanticsNode()
-        val instructionNode=compose.onNodeWithText("Choose how SoundQ looks on this device.").fetchSemanticsNode()
-        val heading=headingNode.boundsInRoot
-        val instruction=instructionNode.boundsInRoot
-        assertSame("Heading and instruction belong to the same mounted sheet root",headingNode.root,instructionNode.root)
-        val root=instructionNode.root as ViewRootForTest
-        // Rasterize the actual mounted Compose root for bounded sheet-paint assertions.
-        // MainActivity and its inherited modal policy permit system screen capture.
+        // Full-screen Theme page: sample only the empty background band between the app bar rule and the
+        // first choice row (the 16dp section gap). Reject an empty/clipped region rather than sampling glyphs or row paint.
+        val titleNode=compose.onNode(hasText("Theme") and isHeading()).fetchSemanticsNode()
+        val rowNode=compose.onNode(hasText("System") and isSelectable()).fetchSemanticsNode()
+        val title=titleNode.boundsInRoot
+        val row=rowNode.boundsInRoot
+        assertSame("Title and first choice belong to the same mounted root",titleNode.root,rowNode.root)
+        val root=rowNode.root as ViewRootForTest
+        val px=compose.activity.resources.displayMetrics.density
+        // Rasterize the actual mounted Compose root for bounded page-paint assertions.
+        // MainActivity permits system screen capture.
         val image=compose.runOnIdle {
             assertTrue(compose.activity.window.attributes.flags and android.view.WindowManager.LayoutParams.FLAG_SECURE == 0)
             val view=root.view
@@ -142,12 +142,13 @@ class AppearanceJourneyTest {
             }.asImageBitmap()
         }
         val pixels=image.toPixelMap()
-        val left=kotlin.math.ceil(maxOf(heading.left,instruction.left)).toInt()+1
-        val right=kotlin.math.floor(minOf(heading.right,instruction.right)).toInt()-1
-        val top=kotlin.math.ceil(heading.bottom).toInt()+1
-        val bottom=kotlin.math.floor(instruction.top).toInt()-1
-        assertTrue("Measured heading-to-instruction background gap must be visible",left>=0&&right<image.width&&top>=0&&bottom<image.height&&right>left&&bottom>top)
-        val expected=(if(dark)SoundQAppearanceMapping.dark else SoundQAppearanceMapping.light).w9_color_sheet_background.toArgb()
+        val left=kotlin.math.ceil(row.left+20*px).toInt()
+        val right=kotlin.math.floor(row.right-20*px).toInt()
+        val top=kotlin.math.ceil(row.top-12*px).toInt()
+        val bottom=kotlin.math.floor(row.top-2*px).toInt()
+        assertTrue("Section gap lies below the app bar title",top>title.bottom)
+        assertTrue("Measured section-gap background must be visible",left>=0&&right<image.width&&top>=0&&bottom<image.height&&right>left&&bottom>top)
+        val expected=(if(dark)SoundQAppearanceMapping.dark else SoundQAppearanceMapping.light).semantic_color_background.toArgb()
         for(y in top..bottom)for(x in left..right) {
             val actual=pixels[x,y].toArgb()
             for(shift in listOf(0,8,16,24))assertTrue("Mounted Appearance sheet paint at ($x,$y), expected ${expected.toUInt().toString(16)}, got ${actual.toUInt().toString(16)}",kotlin.math.abs(((actual ushr shift) and 255)-((expected ushr shift) and 255))<=2)
@@ -178,20 +179,19 @@ class AppearanceJourneyTest {
                 try {compose.runOnIdle {pauseDiagnostic.close()}}
                 catch(diagnostic:Throwable) {val primary=pauseFailure;if(primary!=null)primary.addSuppressed(diagnostic) else throw diagnostic}
             }
-            compose.onNodeWithContentDescription("Account and settings").performClick()
-            compose.onNodeWithText("Settings").performClick()
-            val opener=compose.onNodeWithContentDescription("Choose appearance").performScrollTo()
+            compose.onNodeWithContentDescription("Settings").performClick()
+            val opener=compose.onNode(hasText("Theme") and hasClickAction()).performScrollTo()
             // Settings owns a retained viewport, not a heading fixed above its scroll.
             // Capture it before opening so Close/Back cannot pass by resetting to the top.
             val settingsRoot=opener.fetchSemanticsNode().root
             val settingsBounds=opener.fetchSemanticsNode().boundsInRoot
-            fun readSettingsOffset()=compose.onNode(hasScrollAction() and hasAnyDescendant(hasContentDescription("Choose appearance")))
+            fun readSettingsOffset()=compose.onNode(hasScrollAction() and hasAnyDescendant(hasText("Theme")))
                 .fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
             val capturedSettingsOffset=readSettingsOffset()
             assertTrue("Appearance opener requires a nonzero Settings scroll",capturedSettingsOffset>0f)
             fun assertSettingsReturn(stage:String) {
-                compose.onNodeWithText("Choose how SoundQ looks on this device.").assertDoesNotExist()
-                compose.onNodeWithContentDescription("Close Appearance").assertDoesNotExist()
+                compose.onNode(hasText("Theme") and isHeading()).assertDoesNotExist()
+                compose.onNodeWithText("Dark").assertDoesNotExist()
                 val heading=compose.onNode(hasText("Settings") and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
                 heading.assertExists()
                 opener.assertIsDisplayed().assertIsFocused()
@@ -225,7 +225,7 @@ class AppearanceJourneyTest {
                 instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
                 compose.waitUntil(10000){graph.appearancePreferences.state.value.choice==choice&&graph.appearancePreferences.state.value.error==null}
                 row.assertIsSelected().assertIsFocused()
-                compose.onNodeWithContentDescription("Close Appearance").assertIsDisplayed()
+                compose.onNodeWithContentDescription("Back").assertIsDisplayed()
                 assertEquals(node,light.fetchSemanticsNode().id)
                 if(choice!=Appearance.System)assertMountedSheetPaint(choice==Appearance.Dark)
                 val rebuilt=AppearancePreferences(graph.directory.resolve("appearance.v1.json"));rebuilt.load()
@@ -252,7 +252,7 @@ class AppearanceJourneyTest {
                 }
                 compose.runOnIdle {manager.setApplicationNightMode(UiModeManager.MODE_NIGHT_AUTO)}
             }
-            compose.onNodeWithContentDescription("Close Appearance").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus){assertTrue(it())}
+            compose.onNodeWithContentDescription("Back").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus){assertTrue(it())}
             instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
             assertSettingsReturn("after-close")
             instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_CENTER)

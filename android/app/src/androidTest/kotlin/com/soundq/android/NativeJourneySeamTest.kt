@@ -38,7 +38,8 @@ class NativeJourneySeamTest {
             compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
             compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
             compose.waitUntil(10000){app.graph.library.state.value.rows.isNotEmpty()}
-            compose.onNodeWithContentDescription("Account and preview information").performClick()
+            compose.onNodeWithContentDescription("Settings").performClick()
+            compose.onNodeWithText("Music tools").performScrollTo().performClick()
             compose.onNodeWithText("Imports").performClick()
             compose.onNodeWithContentDescription("Source URL").performClick()
             compose.runOnIdle {

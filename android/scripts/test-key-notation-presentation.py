@@ -71,6 +71,7 @@ import com.soundq.android.data.preferences.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.reflect.KProperty
+import com.soundq.android.product.preferences.keyNotationLabel
 import org.junit.Assert.*
 import org.junit.Test
 class Cell<T>(var value:T) {
@@ -88,22 +89,17 @@ fun rememberCoroutineScope()=work
 val disposals=mutableListOf<()->Unit>()
 class Disposal {fun onDispose(block:()->Unit){disposals.add(block)}}
 fun DisposableEffect(vararg keys:Any?,block:Disposal.()->Unit){Disposal().block()}
-object Modifier {fun selectableGroup()=this}
-object Role {val RadioButton=0}
-object SoundQ {
- object typography {val title=0}
- object colors {val primary=0;val muted=0;val disabled=0}
-}
-object RadioButtonDefaults {fun colors(selectedColor:Int,unselectedColor:Int,disabledSelectedColor:Int,disabledUnselectedColor:Int)=0}
-fun RadioButton(selected:Boolean,onClick:(()->Unit)?,enabled:Boolean,colors:Int){}
+object Modifier {fun selectableGroup()=this;fun fillMaxWidth()=this;fun height(value:Int)=this}
+object SoundQSettingsMetrics {val firstSectionTop=0}
+fun Spacer(modifier:Modifier){}
 fun Column(modifier:Modifier,content:()->Unit){content()}
-fun SettingsChoices(content:()->Unit){content()}
-fun Text(text:String,style:Int){}
+fun SoundQSettingsBlock(content:()->Unit){content()}
 val rows=mutableMapOf<String,()->Unit>()
-fun SoundQRow(label:String,description:String,selected:Boolean,onClick:()->Unit,enabled:Boolean,trailing:()->Unit,role:Int){rows[label]=onClick;trailing()}
+// Settings list rows: title in, action out. The actual setting body supplies label and callback.
+fun SoundQSettingsChoiceRow(title:String,selected:Boolean,onSelect:()->Unit,supporting:String?=null,enabled:Boolean=true){rows[title]=onSelect}
 enum class FeedbackKind { Loading,Error }
 enum class SoundQButtonVariant { Quiet }
-fun SoundQFeedback(title:String,kind:FeedbackKind,detail:String="",label:String="",action:()->Unit={}){if(label.isNotEmpty())rows[label]=action}
+fun SoundQFeedback(title:String,kind:FeedbackKind,detail:String?=null,action:String?=null,onAction:(()->Unit)?=null){if(action!=null&&onAction!=null)rows[action]=onAction}
 fun SoundQButton(label:String,action:()->Unit,variant:SoundQButtonVariant,enabled:Boolean){rows[label]=action}
 '''
  tests='''
