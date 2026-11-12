@@ -42,12 +42,12 @@ internal class SettingsMemory {
  * Full-screen Settings. Device-local owners write under the current session version, so Settings works
  * signed in, signed out and offline; account writes keep the stricter captured account scope.
  * [pages] is owned by the caller so page state (scroll, auth fields) survives host recreation.
+ * [onRoutes] applies an update to the stack as it is when the event runs, not as this composition last saw it.
  */
-@Composable internal fun SettingsHost(model:ProductViewModel,auth:AuthState,routes:List<SettingsRoute>,onRoutes:(List<SettingsRoute>)->Unit,
+@Composable internal fun SettingsHost(model:ProductViewModel,auth:AuthState,routes:List<SettingsRoute>,onRoutes:((List<SettingsRoute>)->List<SettingsRoute>)->Unit,
     exits:SettingsExits,pages:androidx.compose.runtime.saveable.SaveableStateHolder,memory:SettingsMemory,authForm:@Composable (register:Boolean)->Unit) {
     val route=routes.lastOrNull() ?: return
     val graph=model.graph
-    val currentRoutes by rememberUpdatedState(routes)
     val work=rememberCoroutineScope()
     val version=remember {graph.session.version()}
     val scope=remember {graph.session.capture()}
@@ -62,12 +62,13 @@ internal class SettingsMemory {
     val openers=remember {mutableMapOf<String,FocusRequester>()}
     fun opener(key:String)=openers.getOrPut(key){FocusRequester()}
     var settle by remember {mutableIntStateOf(0)}
-    fun open(next:SettingsRoute)=onRoutes(currentRoutes.push(next))
-    fun back() {
-        val popped=currentRoutes.lastOrNull() ?: return
+    fun open(next:SettingsRoute)=onRoutes {it.push(next)}
+    // Two Back presses can arrive before the first pop recomposes; each pops the then-current page.
+    fun back()=onRoutes {current->
+        val popped=current.lastOrNull() ?: return@onRoutes current
         pages.removeState(popped.name)
         memory.focus=popped.name;settle++
-        onRoutes(currentRoutes.pop())
+        current.pop()
     }
     fun leave(key:String,exit:()->Unit){memory.focus=key;exit()}
     androidx.activity.compose.BackHandler {back()}

@@ -1,6 +1,7 @@
 package com.soundq.android
 
 import androidx.compose.ui.test.*
+import com.soundq.android.data.AuthState
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
@@ -18,10 +19,7 @@ class LibraryContinuationJourneyTest {
     @Test fun settingsNaturalEndContinuesSameQueueWithTypedOriginsAndNoRestoreAutoplay() {
         val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as FixtureApplication
         val graph=app.graph
-        compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Email").fetchSemanticsNodes().isNotEmpty()}
-        compose.onNodeWithContentDescription("Email").performTextInput("continuation@example.test")
-        compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
-        compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+        compose.signInThroughSettings("continuation@example.test","test-only-password"){graph.session.state.value is AuthState.SignedIn}
         compose.waitUntil(10000){graph.library.state.value.rows.size==3&&graph.listeningPreferences.state.value.ready}
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
         compose.onNodeWithContentDescription("Settings").performClick()
@@ -36,8 +34,8 @@ class LibraryContinuationJourneyTest {
         try {
             // Refine through the mounted Library so its row callback owns the accepted list.
             val title="Fixture 1"
-            compose.onNode(hasText("Search library") and hasSetTextAction()).performScrollTo().performTextInput(title)
-            compose.onAllNodesWithText("Search").filterToOne(hasClickAction()).performScrollTo().performClick()
+            compose.onNode(hasContentDescription("Library search query") and hasSetTextAction()).performTextInput(title)
+            compose.onNode(hasContentDescription("Search library") and hasClickAction()).performClick()
             compose.waitUntil(10000){graph.library.state.value.let {
                 !it.loading&&it.error==null&&it.query.text==title&&it.rows.size==1&&it.rows.single().title==title
             }}

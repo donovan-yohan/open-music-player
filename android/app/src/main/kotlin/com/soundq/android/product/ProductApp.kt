@@ -279,9 +279,14 @@ import com.soundq.android.product.preferences.*
                 }
                 else if(settingsRoutes.isNotEmpty()) key(accountVersion) {
                     // Full screen: replaces tab content, bottom navigation and the compact player. Playback is untouched.
-                    SettingsHost(model,auth,SettingsRoute.decode(settingsRoutes),{routes->
-                            if(routes.isEmpty())closeSettings() else settingsRoutes=routes.encode()
-                            if(SettingsRoute.Account !in routes)pendingTool=null
+                    SettingsHost(model,auth,SettingsRoute.decode(settingsRoutes),{update->
+                            // Read the stack now: an earlier event in this frame may already have changed it.
+                            val current=SettingsRoute.decode(settingsRoutes)
+                            if(current.isNotEmpty()) {
+                                val routes=update(current)
+                                if(routes.isEmpty())closeSettings() else settingsRoutes=routes.encode()
+                                if(SettingsRoute.Account !in routes)pendingTool=null
+                            }
                         },
                         SettingsExits(onExit={closeSettings()},
                             // Downloads belong to an account or offline session; without one, Account opens instead of an empty page.

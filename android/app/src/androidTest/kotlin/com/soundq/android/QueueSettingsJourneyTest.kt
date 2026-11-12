@@ -1,6 +1,7 @@
 package com.soundq.android
 
 import androidx.compose.ui.test.*
+import com.soundq.android.data.AuthState
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
@@ -17,10 +18,7 @@ class QueueSettingsJourneyTest {
     @Test fun savedKeepQueuedChoiceChangesFutureReplacementWithoutChangingCurrentQueue() {
         val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as FixtureApplication
         val graph=app.graph
-        compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Email").fetchSemanticsNodes().isNotEmpty()}
-        compose.onNodeWithContentDescription("Email").performTextInput("settings-fixture@example.test")
-        compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
-        compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+        compose.signInThroughSettings("settings-fixture@example.test","test-only-password"){graph.session.state.value is AuthState.SignedIn}
         compose.waitUntil(10000){graph.library.state.value.rows.size>=3&&!graph.queueSettings.state.value.loading}
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
         try {

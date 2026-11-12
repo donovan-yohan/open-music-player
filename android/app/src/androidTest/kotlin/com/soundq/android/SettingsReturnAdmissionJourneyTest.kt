@@ -1,6 +1,7 @@
 package com.soundq.android
 
 import androidx.compose.ui.test.*
+import com.soundq.android.data.AuthState
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.platform.ViewRootForTest
@@ -23,6 +24,9 @@ class SettingsReturnAdmissionJourneyTest {
         compose.onNode(hasScrollToNodeAction()).performScrollToNode(matcher)
         return compose.onNode(matcher).assertIsDisplayed().assertIsEnabled()
     }
+
+    /** The Library gear sits in the pinned header, outside the lazy list. */
+    private fun gear()=compose.onNodeWithContentDescription("Settings").assertIsDisplayed().assertIsEnabled()
 
     private fun click(label:String)=compose.onNode(hasText(label) and hasClickAction()).performScrollTo().performClick()
     private val phases=JSONArray()
@@ -100,10 +104,7 @@ class SettingsReturnAdmissionJourneyTest {
         compose.runOnIdle {compose.activity.lifecycle.addObserver(observer)}
         var primary:Throwable?=null
         try {
-            compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Email").fetchSemanticsNodes().isNotEmpty()}
-            compose.onNodeWithContentDescription("Email").performTextInput("settings-return@example.test")
-            compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
-            compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+            compose.signInThroughSettings("settings-return@example.test","test-only-password"){graph.session.state.value is AuthState.SignedIn}
             compose.waitUntil(10000){graph.library.state.value.rows.size>=3}
             val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
             val before=compose.runOnIdle {model.playback.value}
@@ -120,7 +121,7 @@ class SettingsReturnAdmissionJourneyTest {
             }
             openDetails("before-settings-control")
             repeat(3) {cycle ->
-                reveal(hasContentDescription("Settings")).performClick()
+                gear().performClick()
                 observe("settings-$cycle-mounted",graph)
                 compose.onNodeWithContentDescription("Back").assertIsDisplayed().assertIsEnabled().performClick()
                 openDetails("after-settings-$cycle")

@@ -16,11 +16,10 @@ class PreferencesJourneyTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
     @Test fun settingsPersistCacheClearConfirmsAndLocalGateHidesPrivatePlayerWithoutAutoplay() {
         val graph=(InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as FixtureApplication).graph
-        compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Email").fetchSemanticsNodes().isNotEmpty()}
-        compose.onNodeWithContentDescription("Email").performTextInput("preferences@example.test")
-        compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
-        compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+        compose.signInThroughSettings("preferences@example.test","test-only-password"){graph.session.state.value is AuthState.SignedIn}
         compose.waitUntil(10000){graph.library.state.value.rows.size>=3&&graph.storagePreferences.state.value.ready}
+        // Installation-local fixture state outlives earlier runs: start from the default (on) so this run turns it off.
+        assertTrue(graph.storagePreferences.setTemporaryAudio(graph.storagePreferences.capture()!!,true){true})
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
         compose.onNodeWithContentDescription("Settings").performClick()
         compose.onNodeWithText("Storage").performScrollTo().performClick()

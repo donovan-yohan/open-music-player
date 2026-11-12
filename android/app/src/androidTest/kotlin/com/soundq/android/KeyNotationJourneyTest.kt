@@ -1,6 +1,7 @@
 package com.soundq.android
 
 import androidx.compose.ui.test.*
+import com.soundq.android.data.AuthState
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
@@ -21,6 +22,9 @@ class KeyNotationJourneyTest {
         return compose.onNode(matcher).assertIsDisplayed().assertIsEnabled()
     }
 
+    /** The Library gear sits in the pinned header, outside the lazy list. */
+    private fun gear()=compose.onNodeWithContentDescription("Settings").assertIsDisplayed().assertIsEnabled()
+
     private fun click(label:String)=compose.onNode(hasText(label) and hasClickAction()).performScrollTo().performClick()
     @Test fun choiceSurvivesReconstructionAndChangesDetailsWithoutAutoplayOrCorrectionWrites() {
         val graph=(InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as FixtureApplication).graph
@@ -39,17 +43,14 @@ class KeyNotationJourneyTest {
             // Synthetic installation fixture only. No production account or external data.
             graph.keyNotationPreferences.load()
             assertTrue(graph.keyNotationPreferences.setChoice(graph.keyNotationPreferences.capture()!!,KeyNotation.Camelot){true})
-            compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Email").fetchSemanticsNodes().isNotEmpty()}
-            compose.onNodeWithContentDescription("Email").performTextInput("notation@example.test")
-            compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
-            compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+            compose.signInThroughSettings("notation@example.test","test-only-password"){graph.session.state.value is AuthState.SignedIn}
             compose.waitUntil(10000){graph.library.state.value.rows.size>=3&&graph.keyNotationPreferences.state.value.ready}
             val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
             val controller=model.controller
             compose.runOnIdle {assertFalse(model.playback.value.isPlaying)}
             val before=compose.runOnIdle {model.playback.value}
             for(choice in listOf(KeyNotation.Musical,KeyNotation.Camelot)) {
-                reveal(hasContentDescription("Settings")).performClick();click("Key notation")
+                gear().performClick();click("Key notation")
                 click(if(choice==KeyNotation.Musical)"Musical key" else "Camelot")
                 compose.waitUntil(10000){graph.keyNotationPreferences.state.value.choice==choice&&graph.keyNotationPreferences.state.value.error==null}
                 val rebuilt=KeyNotationPreferences(graph.directory.resolve("key-notation.v1.json"));rebuilt.load()

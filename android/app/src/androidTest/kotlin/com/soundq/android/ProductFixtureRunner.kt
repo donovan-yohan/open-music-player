@@ -158,8 +158,10 @@ object ProductTransportFixture {
                 val offset=request.url.queryParameter("offset")?.toIntOrNull() ?: 0
                 val query=request.url.queryParameter("q").orEmpty()
                 val count=if(request.url.queryParameter("liked")=="true"&&!liked)0 else 3
-                val rows=(1..count).filter {offset==0&&("Fixture $it".contains(query,true)||query.isBlank())}.joinToString(",") {"""{"id":$it,"title":"Fixture $it","artist":"Synthetic ensemble","duration_ms":12000,"is_liked":$liked}"""}
-                return reply("""{"tracks":[$rows],"total":$count,"limit":20,"offset":$offset}""")
+                // Like the server, total counts the query's matches, so a refined list pages to its end.
+                val matches=(1..count).filter {"Fixture $it".contains(query,true)||query.isBlank()}
+                val rows=matches.filter {offset==0}.joinToString(",") {"""{"id":$it,"title":"Fixture $it","artist":"Synthetic ensemble","duration_ms":12000,"is_liked":$liked}"""}
+                return reply("""{"tracks":[$rows],"total":${matches.size},"limit":20,"offset":$offset}""")
             }
             if(path=="/api/v1/playback/urls") {
                 val body=request.body!!.utf8();val id=Regex("\\[([0-9]+)\\]").find(body)?.groupValues?.get(1) ?: "1"
