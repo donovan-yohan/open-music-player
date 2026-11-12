@@ -74,6 +74,30 @@ class AudioProviderAdmissionTest {
             assertArrayEquals(bytes,context.contentResolver.openInputStream(uri)!!.use {it.readBytes()})
         }
     }
+    /** The indexed scan and a file grant reach one MediaStore row through different collections. */
+    @Test fun oneMediaStoreRowHasOneIdentityThroughEachRoute() {
+        val bytes=instrumentation.context.assets.open("local-audio/tone.flac").use {it.readBytes()}
+        withSource(bytes) {uri->
+            val access=AndroidAudioAccess(context)
+            assertTrue("Audio index read access required",access.indexedAllowed())
+            val id=android.content.ContentUris.parseId(uri)
+            var indexed:AudioAccessObservation?=null
+            val deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(30)
+            while(indexed==null&&System.nanoTime()<deadline) {
+                indexed=access.discover(emptyList(),{true}).observations.singleOrNull {android.net.Uri.parse(it.locator).lastPathSegment==id.toString()}
+                if(indexed==null)Thread.sleep(100)
+            }
+            val listed=checkNotNull(indexed) {"Audio index never listed the item"}
+            val granted=access.metadata(uri,uri.toString())
+            android.util.Log.i("SoundQIdentity","indexed=${listed.locator} granted=${granted.locator} key=${granted.providerObject} former=${granted.aliases-granted.providerObject}")
+            assertNotEquals(listed.locator,granted.locator)
+            assertEquals(listed.providerObject,granted.providerObject)
+            assertEquals(setOf(listed.providerObject),listed.aliases)
+            // The file grant's earlier key stays provable so stored rows under it fold into this one.
+            assertEquals(1,(granted.aliases-granted.providerObject).size)
+            assertTrue((granted.aliases-granted.providerObject).single().contains(uri.toString()))
+        }
+    }
     @Test fun emptyMissingAndRetiredProviderReadsAreRefused() {
         val access=AndroidAudioAccess(context)
         withSource(byteArrayOf()) {uri->

@@ -9,6 +9,8 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import com.soundq.android.data.AuthState
+import com.soundq.android.data.deviceaudio.AccessState
+import com.soundq.android.data.deviceaudio.GrantKind
 import com.soundq.android.product.ProductViewModel
 import org.junit.Assert.*
 import org.junit.Rule
@@ -32,7 +34,20 @@ class PhoneReviewMountedJourneyTest {
         val out=java.io.File(i.targetContext.filesDir,"pr533-review-captures").apply {mkdirs()}
         try {java.io.File(out,"$name.png").outputStream().use {assertTrue(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it))}}finally{bitmap.recycle()}
     }
-    private fun withPhoneOriginal(model:ProductViewModel,body:(String)->Unit) {
+    /** The item is reached both by the file grant and by the audio index (two routes to one MediaStore row).
+     * Waiting for both makes a duplicate Library row deterministic rather than a refresh-order race. */
+    private fun awaitBothRoutes(model:ProductViewModel,name:String):String {
+        compose.waitUntil(30000){
+            val snapshot=model.graph.phoneAudio.state.value.snapshot
+            val kinds=snapshot?.grants.orEmpty().associate {it.id to it.kind}
+            snapshot?.files.orEmpty().filter {it.metadata.filename==name}.flatMap {f->f.aliases.filter {it.state==AccessState.AVAILABLE}.mapNotNull {kinds[it.grantId]}}.toSet()
+                .containsAll(setOf(GrantKind.FILE,GrantKind.INDEXED))
+        }
+        val rows=model.graph.phoneAudio.state.value.snapshot!!.files.filter {it.metadata.filename==name}
+        assertEquals("One Local files row per MediaStore item",1,rows.size)
+        return rows.single().metadata.displayTitle // The audio index presents the row (its title, not the filename).
+    }
+    private fun withPhoneOriginal(model:ProductViewModel,body:(name:String,title:String)->Unit) {
         val resolver=InstrumentationRegistry.getInstrumentation().targetContext.contentResolver
         val name="soundq-review-${UUID.randomUUID()}.wav"
         val uri=checkNotNull(resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI,ContentValues().apply {
@@ -49,8 +64,7 @@ class PhoneReviewMountedJourneyTest {
             resolver.openOutputStream(uri,"w")!!.use {it.write(bytes)}
             assertEquals(1,resolver.update(uri,ContentValues().apply {put(MediaStore.MediaColumns.IS_PENDING,0)},null,null))
             model.graph.phoneAudio.selected(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION,false){true}
-            compose.waitUntil(15000){model.graph.phoneAudio.state.value.snapshot?.files?.any {it.available&&it.metadata.filename==name}==true}
-            body(name)
+            body(name,awaitBothRoutes(model,name))
         }finally {
             compose.runOnIdle {model.controller.pause();model.controller.clear()}
             assertEquals(1,resolver.delete(uri,null,null))
@@ -58,7 +72,7 @@ class PhoneReviewMountedJourneyTest {
     }
     @Test fun signedOutSharedLinkOpensAccountInsteadOfInvisibleImportPanel() {
         val model=model()
-        withPhoneOriginal(model) { name->
+        withPhoneOriginal(model) { name,title->
         assertTrue(model.graph.incomingShares.receive("https://www.youtube.com/watch?v=abcdefghijk",null))
         try {
             compose.waitUntil(5000){compose.onAllNodesWithContentDescription("Review shared link").fetchSemanticsNodes().isNotEmpty()}
@@ -69,16 +83,17 @@ class PhoneReviewMountedJourneyTest {
             compose.onNode(hasText("Account") and isHeading()).assertDoesNotExist()
             compose.onNodeWithContentDescription("Library search query").performTextReplacement(name)
             compose.onNodeWithContentDescription("Search library").performClick()
-            compose.onNode(hasText(name) and hasClickAction() and !hasSetTextAction()).performScrollTo().assertIsDisplayed().performClick()
+            compose.onAllNodes(hasText(title) and hasClickAction() and !hasSetTextAction()).assertCountEquals(1)
+            compose.onNode(hasText(title) and hasClickAction() and !hasSetTextAction()).performScrollTo().assertIsDisplayed().performClick()
             compose.waitUntil(15000){model.playback.value.isPlaying&&model.playback.value.positionMs>100}
-            assertEquals(name,model.playback.value.title)
+            assertEquals(title,model.playback.value.title)
             capture("shared-link-dismissed-phone-playing")
         }finally{model.graph.incomingShares.state.value?.let(model.graph.incomingShares::dismiss)}
         }
     }
     @Test fun signedOutEmptyQueryClearRefinementResetsVisibleLocalQuery() {
         val model=model()
-        withPhoneOriginal(model) { name->
+        withPhoneOriginal(model) { _,title->
         compose.onNodeWithContentDescription("Library search query").performTextReplacement("soundq-no-match-${UUID.randomUUID()}")
         compose.onNodeWithContentDescription("Search library").performClick()
         compose.onNodeWithText("No matching tracks").assertExists()
@@ -86,7 +101,7 @@ class PhoneReviewMountedJourneyTest {
         compose.onNodeWithText("Clear refinement").performClick()
         compose.onNodeWithContentDescription("Library search query").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.EditableText,androidx.compose.ui.text.AnnotatedString("")))
         compose.onNodeWithText("No matching tracks").assertDoesNotExist()
-        val ownedRow=hasText(name) and hasClickAction() and !hasSetTextAction()
+        val ownedRow=hasText(title) and hasClickAction() and !hasSetTextAction()
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(ownedRow)
         compose.onNode(ownedRow).assertIsDisplayed()
         capture("search-cleared-owned-row")
@@ -109,7 +124,7 @@ class PhoneReviewMountedJourneyTest {
             resolver.openOutputStream(uri,"w")!!.use {it.write(bytes)}
             resolver.update(uri,ContentValues().apply {put(MediaStore.MediaColumns.IS_PENDING,0)},null,null)
             model.graph.phoneAudio.selected(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION,false){true}
-            compose.waitUntil(15000){model.graph.phoneAudio.state.value.snapshot?.files?.any {it.available&&it.metadata.filename==name}==true}
+            awaitBothRoutes(model,name)
             val row=model.graph.phoneAudio.state.value.snapshot!!.files.single {it.metadata.filename==name}
             compose.runOnIdle {model.controller.playDevice(model.graph.phoneAudio.reference(row)){true}}
             compose.waitUntil(15000){model.playback.value.isPlaying&&model.playback.value.positionMs>100}

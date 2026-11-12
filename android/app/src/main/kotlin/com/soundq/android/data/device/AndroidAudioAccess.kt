@@ -121,7 +121,8 @@ internal class AndroidAudioAccess(private val context: Context) {
                         checkCurrent()
                         val uri = ContentUris.withAppendedId(collection, cursor.getLong(0))
                         val filename = cursor.getString(1) ?: "Audio file"
-                        add(AudioAccessObservation(uri.toString(), objectKey(uri), aliases(uri), null, filename,
+                        val identity = identity(uri)
+                        add(AudioAccessObservation(uri.toString(), identity.key, identity.all, null, filename,
                             cursor.getString(2).cleanTag() ?: filename, cursor.getString(3).cleanTag(), cursor.getString(4).cleanTag(),
                             cursor.nullLong(5), cursor.nullLong(6), cursor.nullLong(7), cursor.getString(8)))
                         if (truncated) break
@@ -173,7 +174,8 @@ internal class AndroidAudioAccess(private val context: Context) {
         val retriever = MediaMetadataRetriever()
         try {
             retriever.setDataSource(context, uri)
-            return AudioAccessObservation(uri.toString(), objectKey(uri), aliases(uri), grant, filename,
+            val identity = identity(uri)
+            return AudioAccessObservation(uri.toString(), identity.key, identity.all, grant, filename,
                 retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE).cleanTag() ?: filename,
                 retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST).cleanTag(),
                 retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM).cleanTag(),
@@ -217,23 +219,36 @@ internal class AndroidAudioAccess(private val context: Context) {
         if (!current()) throw CancellationException("Audio source retired")
         return AudioContentProof(total, digest.digest().joinToString("") { "%02x".format(it) })
     }
-    private fun aliases(uri: Uri): Set<String> = buildSet {
-        add(objectKey(uri))
-        if (Build.VERSION.SDK_INT >= 29) runCatching { MediaStore.getMediaUri(context, uri) }.getOrNull()?.let { add(objectKey(it)) }
-    }
-    private fun objectKey(uri: Uri): String {
+    /** Object identity, not the route used to reach it. A document resolves to its MediaStore row; a
+     * MediaStore row is keyed on its audio-index URI (see [MediaStoreIdentity]), with any earlier key kept as
+     * former so stored rows fold into one Library row. */
+    private fun identity(uri: Uri): ProviderIdentity {
         if (Build.VERSION.SDK_INT >= 29 && DocumentsContract.isDocumentUri(context, uri)) {
-            runCatching { MediaStore.getMediaUri(context, uri) }.getOrNull()?.let { return objectKey(it) }
+            runCatching { MediaStore.getMediaUri(context, uri) }.getOrNull()?.let { return identity(it) }
         }
-        if (uri.authority == MediaStore.AUTHORITY && Build.VERSION.SDK_INT >= 30) {
-            val generation = resolver.query(uri, arrayOf(MediaStore.MediaColumns.GENERATION_ADDED), null, null, null)?.use {
-                if (it.moveToFirst()) it.getLong(0) else null
-            } ?: throw java.io.IOException("Provider incarnation unavailable")
-            val volume = uri.pathSegments.firstOrNull() ?: throw java.io.IOException("Provider volume unavailable")
-            return "media:${MediaStore.getVersion(context, volume)}:$uri:$generation"
+        if (uri.authority == MediaStore.AUTHORITY && Build.VERSION.SDK_INT >= 29) return MediaStoreIdentity.of(uri.toString(), uri.pathSegments, mediaRows)
+        return ProviderIdentity(if (DocumentsContract.isDocumentUri(context, uri))
+            "document:${uri.authority}:${DocumentsContract.getDocumentId(uri)}" else "provider:$uri")
+    }
+    @RequiresApi(29) private val mediaRows = object : MediaStoreRows {
+        override fun row(uri: String): MediaRowFacts {
+            val generation = Build.VERSION.SDK_INT >= 30
+            val columns = if (generation) arrayOf(MediaStore.MediaColumns.VOLUME_NAME, MediaStore.MediaColumns.GENERATION_ADDED) else arrayOf(MediaStore.MediaColumns.VOLUME_NAME)
+            val facts = try {
+                resolver.query(Uri.parse(uri), columns, null, null, null)?.use {
+                    if (it.moveToFirst()) MediaRowFacts(if (generation) it.getLong(1) else null, it.getString(0)) else null
+                }
+            } catch (e: Exception) { if (generation) throw e else null }
+            // Before API 30 the key never read the provider; an unreadable volume only skips folding.
+            return facts ?: if (generation) throw java.io.IOException("Provider incarnation unavailable") else MediaRowFacts(null, null)
         }
-        return if (DocumentsContract.isDocumentUri(context, uri))
-            "document:${uri.authority}:${DocumentsContract.getDocumentId(uri)}" else "provider:$uri"
+        override fun indexedAudio(volume: String, id: Long): String? {
+            val audio = ContentUris.withAppendedId(MediaStore.Audio.Media.getContentUri(volume), id)
+            val listed = runCatching { resolver.query(audio, arrayOf(MediaStore.Audio.Media._ID), null, null, null)?.use { it.moveToFirst() } }.getOrNull() == true
+            return if (listed) audio.toString() else null
+        }
+        override fun key(uri: String, volume: String, facts: MediaRowFacts): String =
+            if (Build.VERSION.SDK_INT >= 30) "media:${MediaStore.getVersion(context, volume)}:$uri:${requireNotNull(facts.generation)}" else "provider:$uri"
     }
     private fun Cursor.nullLong(index: Int): Long? = if (isNull(index)) null else getLong(index).takeIf { it >= 0 }
     private fun String?.cleanTag(): String? = this?.trim()?.takeIf { it.isNotEmpty() && it != "<unknown>" }

@@ -26,10 +26,13 @@ internal data class ScanGrant(
     val id: ScanGrantId, val kind: GrantKind, val label: String, val locator: ProviderLocator,
     val persisted: Boolean, val state: AccessState = AccessState.AVAILABLE,
 ) { init { bounded(label) } }
-/** The platform adapter must prove object identity. Equal names or bytes are NOT proof. */
+/** The platform adapter must prove object identity. Equal names or bytes are NOT proof.
+ * [formerObjectIds] are earlier keys the provider proves name this same object (e.g. a MediaStore row once
+ * keyed by the collection a file grant reached it through); stored rows under them fold into this one. */
 internal data class DiscoveredAudio(
     val objectId: ProviderObjectId, val locator: ProviderLocator, val revision: ContentRevision,
     val metadata: OriginalMetadata, val durationMs: Long?, val state: AccessState = AccessState.AVAILABLE,
+    val formerObjectIds: Set<ProviderObjectId> = emptySet(),
 ) { init { require(durationMs == null || durationMs > 0) } }
 internal data class LocatorAccess(val grantId: ScanGrantId, val locator: ProviderLocator, val state: AccessState)
 internal data class DeviceAudio(
@@ -83,7 +86,20 @@ internal data class SuccessfulServerPlaybackReceipt(val capture: ServerHistoryCa
 internal data class RecentItem(val key: HistoryKey, val displayTitle: String)
 internal enum class Mutation { APPLIED, UNCHANGED, REFUSED }
 internal enum class LoadState { READY, REJECTED }
-internal data class DeviceListeningSnapshot(val revision: Long, val files: List<DeviceAudio>, val grants: List<ScanGrant>, val history: List<ListeningHistory>)
+/** A row folded into [into] because the provider proved both were one object. [from] is the retired row's
+ * last owner: a saved reference to exactly that content still resolves to the surviving row. */
+internal data class RetiredDeviceIdentity(val from: ContentOwner, val into: DeviceFileId) {
+    init { require(from.key is HistoryKey.Device && from.key.id != into) }
+}
+internal data class DeviceListeningSnapshot(val revision: Long, val files: List<DeviceAudio>, val grants: List<ScanGrant>, val history: List<ListeningHistory>,
+    val retired: List<RetiredDeviceIdentity> = emptyList()) {
+    /** The available row a saved reference names: itself, or the row its retired identity folded into. */
+    fun resolve(id: DeviceFileId, revision: ContentRevision, incarnation: Long): DeviceAudio? {
+        files.singleOrNull { it.id == id }?.let { return it.takeIf { it.revision == revision && it.incarnation == incarnation && it.available } }
+        val folded = retired.singleOrNull { it.from == ContentOwner(HistoryKey.Device(id), revision, incarnation) } ?: return null
+        return files.singleOrNull { it.id == folded.into && it.revision == revision && it.available }
+    }
+}
 /** Length-prefixed source-scoped encoding. Never concatenate bare account/endpoint/id delimiters. */
 internal fun stableSourceIdentity(key: HistoryKey): String {
     fun field(s: String) = "${s.length}:$s"
