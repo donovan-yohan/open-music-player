@@ -17,6 +17,7 @@ internal data class ServerContent(val owner: ContentOwner, val durationMs: Long)
 internal data class DomainState(
     val revision: Long = 0, val grants: List<ScanGrant> = emptyList(), val files: List<DeviceAudio> = emptyList(),
     val servers: List<ServerContent> = emptyList(), val journal: List<JournalEntry> = emptyList(),
+    val retired: List<RetiredDeviceIdentity> = emptyList(),
 )
 
 /** The only persistence owner. Lifetime OS lock excludes another writer, including same-process handles.
@@ -98,8 +99,10 @@ private fun key(v: HistoryKey): JsonObject = when (v) {
     is HistoryKey.Server -> obj("type" to s("server"), "endpoint" to s(v.scope.endpoint), "account" to s(v.scope.account), "id" to n(v.id.value))
 }
 private fun owner(v: ContentOwner) = obj("key" to key(v.key), "revision" to revision(v.revision), "incarnation" to n(v.incarnation))
+/** Format 2 is format 1 plus a non-empty "retired" list. A store with nothing folded is still written as
+ * format 1, byte for byte, so it stays readable by builds that predate folding. */
 internal fun encodeDomain(v: DomainState): JsonObject = obj(
-    "version" to n(1), "revision" to n(v.revision),
+    "version" to n(if (v.retired.isEmpty()) 1 else 2), "revision" to n(v.revision),
     "grants" to JsonArray(v.grants.map { g -> obj("id" to s(g.id.value.toString()), "kind" to s(g.kind.name), "label" to s(g.label), "locator" to locator(g.locator), "persisted" to b(g.persisted), "state" to s(g.state.name)) }),
     "files" to JsonArray(v.files.map { f -> obj(
         "id" to s(f.id.value.toString()), "provider" to s(f.objectId.provider), "objectId" to s(f.objectId.objectId), "revision" to revision(f.revision), "incarnation" to n(f.incarnation),
@@ -111,6 +114,7 @@ internal fun encodeDomain(v: DomainState): JsonObject = obj(
     "journal" to JsonArray(v.journal.map { j -> obj("key" to key(j.key), "playedAt" to (j.playedAt?.let(::n) ?: JsonNull),
         "bookmark" to (j.bookmark?.let { obj("owner" to owner(it.owner), "positionMs" to n(it.positionMs)) } ?: JsonNull),
         "traversal" to nullable(j.traversal?.toString()), "sequence" to n(j.sequence), "completed" to b(j.completed)) }),
+    *(if (v.retired.isEmpty()) emptyArray<Pair<String, JsonElement>>() else arrayOf<Pair<String, JsonElement>>("retired" to JsonArray(v.retired.map { obj("from" to owner(it.from), "into" to s(it.into.value.toString())) }))),
 )
 private fun JsonObject.text(k: String) = getValue(k).jsonPrimitive.also { require(it.isString) }.content
 private fun JsonObject.long(k: String) = getValue(k).jsonPrimitive.also { require(!it.isString) }.long
@@ -131,7 +135,8 @@ private fun JsonObject.owner(k: String): ContentOwner = getValue(k).jsonObject.l
 internal fun decodeDomain(bytes: ByteArray): DomainState {
     require(bytes.size <= DomainFile.MAX_BYTES)
     val root = Json.parseToJsonElement(bytes.toString(Charsets.UTF_8)).jsonObject
-    require(root.long("version") == 1L)
+    val format = root.long("version")
+    require(format == 1L || format == 2L)
     val state = DomainState(
         root.long("revision").also { require(it >= 0) },
         root.objects("grants").map { ScanGrant(ScanGrantId(UUID.fromString(it.text("id"))), GrantKind.valueOf(it.text("kind")), it.text("label"), it.locator("locator"), it.boolean("persisted"), AccessState.valueOf(it.text("state"))) },
@@ -142,6 +147,7 @@ internal fun decodeDomain(bytes: ByteArray): DomainState {
         root.objects("journal").map { j -> JournalEntry(j.key("key"), j.maybeLong("playedAt").also { require(it == null || it >= 0) },
             if (j.getValue("bookmark") == JsonNull) null else j.getValue("bookmark").jsonObject.let { Bookmark(it.owner("owner"), it.long("positionMs").also { require(it >= 0) }) },
             j.maybeText("traversal")?.let(UUID::fromString), j.long("sequence").also { require(it >= 0) }, j.boolean("completed")) },
+        if (format == 2L) root.objects("retired").map { RetiredDeviceIdentity(it.owner("from"), DeviceFileId(UUID.fromString(it.text("into")))) }.also { require(it.isNotEmpty()) } else emptyList(),
     )
     require(state.grants.distinctBy { it.id }.size == state.grants.size)
     require(state.files.distinctBy { it.id }.size == state.files.size && state.files.distinctBy { it.objectId }.size == state.files.size)
@@ -160,6 +166,9 @@ internal fun decodeDomain(bytes: ByteArray): DomainState {
         require(j.traversal != null || j.sequence == 0L)
         require(when (val k = j.key) { is HistoryKey.Device -> state.files.any { it.id == k.id }; is HistoryKey.Server -> j.bookmark == null || state.servers.any { it.owner.key == k } })
     }
+    val ids = state.files.map { it.id }.toSet()
+    require(state.retired.distinctBy { it.from.key }.size == state.retired.size)
+    require(state.retired.all { (it.from.key as HistoryKey.Device).id !in ids && it.into in ids })
     // Unknown/partial fields and malformed primitive types are rejected, not silently dropped on save.
     require(encodeDomain(state) == root)
     // Format 1 is canonical writer JSON, not an interchange document. This also refuses duplicate

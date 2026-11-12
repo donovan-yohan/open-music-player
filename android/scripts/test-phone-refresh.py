@@ -23,7 +23,7 @@ private class Resolver {@Volatile var persistedUriPermissions=emptyList<Permissi
 private class Permission(val uri:Uri,val isReadPermission:Boolean=true)
 private class Context {val contentResolver=Resolver()}
 private class Graph {val session=Session();val applicationContext=Context()}
-private data class Observation(val locator:String,val providerObject:String=locator,val filename:String=locator,val title:String=locator,val artist:String?=null,val album:String?=null,val durationMs:Long?=601000)
+private data class Observation(val locator:String,val providerObject:String=locator,val filename:String=locator,val title:String=locator,val artist:String?=null,val album:String?=null,val durationMs:Long?=601000,val aliases:Set<String> = setOf(providerObject))
 private data class Coverage(val observations:List<Observation>,val indexedComplete:Boolean=true,val truncated:Boolean=false,val unavailableGrants:Set<String> = emptySet())
 private data class Proof(val sha256:String="a".repeat(64),val bytes:Long=123)
 private class Platform {
@@ -39,7 +39,8 @@ private class Platform {
  @Volatile var accessRevision=0
  fun indexedAllowed()=allowed
  fun persistedTrees()=trees
- fun metadata(uri:Uri,value:String=uri.toString()):Observation=Observation(value)
+ val identities=java.util.concurrent.ConcurrentHashMap<String,Observation>()
+ fun metadata(uri:Uri,value:String=uri.toString()):Observation=identities[uri.toString()] ?: Observation(value)
  fun validTree(uri:Uri)=uri.toString().startsWith("tree:")
  fun persist(uri:Uri,flags:Int,folder:Boolean){error("Fixture uses session-only selected file")}
  fun folderLabel(value:String)=value
@@ -260,6 +261,24 @@ class PhoneRefreshTest {
    assertEquals(0,repo.platform.cancelled);assertEquals(2,repo.platform.discoveries);assertEquals(2,repo.store.publications)
    assertEquals(0,repo.store.obsoletePublications);assertEquals(1,store.snapshot(repo.access)!!.files.size)
   }}finally{gate.countDown();jobs.cancel();root.deleteRecursively()}
+ }
+ @Test fun fileGrantProvingAFormerKeyFoldsItsRowIntoTheIndexedRow()=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-fold-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+  try {DeviceListeningStore(File(root,"domain.json")).use {store->
+   val repo=Repository(store,jobs)
+   repo.platform.rows=listOf(Observation("indexed:41",providerObject="canonical",filename="song.wav"))
+   // Before canonical identity, the file grant keyed the same provider row by its own route.
+   repo.platform.identities["selected:41"]=Observation("selected:41",providerObject="legacy",filename="song.wav")
+   repo.selected(Uri("selected:41"),1,false){true}
+   withTimeout(5000){while(store.snapshot(repo.access)!!.files.count {it.available}<2)delay(1)};repo.settled()
+   assertEquals(2,store.snapshot(repo.access)!!.files.size)
+   repo.platform.identities["selected:41"]=Observation("selected:41",providerObject="canonical",filename="song.wav",aliases=setOf("canonical","legacy"))
+   repo.refresh();repo.settled()
+   val row=store.snapshot(repo.access)!!.files.single()
+   assertEquals(ProviderObjectId("android-content","canonical"),row.objectId)
+   assertEquals(setOf("indexed:41","selected:41"),row.aliases.filter {it.state==AccessState.AVAILABLE}.map {it.locator.value}.toSet())
+   assertEquals(1,store.snapshot(repo.access)!!.retired.size)
+  }}finally{jobs.cancel();root.deleteRecursively()}
  }
  @Test fun partialEnumerationAndRetiredProofNeverReplaceAcknowledgedCorpus()=runBlocking {
   val root=java.nio.file.Files.createTempDirectory("refresh-cancel-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)

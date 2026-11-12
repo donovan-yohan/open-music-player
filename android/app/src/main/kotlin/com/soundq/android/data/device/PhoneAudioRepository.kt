@@ -146,7 +146,8 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                             try {
                                 val proof = platform.proof(observation.locator) { active() }
                                 DiscoveredAudio(ProviderObjectId("android-content", observation.providerObject), locator(observation.locator), ContentRevision(proof.sha256, proof.bytes),
-                                    OriginalMetadata(observation.filename, observation.title, observation.artist, observation.album, observation.locator), observation.durationMs?.takeIf { it > 0 })
+                                    OriginalMetadata(observation.filename, observation.title, observation.artist, observation.album, observation.locator), observation.durationMs?.takeIf { it > 0 },
+                                    formerObjectIds = (observation.aliases - observation.providerObject).map { ProviderObjectId("android-content", it) }.toSet())
                             } catch(e:CancellationException){throw e}
                             catch(_:Exception){complete=false;partial=true;null}
                         }
@@ -210,9 +211,9 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
             } catch (_: Exception) { fail("Folder removal was not confirmed. Your files and saved progress were kept.") }
         } }
     }
-    fun observed(ref: com.soundq.android.playback.PlaybackRef.Device): DeviceAudio? = state.value.snapshot?.files?.singleOrNull {
-        it.id.value.toString()==ref.id && it.revision.sha256==ref.sha256 && it.revision.byteLength==ref.bytes && it.incarnation==ref.incarnation && it.available
-    }
+    /** A saved reference to a row later folded into another (one provider object) resolves to the survivor. */
+    fun observed(ref: com.soundq.android.playback.PlaybackRef.Device): DeviceAudio? =
+        state.value.snapshot?.resolve(DeviceFileId(UUID.fromString(ref.id)), ContentRevision(ref.sha256, ref.bytes), ref.incarnation)
     fun reference(row:DeviceAudio)=com.soundq.android.playback.PlaybackRef.Device(row.id.value.toString(),row.revision.sha256,row.revision.byteLength,row.incarnation)
     suspend fun <T> journal(publishState:Boolean=false,block:(DeviceListeningStore,AccessCapture)->T):T?=withContext(Dispatchers.IO) {serial.withLock {
         if(!current(graph.session.version()))return@withLock null

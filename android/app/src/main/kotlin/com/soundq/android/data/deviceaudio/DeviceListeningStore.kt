@@ -61,8 +61,11 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
     @Synchronized fun publishScan(capture: ScanCapture, audio: List<DiscoveredAudio>, complete: Boolean = true): Mutation {
         if (!current(capture.access) || scans[capture.grantId] != capture.sequence || state.grants.none { it.id == capture.grantId && it.state == AccessState.AVAILABLE }) return Mutation.REFUSED
         if (audio.size > DomainFile.MAX_RECORDS || audio.distinctBy { it.locator }.size != audio.size) return Mutation.REFUSED
-        if (audio.groupBy { it.objectId }.values.any { rows -> rows.any { it.copy(locator = rows[0].locator, state = rows[0].state) != rows[0] } }) return Mutation.REFUSED
-        var files = state.files.map { f -> f.copy(aliases = f.aliases.map { a ->
+        if (audio.groupBy { it.objectId }.values.any { rows -> rows.any { it.copy(locator = rows[0].locator, state = rows[0].state, formerObjectIds = rows[0].formerObjectIds) != rows[0] } }) return Mutation.REFUSED
+        // Fold rows stored under a provider-proved former key into the published object before reconciling
+        // aliases, so the object stays one row and its listening history moves with it.
+        val fold = IdentityFold.before(state.files, audio)
+        var files = fold.files.map { f -> f.copy(aliases = f.aliases.map { a ->
             val movedTo = audio.find { it.locator == a.locator }
             if ((complete && a.grantId == capture.grantId && audio.none { it.objectId == f.objectId && it.locator == a.locator }) || (movedTo != null && movedTo.objectId != f.objectId)) a.copy(state = AccessState.MISSING) else a
         }) }.toMutableList()
@@ -70,26 +73,36 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
             val at = files.indexOfFirst { it.objectId == d.objectId }
             val old = files.getOrNull(at)
             val alias = LocatorAccess(capture.grantId, d.locator, d.state)
+            // One object reached through several grants is presented by the best-ranked grant reaching it
+            // (the audio index, then folders, then files). Routes report tags differently; alternating them
+            // would rewrite the store on every refresh. Changed content always takes the fresh metadata.
+            val shared = old != null && old.revision == d.revision && old.aliases.any { it.grantId != capture.grantId && it.state == AccessState.AVAILABLE && presents(it.grantId, capture.grantId) }
             val next = DeviceAudio(old?.id ?: DeviceFileId(UUID.randomUUID()), d.objectId, d.revision,
                 if (old == null) 1 else if (old.revision == d.revision) old.incarnation else Math.addExact(old.incarnation, 1),
-                d.metadata, d.durationMs, (old?.aliases.orEmpty().filterNot { it.grantId == alias.grantId && it.locator == alias.locator } + alias))
+                if (shared) old!!.metadata else d.metadata, if (shared) old!!.durationMs else d.durationMs,
+                (old?.aliases.orEmpty().filterNot { it.grantId == alias.grantId && it.locator == alias.locator } + alias))
             if (at < 0) files.add(next) else files[at] = next
         }
         files = files.map { f -> f.copy(aliases = f.aliases.sortedWith(compareBy({ it.grantId.value.toString() }, { it.locator.provider }, { it.locator.value }))) }.toMutableList()
         if (files.size > DomainFile.MAX_RECORDS) return Mutation.REFUSED
-        val invalidateAccess = state.files.any { old -> files.find { it.id == old.id }?.let { it.aliases != old.aliases || it.owner != old.owner } == true }
-        val result = commit(state.copy(files = files))
+        val (journal, retired) = fold.after(files, state.journal, state.retired)
+        val invalidateAccess = fold.merges.isNotEmpty() || state.files.any { old -> files.find { it.id == old.id }?.let { it.aliases != old.aliases || it.owner != old.owner } == true }
+        val result = commit(state.copy(files = files, journal = journal, retired = retired))
         if (result == Mutation.APPLIED && invalidateAccess) accessChanged()
         // One publication per capture, even if idempotent. Older captures never become current again.
         if (result != Mutation.REFUSED) scans.remove(capture.grantId)
         return result
     }
+    private fun rank(id: ScanGrantId) = state.grants.find { it.id == id }?.kind?.let { listOf(GrantKind.INDEXED, GrantKind.FOLDER, GrantKind.FILE).indexOf(it) } ?: Int.MAX_VALUE
+    /** Whether [other] outranks [publisher] for presenting a shared object. */
+    private fun presents(other: ScanGrantId, publisher: ScanGrantId): Boolean =
+        compareValuesBy(other, publisher, { rank(it) }, { it.value.toString() }) < 0
     @Synchronized fun snapshot(access: AccessCapture): DeviceListeningSnapshot? {
         if (!current(access)) return null
         val grants = state.grants.map { if (!it.persisted && it.state == AccessState.AVAILABLE && !sessionGrants.contains(it.id)) it.copy(state = AccessState.REVOKED) else it }
         val usable = grants.filter { it.state == AccessState.AVAILABLE }.map { it.id }.toSet()
         return DeviceListeningSnapshot(state.revision, state.files.map { f -> f.copy(aliases = f.aliases.map { if (it.grantId !in usable && it.state == AccessState.AVAILABLE) it.copy(state = AccessState.REVOKED) else it }) }, grants.toList(),
-            state.journal.filter { permitted(it.key) }.map { ListeningHistory(it.key, it.playedAt, it.bookmark) })
+            state.journal.filter { permitted(it.key) }.map { ListeningHistory(it.key, it.playedAt, it.bookmark) }, state.retired)
     }
     private data class Active(val capture: TraversalCapture, val duration: Long, val admissionOrder: Long, val played: Boolean = false)
     // Prepared occurrences coexist. Only successful advancing playback acquires the durable journal.
