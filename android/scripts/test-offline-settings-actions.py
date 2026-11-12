@@ -19,7 +19,7 @@ def braces(source,start):
     return source[start:end]
 def callback(source,marker):
     return braces(source,source.index('{',source.index(marker)+len(marker)))
-open_clear=callback(settings,'SoundQButton("Clear temporary audio",')
+open_clear=callback(settings,'SoundQSettingsRow("Clear temporary audio",onClick=')
 clear_section=settings[settings.index('title={Text("Clear temporary audio?")}'):]
 confirm=callback(clear_section,'TextButton(onClick=')
 clear_decl=next(line.strip() for line in settings.splitlines() if 'var confirmClear by remember' in line)
@@ -62,6 +62,7 @@ APPEARANCE
  return ::choose
 }
 class Graph(val temporaryAudio:TemporaryAudioCache)
+const val CLEAR_FAILED="Couldn’t clear some audio"
 class ClearBinding(val graph:Graph) {
  DECLARATION
  var cacheMessage:String?=null

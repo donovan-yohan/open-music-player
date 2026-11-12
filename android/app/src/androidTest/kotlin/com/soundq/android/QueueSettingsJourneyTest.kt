@@ -33,9 +33,8 @@ class QueueSettingsJourneyTest {
             compose.waitUntil(10000){model.playback.value.isPlaying&&model.playback.value.queue.any {it.manual}}
             val before=model.playback.value
             assertTrue(before.isPlaying)
-            compose.onNodeWithContentDescription("Account and preview information").performClick()
-            compose.onNodeWithText("Settings").performClick()
-            if(graph.queueSettings.state.value.keepQueued)compose.onNodeWithContentDescription("Keep queued songs").performClick()
+            compose.onNodeWithContentDescription("Settings").performClick()
+            if(graph.queueSettings.state.value.keepQueued)compose.onNode(hasText("Keep queued songs") and isToggleable()).performClick()
             compose.waitUntil(10000){!graph.queueSettings.state.value.keepQueued}
             assertEquals(before.queue,model.playback.value.queue)
             assertEquals(before.selectedOccurrence,model.playback.value.selectedOccurrence)
@@ -53,9 +52,8 @@ class QueueSettingsJourneyTest {
             compose.waitUntil(10000){model.playback.value.isPlaying&&model.playback.value.queue.any {it.occurrenceId==manual}}
             val beforeKeep=model.playback.value
             assertTrue(beforeKeep.isPlaying)
-            compose.onNodeWithContentDescription("Account and preview information").performClick()
-            compose.onNodeWithText("Settings").performClick()
-            compose.onNodeWithContentDescription("Keep queued songs").performClick()
+            compose.onNodeWithContentDescription("Settings").performClick()
+            compose.onNode(hasText("Keep queued songs") and isToggleable()).performClick()
             compose.waitUntil(10000){graph.queueSettings.state.value.keepQueued}
             assertEquals(beforeKeep.queue,model.playback.value.queue)
             assertEquals(beforeKeep.selectedOccurrence,model.playback.value.selectedOccurrence)

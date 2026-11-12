@@ -155,7 +155,7 @@ class NativeJamRecoveryJourneyTest {
         signIn();awaitQueue(expected.getJSONObject("queue").getJSONArray("rows").length())
         sameQueue(expected.getJSONObject("queue"),queue())
         assertEquals(0,app.queuedReceiptAttempts.get())
-        compose.onNodeWithContentDescription("Account and settings").performClick();click("Jam")
+        compose.onNodeWithContentDescription("Settings").performClick();click("Music tools");click("Jam")
         compose.waitUntil(15000){compose.onAllNodesWithText("Check same Jam").fetchSemanticsNodes().isNotEmpty()&&app.graph.presence.capture()!=null}
         click("Check same Jam")
         val host=app.graph.jam

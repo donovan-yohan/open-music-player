@@ -24,7 +24,7 @@ class ImportPresentationTest {
             ImportsScreen(state,{}, {}, {}, {}, {}, {}, {}, {}, {})
         }}}
         val field=compose.onNodeWithContentDescription("Source URL").fetchSemanticsNode().boundsInRoot
-        compose.onNodeWithContentDescription("Account and settings").assertExists()
+        compose.onNodeWithContentDescription("Settings").assertExists()
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("SoundCloud import"))
         val youtube=compose.onNode(hasText("YouTube import") and hasClickAction()).fetchSemanticsNode().boundsInRoot
         val soundcloud=compose.onNode(hasText("SoundCloud import") and hasClickAction()).fetchSemanticsNode().boundsInRoot

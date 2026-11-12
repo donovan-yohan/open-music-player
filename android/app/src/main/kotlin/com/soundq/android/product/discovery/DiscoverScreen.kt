@@ -90,7 +90,7 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else "${ms/
                 SoundQIconButton(SoundQIcon.More,"Discover options",{options=true},Modifier.width(48.dp).height(64.dp),outlined=false)
                 DropdownMenu(options,{options=false}) {
                     DropdownMenuItem(text={Text("Server tools",style=SoundQ.typography.body)},leadingIcon={SoundQIcon(SoundQIcon.List,null)},onClick={options=false;onAcquisition()})
-                    DropdownMenuItem(text={Text("Account and settings",style=SoundQ.typography.body)},leadingIcon={SoundQIcon(SoundQIcon.Settings,null)},onClick={options=false;onAccount()})
+                    DropdownMenuItem(text={Text("Settings",style=SoundQ.typography.body)},leadingIcon={SoundQIcon(SoundQIcon.Settings,null)},onClick={options=false;onAccount()})
                 }
             }
         };SoundQDivider()}

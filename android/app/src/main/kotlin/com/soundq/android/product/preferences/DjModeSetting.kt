@@ -1,9 +1,6 @@
 package com.soundq.android.product.preferences
 
-import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.soundq.android.data.preferences.*
 import com.soundq.designsystem.*
@@ -30,17 +27,11 @@ import kotlinx.coroutines.*
         work.launch {try {withContext(Dispatchers.IO){if(valid())owner.load()};if(valid())retry=null}finally {pending=false}}
     }
     val enabled=state.ready&&capture!=null&&!pending
-    SettingsChoices {
-        SoundQRow("DJ mode","Harmonic matching in playlists",state.enabled,{choose(!state.enabled)},enabled=enabled,role=Role.Switch,
-            trailing={Switch(state.enabled,null,enabled=enabled)})
-    }
-    Text("Other DJ controls are unavailable.",color=SoundQ.colors.muted)
-    if(!state.ready)SoundQFeedback("Loading DJ mode",FeedbackKind.Loading)
-    if(pending)SoundQFeedback("Saving DJ mode…",FeedbackKind.Loading)
-    if(state.error==DjModeError.Read)SoundQFeedback("Couldn't load DJ mode",FeedbackKind.Error,"Your saved choice hasn't been replaced.","Reload DJ mode",::reload)
-    if(state.error==DjModeError.Write) {
+    SoundQSettingsSwitchRow("DJ mode",state.enabled,{choose(it)},supporting=if(state.ready)"Harmonic matching in playlists" else "Loading…",enabled=enabled)
+    if(state.error==DjModeError.Read)SoundQSettingsBlock {SoundQFeedback("Couldn't load DJ mode",FeedbackKind.Error,action="Reload DJ mode",onAction=::reload)}
+    if(state.error==DjModeError.Write)SoundQSettingsBlock {
         val failed=retry
-        SoundQFeedback("Couldn't save DJ mode",FeedbackKind.Error,"Your previous choice is unchanged.",if(failed!=null)"Retry DJ mode" else "Reload DJ mode",{if(failed!=null)choose(failed)else reload()})
+        SoundQFeedback("Couldn't save DJ mode",FeedbackKind.Error,action=if(failed!=null)"Retry DJ mode" else "Reload DJ mode",onAction={if(failed!=null)choose(failed)else reload()})
         if(failed!=null)SoundQButton("Reload DJ mode",::reload,variant=SoundQButtonVariant.Quiet,enabled=!pending)
     }
 }

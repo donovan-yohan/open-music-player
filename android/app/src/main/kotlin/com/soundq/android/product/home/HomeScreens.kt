@@ -44,7 +44,7 @@ import java.time.format.DateTimeFormatter
             Text(if(route.destination==HomeDestination.History) "Listening history" else "Home",Modifier.weight(1f).padding(horizontal=SoundQ.spacing.gutter).semantics {heading()},style=SoundQ.typography.title)
             if(route.destination==HomeDestination.History)SoundQIconButton(SoundQIcon.Retry,"Refresh history",{model.loadHome(route,HomeSection.History,historyState)},enabled=acceptedHistory&&!historyState.loading,outlined=false)
             else onHistory?.let {SoundQIconButton(SoundQIcon.List,"Listening history",it,outlined=false)}
-            SoundQIconButton(SoundQIcon.Settings,"Account and settings",onAccount,outlined=false)
+            SoundQIconButton(SoundQIcon.Settings,"Settings",onAccount,outlined=false)
         }
         SoundQDivider()
         if(route.destination==HomeDestination.History) {

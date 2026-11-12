@@ -31,6 +31,7 @@ import com.soundq.android.data.home.*
 import com.soundq.android.product.home.*
 import com.soundq.android.data.imports.ImportView
 import com.soundq.android.product.imports.ImportsScreen
+import com.soundq.android.product.preferences.*
 
 @Composable fun ProductApp(model:ProductViewModel=viewModel()) {
     val auth by model.auth.collectAsStateWithLifecycle()
@@ -136,6 +137,11 @@ import com.soundq.android.product.imports.ImportsScreen
     DisposableEffect(picker) {val captured=picker;onDispose {captured?.close()}}
     LaunchedEffect(picker) {picker?.let {if(membership.outcome==null)it.reload()}}
     var panel by remember {mutableStateOf<String?>(null)}
+    // Settings is a full-screen route family, not a panel. Names are saveable; decode drops unknown entries.
+    var settingsRoutes by rememberSaveable {mutableStateOf(emptyList<String>())}
+    var settingsReturn by rememberSaveable {mutableStateOf<List<String>?>(null)}
+    var settingsOrigin by rememberSaveable {mutableStateOf("Library")}
+    var pendingTool by rememberSaveable {mutableStateOf<String?>(null)}
     var transportReturn by remember(accountVersion) {mutableStateOf<String?>(null)}
     fun closeDetails(captured:com.soundq.android.data.trackdetails.DetailsRoute) {
         model.graph.trackDetails.close(captured)
@@ -175,8 +181,15 @@ import com.soundq.android.product.imports.ImportsScreen
         rowLifecycle.addObserver(observer)
         onDispose {currentRowLifetime.close();revealOwner.close();rowLifecycle.removeObserver(observer)}
     }
+    fun openSettings(routes:List<SettingsRoute> = listOf(SettingsRoute.Root)) {
+        if(settingsRoutes.isEmpty())settingsOrigin=destination
+        settingsReturn=null;panel=null;settingsRoutes=routes.encode()
+    }
+    /** Actions that need a session open Account (or its sign-in form) on top of whatever Settings already shows. */
+    fun openAccount() {openSettings(SettingsRoute.decode(settingsRoutes)+accountEntry(auth))}
     fun navigate(next:String) {
-        if(auth !is AuthState.SignedIn&&next !in setOf("Library","Downloads")){panel="Account";return}
+        if(auth !is AuthState.SignedIn&&next !in setOf("Library","Downloads")){openAccount();return}
+        settingsReturn=null
         acquisitionReturn=emptyList()
         collectionVisit.close();paginationVisit.close();paginationNavigation++
         rowLifetime.close();revealOwner.close()
@@ -192,14 +205,45 @@ import com.soundq.android.product.imports.ImportsScreen
         shell.navigate(when(next){"Home"->HomeDestination.Home;"History"->HomeDestination.History;else->HomeDestination.Library})
         destination=next
     }
+    /** Leave Settings for an existing destination, keeping a token so Back returns to the opening row. */
+    fun settingsDestination(next:String,after:()->Unit={}) {
+        if(auth !is AuthState.SignedIn&&next !in setOf("Library","Downloads")){openAccount();return}
+        val stack=settingsRoutes
+        settingsRoutes=emptyList();navigate(next);after();settingsReturn=stack
+    }
+    fun returnToSettings():Boolean {
+        val stack=settingsReturn ?: return false
+        settingsReturn=null;navigate(settingsOrigin);settingsRoutes=stack
+        return true
+    }
     fun openImports() {catalogActions?.close();orderActions?.close();closeQueueSave();model.graph.acquisition.closeCurrent();detailsRoute?.let(model.graph.trackDetails::close);detailsRoute=null;leaveDiscovery();panel=null;importView=model.graph.imports.open()}
+    /** Music tools keep their existing owners. Without a session, Account opens and the chosen tool is retained. */
+    fun openTool(tool:MusicTool) {
+        if(auth !is AuthState.SignedIn){pendingTool=tool.name;openAccount();return}
+        when(tool) {
+            MusicTool.Catalog->settingsDestination("Catalog")
+            MusicTool.Mixes->settingsDestination("Mixes")
+            MusicTool.ConnectedDevices->panel="Devices"
+            MusicTool.Jam->panel="Jam"
+            MusicTool.Imports->settingsDestination("Discover") {openImports()}
+            MusicTool.ServerImports->settingsDestination("Acquisition")
+        }
+    }
     val deviceScope=remember(accountVersion,auth is AuthState.DeviceOnly) {if(auth is AuthState.DeviceOnly)model.graph.session.capture() else null}
     androidx.activity.compose.BackHandler(auth is AuthState.DeviceOnly || (auth is AuthState.Pending && onlineRestore!=null)) {
         deviceScope?.let(model::goOnline)
     }
-    androidx.activity.compose.BackHandler(auth is AuthState.SignedIn && destination in listOf("Home","History","Discover","Downloads","Acquisition","Mixes") && importView==null && panel==null) {navigate("Library")}
+    androidx.activity.compose.BackHandler(((auth is AuthState.SignedIn && destination in listOf("Home","History","Discover","Downloads","Acquisition","Mixes"))||settingsReturn!=null) && importView==null && panel==null && settingsRoutes.isEmpty()) {if(!returnToSettings())navigate("Library")}
     LaunchedEffect(auth) {if(auth !is AuthState.SignedIn){orderActions?.close();closeQueueSave();importView?.let(model.graph.imports::close);importView=null;revealImported=null;detailsRoute?.let(model.graph.trackDetails::close);detailsRoute=null;panel=null;selected=null;picker?.close();picker=null;trackCapture=null;gallery=false;if(auth !is AuthState.Restoring && auth !is AuthState.Pending){acquisitionReturn=emptyList();destination="Library"}}}
     LaunchedEffect(playlistActions) {playlistActions?.reload()}
+    LaunchedEffect(auth is AuthState.SignedIn) {
+        val tool=pendingTool?.let {name->MusicTool.entries.firstOrNull {it.name==name}}
+        if(auth is AuthState.SignedIn&&tool!=null&&settingsRoutes.isNotEmpty()) {
+            pendingTool=null
+            settingsRoutes=SettingsRoute.decode(settingsRoutes).dropLastWhile {it in setOf(SettingsRoute.Account,SettingsRoute.SignIn,SettingsRoute.CreateAccount)}.ifEmpty {listOf(SettingsRoute.Root)}.encode()
+            openTool(tool)
+        }
+    }
     val appearance by model.graph.appearancePreferences.state.collectAsStateWithLifecycle()
     SoundQTheme(appearance=when(appearance.choice) {
         com.soundq.android.data.preferences.Appearance.System->soundq.design.generated.SoundQAppearance.System
@@ -221,11 +265,26 @@ import com.soundq.android.product.imports.ImportsScreen
                     }
                     Box(Modifier.weight(1f)){AuthScreen(auth,model)}
                 }
+                else if(settingsRoutes.isNotEmpty()) key(accountVersion) {
+                    // Full screen: replaces tab content, bottom navigation and the compact player. Playback is untouched.
+                    SettingsHost(model,auth,SettingsRoute.decode(settingsRoutes),{routes->
+                            settingsRoutes=routes.encode()
+                            if(SettingsRoute.Account !in routes)pendingTool=null
+                        },
+                        SettingsExits(onExit={settingsRoutes=emptyList()},
+                            // Downloads belong to an account or offline session; without one, Account opens instead of an empty page.
+                            onDownloads={if(model.graph.session.capture()==null)openAccount() else settingsDestination("Downloads")},
+                            onHistory={settingsDestination("History")},
+                            onTool=::openTool,
+                            onSignedOut={orderActions?.close();closeQueueSave();importView?.let(model.graph.imports::close);importView=null;panel=null;settingsRoutes=listOf(SettingsRoute.Root).encode()},
+                            onGallery=if(BuildConfig.DEBUG&&auth is AuthState.SignedIn){{gallery=true}}else null),
+                        authForm={register->AuthScreen(auth,model,scrollable=false,embedded=true,initialRegister=register)})
+                }
                 else Column(Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxSize()) {
                     incomingShare?.takeIf {it.account==null||it.account==(auth as? AuthState.SignedIn)?.accountId}?.let {
                         Row(Modifier.fillMaxWidth().heightIn(min=48.dp).padding(start=SoundQ.spacing.gutter),verticalAlignment=Alignment.CenterVertically) {
                             Text(if(auth is AuthState.SignedIn)"Shared link ready" else "Shared music link retained. Sign in, then confirm the import.",Modifier.weight(1f),style=SoundQ.typography.caption)
-                            LibraryIconCell(SoundQIcon.Info,"Review shared link",{panel=if(auth is AuthState.SignedIn)"SharedLink" else "Account"})
+                            LibraryIconCell(SoundQIcon.Info,"Review shared link",{if(auth is AuthState.SignedIn)panel="SharedLink" else openAccount()})
                         }
                         SoundQDivider()
                     }
@@ -233,7 +292,7 @@ import com.soundq.android.product.imports.ImportsScreen
                     val importDraft=imports.draft
                     if(activeImport!=null) {
                         fun closeImports(){model.graph.imports.close(activeImport);importView=null}
-                        androidx.activity.compose.BackHandler {closeImports()}
+                        androidx.activity.compose.BackHandler {closeImports();returnToSettings()}
                         Box(Modifier.weight(1f).fillMaxWidth()) {
                             ImportsScreen(imports,{model.graph.imports.edit(activeImport,it)},
                                 {model.submitImport(activeImport,importDraft)},
@@ -241,7 +300,7 @@ import com.soundq.android.product.imports.ImportsScreen
                                 {model.graph.imports.select(activeImport,it)},
                                 {model.graph.imports.another(activeImport)},
                                 {model.openImportLibrary(activeImport){id -> if(importView===activeImport){revealImported=id;closeImports();navigate("Library")}}},
-                                {closeImports()},{panel="Account"},
+                                {closeImports();returnToSettings()},{openSettings()},
                                 {receipt->model.recoverSourceImport(activeImport,receipt)},
                                 {receipt->model.retrySourceImport(activeImport,receipt)},{receipt->model.recoverDurableImport(activeImport,receipt)},{receipt->model.retryDurablePublication(activeImport,receipt)},
                                 onOpenPlaylist={confirmation->model.graph.imports.openPlaylistTarget(activeImport,confirmation){id->closeImports();navigate("Playlists");if(model.graph.playlistDetail.select(id)!=null)model.retryPlaylistDetail()}})
@@ -252,17 +311,17 @@ import com.soundq.android.product.imports.ImportsScreen
                                 {job,id->navigate("Playlists");acquisitionReturn=owner.saveJob(job.value);if(model.graph.playlistDetail.select(PlaylistId(id))!=null)model.retryPlaylistDetail()},acquisitionPlaylistJob?.let {com.soundq.android.data.imports.ImportJobId(it)})
                         }}}
                     } else if(destination=="Catalog") Box(Modifier.weight(1f).fillMaxWidth()) {
-                        catalogActions?.let {com.soundq.android.product.catalog.CatalogScreen(catalog,it,{navigate("Library")})}
+                        catalogActions?.let {com.soundq.android.product.catalog.CatalogScreen(catalog,it,{if(!returnToSettings())navigate("Library")})}
                     } else if(destination=="Mixes") Box(Modifier.weight(1f).fillMaxWidth()) {
                         key(accountVersion) {com.soundq.android.product.mix.MixScreen(model)}
                     } else if(destination=="Downloads") Box(Modifier.weight(1f).fillMaxWidth()) {
                         val scope=remember(accountVersion){model.graph.session.capture()}
-                        scope?.let {com.soundq.android.product.offline.DownloadsScreen(model,downloads,it,{navigate("Library")})}
+                        scope?.let {com.soundq.android.product.offline.DownloadsScreen(model,downloads,it,{if(!returnToSettings())navigate("Library")})}
                     } else if(destination=="Discover") Box(Modifier.weight(1f).fillMaxWidth()) {
-                        com.soundq.android.product.discovery.DiscoverScreen(model,discoveryView,discoveryIntake,{openImports()},{panel="Account"},{navigate("Acquisition")})
+                        com.soundq.android.product.discovery.DiscoverScreen(model,discoveryView,discoveryIntake,{openImports()},{openSettings()},{navigate("Acquisition")})
                         com.soundq.android.product.imports.SourceImportOptions(model,discoveryIntake)
                     } else if(destination in listOf("Home","History")) Box(Modifier.weight(1f).fillMaxWidth()) {
-                        HomeDestinationScreen(model,route,{navigate("Library")},{panel="Account"},revealOwner,onHistory={navigate("History")})
+                        HomeDestinationScreen(model,route,{navigate("Library")},{openSettings()},revealOwner,onHistory={navigate("History")})
                     } else if(destination=="Playlists") Box(Modifier.weight(1f).fillMaxWidth()) {
                         val artworkCapture=remember(playlistDetail.detail?.let(::RowIdentity),accountVersion,playlistArtworkVisit,blendForeground) {if(blendForeground)model.graph.playlistDetail.capturePlayback()else null}
                         if(playlistDetail.id!=null)com.soundq.android.product.playlists.HarmonicPlaylist(model,managementActions) {harmonicEntry,harmonicFeedback->com.soundq.android.product.playlists.PlaylistDetailScreen(
@@ -284,7 +343,7 @@ import com.soundq.android.product.imports.ImportsScreen
                         val mixedNeeded=phone.snapshot?.files?.isNotEmpty()==true||downloadTracks.isNotEmpty()||localFiles||recentOrder||auth !is AuthState.SignedIn
                         LaunchedEffect(accountVersion,library,mixedNeeded) {if(mixedNeeded&&auth is AuthState.SignedIn)kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){model.graph.library.completeProjection(library)}}
                         val mixedRows=remember(library,phone.snapshot,downloads,account,projectionOwner,accountVersion,localFiles,recentOrder,mixedQuery) {unifiedLibraryRows(model.graph.endpoint.identity,account,if(auth is AuthState.SignedIn&&projectionOwner!=null)library.rows else emptyList(),downloadTracks,phone.snapshot,mixedQuery,localFiles,recentOrder)}
-                        LibraryHeader({panel="Account"},{navigate("Catalog")})
+                        LibraryHeader({openSettings()},{navigate("Catalog")})
                         LibrarySearch(mixedQuery.text) {if(auth is AuthState.SignedIn)model.refine(library.query.copy(text=it))else localQuery=localQuery.copy(text=it)}
                         LibraryFilters(mixedQuery.liked,if(mixedNeeded)mixedRows.size else library.total,{if(auth is AuthState.SignedIn)model.refine(library.query.copy(liked=it))else localQuery=localQuery.copy(liked=it)},{panel="Refine"})
                         Row(Modifier.fillMaxWidth().heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically) {
@@ -347,7 +406,7 @@ import com.soundq.android.product.imports.ImportsScreen
                     }
                     SoundQCompactPlayer(playback.title ?: "Nothing playing",playback.artist,playback.isPlaying,playback.canPlay,playback.preparing,{transportReturn=null;panel="Player"},model.controller::toggle,{transportReturn=null;panel="Queue"},
                         timing=compactSongTiming(playback),artwork={com.soundq.android.product.artwork.PlayerArtwork(model.graph,playback,72.dp,{compactEntry.get()})})
-                    SoundQBottomNavigation(when(destination){"History"->"Home";"Catalog","Downloads","Acquisition"->"Library";else->destination},::navigate)
+                    SoundQBottomNavigation(when(destination){"History"->"Home";"Catalog","Downloads","Acquisition"->"Library";else->destination},{settingsReturn=null;navigate(it)})
                 }
                 if(auth is AuthState.SignedIn || auth is AuthState.DeviceOnly || auth is AuthState.SignedOut)when(panel) {
                     "SharedLink"->incomingShare?.takeIf {auth is AuthState.SignedIn&&(it.account==null||it.account==(auth as? AuthState.SignedIn)?.accountId)}?.let {share->SoundQSheet("Shared link",{panel=null}) {
@@ -357,29 +416,8 @@ import com.soundq.android.product.imports.ImportsScreen
                         },enabled=!imports.pending)
                         SoundQButton("Discard shared link",{model.graph.incomingShares.dismiss(share);panel=null},variant=SoundQButtonVariant.Quiet)
                     }}
-                    "Account"->SoundQSheet("Account",{panel=null}) {
-                        if(auth !is AuthState.SignedIn) {
-                            if(auth is AuthState.DeviceOnly)deviceScope?.let {scope->SoundQButton("Go online",{model.goOnline(scope);panel=null})}
-                            else AuthScreen(auth,model,scrollable=false)
-                            SoundQButton("Settings",{panel="Settings"},variant=SoundQButtonVariant.Secondary)
-                            SoundQButton("Back to Library",{panel=null},variant=SoundQButtonVariant.Quiet)
-                        } else {
-                        Text("Server: ${model.graph.endpoint.identity}",style=SoundQ.typography.mono)
-                        SoundQButton("Catalog",{navigate("Catalog")})
-                        SoundQButton("Mixes",{navigate("Mixes")})
-                        SoundQButton("Downloads",{navigate("Downloads")})
-                        SoundQButton("Connected devices",{panel="Devices"},variant=SoundQButtonVariant.Secondary)
-                        SoundQButton("Jam",{panel="Jam"},variant=SoundQButtonVariant.Secondary)
-                        SoundQButton("Imports",{navigate("Discover");openImports()})
-                        SoundQButton("Server import jobs and research",{navigate("Acquisition")})
-                        SoundQButton("History",{navigate("History")},variant=SoundQButtonVariant.Secondary)
-                        SoundQButton("Sign out",{orderActions?.close();closeQueueSave();importView?.let(model.graph.imports::close);importView=null;panel=null;model.logout()})
-                        SoundQButton("Settings",{panel="Settings"},variant=SoundQButtonVariant.Secondary)
-                        if(BuildConfig.DEBUG)SoundQButton("Developer component gallery",{panel=null;gallery=true},variant=SoundQButtonVariant.Secondary)
-                    }}
-                    "Settings"->com.soundq.android.product.preferences.PreferencesSheet(model,{panel=null},{navigate("Downloads")},{navigate("History")})
                     "Refine"->RefineSheet(if(auth is AuthState.SignedIn)library.query else localQuery,{panel=null},recent=recentOrder,onRecentApply={recentOrder=it}) {if(auth is AuthState.SignedIn)model.refine(it)else localQuery=it;panel=null}
-                    "PhoneTrack"->selectedPhone?.let {row->PhoneTrackSheet(model,row,{panel=null},{panel="Settings"})}
+                    "PhoneTrack"->selectedPhone?.let {row->PhoneTrackSheet(model,row,{panel=null},{openSettings(listOf(SettingsRoute.LocalAudio))})}
                     "Devices"->com.soundq.android.product.connect.ConnectedDevicesPanel(model,{panel=null},{panel="Jam"})
                     "Jam"->com.soundq.android.product.jam.JamHostPanel(model,{panel=null})
                     "Track"->selected?.let {track -> SoundQSheet(track.title,{panel=null}) {
@@ -466,7 +504,7 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
     }
 }
 
-@Composable private fun LibraryHeader(onAccount:()->Unit,onCatalog:()->Unit) {
+@Composable private fun LibraryHeader(onSettings:()->Unit,onCatalog:()->Unit) {
     var more by remember {mutableStateOf(false)}
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().heightIn(min=56.dp),verticalAlignment=Alignment.CenterVertically) {
@@ -478,7 +516,7 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
                 LibraryIconCell(SoundQIcon.More,"Library options",{more=true},Modifier.heightIn(min=56.dp))
                 DropdownMenu(more,{more=false}) {DropdownMenuItem(text={Text("Catalog")},onClick={more=false;onCatalog()})}
             }
-            LibraryIconCell(SoundQIcon.Settings,"Account and settings",onAccount,Modifier.heightIn(min=56.dp))
+            LibraryIconCell(SoundQIcon.Settings,"Settings",onSettings,Modifier.heightIn(min=56.dp))
         }
         SoundQDivider()
     }
@@ -548,8 +586,9 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
     Box(Modifier.fillMaxWidth().padding(horizontal=SoundQ.spacing.gutter),contentAlignment=Alignment.CenterStart) {content()}
 }
 
-@Composable private fun AuthScreen(state:AuthState,model:ProductViewModel,scrollable:Boolean=true) {
-    var register by rememberSaveable {mutableStateOf(false)}
+/** Embedded in Settings, the app bar names the form: no brand block, heading or mode switch. */
+@Composable private fun AuthScreen(state:AuthState,model:ProductViewModel,scrollable:Boolean=true,embedded:Boolean=false,initialRegister:Boolean=false) {
+    var register by rememberSaveable {mutableStateOf(initialRegister)}
     var email by rememberSaveable(stateSaver=TextFieldValue.Saver) {mutableStateOf(TextFieldValue(""))}
     var username by rememberSaveable(stateSaver=TextFieldValue.Saver) {mutableStateOf(TextFieldValue(""))}
     var password by remember {mutableStateOf(TextFieldValue(""))}
@@ -581,17 +620,19 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
             else->null }
         if(error==null){focus.clearFocus();model.submit(email.text,password.text,username.text.takeIf {register})}
     }
-    // The standalone route owns a viewport. Account's sheet already owns scrolling
-    // and measures its body unbounded, so auth fields there must be ordinary content.
+    // The standalone route owns a viewport. Settings already owns scrolling,
+    // so embedded auth fields are ordinary content with the single 20dp gutter.
     val scroll=rememberScrollState()
     val bodyModifier=if(scrollable)Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxSize().verticalScroll(scroll)
         else Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxWidth()
     Column(bodyModifier.padding(SoundQ.spacing.gutter),verticalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium)) {
-        Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium)) {
-            Image(painterResource(R.drawable.soundq_logo),null,Modifier.size(SoundQ.sizes.target))
-            Text("SoundQ",style=SoundQ.typography.title)
+        if(!embedded) {
+            Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium)) {
+                Image(painterResource(R.drawable.soundq_logo),null,Modifier.size(SoundQ.sizes.target))
+                Text("SoundQ",style=SoundQ.typography.title)
+            }
+            Text(if(register)"Create account" else "Sign in",style=SoundQ.typography.heading,modifier=Modifier.semantics {heading()})
         }
-        Text(if(register)"Create account" else "Sign in",style=SoundQ.typography.heading,modifier=Modifier.semantics {heading()})
         if(state is AuthState.SaveRequired) {
             SoundQFeedback("Account accepted, secure save failed",FeedbackKind.Error,state.reason.message,"Retry secure save",model::retrySave)
             SoundQButton("Cancel accepted session",model::cancelAuth,variant=SoundQButtonVariant.Secondary)
@@ -620,7 +661,7 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
             // Natural wrapping is only a narrow-width / enlarged-text fallback; ordinary phones retain one inline row.
             FlowRow(horizontalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium),verticalArrangement=Arrangement.spacedBy(SoundQ.spacing.small)) {
                 SoundQButton(if(register)"Create account" else "Sign in",{submit()},enabled=!pending&&!(state is AuthState.SignedOut&&state.error==SafeFailure.Reason.StoreRejected))
-                SoundQButton(if(register)"Sign in" else "Create account",::switchMode,enabled=!pending,variant=SoundQButtonVariant.Secondary)
+                if(!embedded)SoundQButton(if(register)"Sign in" else "Create account",::switchMode,enabled=!pending,variant=SoundQButtonVariant.Secondary)
             }
             if(state is AuthState.Pending&&!recovering)SoundQButton("Cancel sign-in view",model::cancelAuth,variant=SoundQButtonVariant.Quiet)
         }
