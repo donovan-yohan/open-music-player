@@ -28,10 +28,10 @@ import kotlinx.coroutines.*
     }
     val enabled=state.ready&&capture!=null&&!pending
     SoundQSettingsSwitchRow("DJ mode",state.enabled,{choose(it)},supporting=if(state.ready)"Harmonic matching in playlists" else "Loading…",enabled=enabled)
-    if(state.error==DjModeError.Read)SoundQSettingsBlock {SoundQFeedback("Couldn't load DJ mode",FeedbackKind.Error,action="Reload DJ mode",onAction=::reload)}
+    if(state.error==DjModeError.Read)SoundQSettingsBlock {SoundQFeedback("Couldn’t load DJ mode",FeedbackKind.Error,action="Reload DJ mode",onAction=::reload)}
     if(state.error==DjModeError.Write)SoundQSettingsBlock {
         val failed=retry
-        SoundQFeedback("Couldn't save DJ mode",FeedbackKind.Error,action=if(failed!=null)"Retry DJ mode" else "Reload DJ mode",onAction={if(failed!=null)choose(failed)else reload()})
+        SoundQFeedback("Couldn’t save DJ mode",FeedbackKind.Error,action=if(failed!=null)"Retry DJ mode" else "Reload DJ mode",onAction={if(failed!=null)choose(failed)else reload()})
         if(failed!=null)SoundQButton("Reload DJ mode",::reload,variant=SoundQButtonVariant.Quiet,enabled=!pending)
     }
 }

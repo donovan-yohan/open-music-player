@@ -116,7 +116,7 @@ internal class SettingsExits(
     val capture=graph.queueSettings.capture()
     SoundQSettingsSwitchRow("Keep queued songs",settings.keepQueued,{capture?.let {captured->model.keepQueued(captured,it,valid)}},
         supporting=if(settings.loading)"Loading…" else "Keep your queue when starting another list",enabled=capture!=null)
-    if(settings.error)SoundQSettingsBlock {SoundQFeedback(if(settings.writable)"Couldn't save Keep queued songs" else "Couldn't load Keep queued songs",FeedbackKind.Error,action="Reload",onAction={model.reloadQueueSettings(valid)})}
+    if(settings.error)SoundQSettingsBlock {SoundQFeedback(if(settings.writable)"Couldn’t save Keep queued songs" else "Couldn’t load Keep queued songs",FeedbackKind.Error,action="Reload",onAction={model.reloadQueueSettings(valid)})}
     SoundQSettingsRow("End of queue",value=summary(listening.ready,endOfQueueLabel(listening.mode)),onClick={open(SettingsRoute.EndOfQueue)},modifier=opener(SettingsRoute.EndOfQueue))
     SoundQSettingsRow("Swipe to queue",value=summary(swipe.ready,swipeQueueLabel(swipe.mode)),onClick={open(SettingsRoute.SwipeToQueue)},modifier=opener(SettingsRoute.SwipeToQueue))
     SoundQSettingsRow("Crossfade",value=summary(crossfade.ready,crossfadeLabel(crossfade.seconds)),onClick={open(SettingsRoute.Crossfade)},modifier=opener(SettingsRoute.Crossfade))
@@ -199,7 +199,7 @@ internal fun localAudioSummary(state:com.soundq.android.data.device.PhoneAudioSt
     val storageCapture=graph.storagePreferences.capture()
     SoundQSettingsSwitchRow("Temporary audio",storage.temporaryAudioEnabled,
         {enabled->storageCapture?.let {captured->work.launch {val saved=withContext(Dispatchers.IO){graph.storagePreferences.setTemporaryAudio(captured,enabled,valid)};if(valid())failedWrite=!saved&&graph.storagePreferences.state.value.error}}},enabled=storageCapture!=null)
-    if(storage.error)SoundQSettingsBlock {SoundQFeedback(if(failedWrite)"Couldn't save temporary audio" else "Couldn't load temporary audio",FeedbackKind.Error,action="Reload",onAction={work.launch(Dispatchers.IO){if(valid())graph.storagePreferences.load()}})}
+    if(storage.error)SoundQSettingsBlock {SoundQFeedback(if(failedWrite)"Couldn’t save temporary audio" else "Couldn’t load temporary audio",FeedbackKind.Error,action="Reload",onAction={work.launch(Dispatchers.IO){if(valid())graph.storagePreferences.load()}})}
     SoundQSettingsRow("Used",value=cache?.bytes?.let(::readableStorageSize) ?: "Unavailable")
     cache?.takeIf {it.deferredFiles>0}?.let {SoundQSettingsRow("Clearing after playback",value=if(it.deferredFiles==1)"1 file" else "${it.deferredFiles} files")}
     SoundQSettingsRow("Clear temporary audio",onClick={if(valid())confirmClear=graph.temporaryAudio.captureClear()},trailing={})
@@ -236,7 +236,7 @@ private const val CLEAR_FAILED="Couldn’t clear some audio"
             {capture?.let {captured->work.launch {val saved=withContext(Dispatchers.IO){owner.setMode(captured,mode,valid)};if(valid())failedWrite=!saved&&owner.state.value.error}}},enabled=capture!=null)
     }
     if(!state.ready)SoundQSettingsBlock {SoundQFeedback("Loading…",FeedbackKind.Loading)}
-    if(state.error)SoundQSettingsBlock {SoundQFeedback(if(failedWrite)"Couldn't save End of queue" else "Couldn't load End of queue",FeedbackKind.Error,action="Reload",onAction={work.launch(Dispatchers.IO){if(valid())owner.load()}})}
+    if(state.error)SoundQSettingsBlock {SoundQFeedback(if(failedWrite)"Couldn’t save End of queue" else "Couldn’t load End of queue",FeedbackKind.Error,action="Reload",onAction={work.launch(Dispatchers.IO){if(valid())owner.load()}})}
 }
 
 @Composable private fun SwipeQueueChoices(owner:SwipeQueuePreferences,valid:()->Boolean) {
@@ -250,7 +250,7 @@ private const val CLEAR_FAILED="Couldn’t clear some audio"
             {capture?.let {captured->work.launch {val saved=withContext(Dispatchers.IO){owner.setMode(captured,mode,valid)};if(valid())failedWrite=!saved&&owner.state.value.error}}},enabled=capture!=null)
     }
     if(!state.ready)SoundQSettingsBlock {SoundQFeedback("Loading…",FeedbackKind.Loading)}
-    if(state.error)SoundQSettingsBlock {SoundQFeedback(if(failedWrite)"Couldn't save Swipe to queue" else "Couldn't load Swipe to queue",FeedbackKind.Error,action="Reload",onAction={work.launch(Dispatchers.IO){if(valid())owner.load()}})}
+    if(state.error)SoundQSettingsBlock {SoundQFeedback(if(failedWrite)"Couldn’t save Swipe to queue" else "Couldn’t load Swipe to queue",FeedbackKind.Error,action="Reload",onAction={work.launch(Dispatchers.IO){if(valid())owner.load()}})}
 }
 
 @Composable private fun AboutSettings(valid:()->Boolean,onNotices:()->Unit,noticesModifier:Modifier) {
@@ -326,10 +326,10 @@ private const val CLEAR_FAILED="Couldn’t clear some audio"
         }
     }
     if(!state.ready)SoundQSettingsBlock {SoundQFeedback("Loading…",FeedbackKind.Loading)}
-    if(state.error==KeyNotationError.Read)SoundQSettingsBlock {SoundQFeedback("Couldn't load key notation",FeedbackKind.Error,action="Reload key notation",onAction=::reload)}
+    if(state.error==KeyNotationError.Read)SoundQSettingsBlock {SoundQFeedback("Couldn’t load key notation",FeedbackKind.Error,action="Reload key notation",onAction=::reload)}
     if(state.error==KeyNotationError.Write)SoundQSettingsBlock {
         val failed=retry
-        SoundQFeedback("Couldn't save key notation",FeedbackKind.Error,action=if(failed!=null)"Retry key notation" else "Reload key notation",onAction={if(failed!=null)choose(failed)else reload()})
+        SoundQFeedback("Couldn’t save key notation",FeedbackKind.Error,action=if(failed!=null)"Retry key notation" else "Reload key notation",onAction={if(failed!=null)choose(failed)else reload()})
         if(failed!=null)SoundQButton("Reload key notation",::reload,variant=SoundQButtonVariant.Quiet,enabled=!pending)
     }
 }

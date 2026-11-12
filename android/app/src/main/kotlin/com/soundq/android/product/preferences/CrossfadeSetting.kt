@@ -27,5 +27,5 @@ import kotlinx.coroutines.*
         for(seconds in crossfadeChoices)SoundQSettingsChoiceRow(crossfadeLabel(seconds),state.ready&&state.seconds==seconds,{choose(seconds)},enabled=capture!=null&&!pending)
     }
     if(!state.ready)SoundQSettingsBlock {SoundQFeedback("Loading…",FeedbackKind.Loading)}
-    if(state.error)SoundQSettingsBlock {SoundQFeedback(if(failedWrite)"Couldn't save crossfade" else "Couldn't load crossfade",FeedbackKind.Error,action="Reload",onAction={work.launch(Dispatchers.IO){if(valid())owner.load()}})}
+    if(state.error)SoundQSettingsBlock {SoundQFeedback(if(failedWrite)"Couldn’t save crossfade" else "Couldn’t load crossfade",FeedbackKind.Error,action="Reload",onAction={work.launch(Dispatchers.IO){if(valid())owner.load()}})}
 }

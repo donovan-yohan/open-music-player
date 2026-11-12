@@ -53,10 +53,10 @@ import java.util.concurrent.atomic.AtomicBoolean
         }
     }
     if(!state.ready)SoundQSettingsBlock {SoundQFeedback("Loading…",FeedbackKind.Loading)}
-    if(state.error==AppearanceError.Read)SoundQSettingsBlock {SoundQFeedback("Couldn't load theme",FeedbackKind.Error,action="Reload",onAction=::reload)}
+    if(state.error==AppearanceError.Read)SoundQSettingsBlock {SoundQFeedback("Couldn’t load theme",FeedbackKind.Error,action="Reload",onAction=::reload)}
     if(state.error==AppearanceError.Write)SoundQSettingsBlock {
         val failed=retry
-        SoundQFeedback("Couldn't save theme",FeedbackKind.Error,action=if(failed!=null)"Try again" else "Reload",onAction={if(failed!=null)choose(failed)else reload()})
+        SoundQFeedback("Couldn’t save theme",FeedbackKind.Error,action=if(failed!=null)"Try again" else "Reload",onAction={if(failed!=null)choose(failed)else reload()})
         if(failed!=null)SoundQButton("Reload",::reload,variant=SoundQButtonVariant.Quiet,enabled=!pending)
     }
 }
