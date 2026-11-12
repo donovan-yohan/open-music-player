@@ -48,10 +48,10 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
     }
     /** Object ids of rows an older build's file/folder picker reached. The platform may prove some name a row of the
      * audio index; the indexed scan then publishes those keys as former keys and folds the rows into it. */
-    @Synchronized fun legacyObjects(access: AccessCapture): Set<ProviderObjectId>? {
+    @Synchronized fun legacyObjects(access: AccessCapture): Map<ProviderObjectId, ContentRevision>? {
         if (!current(access)) return null
         val legacy = legacyGrants()
-        return state.files.filter { f -> f.aliases.any { it.grantId in legacy } }.map { it.objectId }.toSet()
+        return state.files.filter { f -> f.aliases.any { it.grantId in legacy } }.associate { it.objectId to it.revision }
     }
     /** Retires picker grants from older builds. Call only after a complete indexed publication, so every row the
      * provider could prove has already folded into its audio-index row. A row left with no audio-index route was

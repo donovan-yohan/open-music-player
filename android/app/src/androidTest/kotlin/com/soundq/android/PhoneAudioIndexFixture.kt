@@ -1,7 +1,6 @@
 package com.soundq.android
 
 import android.net.Uri
-import android.os.Environment
 import com.soundq.android.data.device.PhoneAudioRepository
 import com.soundq.android.data.deviceaudio.DeviceAudio
 import org.junit.Assert.assertTrue
@@ -10,7 +9,7 @@ import org.junit.Assert.assertTrue
  * runner to allow it first (`appops set <package> MANAGE_EXTERNAL_STORAGE allow`); this then rescans and returns the
  * available Library row the audio index gives that MediaStore item. */
 internal fun PhoneAudioRepository.awaitIndexed(item: Uri, valid: () -> Boolean = { true }, timeoutMs: Long = 60_000): DeviceAudio {
-    assertTrue("Runner must allow all files access (appops MANAGE_EXTERNAL_STORAGE allow)", Environment.isExternalStorageManager())
+    assertTrue("Runner must allow all files access (appops MANAGE_EXTERNAL_STORAGE allow)", platform.storageAllowed())
     val suffix = "/audio/media/${android.content.ContentUris.parseId(item)}"
     fun row() = state.value.snapshot?.files?.singleOrNull { f -> f.available && f.aliases.any { it.locator.value.endsWith(suffix) } }
     refresh(valid)

@@ -49,7 +49,7 @@ class LegacyPickerMigrationTest {
             assertEquals(listOf(HistoryKey.Device(media.id)), snapshot.history.map { it.key })
             assertEquals(emptyList<RetiredDeviceIdentity>(), snapshot.retired)
             assertNull("A picker row cannot be played", store.captureSource(access, picked.id))
-            assertEquals(setOf(picked.objectId, lost.objectId), store.legacyObjects(access))
+            assertEquals(mapOf(picked.objectId to revision, lost.objectId to revision), store.legacyObjects(access))
             // No new picker grant, and a persisted one from an older build never scans.
             assertEquals(Mutation.REFUSED, store.putGrant(access, file.copy(id = ScanGrantId(id("new-file")))))
             assertEquals(Mutation.REFUSED, store.putGrant(access, folder.copy(state = AccessState.AVAILABLE)))
@@ -66,7 +66,7 @@ class LegacyPickerMigrationTest {
             assertEquals(Mutation.UNCHANGED, store.publishScan(store.beginScan(access, indexed.id)!!, listOf(found())))
             assertEquals(Mutation.APPLIED, store.retireLegacyAccess(access))
             assertEquals(Mutation.UNCHANGED, store.retireLegacyAccess(access))
-            assertEquals(emptySet<ProviderObjectId>(), store.legacyObjects(access))
+            assertEquals(emptyMap<ProviderObjectId, ContentRevision>(), store.legacyObjects(access))
             assertEquals(650_000L, store.bookmark(store.captureSource(access, media.id)!!)!!.positionMs)
         }
         val after = decodeDomain(path.readBytes())

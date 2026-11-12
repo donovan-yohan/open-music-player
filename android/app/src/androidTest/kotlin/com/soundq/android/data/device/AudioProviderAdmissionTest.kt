@@ -99,9 +99,12 @@ class AudioProviderAdmissionTest {
             val replaced="media:${MediaStore.getVersion(context,"external")}:$uri:${generation+1}"
             val elsewhere="document:com.android.externalstorage.documents:primary:Music/soundq-absent-${UUID.randomUUID()}.flac"
             val cloud="document:com.google.android.apps.docs.storage:acc=1;doc=encoded"
-            val proven=access.provenIndexKeys(listOf(fileGrant,folderGrant,downloadsDocument,replaced,elsewhere,cloud,listed.providerObject))
+            // An Android 10 key names the row only: it folds when the stored bytes match too.
+            val rowOnly="provider:content://media/external/audio/media/$id"
+            val proven=access.provenIndexKeys(listOf(fileGrant,folderGrant,downloadsDocument,replaced,elsewhere,cloud,rowOnly,listed.providerObject))
             android.util.Log.i("SoundQIdentity","index=${listed.providerObject} proven=$proven")
-            assertEquals(mapOf(fileGrant to listed.providerObject,folderGrant to listed.providerObject,downloadsDocument to listed.providerObject),proven)
+            val exact=IndexKeyProof(listed.providerObject,sameContent=false)
+            assertEquals(mapOf(fileGrant to exact,folderGrant to exact,downloadsDocument to exact,rowOnly to IndexKeyProof(listed.providerObject,sameContent=true)),proven)
         }
     }
     @Test fun emptyMissingAndRetiredProviderReadsAreRefused() {

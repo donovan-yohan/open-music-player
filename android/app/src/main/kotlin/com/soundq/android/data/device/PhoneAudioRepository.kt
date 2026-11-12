@@ -121,15 +121,17 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                     val result = platform.discover({ active() })
                     check(result.complete && !result.truncated) { "Android audio coverage is partial" }
                     // Rows an older build's picker keyed fold into the index row the provider proves is the same object.
-                    val legacy = (owner.legacyObjects(accepted) ?: throw CancellationException()).map { it.objectId }
-                    val former = platform.provenIndexKeys(legacy).entries.groupBy({ it.value }, { it.key })
+                    val legacy = (owner.legacyObjects(accepted) ?: throw CancellationException()).mapKeys { it.key.objectId }
+                    val proven = platform.provenIndexKeys(legacy.keys)
                     result.observations.mapNotNull { observation ->
                         if (!active()) throw CancellationException()
                         try {
                             val proof = platform.proof(observation.locator) { active() }
-                            DiscoveredAudio(ProviderObjectId("android-content", observation.providerObject), locator(observation.locator), ContentRevision(proof.sha256, proof.bytes),
+                            val revision = ContentRevision(proof.sha256, proof.bytes)
+                            val former = proven.filter { (old, key) -> key.key == observation.providerObject && (!key.sameContent || legacy[old] == revision) }.keys
+                            DiscoveredAudio(ProviderObjectId("android-content", observation.providerObject), locator(observation.locator), revision,
                                 OriginalMetadata(observation.filename, observation.title, observation.artist, observation.album, observation.locator), observation.durationMs?.takeIf { it > 0 },
-                                formerObjectIds = (observation.aliases - observation.providerObject + former[observation.providerObject].orEmpty()).map { ProviderObjectId("android-content", it) }.toSet())
+                                formerObjectIds = (observation.aliases - observation.providerObject + former).map { ProviderObjectId("android-content", it) }.toSet())
                         } catch(e:CancellationException){throw e}
                         catch(_:Exception){complete=false;null}
                     }
@@ -144,8 +146,9 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                     if (!active()) throw CancellationException()
                     // The index enumeration is whole even if the walk was not: omitted index rows are gone.
                     check(owner.publishScan(scan, descriptors, complete) != Mutation.REFUSED)
-                    // Whole coverage has folded every picker row the provider could prove; the rest are dropped.
-                    if (whole) check(owner.retireLegacyAccess(accepted) != Mutation.REFUSED)
+                    // Whole coverage, with shared storage walked, has folded every picker row the provider could prove;
+                    // the rest are dropped. Without a walk an unindexed picked file could still be proved later.
+                    if (whole && platform.walksSharedStorage()) check(owner.retireLegacyAccess(accepted) != Mutation.REFUSED)
                     lastScan = PhoneScanObservation(true, whole, true)
                 }
                 publish(if (whole) null else "Some audio could not be refreshed. Existing files and saved progress were kept.")

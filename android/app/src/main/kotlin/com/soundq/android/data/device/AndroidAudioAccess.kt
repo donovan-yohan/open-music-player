@@ -29,6 +29,9 @@ internal data class AudioAccessObservation(
 )
 internal data class AudioCoverage(val complete: Boolean, val observations: List<AudioAccessObservation>, val truncated: Boolean)
 internal data class AudioContentProof(val bytes: Long, val sha256: String)
+/** A picker key proved to name the audio-index object [key]. [sameContent]: the route only names the row, so the
+ * stored row's bytes must also equal the index row's. */
+internal data class IndexKeyProof(val key: String, val sameContent: Boolean)
 
 /** All files access is the only route to phone audio: walk shared storage, index what MediaStore missed, then read
  * the MediaStore audio index. No writes to source, upload, backend or account dependency. Call on IO. */
@@ -108,31 +111,42 @@ internal class AndroidAudioAccess(private val context: Context) {
         } catch (e: CancellationException) { throw e } catch (_: Exception) { return AudioCoverage(false, found.values.toList(), truncated) }
         return AudioCoverage(!truncated, found.values.toList(), truncated)
     }
+    /** Whether a scan walks shared storage before reading the index. Only then can coverage be whole enough to
+     * retire picker rows the provider could not prove. */
+    fun walksSharedStorage() = Build.VERSION.SDK_INT >= 30
     /** Maps object keys an older build's picker stored to the audio-index key of the same object, where the provider
-     * proves it: a MediaStore key must be a key MediaStore still gives that row (same row, same incarnation); an
-     * external-storage document is found by its path. Keys it cannot prove are absent. Needs all files access. */
-    fun provenIndexKeys(objectIds: Collection<String>): Map<String, String> {
-        if (Build.VERSION.SDK_INT < 29 || objectIds.isEmpty() || !storageAllowed()) return emptyMap()
-        val result = linkedMapOf<String, String>()
+     * proves it: a `media:` key must be a key MediaStore still gives that row (same row, same incarnation); an
+     * external-storage or downloads document is found by its path. A `provider:` key from Android 10 or earlier only
+     * names the row, so it also needs the index row's bytes to equal the stored row's. Keys it cannot prove are absent. */
+    fun provenIndexKeys(objectIds: Collection<String>): Map<String, IndexKeyProof> {
+        if (objectIds.isEmpty() || !storageAllowed()) return emptyMap()
+        val result = linkedMapOf<String, IndexKeyProof>()
         for (old in objectIds) {
             val route = LegacyPickerIdentity.route(old, ::volumeRoot) ?: continue
             val media = when (route) { is LegacyRoute.Media -> route.uri; is LegacyRoute.Path -> indexedAudioAt(route.path) } ?: continue
             val identity = runCatching { identity(Uri.parse(media)) }.getOrNull() ?: continue
-            val proven = when (route) { is LegacyRoute.Media -> old in identity.all; is LegacyRoute.Path -> true }
-            if (proven && identity.key != old) result[old] = identity.key
+            if (identity.key == old) continue
+            when {
+                route is LegacyRoute.Path -> result[old] = IndexKeyProof(identity.key, sameContent = false)
+                old in identity.all -> result[old] = IndexKeyProof(identity.key, sameContent = false)
+                old.startsWith("provider:") -> result[old] = IndexKeyProof(identity.key, sameContent = true)
+            }
         }
         return result
     }
     @Suppress("DEPRECATION") private fun volumeRoot(volume: String): String =
         if (volume == "primary") Environment.getExternalStorageDirectory().path else "/storage/$volume"
-    /** The audio-index URI, on the row's concrete volume, of the file at [path]. */
-    @RequiresApi(29) private fun indexedAudioAt(path: String): String? {
+    /** The audio-index URI of the file at [path]: on the row's concrete volume where Android has volumes. */
+    private fun indexedAudioAt(path: String): String? {
         @Suppress("DEPRECATION") val data = MediaStore.MediaColumns.DATA
+        val volumes = Build.VERSION.SDK_INT >= 29
+        val collection = if (volumes) MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL) else MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        val columns = if (volumes) arrayOf(MediaStore.Audio.Media._ID, MediaStore.MediaColumns.VOLUME_NAME) else arrayOf(MediaStore.Audio.Media._ID)
         return runCatching {
-            resolver.query(MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL), arrayOf(MediaStore.Audio.Media._ID, MediaStore.MediaColumns.VOLUME_NAME),
-                "$data=?", arrayOf(path), null)?.use { cursor ->
-                if (cursor.count == 1 && cursor.moveToFirst()) cursor.getString(1)?.takeIf { it.isNotBlank() }
-                    ?.let { ContentUris.withAppendedId(MediaStore.Audio.Media.getContentUri(it), cursor.getLong(0)).toString() } else null
+            resolver.query(collection, columns, "$data=?", arrayOf(path), null)?.use { cursor ->
+                if (cursor.count != 1 || !cursor.moveToFirst()) null
+                else if (!volumes) ContentUris.withAppendedId(collection, cursor.getLong(0)).toString()
+                else cursor.getString(1)?.takeIf { it.isNotBlank() }?.let { ContentUris.withAppendedId(MediaStore.Audio.Media.getContentUri(it), cursor.getLong(0)).toString() }
             }
         }.getOrNull()
     }

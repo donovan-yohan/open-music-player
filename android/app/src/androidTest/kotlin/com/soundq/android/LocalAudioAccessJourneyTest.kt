@@ -27,6 +27,7 @@ import java.util.UUID
  * process, so the runner sets it with `appops` between methods and passes fixture names as instrumentation arguments.
  * Fixtures that MediaStore has not indexed are placed by the runner on the lower filesystem (`/data/media/0`), which
  * an app cannot do. The upgrade cases start from a store and URI grant an older build's pickers left behind. */
+@androidx.test.filters.SdkSuppress(minSdkVersion=30)
 class LocalAudioAccessJourneyTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
     private val instrumentation get()=InstrumentationRegistry.getInstrumentation()

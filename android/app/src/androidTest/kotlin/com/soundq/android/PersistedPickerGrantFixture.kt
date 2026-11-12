@@ -9,6 +9,7 @@ import org.junit.Test
 /** Upgrade-journey setup, run by the runner before the upgrade case of [LocalAudioAccessJourneyTest]: the shell hands
  * this package a persistable read grant, as an older build's file picker did, and the package takes it. No activity
  * rule: the shell's own launch owns the grant until it is persisted. */
+@androidx.test.filters.SdkSuppress(minSdkVersion=30)
 class PersistedPickerGrantFixture {
     @Test fun olderBuildHoldsAPersistedPickerGrant() {
         val instrumentation=InstrumentationRegistry.getInstrumentation()

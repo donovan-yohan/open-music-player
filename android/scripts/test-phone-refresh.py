@@ -9,6 +9,7 @@ refresh=s[s.index('    private val refreshEpoch='):s.index('    fun observed(')]
 header='''package com.soundq.android.refreshprobe
 import com.soundq.android.data.deviceaudio.*
 import com.soundq.android.data.device.PhoneScanObservation
+import com.soundq.android.data.device.IndexKeyProof
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -22,7 +23,7 @@ private class Session {@Volatile var version=1L;fun version()=version}
 private class Graph {val session=Session()}
 private data class Observation(val locator:String,val providerObject:String=locator,val filename:String=locator,val title:String=locator,val artist:String?=null,val album:String?=null,val durationMs:Long?=601000,val aliases:Set<String> = setOf(providerObject))
 private data class Coverage(val complete:Boolean,val observations:List<Observation>,val truncated:Boolean=false)
-private data class Proof(val sha256:String="a".repeat(64),val bytes:Long=123)
+private data class Proof(val sha256:String,val bytes:Long=123)
 private class Platform {
  var rows=listOf(Observation("one"));var complete=true;var fail:String?=null;var gate:java.util.concurrent.CountDownLatch?=null
  val entered=java.util.concurrent.CountDownLatch(1);var proofs=0;var discoveries=0;var cancelled=0
@@ -30,14 +31,17 @@ private class Platform {
  @Volatile var indexing=true
  @Volatile var accessRevision=0
  /** Picker keys the provider proves name an audio-index object: old key -> index key. */
- @Volatile var proven=emptyMap<String,String>()
+ @Volatile var proven=emptyMap<String,IndexKeyProof>()
+ @Volatile var walks=true
+ @Volatile var sha="a".repeat(64)
  val asked=java.util.Collections.synchronizedList(mutableListOf<Collection<String>>())
  val order=java.util.Collections.synchronizedList(mutableListOf<String>())
  fun storageAllowed()=storage
  fun indexUnlisted(current:()->Boolean):Boolean {order+="index-unlisted";return indexing}
  fun discover(current:()->Boolean):Coverage {discoveries++;order+="discover";return Coverage(complete,rows)}
- fun provenIndexKeys(ids:Collection<String>):Map<String,String> {asked+=ids.toList();return proven.filterKeys {it in ids}}
- fun proof(uri:String,current:()->Boolean):Proof {proofs++;entered.countDown();gate?.await();if(!current()){cancelled++;throw CancellationException()};if(uri==fail)error("Unreadable original");return Proof()}
+ fun walksSharedStorage()=walks
+ fun provenIndexKeys(ids:Collection<String>):Map<String,IndexKeyProof> {asked+=ids.toList();return proven.filterKeys {it in ids}}
+ fun proof(uri:String,current:()->Boolean):Proof {proofs++;entered.countDown();gate?.await();if(!current()){cancelled++;throw CancellationException()};if(uri==fail)error("Unreadable original");return Proof(sha)}
 }
 private data class State(val refreshing:Boolean=false,val permission:Boolean=true,val message:String?=null)
 // Record attempted obsolete publications, not merely domain refusal or eventual trailing state.
@@ -222,7 +226,7 @@ class PhoneRefreshTest {
   try {val path=File(root,"domain.json");Legacy.write(path);DeviceListeningStore(path).use {store->
    val repo=Repository(store,jobs)
    repo.platform.rows=listOf(Observation("indexed:9",providerObject="heard-key",filename="heard.wav",title="heard"),Observation("indexed:41",providerObject="index-key",filename="picked.wav",title="picked"))
-   repo.platform.proven=mapOf("picker-key" to "index-key")
+   repo.platform.proven=mapOf("picker-key" to IndexKeyProof("index-key",sameContent=false))
    repo.refresh();repo.settled()
    assertEquals(setOf("picker-key","unproven-key"),repo.platform.asked.single().toSet())
    val snapshot=store.snapshot(repo.access)!!
@@ -233,7 +237,7 @@ class PhoneRefreshTest {
    assertEquals(mapOf(Legacy.heard.id to 1000L,Legacy.picked.id to 3000L),snapshot.history.associate {(it.key as HistoryKey.Device).id to it.playedAtEpochMs})
    assertEquals(650000L,snapshot.history.single {it.key==HistoryKey.Device(Legacy.picked.id)}.bookmark!!.positionMs)
    assertEquals(700000L,snapshot.history.single {it.key==HistoryKey.Device(Legacy.heard.id)}.bookmark!!.positionMs)
-   assertEquals(emptySet<ProviderObjectId>(),store.legacyObjects(repo.access))
+   assertEquals(emptySet<ProviderObjectId>(),store.legacyObjects(repo.access)!!.keys)
    assertEquals(listOf(GrantKind.INDEXED),decodeDomain(path.readBytes()).grants.map {it.kind})
    // Idempotent: the next refresh neither asks again nor rewrites the store.
    val bytes=path.readBytes();repo.refresh();repo.settled()
@@ -254,8 +258,41 @@ class PhoneRefreshTest {
    repo.platform.indexing=true;repo.platform.fail="indexed:9";repo.refresh();repo.settled()
    assertEquals("An unproved index row keeps them too",2,store.legacyObjects(repo.access)!!.size)
    repo.platform.fail=null;repo.refresh();repo.settled()
-   assertEquals(emptySet<ProviderObjectId>(),store.legacyObjects(repo.access))
+   assertEquals(emptySet<ProviderObjectId>(),store.legacyObjects(repo.access)!!.keys)
    assertEquals(listOf(Legacy.heard.id),decodeDomain(path.readBytes()).files.map {it.id})
+  }}finally{jobs.cancel();root.deleteRecursively()}
+ }
+ @Test fun rowOnlyPickerKeysFoldOnlyWithTheSameBytes()=runBlocking {
+  for(same in listOf(true,false)) {
+   val root=java.nio.file.Files.createTempDirectory("refresh-legacy-bytes-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+   try {val path=File(root,"domain.json");Legacy.write(path);DeviceListeningStore(path).use {store->
+    val repo=Repository(store,jobs)
+    repo.platform.rows=listOf(Observation("indexed:9",providerObject="heard-key",filename="heard.wav",title="heard"),Observation("indexed:41",providerObject="index-key",filename="picked.wav",title="picked"))
+    // An Android 10 `provider:` key names the row but not its incarnation: the bytes must match too.
+    repo.platform.proven=mapOf("picker-key" to IndexKeyProof("index-key",sameContent=true))
+    if(!same)repo.platform.sha="c".repeat(64)
+    repo.refresh();repo.settled()
+    val files=store.snapshot(repo.access)!!.files
+    val picked=files.single {it.objectId==ProviderObjectId("android-content","index-key")}
+    if(same)assertEquals(Legacy.picked.id,picked.id) else assertNotEquals("Other bytes are another file: no fold",Legacy.picked.id,picked.id)
+    assertEquals(if(same)650000L else null,store.snapshot(repo.access)!!.history.singleOrNull {it.key==HistoryKey.Device(picked.id)}?.bookmark?.positionMs)
+   }}finally{jobs.cancel();root.deleteRecursively()}
+  }
+ }
+ @Test fun withoutASharedStorageWalkNoPickerRowIsDropped()=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-legacy-nowalk-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+  try {val path=File(root,"domain.json");Legacy.write(path);DeviceListeningStore(path).use {store->
+   val repo=Repository(store,jobs)
+   repo.platform.walks=false  // Android 10 and earlier: the index is read, but storage is never walked.
+   repo.platform.rows=listOf(Observation("indexed:9",providerObject="heard-key",filename="heard.wav",title="heard"),Observation("indexed:41",providerObject="index-key",filename="picked.wav",title="picked"))
+   repo.platform.proven=mapOf("picker-key" to IndexKeyProof("index-key",sameContent=false))
+   repo.refresh();repo.settled()
+   assertEquals(PhoneScanObservation(indexed=true,complete=true,storage=true),repo.lastScan)
+   assertEquals(0,repo.store.retirements)
+   // The proved row still folds (and shows); the unproven one waits, hidden, with its state.
+   assertTrue(store.snapshot(repo.access)!!.files.any {it.id==Legacy.picked.id})
+   assertTrue(ProviderObjectId("android-content","unproven-key") in store.legacyObjects(repo.access)!!.keys)
+   assertTrue(decodeDomain(path.readBytes()).journal.any {it.key==HistoryKey.Device(Legacy.unproven.id)})
   }}finally{jobs.cancel();root.deleteRecursively()}
  }
  @Test fun partialEnumerationAndRetiredProofNeverReplaceAcknowledgedCorpus()=runBlocking {
