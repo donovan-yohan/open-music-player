@@ -120,7 +120,7 @@ object SoundQSettingsMetrics {
         .semantics(mergeDescendants = true) {}
         else modifier.semantics(mergeDescendants = true) {}
     val chevron: (@Composable () -> Unit)? = trailing ?: if (onClick != null) ({
-        SoundQIcon(SoundQIcon.Next, null, mirrored(), tint = if (enabled) SoundQ.colors.muted else SoundQ.colors.disabled)
+        SoundQIcon(SoundQIcon.Arrow, null, mirrored(), tint = if (enabled) SoundQ.colors.muted else SoundQ.colors.disabled)
     }) else null
     SettingsRowFrame(title, supporting, value, enabled, false, interactive, if (onClick != null) interactions else null, technical, chevron)
 }

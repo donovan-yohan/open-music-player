@@ -367,7 +367,6 @@ import com.soundq.android.product.preferences.*
                         }
                         SoundQDivider()
                         if(mixedNeeded&&auth is AuthState.SignedIn&&!library.completeProjection)Text(if(library.projectionError||library.error!=null)"Partial server coverage · ordering shown results only" else "Loading complete server coverage · ordering shown results only",Modifier.padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.caption,color=SoundQ.colors.muted)
-                        if(auth !is AuthState.SignedIn)Text("Offline Library · authorized phone files and device downloads",Modifier.padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.caption)
                         phone.message?.takeIf {phone.snapshot==null}?.let {Text(it,Modifier.padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.caption)}
                         val collectionCurrent={collectionVisit.current()&&panel==null&&picker==null&&destination=="Library"&&rowLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)&&paginationScope?.let(model.graph.session::remoteCurrent)==true}
                         LibraryCollectionControls(library,{model.refine(library.query.copy(collection=null))},

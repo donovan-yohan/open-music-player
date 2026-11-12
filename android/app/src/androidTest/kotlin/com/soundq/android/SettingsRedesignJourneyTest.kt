@@ -7,6 +7,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.soundq.android.data.AuthState
 import com.soundq.android.data.preferences.*
 import org.junit.Assert.*
+import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -22,7 +23,8 @@ class SettingsRedesignJourneyTest {
     }
     private fun heading(text:String)=compose.onNode(hasText(text) and isHeading())
     private fun row(text:String)=compose.onNode(hasText(text) and hasClickAction())
-    private fun open(text:String){row(text).performScrollTo().performClick();heading(text).assertIsDisplayed()}
+    // The app bar title is the first heading; a detail page may repeat it as its section label.
+    private fun open(text:String){row(text).performScrollTo().performClick();compose.onAllNodes(hasText(text) and isHeading()).onFirst().assertIsDisplayed()}
     private fun back()=compose.onNodeWithContentDescription("Back").performClick()
     private fun systemBack(){InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);compose.waitForIdle()}
     private fun signedOut(){compose.runOnIdle {if(graph.session.state.value !is AuthState.SignedOut)graph.session.retire()};compose.waitUntil(10000){graph.session.state.value is AuthState.SignedOut}}
@@ -39,9 +41,12 @@ class SettingsRedesignJourneyTest {
         back()
         compose.waitUntil(5000){compose.onAllNodesWithContentDescription("Library search query").fetchSemanticsNodes().isNotEmpty()}
         heading("Settings").assertDoesNotExist()
-        gear();systemBack()
+        gear();heading("Settings").assertIsDisplayed();systemBack()
         heading("Settings").assertDoesNotExist()
         compose.onNodeWithContentDescription("Library search query").assertExists()
+        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.onNodeWithText("Offline Library",substring=true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Local files").performClick()
     }
 
     @Test fun rowsTitlesAndSectionLabelsShareTheTwentyDpGutter() {
@@ -56,6 +61,7 @@ class SettingsRedesignJourneyTest {
         }
         heading("Playback").performScrollTo().assertLeftPositionInRootIsEqualTo(20.dp)
         // Navigation chevron ends at the right gutter: value text ends 12dp + 24dp before it.
+        row("Account").performScrollTo()
         val value=compose.onNodeWithText("Signed out",useUnmergedTree=true).fetchSemanticsNode().boundsInRoot
         assertEquals(width/density-20f-24f-12f,value.right/density,1f)
     }
@@ -68,6 +74,23 @@ class SettingsRedesignJourneyTest {
         DjModePreferences(java.io.File(graph.directory,"dj-mode.v1.json")).also {it.load();assertEquals(!dj,it.enabled())}
         compose.onNode(hasText("DJ mode") and isToggleable()).performClick()
         compose.waitUntil(10000){graph.djModePreferences.state.value.enabled==dj}
+
+        compose.waitUntil(10000){graph.queueSettings.capture()!=null}
+        val keep=graph.queueSettings.state.value.keepQueued
+        compose.onNode(hasText("Keep queued songs") and isToggleable()).performScrollTo().assertIsEnabled().performClick()
+        compose.waitUntil(10000){graph.queueSettings.state.value.keepQueued!=keep}
+        com.soundq.android.data.QueueSettingsRepository(com.soundq.android.data.FileQueuePreferencesStore(graph.directory.resolve("queue-settings.v1.json"))).also {it.load();assertEquals(!keep,it.state.value.keepQueued)}
+        compose.onNode(hasText("Keep queued songs") and isToggleable()).performClick()
+        compose.waitUntil(10000){graph.queueSettings.state.value.keepQueued==keep}
+
+        open("Storage")
+        val temporary=graph.storagePreferences.state.value.temporaryAudioEnabled
+        compose.onNode(hasText("Temporary audio") and isToggleable()).assertIsEnabled().performClick()
+        compose.waitUntil(10000){graph.storagePreferences.state.value.temporaryAudioEnabled!=temporary}
+        StoragePreferences(graph.directory.resolve("storage-preferences.v1.json")).also {it.load();assertEquals(!temporary,it.state.value.temporaryAudioEnabled)}
+        compose.onNode(hasText("Temporary audio") and isToggleable()).performClick()
+        compose.waitUntil(10000){graph.storagePreferences.state.value.temporaryAudioEnabled==temporary}
+        back()
 
         val fade=graph.crossfadePreferences.state.value.seconds
         val target=if(fade==3)4 else 3
@@ -160,5 +183,41 @@ class SettingsRedesignJourneyTest {
         compose.waitUntil(15000){graph.session.state.value is AuthState.SignedOut}
         compose.waitUntil(10000){compose.onAllNodes(hasText("Account") and hasText("Signed out") and hasClickAction()).fetchSemanticsNodes().isNotEmpty()}
         heading("Settings").assertIsDisplayed()
+    }
+
+    /** OS-frame captures for review, only when the runner passes captureLabel. Not an acceptance assertion. */
+    @Test fun capturesSettingsPagesForReview() {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("captureLabel")!=null)
+        val dark=InstrumentationRegistry.getArguments().getString("captureDark")=="true"
+        signedOut()
+        if(InstrumentationRegistry.getArguments().getString("captureSignedIn")=="true") {
+            gear();open("Account");open("Sign in")
+            compose.onNodeWithContentDescription("Email").performTextInput("settings-capture@example.test")
+            compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
+            compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+            compose.waitUntil(15000){graph.session.state.value is AuthState.SignedIn&&graph.appearancePreferences.state.value.ready}
+            back();back()
+            compose.waitUntil(5000){compose.onAllNodes(hasText("Settings") and isHeading()).fetchSemanticsNodes().isEmpty()}
+        }
+        compose.runOnIdle {graph.appearancePreferences.capture()?.let {graph.appearancePreferences.setChoice(it,if(dark)Appearance.Dark else Appearance.Light){true}}}
+        try {
+            captureListeningStage("library")
+            compose.onNodeWithContentDescription("Local files").performClick();compose.waitForIdle();Thread.sleep(500)
+            captureListeningStage("library-local-files")
+            compose.onNodeWithContentDescription("Local files").performClick();compose.waitForIdle()
+            gear();compose.waitForIdle();Thread.sleep(500);captureListeningStage("settings-top")
+            row("About").performScrollTo();compose.waitForIdle();Thread.sleep(500);captureListeningStage("settings-bottom")
+            compose.onNode(hasScrollAction()).performTouchInput {swipeDown()};compose.waitForIdle()
+            row("Account").performScrollTo();open("Account");captureListeningStage("account")
+            back();open("Local audio");captureListeningStage("local-audio")
+            back();open("Storage");captureListeningStage("storage")
+            back();open("Crossfade");captureListeningStage("crossfade")
+            back();open("Theme");captureListeningStage("theme")
+            back();open("Music tools");captureListeningStage("music-tools")
+            back();open("About");captureListeningStage("about")
+            back();back()
+        } finally {
+            compose.runOnIdle {graph.appearancePreferences.capture()?.let {graph.appearancePreferences.setChoice(it,Appearance.System){true}}}
+        }
     }
 }
