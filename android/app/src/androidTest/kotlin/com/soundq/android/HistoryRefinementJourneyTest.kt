@@ -3,6 +3,7 @@ package com.soundq.android
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
+import com.soundq.android.data.AuthState
 import com.soundq.android.product.ProductViewModel
 import mockwebserver3.*
 import org.junit.Assert.*
@@ -37,10 +38,8 @@ class HistoryRefinementJourneyTest {
     }
     @get:Rule val rules:RuleChain=RuleChain.outerRule(transport).around(compose)
     @Test fun ordinaryHistorySearchAndSkippedTabReachEventsAfterFirstPageWithoutAutoplay() {
-        compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Email").fetchSemanticsNodes().isNotEmpty()}
-        compose.onNodeWithContentDescription("Email").performTextInput("history-parity@example.test")
-        compose.onNodeWithContentDescription("Password").performTextInput("fixture-password")
-        compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+        val graph=(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as FixtureApplication).graph
+        compose.signInThroughSettings("history-parity@example.test","fixture-password"){graph.session.state.value is AuthState.SignedIn}
         compose.waitUntil(10000){compose.onAllNodes(hasText("Search library") and hasSetTextAction()).fetchSemanticsNodes().isNotEmpty()}
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
         compose.onAllNodesWithText("Home").filterToOne(hasClickAction()).performClick()

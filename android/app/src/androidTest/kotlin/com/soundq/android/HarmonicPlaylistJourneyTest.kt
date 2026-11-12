@@ -1,6 +1,7 @@
 package com.soundq.android
 
 import androidx.compose.ui.test.*
+import com.soundq.android.data.AuthState
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
 import mockwebserver3.*
@@ -31,10 +32,7 @@ class HarmonicPlaylistJourneyTest {
         }}
         try {
             app.graph.djModePreferences.load();app.graph.djModePreferences.setEnabled(app.graph.djModePreferences.capture()!!,true){true}
-            compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Email").fetchSemanticsNodes().isNotEmpty()}
-            compose.onNodeWithContentDescription("Email").performTextInput("harmonic@example.test")
-            compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
-            compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+            compose.signInThroughSettings("harmonic@example.test","test-only-password"){app.graph.session.state.value is AuthState.SignedIn}
             compose.waitUntil(10000){app.graph.session.capture()!=null&&compose.onAllNodesWithText("Playlists").fetchSemanticsNodes().isNotEmpty()}
             val model=compose.runOnIdle {androidx.lifecycle.ViewModelProvider(compose.activity)[com.soundq.android.product.ProductViewModel::class.java]}
             compose.waitUntil(10000){app.graph.library.state.value.rows.size==3&&model.playback.value.connection==com.soundq.android.playback.PlaybackProjection.Connection.Connected}
