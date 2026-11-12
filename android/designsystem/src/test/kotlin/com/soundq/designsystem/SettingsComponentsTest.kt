@@ -17,6 +17,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.platform.testTag
 
 /** Mounted host composition of the settings list primitives. Not device pixels or TalkBack acceptance. */
 @RunWith(RobolectricTestRunner::class)
@@ -127,5 +130,55 @@ class SettingsComponentsTest {
         assertEquals(20f,value.left.value,0.5f)
         assertTrue("value stacks below title",value.top>=title.bottom)
         assertTrue(compose.onNode(hasText("Server import jobs and research") and hasClickAction()).getBoundsInRoot().let {it.bottom-it.top}.value>=80f)
+    }
+
+    /**
+     * The navigation affordance is the chevron (Arrow, "m9 5 7 7-7 7"), never the media skip-next glyph (Next).
+     * Compares the ink the real row paints in its trailing slot with standalone renders of both icons.
+     */
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun navigationRowsEndInTheChevronNotTheSkipNextGlyph() {
+        host {
+            SoundQSettingsRow("Downloads",onClick={})
+            SoundQSettingsRow("Account",value="Signed out",onClick={})
+            Row {
+                Box(Modifier.testTag("chevron")) {SoundQIcon(SoundQIcon.Arrow,null,tint=SoundQ.colors.muted)}
+                Box(Modifier.testTag("next")) {SoundQIcon(SoundQIcon.Next,null,tint=SoundQ.colors.muted)}
+            }
+        }
+        val chevron=ink(compose.onNodeWithTag("chevron").captureToImage().asAndroidBitmap())
+        val next=ink(compose.onNodeWithTag("next").captureToImage().asAndroidBitmap())
+        assertTrue("reference glyphs differ",overlap(chevron,next)<0.6)
+        for(title in listOf("Downloads","Account")) {
+            val row=compose.onNode(hasText(title) and hasClickAction()).captureToImage().asAndroidBitmap()
+            val density=row.width/412f
+            // Trailing slot only: the 24dp glyph box ending at the right gutter, above the row's 1dp rule.
+            val slot=android.graphics.Bitmap.createBitmap(row,(row.width-(20+24)*density).toInt(),0,(24*density).toInt(),row.height-(2*density).toInt())
+            val painted=ink(slot)
+            assertTrue("$title row paints the chevron",overlap(painted,chevron)>0.9)
+            assertTrue("$title row does not paint skip-next",overlap(painted,next)<0.6)
+        }
+    }
+
+    /** Ink pixels (differing from the corner background), cropped to their bounding box. */
+    private fun ink(bitmap:android.graphics.Bitmap):Array<BooleanArray> {
+        val background=bitmap.getPixel(0,0)
+        fun differs(c:Int)=listOf(16,8,0).sumOf {shift->kotlin.math.abs((c shr shift and 0xff)-(background shr shift and 0xff))}>96
+        val points=(0 until bitmap.height).flatMap {y->(0 until bitmap.width).filter {x->differs(bitmap.getPixel(x,y))}.map {x->x to y}}
+        assertTrue("glyph painted",points.isNotEmpty())
+        val left=points.minOf {it.first};val top=points.minOf {it.second}
+        val mask=Array(points.maxOf {it.second}-top+1){BooleanArray(points.maxOf {it.first}-left+1)}
+        for((x,y) in points)mask[y-top][x-left]=true
+        return mask
+    }
+
+    /** Intersection over union of two top-left-aligned masks; size mismatch counts as difference. */
+    private fun overlap(a:Array<BooleanArray>,b:Array<BooleanArray>):Double {
+        var both=0;var either=0
+        for(y in 0 until maxOf(a.size,b.size))for(x in 0 until maxOf(a.getOrNull(0)?.size?:0,b.getOrNull(0)?.size?:0)) {
+            val p=a.getOrNull(y)?.getOrNull(x)==true;val q=b.getOrNull(y)?.getOrNull(x)==true
+            if(p&&q)both++;if(p||q)either++
+        }
+        return if(either==0)0.0 else both.toDouble()/either
     }
 }

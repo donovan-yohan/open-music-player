@@ -98,7 +98,8 @@ internal class SettingsMemory {
                 SettingsRoute.Crossfade->CrossfadeSetting(graph.crossfadePreferences,valid)
                 SettingsRoute.KeyNotation->KeyNotationSetting(graph.keyNotationPreferences,valid)
                 SettingsRoute.MusicTools->{
-                    SoundQSettingsSectionLabel("Music tools",first=true)
+                    // The app bar already names this page; a section label would repeat it.
+                    Spacer(Modifier.height(SoundQSettingsMetrics.firstSectionTop))
                     for(tool in MusicTool.entries)SoundQSettingsRow(tool.label,onClick={leaving.onTool(tool)},modifier=Modifier.opens(tool.name))
                 }
                 SettingsRoute.About->AboutSettings(valid,{open(SettingsRoute.Notices)},Modifier.opens(SettingsRoute.Notices))
@@ -118,7 +119,8 @@ internal class SettingsMemory {
     val notation by graph.keyNotationPreferences.state.collectAsStateWithLifecycle()
     val appearance by graph.appearancePreferences.state.collectAsStateWithLifecycle()
     val phone by graph.phoneAudio.state.collectAsStateWithLifecycle()
-    SoundQSettingsSectionLabel("Account",first=true)
+    // Account is a single row; a section label above it would only repeat its title.
+    Spacer(Modifier.height(SoundQSettingsMetrics.firstSectionTop))
     SoundQSettingsRow("Account",value=accountStatus(auth),onClick={open(SettingsRoute.Account)},modifier=opener("Account"))
     SoundQSettingsSectionLabel("Library")
     SoundQSettingsRow("Local audio",value=localAudioSummary(phone),onClick={open(SettingsRoute.LocalAudio)},modifier=opener("LocalAudio"))
@@ -169,7 +171,7 @@ internal fun localAudioSummary(state:com.soundq.android.data.device.PhoneAudioSt
             work.launch {withContext(Dispatchers.IO){graph.localUnlock.complete(request,accepted,accountValid)}}
         } ?: graph.localUnlock.cancel()
     }
-    SoundQSettingsSectionLabel("Account",first=true)
+    Spacer(Modifier.height(SoundQSettingsMetrics.firstSectionTop))
     SoundQSettingsRow("Status",value=accountStatus(auth))
     SoundQSettingsRow("Server",value=graph.endpoint.identity,technical=true)
     val session=auth is AuthState.SignedIn||auth is AuthState.DeviceOnly
@@ -209,7 +211,7 @@ internal fun localAudioSummary(state:com.soundq.android.data.device.PhoneAudioSt
     var cacheMessage by remember {mutableStateOf<String?>(null)}
     var failedWrite by remember {mutableStateOf(false)}
     var pending by remember {mutableStateOf(false)}
-    SoundQSettingsSectionLabel("Temporary audio",first=true)
+    Spacer(Modifier.height(SoundQSettingsMetrics.firstSectionTop))
     val storageCapture=graph.storagePreferences.capture()
     SoundQSettingsSwitchRow("Temporary audio",storage.temporaryAudioEnabled,
         {enabled->if(!pending)storageCapture?.let {captured->pending=true;work.launch {try {val saved=withContext(Dispatchers.IO){graph.storagePreferences.setTemporaryAudio(captured,enabled,valid)};if(valid())failedWrite=!saved&&graph.storagePreferences.state.value.error}finally {pending=false}}}},enabled=storageCapture!=null&&!pending)
