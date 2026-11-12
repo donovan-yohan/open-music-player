@@ -30,6 +30,11 @@ private class Platform {
  var rows=listOf(Observation("one"));var complete=true;var fail:String?=null;var gate:java.util.concurrent.CountDownLatch?=null
  val entered=java.util.concurrent.CountDownLatch(1);var proofs=0;var discoveries=0;var cancelled=0
  @Volatile var allowed=true
+ @Volatile var storage=false
+ @Volatile var indexing=true
+ val order=java.util.Collections.synchronizedList(mutableListOf<String>())
+ fun storageAllowed()=storage
+ fun indexUnlisted(current:()->Boolean):Boolean {order+="index-unlisted";return indexing}
  @Volatile var trees=emptyList<String>()
  @Volatile var accessRevision=0
  fun indexedAllowed()=allowed
@@ -39,7 +44,7 @@ private class Platform {
  fun persist(uri:Uri,flags:Int,folder:Boolean){error("Fixture uses session-only selected file")}
  fun folderLabel(value:String)=value
  fun release(value:String){trees=trees.filterNot {it==value}}
- fun discover(trees:List<String>,current:()->Boolean,includeIndexed:Boolean=true):Coverage {discoveries++;return Coverage(rows,indexedComplete=complete)}
+ fun discover(trees:List<String>,current:()->Boolean,includeIndexed:Boolean=true):Coverage {discoveries++;order+="discover";return Coverage(rows,indexedComplete=complete)}
  fun proof(uri:String,current:()->Boolean):Proof {proofs++;entered.countDown();gate?.await();if(!current()){cancelled++;throw CancellationException()};if(uri==fail)error("Unreadable original");return Proof()}
 }
 private data class State(val refreshing:Boolean=false,val permission:Boolean=true,val message:String?=null)
@@ -195,6 +200,40 @@ class PhoneRefreshTest {
    val before=repo.platform.proofs
    repo.refresh {valid};withTimeout(5000){while(repo.platform.proofs<=before)delay(1)};valid=false;gate.countDown();repo.settled()
    assertNull(repo.lastScan)
+  }}finally{jobs.cancel();root.deleteRecursively()}
+ }
+ @Test fun runningRefreshPublishesTheAccessItWasAdmittedWith()=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-admitted-").toFile()
+  val executor=java.util.concurrent.Executors.newSingleThreadExecutor();val jobs=CoroutineScope(SupervisorJob()+executor.asCoroutineDispatcher())
+  val hold=java.util.concurrent.CountDownLatch(1);val gate=java.util.concurrent.CountDownLatch(1)
+  try {DeviceListeningStore(File(root,"domain.json")).use {store->
+   val repo=Repository(store,jobs)
+   assertNotEquals(Mutation.REFUSED,store.putGrant(repo.access,ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.FILE,"session",ProviderLocator("fixture","session:one"),false)))
+   repo.platform.storage=false;repo.platform.gate=gate
+   executor.submit {hold.await()}
+   repo.refresh()   // admits without all files access; its worker is queued behind the held executor
+   repo.platform.storage=true;hold.countDown()
+   assertTrue(repo.platform.entered.await(5,java.util.concurrent.TimeUnit.SECONDS))
+   assertTrue(repo.mutable.value.refreshing)
+   assertFalse("A running refresh must publish its admitted access, not access granted after admission",repo.mutable.value.permission)
+   gate.countDown();repo.settled()
+  }}finally{hold.countDown();gate.countDown();jobs.cancel();executor.shutdownNow();root.deleteRecursively()}
+ }
+ @Test fun allFilesAccessIndexesUnlistedAudioBeforeReadingTheIndex()=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-storage-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+  try {DeviceListeningStore(File(root,"domain.json")).use {store->
+   val repo=Repository(store,jobs)
+   repo.refresh();repo.settled()
+   assertEquals("Media-only access never walks storage",listOf("discover"),repo.platform.order.toList())
+   assertEquals(PhoneScanObservation(indexed=true,complete=true,storage=false),repo.lastScan)
+   repo.platform.order.clear();repo.platform.storage=true;repo.refresh();repo.settled()
+   assertEquals(listOf("index-unlisted","discover"),repo.platform.order.toList())
+   assertEquals(PhoneScanObservation(indexed=true,complete=true,storage=true),repo.lastScan)
+   // Incomplete indexing still publishes what the index lists, but is not whole coverage.
+   repo.platform.indexing=false;repo.platform.rows=listOf(Observation("one"),Observation("two"));repo.refresh();repo.settled()
+   assertEquals(PhoneScanObservation(indexed=true,complete=false,storage=true),repo.lastScan)
+   assertEquals(setOf("one","two"),store.snapshot(repo.access)!!.files.filter {it.available}.map {it.metadata.filename}.toSet())
+   assertTrue(repo.mutable.value.message!!.contains("Some audio"))
   }}finally{jobs.cancel();root.deleteRecursively()}
  }
  @Test fun refreshBurstDoesNotCancelProofAndHasOnlyOneTrailingScan()=runBlocking {

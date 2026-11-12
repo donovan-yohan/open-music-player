@@ -8,6 +8,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.media.MediaMetadataRetriever
+import android.media.MediaScannerConnection
+import android.os.Environment
+import android.os.storage.StorageManager
+import androidx.annotation.RequiresApi
 import android.net.Uri
 import android.os.Build
 import android.os.CancellationSignal
@@ -32,7 +36,38 @@ internal data class AudioContentProof(val bytes: Long, val sha256: String)
 internal class AndroidAudioAccess(private val context: Context) {
     private val resolver = context.contentResolver
     val permission: String get() = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
-    fun indexedAllowed() = context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+    /** All files access: the user-facing grant. It also lets the MediaStore audio index be read. */
+    fun storageAllowed() = Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()
+    fun indexedAllowed() = storageAllowed() || context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+    @RequiresApi(30) fun storageRoots(): List<File> =
+        context.getSystemService(StorageManager::class.java).storageVolumes.filter { it.state == Environment.MEDIA_MOUNTED }.mapNotNull { it.directory }
+    /** With all files access, ask MediaStore to index audio on shared storage it does not list yet, so the
+     * indexed scan keeps owning identity. Returns false when the walk or indexing was incomplete. */
+    fun indexUnlisted(current: () -> Boolean): Boolean {
+        if (Build.VERSION.SDK_INT < 30 || !Environment.isExternalStorageManager()) return true
+        val walk = SharedStorageAudioWalker.walk(storageRoots(), current)
+        val unlisted = SharedStorageAudioWalker.unlisted(walk.files, ::listedPaths)
+        return scanFiles(unlisted, current) && !walk.truncated
+    }
+    @RequiresApi(30) private fun listedPaths(paths: List<String>): Set<String> {
+        @Suppress("DEPRECATION") val data = MediaStore.MediaColumns.DATA
+        return resolver.query(MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL), arrayOf(data),
+            "$data IN (${paths.joinToString(",") { "?" }})", paths.toTypedArray(), null)?.use { cursor ->
+            buildSet { while (cursor.moveToNext()) cursor.getString(0)?.let(::add) }
+        } ?: throw java.io.IOException("Media index unavailable")
+    }
+    private fun scanFiles(paths: List<String>, current: () -> Boolean): Boolean {
+        if (paths.isEmpty()) return true
+        val pending = java.util.concurrent.CountDownLatch(paths.size)
+        val failed = java.util.concurrent.atomic.AtomicInteger()
+        MediaScannerConnection.scanFile(context, paths.toTypedArray(), null) { _, uri -> if (uri == null) failed.incrementAndGet(); pending.countDown() }
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(minOf(300L, 30L + paths.size / 10))
+        while (!pending.await(250, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            if (!current()) throw CancellationException("Media indexing retired")
+            if (System.nanoTime() > deadline) return false
+        }
+        return failed.get() == 0
+    }
     fun persistedTrees(): List<String> = resolver.persistedUriPermissions.filter { it.isReadPermission && DocumentsContract.isTreeUri(it.uri) }.map { it.uri.toString() }
     fun persist(uri: Uri, flags: Int, tree: Boolean) {
         require(uri.scheme == "content")

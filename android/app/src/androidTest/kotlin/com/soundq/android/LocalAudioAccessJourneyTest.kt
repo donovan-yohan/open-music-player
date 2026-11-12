@@ -1,10 +1,13 @@
 package com.soundq.android
 
+import android.app.Instrumentation
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.Settings
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.lifecycle.Lifecycle
@@ -20,26 +23,35 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 
-/** Real MainActivity and Library route with a test-owned MediaStore original.
- * Revoking a runtime permission kills the app process, so the runner must revoke
- * READ_MEDIA_AUDIO (`pm revoke`) before each access-off method. Every method leaves it granted. */
+/** Real MainActivity and Library route. Changing all files access (or revoking a runtime permission) kills the
+ * app process, so the runner sets access with `appops`/`pm` between methods and passes fixture names as
+ * instrumentation arguments. Fixtures that MediaStore has not indexed are placed by the runner on the lower
+ * filesystem (`/data/media/0`), which an app cannot do. */
 class LocalAudioAccessJourneyTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
     private val instrumentation get()=InstrumentationRegistry.getInstrumentation()
-    private val permission=if(Build.VERSION.SDK_INT>=33)android.Manifest.permission.READ_MEDIA_AUDIO else android.Manifest.permission.READ_EXTERNAL_STORAGE
+    private val packageName get()=instrumentation.targetContext.packageName
+    private val mediaPermission=if(Build.VERSION.SDK_INT>=33)android.Manifest.permission.READ_MEDIA_AUDIO else android.Manifest.permission.READ_EXTERNAL_STORAGE
+    private fun arg(name:String)=checkNotNull(InstrumentationRegistry.getArguments().getString(name)) {"Missing instrumentation argument $name"}
 
-    private fun model():ProductViewModel {
-        assertEquals("Revoke $permission before this journey",PackageManager.PERMISSION_DENIED,instrumentation.targetContext.checkSelfPermission(permission))
+    private fun model(fileAccess:Boolean):ProductViewModel {
+        assertEquals("Runner must set all files access=$fileAccess",fileAccess,Environment.isExternalStorageManager())
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
         compose.runOnIdle {model.graph.session.retire()}
         compose.waitUntil(15000){model.graph.session.state.value is AuthState.SignedOut&&model.graph.phoneAudio.state.value.let {it.ready&&!it.refreshing}&&
             compose.onAllNodesWithContentDescription("Library search query").fetchSemanticsNodes().isNotEmpty()}
         return model
     }
+    private fun accessOff():ProductViewModel {
+        assertEquals("Runner must revoke $mediaPermission",PackageManager.PERMISSION_DENIED,instrumentation.targetContext.checkSelfPermission(mediaPermission))
+        return model(fileAccess=false)
+    }
     private fun appearance(model:ProductViewModel,choice:Appearance) {
         compose.waitUntil(10000){model.graph.appearancePreferences.state.value.ready}
         assertTrue(model.graph.appearancePreferences.setChoice(model.graph.appearancePreferences.capture()!!,choice){true})
-        compose.waitForIdle()
+        compose.waitUntil(5000){model.graph.appearancePreferences.state.value.choice==choice}
+        // Let the recomposed theme and system bars reach a drawn frame before a system screenshot.
+        compose.waitForIdle();Thread.sleep(1000);compose.waitForIdle()
     }
     private fun capture(name:String) {
         val bitmap=instrumentation.uiAutomation.takeScreenshot()
@@ -71,47 +83,96 @@ class LocalAudioAccessJourneyTest {
             body(name)
         } finally {assertEquals(1,resolver.delete(uri,null,null))}
     }
-    private fun localFilesShowsAccessOff(name:String) {
+    private fun localFilesShowsAccessOff(hidden:String?=null) {
         compose.onNodeWithContentDescription("Local files").performClick()
-        compose.onNodeWithText("Audio access is off").assertIsDisplayed()
-        compose.onNodeWithText("Allow audio access").assertIsDisplayed()
-        compose.onNodeWithText("Add folder").assertIsDisplayed()
-        compose.onNodeWithText("Open audio file").assertIsDisplayed()
-        // The original exists in MediaStore, but nothing claims it is listed.
-        compose.onAllNodes(hasText(name,substring=true)).assertCountEquals(0)
+        compose.onNodeWithText("File access is off").assertIsDisplayed()
+        compose.onNodeWithText("Allow file access").assertIsDisplayed()
+        hidden?.let {compose.onAllNodes(hasText(it,substring=true)).assertCountEquals(0)}
         compose.onNodeWithText("No matching tracks").assertDoesNotExist()
     }
-    private fun rowAppears(model:ProductViewModel,name:String) {
-        try {compose.waitUntil(30000){compose.onAllNodes(hasText(name.removeSuffix(".wav"),substring=true) and hasClickAction()).fetchSemanticsNodes().isNotEmpty()}}
+    private fun rowAppears(model:ProductViewModel,stem:String) {
+        try {compose.waitUntil(60000){compose.onAllNodes(hasText(stem,substring=true) and hasClickAction() and !hasSetTextAction()).fetchSemanticsNodes().isNotEmpty()}}
         catch(timeout:androidx.compose.ui.test.ComposeTimeoutException) {
             val phone=model.graph.phoneAudio.state.value
-            fail("Row absent: ready=${phone.ready} permission=${phone.permission} refreshing=${phone.refreshing} message=${phone.message} "+
-                "grants=${phone.snapshot?.grants?.map {"${it.kind}:${it.state}"}} files=${phone.snapshot?.files?.map {"${it.metadata.filename}:${it.available}"}}")
+            fail("Row $stem absent: ready=${phone.ready} access=${phone.permission} refreshing=${phone.refreshing} scan=${phone.scan} message=${phone.message} "+
+                "files=${phone.snapshot?.files?.filter {it.available}?.map {it.metadata.filename}}")
         }
-        compose.onNodeWithText("Audio access is off").assertDoesNotExist()
-        compose.onNodeWithText("Allow audio access").assertDoesNotExist()
+    }
+    private fun openLocalAudioSettings() {
+        compose.onNodeWithContentDescription("Account and settings").performClick()
+        compose.onNodeWithText("Settings").performScrollTo().performClick()
+        compose.onNodeWithText("Local audio").performScrollTo().performClick()
+        compose.onNodeWithText("Phone audio").assertIsDisplayed()
     }
 
-    @Test fun allowFromLibraryLocalFilesGrantsAndListsPhoneAudio() {
-        val model=model()
+    @Test fun allowFileAccessLaunchesAllFilesAccessSettings() {
+        val model=accessOff()
+        localFilesShowsAccessOff()
+        appearance(model,Appearance.Light);capture("access-off-light")
+        appearance(model,Appearance.Dark);capture("access-off-dark")
+        appearance(model,Appearance.System)
+        val launched=java.util.concurrent.atomic.AtomicReference<Intent?>()
+        val monitor=object:Instrumentation.ActivityMonitor() {
+            override fun onStartActivity(intent:Intent):Instrumentation.ActivityResult? =
+                if(intent.action==Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION){launched.set(intent);Instrumentation.ActivityResult(0,null)}else null
+        }
+        instrumentation.addMonitor(monitor)
+        try {
+            compose.onNodeWithText("Allow file access").performClick()
+            assertTrue("Allow file access did not request the all files access page",waitFor(5000){launched.get()!=null})
+            assertEquals("package:$packageName",launched.get()!!.dataString)
+        } finally {instrumentation.removeMonitor(monitor)}
+        // Settings > Local audio offers the same single action (Local files off so only the sheet shows it).
+        compose.onNodeWithContentDescription("Local files").performClick()
+        openLocalAudioSettings()
+        compose.onNodeWithText("File access is off").assertIsDisplayed()
+        compose.onNodeWithText("Allow file access").performScrollTo().assertIsDisplayed()
+        appearance(model,Appearance.Light);capture("settings-access-off-light")
+        appearance(model,Appearance.Dark);capture("settings-access-off-dark")
+        appearance(model,Appearance.System)
+    }
+
+    /** Leaves the real system page in front; the runner then grants with appops, which restarts the app. */
+    @Test fun allowFileAccessOpensTheSystemPage() {
+        accessOff()
+        localFilesShowsAccessOff()
+        compose.onNodeWithText("Allow file access").performClick()
+        assertTrue("Allow file access did not open system UI",waitFor(10000){!resumed()})
+    }
+
+    /** After the runner grants all files access: the cold start rescans and lists audio from the Download root
+     * and from a folder MediaStore had not indexed. */
+    @Test fun afterFileAccessGrantLocalFilesListsSharedStorageAudio() {
+        val downloadStem=arg("downloadStem");val unindexedStem=arg("unindexedStem");val unindexedPath=arg("unindexedPath")
+        val model=model(fileAccess=true)
+        compose.onNodeWithContentDescription("Local files").performClick()
+        for(stem in listOf(downloadStem,unindexedStem))rowAppears(model,stem)
+        compose.onNodeWithText("File access is off").assertDoesNotExist()
+        compose.onNodeWithText("Allow file access").assertDoesNotExist()
+        @Suppress("DEPRECATION") val data=MediaStore.MediaColumns.DATA
+        val indexed=instrumentation.targetContext.contentResolver.query(MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL),arrayOf(data),"$data=?",arrayOf(unindexedPath),null)!!.use {it.count}
+        assertEquals("The walk asked MediaStore to index the unlisted file",1,indexed)
+        capture("access-granted-rows")
+        openLocalAudioSettings()
+        compose.onNodeWithText("File access allowed").assertIsDisplayed()
+        compose.onNodeWithText("Allow file access").assertDoesNotExist()
+        capture("settings-access-on")
+    }
+
+    /** Resume without a process restart (the silent media-permission baseline changing) still rescans. */
+    @Test fun returningWithMediaAccessRefreshesLibraryWithoutRestart() {
+        val model=accessOff()
         withMusicOriginal {name->
-            localFilesShowsAccessOff(name)
-            appearance(model,Appearance.Light);capture("access-off-light")
-            appearance(model,Appearance.Dark);capture("access-off-dark")
-            appearance(model,Appearance.System)
-            compose.onNodeWithText("Allow audio access").performClick()
-            // The existing picker action opens either the system prompt or, after a prior denial, app settings.
-            assertTrue("Allow audio access did not open system UI",waitFor(10000){!resumed()})
-            instrumentation.uiAutomation.grantRuntimePermission(instrumentation.targetContext.packageName,permission)
-            if(!waitFor(3000){resumed()})instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_BACK").close()
-            assertTrue(waitFor(10000){resumed()})
-            rowAppears(model,name)
-            capture("access-granted-rows")
+            localFilesShowsAccessOff(hidden=name)
+            instrumentation.uiAutomation.grantRuntimePermission(packageName,mediaPermission)
+            compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+            compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+            rowAppears(model,name.removeSuffix(".wav"))
         }
     }
 
     @Test fun undecodablePhoneFileStaysVisibleAsUnplayableAfterTap() {
-        instrumentation.uiAutomation.grantRuntimePermission(instrumentation.targetContext.packageName,permission)
+        instrumentation.uiAutomation.grantRuntimePermission(packageName,mediaPermission)
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
         compose.runOnIdle {model.graph.session.retire()}
         compose.waitUntil(15000){model.graph.session.state.value is AuthState.SignedOut&&model.graph.phoneAudio.state.value.ready}
@@ -140,18 +201,6 @@ class LocalAudioAccessJourneyTest {
         } finally {
             compose.runOnIdle {model.controller.pause();model.controller.clear()}
             assertEquals(1,resolver.delete(uri,null,null))
-        }
-    }
-
-    @Test fun returningWithAccessGrantedRefreshesLibraryWithoutRestart() {
-        val model=model()
-        withMusicOriginal {name->
-            localFilesShowsAccessOff(name)
-            // Equivalent to granting in system Settings and coming back.
-            instrumentation.uiAutomation.grantRuntimePermission(instrumentation.targetContext.packageName,permission)
-            compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
-            compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
-            rowAppears(model,name)
         }
     }
 }

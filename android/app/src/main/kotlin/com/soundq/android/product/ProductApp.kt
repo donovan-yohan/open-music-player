@@ -286,7 +286,7 @@ import com.soundq.android.product.imports.ImportsScreen
                         val mixedRows=remember(library,phone.snapshot,downloads,account,projectionOwner,accountVersion,localFiles,recentOrder,mixedQuery) {unifiedLibraryRows(model.graph.endpoint.identity,account,if(auth is AuthState.SignedIn&&projectionOwner!=null)library.rows else emptyList(),downloadTracks,phone.snapshot,mixedQuery,localFiles,recentOrder)}
                         val localAudioVisit=remember {java.util.concurrent.atomic.AtomicBoolean(true)}
                         DisposableEffect(localAudioVisit){onDispose {localAudioVisit.set(false)}}
-                        // Same captured picker/permission owner as Settings > Local audio, including permanent-denial recovery.
+                        // Same captured picker/access owner as Settings > Local audio.
                         // Session versions are captured per callback: a retired scope need not recompose this route.
                         val localPickers=com.soundq.android.product.preferences.rememberAudioPickers(model.graph,
                             {uri,flags,current->model.graph.phoneAudio.selected(uri,flags,false){localAudioVisit.get()&&current()}},
@@ -295,7 +295,7 @@ import com.soundq.android.product.imports.ImportsScreen
                                 // The scan belongs to the phone owner's session scope, not this visit: leaving
                                 // Library must not cancel a first scan that is still proving files.
                                 val version=model.graph.session.version()
-                                if(localAudioVisit.get()&&model.graph.phoneAudio.current(version)&&localAudioAccessChanged(model.graph.phoneAudio.state.value,model.graph.phoneAudio.platform.indexedAllowed()))
+                                if(localAudioVisit.get()&&model.graph.phoneAudio.current(version)&&localAudioAccessChanged(model.graph.phoneAudio.state.value,model.graph.phoneAudio.platform.storageAllowed(),model.graph.phoneAudio.platform.indexedAllowed()))
                                     model.graph.phoneAudio.refresh {model.graph.phoneAudio.current(version)}
                             })
                         val localNotice=localAudioNotice(phone,mixedQuery,localFiles,mixedRows.isEmpty())
@@ -321,7 +321,7 @@ import com.soundq.android.product.imports.ImportsScreen
                         LazyColumn(Modifier.weight(1f).fillMaxWidth().semantics {contentDescription=library.total?.let {"Library, $it tracks"} ?: "Library tracks"},state=libraryScroll) {
                         if(library.loading) item {LibraryStateCell {SoundQFeedback(if(library.rows.isEmpty())"Loading library" else "Loading more tracks",FeedbackKind.Loading)}}
                         if(!library.loading&&library.error==null&&mixedRows.isEmpty()&&localNotice!=LocalAudioNotice.NoneFound&&(localNotice==null||mixedQuery!=LibraryQuery()))item {LibraryStateCell {SoundQFeedback(if(mixedQuery==LibraryQuery()&&!localFiles)"No tracks yet" else "No matching tracks",FeedbackKind.Empty,action="Clear refinement",onAction={if(auth is AuthState.SignedIn)model.refine(LibraryQuery())else localQuery=LibraryQuery();localFiles=false;recentOrder=false})}}
-                        localNotice?.let {notice->item(key="local-audio-notice") {LibraryStateCell {Column {LocalAudioNoticeContent(notice,localPickers.permission,localPickers.folder,localPickers.file)}}}}
+                        localNotice?.let {notice->item(key="local-audio-notice") {LibraryStateCell {Column {LocalAudioNoticeContent(notice,localPickers.permission)}}}}
                         itemsIndexed(if(mixedNeeded)mixedRows else mixedRows.filter {it.server!=null},key={_,row -> row.stable}) {_,mixedRow ->
                             val phoneRow=mixedRow.phone
                             if(phoneRow!=null) {

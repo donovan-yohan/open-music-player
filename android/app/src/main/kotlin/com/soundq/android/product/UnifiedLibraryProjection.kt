@@ -15,7 +15,7 @@ internal val DeviceAudio.unplayable:Boolean get()=!available&&aliases.any {it.st
 internal fun phoneRowUnavailableLabel(row:DeviceAudio,grants:List<ScanGrant>):String {
     if(row.unplayable)return "Can’t play this file"
     val indexed=grants.filter {it.kind==GrantKind.INDEXED}.map {it.id}.toSet()
-    if(row.aliases.isNotEmpty()&&row.aliases.all {it.state==AccessState.REVOKED&&it.grantId in indexed})return "Unavailable · Audio access is off"
+    if(row.aliases.isNotEmpty()&&row.aliases.all {it.state==AccessState.REVOKED&&it.grantId in indexed})return "Unavailable · File access is off"
     return "Unavailable · Choose file again"
 }
 internal fun unifiedLibraryRows(endpoint:String,account:String?,server:List<Track>,downloads:List<Track>,phone:DeviceListeningSnapshot?,query:LibraryQuery,localOnly:Boolean,recent:Boolean):List<UnifiedLibraryRow> {

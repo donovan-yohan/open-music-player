@@ -45,7 +45,7 @@ class UnifiedLibraryProjectionTest {
         assertEquals("Can’t play this file",phoneRowUnavailableLabel(undecodable,snapshot.grants))
         assertEquals("Can’t play this file",phoneRowUnavailableLabel(unsupported,snapshot.grants))
         // Indexed access off is not fixed by choosing the file again.
-        assertEquals("Unavailable · Audio access is off",phoneRowUnavailableLabel(revoked,snapshot.grants))
+        assertEquals("Unavailable · File access is off",phoneRowUnavailableLabel(revoked,snapshot.grants))
         assertEquals("Unavailable · Choose file again",phoneRowUnavailableLabel(lostFolder,snapshot.grants))
     }
     @Test fun downloadsNeverDuplicateAcknowledgedServerIdentityAndPhoneCannotBecomeLiked() {
