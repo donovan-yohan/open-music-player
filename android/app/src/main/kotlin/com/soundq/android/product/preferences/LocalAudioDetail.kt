@@ -25,13 +25,11 @@ import com.soundq.designsystem.*
     var remove by remember { mutableStateOf<ScanGrant?>(null) }
     SoundQButton("Back to Settings", onBack, variant = SoundQButtonVariant.Quiet)
     Text("Phone audio", style = SoundQ.typography.title)
-    Text(if (state.permission) "Audio access allowed" else "Audio access is off", color = if (state.permission) SoundQ.colors.primary else SoundQ.colors.muted)
-    Text("Finds audio listed by Android, including available files in Documents and Downloads.", color = SoundQ.colors.muted)
-    if (!state.permission) SoundQButton("Allow audio access", pickers.permission, variant = SoundQButtonVariant.Secondary)
+    Text(if (state.permission) "File access allowed" else "File access is off", color = if (state.permission) SoundQ.colors.primary else SoundQ.colors.muted)
+    if (!state.permission) SoundQButton("Allow file access", pickers.permission)
     SoundQButton(if (state.refreshing) "Refreshing…" else "Refresh", { owner.refresh(valid) }, enabled = state.ready && !state.refreshing, variant = SoundQButtonVariant.Secondary)
     SoundQButton("Add folder", pickers.folder, enabled = state.ready, variant = SoundQButtonVariant.Secondary)
     SoundQButton("Open audio file", pickers.file, enabled = state.ready, variant = SoundQButtonVariant.Secondary)
-    Text("Can’t find a download? Open the audio file. Android may not let you add the Downloads folder.", color = SoundQ.colors.muted)
     state.message?.let { SoundQFeedback(it, FeedbackKind.Notice) }
     Text("Added locations", style = SoundQ.typography.title)
     val grants = state.snapshot?.grants.orEmpty().filter { it.kind != GrantKind.INDEXED && it.state != AccessState.REMOVED }

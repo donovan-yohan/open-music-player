@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean
     val valid={alive.get()&&current()&&model.graph.phoneAudio.current(version)&&model.graph.phoneAudio.observed(ref)!=null}
     if(!row.available) {
         SoundQMediaRow(row.metadata.displayTitle,row.metadata.artist.orEmpty(),false,onMore,onMore,
-            supporting="Unavailable · Choose file again",metadata={LibraryMetadataContent(memberDurationMetadata(row.durationMs ?: 0))})
+            supporting=phoneRowUnavailableLabel(row,phone.snapshot?.grants.orEmpty()),metadata={LibraryMetadataContent(memberDurationMetadata(row.durationMs ?: 0))})
         return
     }
     SoundQRevealMediaRow(row.metadata.displayTitle,row.metadata.artist.orEmpty(),selected,reveal,valid(),null,false,
@@ -43,7 +43,7 @@ import java.util.concurrent.atomic.AtomicBoolean
         Text(row.metadata.artist.orEmpty());row.metadata.album?.let {Text(it)}
         Text("Phone file · ${row.metadata.filename}",style=SoundQ.typography.caption)
         Text("Your original file stays on this phone. Playback does not upload it.",style=SoundQ.typography.caption)
-        if(!row.available)Text("File access is unavailable. Choose the same file again in Local audio.")
+        if(row.unplayable)Text("SoundQ can’t play this file.") else if(!row.available)Text("File access is unavailable. Choose the same file again in Local audio.")
         SoundQButton("Play / resume",{if(valid()){model.controller.playDevice(ref,valid);onDismiss()}},enabled=valid())
         SoundQButton("Play next",{if(valid()){model.controller.enqueueDevice(ref,true,valid);onDismiss()}},enabled=valid(),variant=SoundQButtonVariant.Secondary)
         SoundQButton("Add to listening queue",{if(valid()){model.controller.enqueueDevice(ref,false,valid);onDismiss()}},enabled=valid(),variant=SoundQButtonVariant.Secondary)
