@@ -122,16 +122,17 @@ class AppearanceJourneyTest {
         }
     }
     private fun assertMountedSheetPaint(dark:Boolean) {
-        // Measure only the empty layout spacing between the heading and instruction text.
-        // Reject an empty/clipped region rather than sampling glyphs or radio-row focus paint.
-        val headingNode=compose.onNode(hasText("Appearance") and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading)).fetchSemanticsNode()
-        val instructionNode=compose.onNode(hasText("Theme") and isHeading()).fetchSemanticsNode()
-        val heading=headingNode.boundsInRoot
-        val instruction=instructionNode.boundsInRoot
-        assertSame("Heading and instruction belong to the same mounted sheet root",headingNode.root,instructionNode.root)
-        val root=instructionNode.root as ViewRootForTest
-        // Rasterize the actual mounted Compose root for bounded sheet-paint assertions.
-        // MainActivity and its inherited modal policy permit system screen capture.
+        // Full-screen Theme page: sample only the empty background band between the app bar rule and the
+        // first choice row (the 16dp section gap). Reject an empty/clipped region rather than sampling glyphs or row paint.
+        val titleNode=compose.onNode(hasText("Theme") and isHeading()).fetchSemanticsNode()
+        val rowNode=compose.onNode(hasText("System") and isSelectable()).fetchSemanticsNode()
+        val title=titleNode.boundsInRoot
+        val row=rowNode.boundsInRoot
+        assertSame("Title and first choice belong to the same mounted root",titleNode.root,rowNode.root)
+        val root=rowNode.root as ViewRootForTest
+        val px=compose.activity.resources.displayMetrics.density
+        // Rasterize the actual mounted Compose root for bounded page-paint assertions.
+        // MainActivity permits system screen capture.
         val image=compose.runOnIdle {
             assertTrue(compose.activity.window.attributes.flags and android.view.WindowManager.LayoutParams.FLAG_SECURE == 0)
             val view=root.view
@@ -141,12 +142,13 @@ class AppearanceJourneyTest {
             }.asImageBitmap()
         }
         val pixels=image.toPixelMap()
-        val left=kotlin.math.ceil(maxOf(heading.left,instruction.left)).toInt()+1
-        val right=kotlin.math.floor(minOf(heading.right,instruction.right)).toInt()-1
-        val top=kotlin.math.ceil(heading.bottom).toInt()+1
-        val bottom=kotlin.math.floor(instruction.top).toInt()-1
-        assertTrue("Measured heading-to-instruction background gap must be visible",left>=0&&right<image.width&&top>=0&&bottom<image.height&&right>left&&bottom>top)
-        val expected=(if(dark)SoundQAppearanceMapping.dark else SoundQAppearanceMapping.light).w9_color_sheet_background.toArgb()
+        val left=kotlin.math.ceil(row.left+20*px).toInt()
+        val right=kotlin.math.floor(row.right-20*px).toInt()
+        val top=kotlin.math.ceil(row.top-12*px).toInt()
+        val bottom=kotlin.math.floor(row.top-2*px).toInt()
+        assertTrue("Section gap lies below the app bar title",top>title.bottom)
+        assertTrue("Measured section-gap background must be visible",left>=0&&right<image.width&&top>=0&&bottom<image.height&&right>left&&bottom>top)
+        val expected=(if(dark)SoundQAppearanceMapping.dark else SoundQAppearanceMapping.light).semantic_color_background.toArgb()
         for(y in top..bottom)for(x in left..right) {
             val actual=pixels[x,y].toArgb()
             for(shift in listOf(0,8,16,24))assertTrue("Mounted Appearance sheet paint at ($x,$y), expected ${expected.toUInt().toString(16)}, got ${actual.toUInt().toString(16)}",kotlin.math.abs(((actual ushr shift) and 255)-((expected ushr shift) and 255))<=2)

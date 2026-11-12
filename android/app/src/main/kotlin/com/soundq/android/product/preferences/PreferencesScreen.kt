@@ -5,7 +5,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -30,12 +29,22 @@ internal class SettingsExits(
     val onGallery:(()->Unit)?,
 )
 
+/** Settings view state that outlives one host composition: exits to Downloads/History/tools and account changes. */
+internal class SettingsMemory {
+    /** Last observed temporary-audio status. Read only on Storage pages: status() validates every cached file. */
+    var cache by mutableStateOf<com.soundq.android.data.cache.CacheStatus?>(null)
+    /** Row to focus when the host next settles (the row that opened a popped page or an external destination). */
+    var focus:String?=null
+    fun reset(){cache=null;focus=null}
+}
+
 /**
  * Full-screen Settings. Device-local owners write under the current session version, so Settings works
  * signed in, signed out and offline; account writes keep the stricter captured account scope.
+ * [pages] is owned by the caller so page state (scroll, auth fields) survives host recreation.
  */
 @Composable internal fun SettingsHost(model:ProductViewModel,auth:AuthState,routes:List<SettingsRoute>,onRoutes:(List<SettingsRoute>)->Unit,
-    exits:SettingsExits,authForm:@Composable (register:Boolean)->Unit) {
+    exits:SettingsExits,pages:androidx.compose.runtime.saveable.SaveableStateHolder,memory:SettingsMemory,authForm:@Composable (register:Boolean)->Unit) {
     val route=routes.lastOrNull() ?: return
     val graph=model.graph
     val currentRoutes by rememberUpdatedState(routes)
@@ -47,37 +56,41 @@ internal class SettingsExits(
     val accountValid={alive.get()&&scope?.let(graph.session::current)==true}
     val activity=androidx.activity.compose.LocalActivity.current as? MainActivity
     DisposableEffect(Unit){onDispose {alive.set(false);activity?.deviceUnlock?.cancel();graph.localUnlock.cancel()}}
-    var cache by remember {mutableStateOf<com.soundq.android.data.cache.CacheStatus?>(null)}
-    fun refresh(){work.launch {val observed=withContext(Dispatchers.IO){graph.temporaryAudio.status()};if(valid())cache=observed}}
-    LaunchedEffect(Unit){refresh()}
-    LaunchedEffect(auth){val settled=currentRoutes.settled(auth);if(settled!=currentRoutes)onRoutes(settled)}
-    val pages=rememberSaveableStateHolder()
-    val openers=remember {SettingsRoute.entries.associateWith {FocusRequester()}}
-    var restoreFocus by remember {mutableStateOf<SettingsRoute?>(null)}
+    val cache=memory.cache
+    fun refresh(){work.launch {val observed=withContext(Dispatchers.IO){graph.temporaryAudio.status()};if(valid())memory.cache=observed}}
+    LaunchedEffect(route){if(route==SettingsRoute.Storage||route==SettingsRoute.StorageDetails)refresh()}
+    val openers=remember {mutableMapOf<String,FocusRequester>()}
+    fun opener(key:String)=openers.getOrPut(key){FocusRequester()}
+    var settle by remember {mutableIntStateOf(0)}
     fun open(next:SettingsRoute)=onRoutes(currentRoutes.push(next))
     fun back() {
         val popped=currentRoutes.lastOrNull() ?: return
         pages.removeState(popped.name)
-        restoreFocus=popped
+        memory.focus=popped.name;settle++
         onRoutes(currentRoutes.pop())
     }
+    fun leave(key:String,exit:()->Unit){memory.focus=key;exit()}
     androidx.activity.compose.BackHandler {back()}
-    LaunchedEffect(route,restoreFocus) {
-        val target=restoreFocus ?: return@LaunchedEffect
+    LaunchedEffect(route,settle) {
+        val target=memory.focus ?: return@LaunchedEffect
         withFrameNanos {}
-        runCatching {openers.getValue(target).requestFocus()}
-        restoreFocus=null
+        runCatching {opener(target).requestFocus()}
+        memory.focus=null
     }
-    fun Modifier.opens(target:SettingsRoute)=focusRequester(openers.getValue(target))
+    fun Modifier.opens(target:SettingsRoute)=focusRequester(opener(target.name))
+    fun Modifier.opens(key:String)=focusRequester(opener(key))
+    val leaving=SettingsExits(exits.onExit,{leave("Downloads",exits.onDownloads)},{leave("Listening history",exits.onHistory)},
+        {tool->leave(tool.name,{exits.onTool(tool)})},exits.onSignedOut,exits.onGallery)
     pages.SaveableStateProvider(route.name) {
         SoundQSettingsScaffold(route.title,::back,scrollState=rememberScrollState()) {
             when(route) {
-                SettingsRoute.Root->SettingsRoot(model,auth,cache,valid,::open,exits) {Modifier.opens(it)}
-                SettingsRoute.Account->AccountSettings(model,auth,accountValid,::open,exits)
+                SettingsRoute.Root->SettingsRoot(model,auth,cache,valid,::open,leaving) {Modifier.opens(it)}
+                SettingsRoute.Account->AccountSettings(model,auth,accountValid,::open,exits) {Modifier.opens(it)}
                 SettingsRoute.SignIn->authForm(false)
                 SettingsRoute.CreateAccount->authForm(true)
-                SettingsRoute.LocalAudio->LocalAudioDetail(graph)
-                SettingsRoute.Storage->StorageSettings(graph,cache,{refresh()},valid,{open(SettingsRoute.StorageDetails)},exits.onDownloads,Modifier.opens(SettingsRoute.StorageDetails))
+                SettingsRoute.LocalAudio->LocalAudioDetail(graph,graph.session.version())
+                SettingsRoute.Storage->StorageSettings(graph,cache,{refresh()},valid,{open(SettingsRoute.StorageDetails)},{leave("Manage downloads",exits.onDownloads)},
+                    Modifier.opens(SettingsRoute.StorageDetails),Modifier.opens("Manage downloads"))
                 SettingsRoute.StorageDetails->StorageDetails(cache)
                 SettingsRoute.Theme->AppearanceChoices(graph.appearancePreferences)
                 SettingsRoute.EndOfQueue->EndOfQueueChoices(graph.listeningPreferences,valid)
@@ -86,7 +99,7 @@ internal class SettingsExits(
                 SettingsRoute.KeyNotation->KeyNotationSetting(graph.keyNotationPreferences,valid)
                 SettingsRoute.MusicTools->{
                     SoundQSettingsSectionLabel("Music tools",first=true)
-                    for(tool in MusicTool.entries)SoundQSettingsRow(tool.label,onClick={exits.onTool(tool)})
+                    for(tool in MusicTool.entries)SoundQSettingsRow(tool.label,onClick={leaving.onTool(tool)},modifier=Modifier.opens(tool.name))
                 }
                 SettingsRoute.About->AboutSettings(valid,{open(SettingsRoute.Notices)},Modifier.opens(SettingsRoute.Notices))
                 SettingsRoute.Notices->OpenSourceNotices()
@@ -96,7 +109,7 @@ internal class SettingsExits(
 }
 
 @Composable private fun SettingsRoot(model:ProductViewModel,auth:AuthState,cache:com.soundq.android.data.cache.CacheStatus?,valid:()->Boolean,
-    open:(SettingsRoute)->Unit,exits:SettingsExits,opener:(SettingsRoute)->Modifier) {
+    open:(SettingsRoute)->Unit,exits:SettingsExits,opener:(String)->Modifier) {
     val graph=model.graph
     val settings by model.queueSettings.collectAsStateWithLifecycle()
     val listening by graph.listeningPreferences.state.collectAsStateWithLifecycle()
@@ -106,27 +119,27 @@ internal class SettingsExits(
     val appearance by graph.appearancePreferences.state.collectAsStateWithLifecycle()
     val phone by graph.phoneAudio.state.collectAsStateWithLifecycle()
     SoundQSettingsSectionLabel("Account",first=true)
-    SoundQSettingsRow("Account",value=accountStatus(auth),onClick={open(SettingsRoute.Account)},modifier=opener(SettingsRoute.Account))
+    SoundQSettingsRow("Account",value=accountStatus(auth),onClick={open(SettingsRoute.Account)},modifier=opener("Account"))
     SoundQSettingsSectionLabel("Library")
-    SoundQSettingsRow("Local audio",value=localAudioSummary(phone),onClick={open(SettingsRoute.LocalAudio)},modifier=opener(SettingsRoute.LocalAudio))
-    SoundQSettingsRow("Downloads",onClick=exits.onDownloads)
-    SoundQSettingsRow("Storage",value=cache?.bytes?.let(::readableStorageSize),onClick={open(SettingsRoute.Storage)},modifier=opener(SettingsRoute.Storage))
-    SoundQSettingsRow("Listening history",onClick=exits.onHistory)
+    SoundQSettingsRow("Local audio",value=localAudioSummary(phone),onClick={open(SettingsRoute.LocalAudio)},modifier=opener("LocalAudio"))
+    SoundQSettingsRow("Downloads",onClick=exits.onDownloads,modifier=opener("Downloads"))
+    SoundQSettingsRow("Storage",value=cache?.bytes?.let(::readableStorageSize),onClick={open(SettingsRoute.Storage)},modifier=opener("Storage"))
+    SoundQSettingsRow("Listening history",onClick=exits.onHistory,modifier=opener("Listening history"))
     SoundQSettingsSectionLabel("Playback")
     val capture=graph.queueSettings.capture()
     SoundQSettingsSwitchRow("Keep queued songs",settings.keepQueued,{capture?.let {captured->model.keepQueued(captured,it,valid)}},
         supporting=if(settings.loading)"Loading…" else "Keep your queue when starting another list",enabled=capture!=null)
     if(settings.error)SoundQSettingsBlock {SoundQFeedback(if(settings.writable)"Couldn’t save Keep queued songs" else "Couldn’t load Keep queued songs",FeedbackKind.Error,action="Reload",onAction={model.reloadQueueSettings(valid)})}
-    SoundQSettingsRow("End of queue",value=summary(listening.ready,endOfQueueLabel(listening.mode)),onClick={open(SettingsRoute.EndOfQueue)},modifier=opener(SettingsRoute.EndOfQueue))
-    SoundQSettingsRow("Swipe to queue",value=summary(swipe.ready,swipeQueueLabel(swipe.mode)),onClick={open(SettingsRoute.SwipeToQueue)},modifier=opener(SettingsRoute.SwipeToQueue))
-    SoundQSettingsRow("Crossfade",value=summary(crossfade.ready,crossfadeLabel(crossfade.seconds)),onClick={open(SettingsRoute.Crossfade)},modifier=opener(SettingsRoute.Crossfade))
+    SoundQSettingsRow("End of queue",value=summary(listening.ready,endOfQueueLabel(listening.mode)),onClick={open(SettingsRoute.EndOfQueue)},modifier=opener("EndOfQueue"))
+    SoundQSettingsRow("Swipe to queue",value=summary(swipe.ready,swipeQueueLabel(swipe.mode)),onClick={open(SettingsRoute.SwipeToQueue)},modifier=opener("SwipeToQueue"))
+    SoundQSettingsRow("Crossfade",value=summary(crossfade.ready,crossfadeLabel(crossfade.seconds)),onClick={open(SettingsRoute.Crossfade)},modifier=opener("Crossfade"))
     DjModeSetting(graph.djModePreferences,valid)
-    SoundQSettingsRow("Key notation",value=summary(notation.ready,keyNotationLabel(notation.choice)),onClick={open(SettingsRoute.KeyNotation)},modifier=opener(SettingsRoute.KeyNotation))
+    SoundQSettingsRow("Key notation",value=summary(notation.ready,keyNotationLabel(notation.choice)),onClick={open(SettingsRoute.KeyNotation)},modifier=opener("KeyNotation"))
     SoundQSettingsSectionLabel("Appearance")
-    SoundQSettingsRow("Theme",value=summary(appearance.ready,appearanceLabel(appearance.choice)),onClick={open(SettingsRoute.Theme)},modifier=opener(SettingsRoute.Theme))
+    SoundQSettingsRow("Theme",value=summary(appearance.ready,appearanceLabel(appearance.choice)),onClick={open(SettingsRoute.Theme)},modifier=opener("Theme"))
     SoundQSettingsSectionLabel("More")
-    SoundQSettingsRow("Music tools",onClick={open(SettingsRoute.MusicTools)},modifier=opener(SettingsRoute.MusicTools))
-    SoundQSettingsRow("About",onClick={open(SettingsRoute.About)},modifier=opener(SettingsRoute.About))
+    SoundQSettingsRow("Music tools",onClick={open(SettingsRoute.MusicTools)},modifier=opener("MusicTools"))
+    SoundQSettingsRow("About",onClick={open(SettingsRoute.About)},modifier=opener("About"))
     exits.onGallery?.let {gallery->
         SoundQSettingsSectionLabel("Developer")
         SoundQSettingsRow("Component gallery",onClick=gallery)
@@ -143,7 +156,7 @@ internal fun localAudioSummary(state:com.soundq.android.data.device.PhoneAudioSt
     LocalAudioStatus.Failed->localAudioSongs(state).takeIf {it>0}?.let(::songCount)
 }
 
-@Composable private fun AccountSettings(model:ProductViewModel,auth:AuthState,accountValid:()->Boolean,open:(SettingsRoute)->Unit,exits:SettingsExits) {
+@Composable private fun AccountSettings(model:ProductViewModel,auth:AuthState,accountValid:()->Boolean,open:(SettingsRoute)->Unit,exits:SettingsExits,opener:(SettingsRoute)->Modifier) {
     val graph=model.graph
     val unlock by graph.localUnlock.state.collectAsStateWithLifecycle()
     val activity=androidx.activity.compose.LocalActivity.current as? MainActivity
@@ -177,8 +190,8 @@ internal fun localAudioSummary(state:com.soundq.android.data.device.PhoneAudioSt
             SoundQSettingsRow("Go online",onClick={deviceScope?.let(model::goOnline)},enabled=deviceScope!=null,trailing={})
         }
         else->{
-            SoundQSettingsRow("Sign in",onClick={open(SettingsRoute.SignIn)})
-            SoundQSettingsRow("Create account",onClick={open(SettingsRoute.CreateAccount)})
+            SoundQSettingsRow("Sign in",onClick={open(SettingsRoute.SignIn)},modifier=opener(SettingsRoute.SignIn))
+            SoundQSettingsRow("Create account",onClick={open(SettingsRoute.CreateAccount)},modifier=opener(SettingsRoute.CreateAccount))
         }
     }
     if(confirmLogout)AlertDialog(onDismissRequest={confirmLogout=false},title={Text("Sign out?")},
@@ -189,16 +202,17 @@ internal fun localAudioSummary(state:com.soundq.android.data.device.PhoneAudioSt
 }
 
 @Composable private fun StorageSettings(graph:AppGraph,cache:com.soundq.android.data.cache.CacheStatus?,refresh:()->Unit,valid:()->Boolean,
-    onDetails:()->Unit,onDownloads:()->Unit,detailsModifier:Modifier) {
+    onDetails:()->Unit,onDownloads:()->Unit,detailsModifier:Modifier,downloadsModifier:Modifier) {
     val storage by graph.storagePreferences.state.collectAsStateWithLifecycle()
     val work=rememberCoroutineScope()
     var confirmClear by remember {mutableStateOf<com.soundq.android.data.cache.CacheClearCapture?>(null)}
     var cacheMessage by remember {mutableStateOf<String?>(null)}
     var failedWrite by remember {mutableStateOf(false)}
+    var pending by remember {mutableStateOf(false)}
     SoundQSettingsSectionLabel("Temporary audio",first=true)
     val storageCapture=graph.storagePreferences.capture()
     SoundQSettingsSwitchRow("Temporary audio",storage.temporaryAudioEnabled,
-        {enabled->storageCapture?.let {captured->work.launch {val saved=withContext(Dispatchers.IO){graph.storagePreferences.setTemporaryAudio(captured,enabled,valid)};if(valid())failedWrite=!saved&&graph.storagePreferences.state.value.error}}},enabled=storageCapture!=null)
+        {enabled->if(!pending)storageCapture?.let {captured->pending=true;work.launch {try {val saved=withContext(Dispatchers.IO){graph.storagePreferences.setTemporaryAudio(captured,enabled,valid)};if(valid())failedWrite=!saved&&graph.storagePreferences.state.value.error}finally {pending=false}}}},enabled=storageCapture!=null&&!pending)
     if(storage.error)SoundQSettingsBlock {SoundQFeedback(if(failedWrite)"Couldn’t save temporary audio" else "Couldn’t load temporary audio",FeedbackKind.Error,action="Reload",onAction={work.launch(Dispatchers.IO){if(valid())graph.storagePreferences.load()}})}
     SoundQSettingsRow("Used",value=cache?.bytes?.let(::readableStorageSize) ?: "Unavailable")
     cache?.takeIf {it.deferredFiles>0}?.let {SoundQSettingsRow("Clearing after playback",value=if(it.deferredFiles==1)"1 file" else "${it.deferredFiles} files")}
@@ -210,7 +224,7 @@ internal fun localAudioSummary(state:com.soundq.android.data.device.PhoneAudioSt
         else SoundQFeedback(message,FeedbackKind.Notice)
     }}
     SoundQSettingsSectionLabel("Downloads")
-    SoundQSettingsRow("Manage downloads",onClick=onDownloads)
+    SoundQSettingsRow("Manage downloads",onClick=onDownloads,modifier=downloadsModifier)
     confirmClear?.let {captured ->AlertDialog(onDismissRequest={confirmClear=null},title={Text("Clear temporary audio?")},text={Text("Downloads and artwork stay on this device.")},confirmButton={TextButton(onClick={confirmClear=null;work.launch {val result=withContext(Dispatchers.IO){if(valid())graph.temporaryAudio.clear(captured) else null};if(valid()&&result!=null){cacheMessage=when {result.failedFiles>0->CLEAR_FAILED;result.deferredFiles>0->"Clearing after playback";else->"Temporary audio cleared"};refresh()}}}){Text("Clear")}},dismissButton={TextButton(onClick={confirmClear=null}){Text("Cancel")}})}
 }
 private const val CLEAR_FAILED="Couldn’t clear some audio"
@@ -230,10 +244,12 @@ private const val CLEAR_FAILED="Couldn’t clear some audio"
     val work=rememberCoroutineScope()
     val capture=owner.capture()
     var failedWrite by remember {mutableStateOf(false)}
+    // One write per captured revision: a second tap before the first settles would be refused as stale.
+    var pending by remember {mutableStateOf(false)}
     Spacer(Modifier.height(SoundQSettingsMetrics.firstSectionTop))
     Column(Modifier.fillMaxWidth().selectableGroup()) {
         for(mode in EndOfQueue.entries)SoundQSettingsChoiceRow(endOfQueueLabel(mode),state.ready&&state.mode==mode,
-            {capture?.let {captured->work.launch {val saved=withContext(Dispatchers.IO){owner.setMode(captured,mode,valid)};if(valid())failedWrite=!saved&&owner.state.value.error}}},enabled=capture!=null)
+            {if(!pending)capture?.let {captured->pending=true;work.launch {try {val saved=withContext(Dispatchers.IO){owner.setMode(captured,mode,valid)};if(valid())failedWrite=!saved&&owner.state.value.error}finally {pending=false}}}},enabled=capture!=null&&!pending)
     }
     if(!state.ready)SoundQSettingsBlock {SoundQFeedback("Loading…",FeedbackKind.Loading)}
     if(state.error)SoundQSettingsBlock {SoundQFeedback(if(failedWrite)"Couldn’t save End of queue" else "Couldn’t load End of queue",FeedbackKind.Error,action="Reload",onAction={work.launch(Dispatchers.IO){if(valid())owner.load()}})}
@@ -244,10 +260,12 @@ private const val CLEAR_FAILED="Couldn’t clear some audio"
     val work=rememberCoroutineScope()
     val capture=owner.capture()
     var failedWrite by remember {mutableStateOf(false)}
+    // One write per captured revision: a second tap before the first settles would be refused as stale.
+    var pending by remember {mutableStateOf(false)}
     Spacer(Modifier.height(SoundQSettingsMetrics.firstSectionTop))
     Column(Modifier.fillMaxWidth().selectableGroup()) {
         for(mode in listOf(SwipeQueue.AddToQueue,SwipeQueue.PlayNext))SoundQSettingsChoiceRow(swipeQueueLabel(mode),state.ready&&state.mode==mode,
-            {capture?.let {captured->work.launch {val saved=withContext(Dispatchers.IO){owner.setMode(captured,mode,valid)};if(valid())failedWrite=!saved&&owner.state.value.error}}},enabled=capture!=null)
+            {if(!pending)capture?.let {captured->pending=true;work.launch {try {val saved=withContext(Dispatchers.IO){owner.setMode(captured,mode,valid)};if(valid())failedWrite=!saved&&owner.state.value.error}finally {pending=false}}}},enabled=capture!=null&&!pending)
     }
     if(!state.ready)SoundQSettingsBlock {SoundQFeedback("Loading…",FeedbackKind.Loading)}
     if(state.error)SoundQSettingsBlock {SoundQFeedback(if(failedWrite)"Couldn’t save Swipe to queue" else "Couldn’t load Swipe to queue",FeedbackKind.Error,action="Reload",onAction={work.launch(Dispatchers.IO){if(valid())owner.load()}})}

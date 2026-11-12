@@ -142,6 +142,9 @@ import com.soundq.android.product.preferences.*
     var settingsReturn by rememberSaveable {mutableStateOf<List<String>?>(null)}
     var settingsOrigin by rememberSaveable {mutableStateOf("Library")}
     var pendingTool by rememberSaveable {mutableStateOf<String?>(null)}
+    // Page state (scroll, embedded auth fields) and return focus outlive one SettingsHost composition.
+    val settingsPages=androidx.compose.runtime.saveable.rememberSaveableStateHolder()
+    val settingsMemory=remember {SettingsMemory()}
     var transportReturn by remember(accountVersion) {mutableStateOf<String?>(null)}
     fun closeDetails(captured:com.soundq.android.data.trackdetails.DetailsRoute) {
         model.graph.trackDetails.close(captured)
@@ -182,9 +185,11 @@ import com.soundq.android.product.preferences.*
         onDispose {currentRowLifetime.close();revealOwner.close();rowLifecycle.removeObserver(observer)}
     }
     fun openSettings(routes:List<SettingsRoute> = listOf(SettingsRoute.Root)) {
-        if(settingsRoutes.isEmpty())settingsOrigin=destination
+        if(settingsRoutes.isEmpty()){settingsOrigin=destination;SettingsRoute.entries.forEach {settingsPages.removeState(it.name)};settingsMemory.reset()}
         settingsReturn=null;panel=null;settingsRoutes=routes.encode()
     }
+    /** Closing Settings in place remounts the tab beneath it. Discover's screen closed its handles on disposal. */
+    fun closeSettings() {settingsRoutes=emptyList();if(destination=="Discover")discoveryVisit++}
     /** Actions that need a session open Account (or its sign-in form) on top of whatever Settings already shows. */
     fun openAccount() {openSettings(SettingsRoute.decode(settingsRoutes)+accountEntry(auth))}
     fun navigate(next:String) {
@@ -236,13 +241,18 @@ import com.soundq.android.product.preferences.*
     androidx.activity.compose.BackHandler(((auth is AuthState.SignedIn && destination in listOf("Home","History","Discover","Downloads","Acquisition","Mixes"))||settingsReturn!=null) && importView==null && panel==null && settingsRoutes.isEmpty()) {if(!returnToSettings())navigate("Library")}
     LaunchedEffect(auth) {if(auth !is AuthState.SignedIn){orderActions?.close();closeQueueSave();importView?.let(model.graph.imports::close);importView=null;revealImported=null;detailsRoute?.let(model.graph.trackDetails::close);detailsRoute=null;panel=null;selected=null;picker?.close();picker=null;trackCapture=null;gallery=false;if(auth !is AuthState.Restoring && auth !is AuthState.Pending){acquisitionReturn=emptyList();destination="Library"}}}
     LaunchedEffect(playlistActions) {playlistActions?.reload()}
-    LaunchedEffect(auth is AuthState.SignedIn) {
+    // Single owner for auth-driven Settings routes: once a session exists the sign-in form retires, and a tool
+    // chosen while signed out opens. Doing both here avoids a second writer re-pushing a stale stack.
+    LaunchedEffect(auth is AuthState.SignedIn||auth is AuthState.DeviceOnly) {
+        if(settingsRoutes.isEmpty())return@LaunchedEffect
+        val stack=SettingsRoute.decode(settingsRoutes)
+        val settled=stack.settled(auth)
         val tool=pendingTool?.let {name->MusicTool.entries.firstOrNull {it.name==name}}
-        if(auth is AuthState.SignedIn&&tool!=null&&settingsRoutes.isNotEmpty()) {
+        if(auth is AuthState.SignedIn&&tool!=null) {
             pendingTool=null
-            settingsRoutes=SettingsRoute.decode(settingsRoutes).dropLastWhile {it in setOf(SettingsRoute.Account,SettingsRoute.SignIn,SettingsRoute.CreateAccount)}.ifEmpty {listOf(SettingsRoute.Root)}.encode()
+            settingsRoutes=settled.dropLastWhile {it==SettingsRoute.Account}.ifEmpty {listOf(SettingsRoute.Root)}.encode()
             openTool(tool)
-        }
+        } else if(settled!=stack)settingsRoutes=settled.encode()
     }
     val appearance by model.graph.appearancePreferences.state.collectAsStateWithLifecycle()
     SoundQTheme(appearance=when(appearance.choice) {
@@ -258,7 +268,9 @@ import com.soundq.android.product.preferences.*
                 else if(auth is AuthState.Pending && onlineRestore?.deviceOnly==true) Column(Modifier.fillMaxSize().padding(SoundQ.spacing.gutter)) {
                     SoundQFeedback("Going online",FeedbackKind.Loading)
                 }
-                else if(auth !is AuthState.SignedIn&&auth !is AuthState.DeviceOnly&&auth !is AuthState.SignedOut) Column(Modifier.fillMaxSize()) {
+                // A sign-in started from Settings stays in Settings through Pending/SaveRequired; other auth states use the standalone form.
+                else if(auth !is AuthState.SignedIn&&auth !is AuthState.DeviceOnly&&auth !is AuthState.SignedOut&&
+                    SettingsRoute.decode(settingsRoutes).lastOrNull() !in setOf(SettingsRoute.SignIn,SettingsRoute.CreateAccount)) Column(Modifier.fillMaxSize()) {
                     incomingShare?.takeIf {it.account==null}?.let {share->
                         Text("Shared music link retained. Sign in, then confirm the import.",Modifier.padding(SoundQ.spacing.gutter))
                         SoundQButton("Discard shared link",{model.graph.incomingShares.dismiss(share)},variant=SoundQButtonVariant.Secondary)
@@ -268,17 +280,17 @@ import com.soundq.android.product.preferences.*
                 else if(settingsRoutes.isNotEmpty()) key(accountVersion) {
                     // Full screen: replaces tab content, bottom navigation and the compact player. Playback is untouched.
                     SettingsHost(model,auth,SettingsRoute.decode(settingsRoutes),{routes->
-                            settingsRoutes=routes.encode()
+                            if(routes.isEmpty())closeSettings() else settingsRoutes=routes.encode()
                             if(SettingsRoute.Account !in routes)pendingTool=null
                         },
-                        SettingsExits(onExit={settingsRoutes=emptyList()},
+                        SettingsExits(onExit={closeSettings()},
                             // Downloads belong to an account or offline session; without one, Account opens instead of an empty page.
                             onDownloads={if(model.graph.session.capture()==null)openAccount() else settingsDestination("Downloads")},
                             onHistory={settingsDestination("History")},
                             onTool=::openTool,
                             onSignedOut={orderActions?.close();closeQueueSave();importView?.let(model.graph.imports::close);importView=null;panel=null;settingsRoutes=listOf(SettingsRoute.Root).encode()},
                             onGallery=if(BuildConfig.DEBUG&&auth is AuthState.SignedIn){{gallery=true}}else null),
-                        authForm={register->AuthScreen(auth,model,scrollable=false,embedded=true,initialRegister=register)})
+                        settingsPages,settingsMemory,authForm={register->AuthScreen(auth,model,scrollable=false,embedded=true,initialRegister=register)})
                 }
                 else Column(Modifier.widthIn(max=SoundQ.sizes.appMax).fillMaxSize()) {
                     incomingShare?.takeIf {it.account==null||it.account==(auth as? AuthState.SignedIn)?.accountId}?.let {

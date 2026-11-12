@@ -24,12 +24,11 @@ internal fun localAudioStatus(state:PhoneAudioState):LocalAudioStatus? = when {
 internal fun localAudioSongs(state:PhoneAudioState):Int = state.snapshot?.files?.count {it.available} ?: 0
 
 /** Settings → Local audio. One access action; scanning belongs to the single phone-audio owner. */
-@Composable internal fun LocalAudioDetail(graph: AppGraph) {
+@Composable internal fun LocalAudioDetail(graph: AppGraph, version: Long) {
     val owner = graph.phoneAudio
     val state by owner.state.collectAsStateWithLifecycle()
-    val version = remember { graph.session.version() }
-    val alive = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
-    DisposableEffect(Unit) { onDispose { alive.set(false) } }
+    val alive = remember(version) { java.util.concurrent.atomic.AtomicBoolean(true) }
+    DisposableEffect(alive) { onDispose { alive.set(false) } }
     val valid = { alive.get() && owner.current(version) }
     val pickers = rememberAudioPickers(graph,
         { uri, flags, current -> owner.selected(uri, flags, false) { valid() && current() } },
@@ -38,14 +37,22 @@ internal fun localAudioSongs(state:PhoneAudioState):Int = state.snapshot?.files?
         { if (valid() && com.soundq.android.product.localAudioAccessChanged(owner.state.value, owner.platform.storageAllowed(), owner.platform.indexedAllowed())) owner.refresh(valid) })
     val status = localAudioStatus(state)
     SoundQSettingsSectionLabel("Access", first = true)
-    SoundQSettingsRow("File access", value = if (state.permission) "Allowed" else "Off")
-    if (status == LocalAudioStatus.Off || !state.ready) {
+    SoundQSettingsRow("File access", value = if (!state.ready) "Loading…" else if (state.permission) "Allowed" else "Off")
+    val scanAgain: @Composable () -> Unit = {
         SoundQSettingsBlock(Modifier.padding(top = SoundQ.spacing.large)) {
-            SoundQButton("Allow file access", pickers.permission, Modifier.fillMaxWidth(), enabled = state.ready)
+            SoundQButton("Scan again", { owner.refresh(valid) }, Modifier.fillMaxWidth(), variant = SoundQButtonVariant.Secondary, enabled = status != LocalAudioStatus.Scanning)
         }
-        return
     }
-    SoundQSettingsSectionLabel("Library")
+    when (status) {
+        null -> { if (state.ready) scanAgain(); return } // Allowed, no finished scan yet: unknown, not zero songs.
+        LocalAudioStatus.Off -> {
+            SoundQSettingsBlock(Modifier.padding(top = SoundQ.spacing.large)) {
+                SoundQButton("Allow file access", pickers.permission, Modifier.fillMaxWidth())
+            }
+            return
+        }
+        else -> SoundQSettingsSectionLabel("Library")
+    }
     when (status) {
         LocalAudioStatus.Scanning -> SoundQSettingsBlock(Modifier.heightIn(min = SoundQSettingsMetrics.rowMin)) {
             Row(Modifier.heightIn(min = SoundQSettingsMetrics.rowMin).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
@@ -64,9 +71,8 @@ internal fun localAudioSongs(state:PhoneAudioState):Int = state.snapshot?.files?
                 Text("No audio found", style = SoundQ.typography.title, color = SoundQ.colors.text, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
             }
         }
-        else -> SoundQSettingsRow("Songs", value = "${localAudioSongs(state)}")
+        LocalAudioStatus.Found -> SoundQSettingsRow("Songs", value = "${localAudioSongs(state)}")
+        else -> Unit
     }
-    SoundQSettingsBlock(Modifier.padding(top = SoundQ.spacing.large)) {
-        SoundQButton("Scan again", { owner.refresh(valid) }, Modifier.fillMaxWidth(), variant = SoundQButtonVariant.Secondary, enabled = status != LocalAudioStatus.Scanning)
-    }
+    scanAgain()
 }

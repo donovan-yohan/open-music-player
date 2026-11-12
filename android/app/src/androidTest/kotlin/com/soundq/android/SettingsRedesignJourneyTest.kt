@@ -163,12 +163,25 @@ class SettingsRedesignJourneyTest {
         compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
         compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
         compose.waitUntil(15000){graph.session.state.value is AuthState.SignedIn}
-        // The retained tool target runs once the session exists; Back returns to Settings.
-        compose.waitUntil(15000){compose.onAllNodes(hasText("Settings") and isHeading()).fetchSemanticsNodes().isEmpty()}
+        // The retained tool target (Catalog) opens once the session exists; Back returns to Music tools.
+        compose.waitUntil(15000){compose.onAllNodes(hasText("Catalog") and isHeading()).fetchSemanticsNodes().isNotEmpty()}
         systemBack()
-        compose.waitUntil(10000){compose.onAllNodes(hasText("Settings") and isHeading()).fetchSemanticsNodes().isNotEmpty()||compose.onAllNodes(hasText("Music tools") and isHeading()).fetchSemanticsNodes().isNotEmpty()}
-        while(compose.onAllNodes(hasText("Settings") and isHeading()).fetchSemanticsNodes().isEmpty())back()
+        compose.waitUntil(10000){compose.onAllNodes(hasText("Music tools") and isHeading()).fetchSemanticsNodes().isNotEmpty()}
+        back()
+        heading("Settings").assertIsDisplayed()
         compose.onNode(hasText("Account") and hasText("Signed in") and hasClickAction()).performScrollTo().assertIsDisplayed()
+        // Leaving for Listening history and coming back restores the Settings page where it was.
+        // Scroll to the end (nonzero offset) while the opening row stays on screen.
+        row("About").performScrollTo()
+        row("Listening history").assertIsDisplayed()
+        val opener=row("Listening history").fetchSemanticsNode().boundsInRoot
+        heading("Account").assertIsNotDisplayed()
+        row("Listening history").performClick()
+        compose.waitUntil(10000){compose.onAllNodes(hasText("Settings") and isHeading()).fetchSemanticsNodes().isEmpty()}
+        systemBack()
+        heading("Settings").assertIsDisplayed()
+        assertEquals("Return restores the Settings scroll",opener,row("Listening history").fetchSemanticsNode().boundsInRoot)
+        row("Account").performScrollTo()
         open("Account")
         compose.onNode(hasText("Status") and hasText("Signed in")).assertIsDisplayed()
         compose.onNode(hasText("Device unlock") and isToggleable()).assertIsDisplayed()
@@ -183,6 +196,26 @@ class SettingsRedesignJourneyTest {
         compose.waitUntil(15000){graph.session.state.value is AuthState.SignedOut}
         compose.waitUntil(10000){compose.onAllNodes(hasText("Account") and hasText("Signed out") and hasClickAction()).fetchSemanticsNodes().isNotEmpty()}
         heading("Settings").assertIsDisplayed()
+    }
+
+    @Test fun settingsOpenedFromDiscoverReturnsToAWorkingDiscover() {
+        signedOut();gear();open("Account");open("Sign in")
+        compose.onNodeWithContentDescription("Email").performTextInput("settings-discover@example.test")
+        compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
+        compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+        compose.waitUntil(15000){graph.session.state.value is AuthState.SignedIn}
+        back();back()
+        compose.waitUntil(5000){compose.onAllNodes(hasText("Settings") and isHeading()).fetchSemanticsNodes().isEmpty()}
+        compose.onNode(hasText("Discover") and hasClickAction()).performClick()
+        compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Discover options").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Discover options").performClick()
+        compose.onNodeWithText("Settings").performClick()
+        heading("Settings").assertIsDisplayed()
+        back()
+        compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Discover options").fetchSemanticsNodes().isNotEmpty()}
+        // The remounted screen owns current handles: an edit reaches the repository.
+        compose.onNode(hasContentDescription("Search sources") and hasSetTextAction()).performTextInput("after settings")
+        compose.waitUntil(5000){graph.discovery.state.value.draft.text=="after settings"}
     }
 
     /** OS-frame captures for review, only when the runner passes captureLabel. Not an acceptance assertion. */
