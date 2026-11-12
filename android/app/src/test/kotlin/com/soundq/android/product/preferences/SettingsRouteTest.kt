@@ -2,6 +2,7 @@ package com.soundq.android.product.preferences
 
 import com.soundq.android.data.AuthState
 import com.soundq.android.data.device.PhoneAudioState
+import com.soundq.android.data.device.PhoneScanObservation
 import com.soundq.android.data.deviceaudio.DeviceListeningSnapshot
 import com.soundq.android.data.preferences.*
 import org.junit.Assert.*
@@ -61,11 +62,25 @@ class SettingsRouteTest {
     }
 
     @Test fun localAudioSummaryReflectsOwnerStateWithoutReportingUnknownAsZero() {
+        val empty=DeviceListeningSnapshot(1,emptyList(),emptyList(),emptyList())
+        val finished=PhoneScanObservation(indexed=true,complete=true,storage=true)
         assertEquals("Loading…",localAudioSummary(PhoneAudioState()))
-        assertEquals("Access off",localAudioSummary(PhoneAudioState(ready=true,permission=false)))
-        assertEquals("Scanning…",localAudioSummary(PhoneAudioState(ready=true,permission=true,refreshing=true)))
-        assertNull(localAudioSummary(PhoneAudioState(ready=true,permission=true)))
-        assertEquals("No audio found",localAudioSummary(PhoneAudioState(ready=true,permission=true,snapshot=DeviceListeningSnapshot(1,emptyList(),emptyList(),emptyList()))))
+        assertEquals("Access off",localAudioSummary(PhoneAudioState(ready=true,snapshot=empty,permission=false,scan=finished)))
+        assertEquals("Scanning…",localAudioSummary(PhoneAudioState(ready=true,snapshot=empty,refreshing=true,permission=true)))
+        // An empty catalog before any finished scan is unknown, not "No audio found".
+        assertNull(localAudioSummary(PhoneAudioState(ready=true,snapshot=empty,permission=true)))
+        assertEquals("No audio found",localAudioSummary(PhoneAudioState(ready=true,snapshot=empty,permission=true,scan=finished)))
+        assertNull("A failed scan is not zero songs",localAudioSummary(PhoneAudioState(ready=true,snapshot=empty,permission=true,scan=PhoneScanObservation(false,true,true))))
+    }
+
+    @Test fun localAudioStatusIsThePlainAccessScanResultSet() {
+        val empty=DeviceListeningSnapshot(1,emptyList(),emptyList(),emptyList())
+        assertNull(localAudioStatus(PhoneAudioState()))
+        assertEquals(LocalAudioStatus.Off,localAudioStatus(PhoneAudioState(ready=true,snapshot=empty,permission=false)))
+        assertEquals(LocalAudioStatus.Scanning,localAudioStatus(PhoneAudioState(ready=true,snapshot=empty,refreshing=true,permission=true)))
+        assertEquals(LocalAudioStatus.Failed,localAudioStatus(PhoneAudioState(ready=true,snapshot=empty,permission=true,scan=PhoneScanObservation(false,true,true))))
+        assertEquals(LocalAudioStatus.Empty,localAudioStatus(PhoneAudioState(ready=true,snapshot=empty,permission=true,scan=PhoneScanObservation(true,true,true))))
+        assertEquals(0,localAudioSongs(PhoneAudioState(ready=true,snapshot=empty,permission=true)))
     }
 
     @Test fun musicToolsKeepTheOldAccountHubOrder() {

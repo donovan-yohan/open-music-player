@@ -76,7 +76,7 @@ internal class SettingsExits(
                 SettingsRoute.Account->AccountSettings(model,auth,accountValid,::open,exits)
                 SettingsRoute.SignIn->authForm(false)
                 SettingsRoute.CreateAccount->authForm(true)
-                SettingsRoute.LocalAudio->SoundQSettingsBlock(Modifier.padding(vertical=SoundQ.spacing.large)) {LocalAudioDetail(graph,::back)}
+                SettingsRoute.LocalAudio->LocalAudioDetail(graph)
                 SettingsRoute.Storage->StorageSettings(graph,cache,{refresh()},valid,{open(SettingsRoute.StorageDetails)},exits.onDownloads,Modifier.opens(SettingsRoute.StorageDetails))
                 SettingsRoute.StorageDetails->StorageDetails(cache)
                 SettingsRoute.Theme->AppearanceChoices(graph.appearancePreferences)
@@ -133,14 +133,14 @@ internal class SettingsExits(
     }
 }
 
-/** Actual owner state only. A missing snapshot is not reported as zero songs. */
-internal fun localAudioSummary(state:com.soundq.android.data.device.PhoneAudioState):String? = when {
-    !state.ready->"Loading…"
-    !state.permission->"Access off"
-    state.refreshing->"Scanning…"
-    state.snapshot==null->null
-    state.snapshot.files.isEmpty()->"No audio found"
-    else->songCount(state.snapshot.files.size)
+/** Actual owner state only. An unknown or failed scan is not reported as zero songs. */
+internal fun localAudioSummary(state:com.soundq.android.data.device.PhoneAudioState):String? = when(localAudioStatus(state)) {
+    null->if(state.ready)null else "Loading…"
+    LocalAudioStatus.Off->"Access off"
+    LocalAudioStatus.Scanning->"Scanning…"
+    LocalAudioStatus.Empty->"No audio found"
+    LocalAudioStatus.Found->songCount(localAudioSongs(state))
+    LocalAudioStatus.Failed->localAudioSongs(state).takeIf {it>0}?.let(::songCount)
 }
 
 @Composable private fun AccountSettings(model:ProductViewModel,auth:AuthState,accountValid:()->Boolean,open:(SettingsRoute)->Unit,exits:SettingsExits) {

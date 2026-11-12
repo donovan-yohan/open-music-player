@@ -53,7 +53,7 @@ import com.soundq.android.product.preferences.*
     LaunchedEffect(revealImported,library.rows,library.loading,library.error) {
         revealImported?.let {id ->
             val index=library.rows.indexOfFirst {it.id==id}
-            if(index>=0){libraryScroll.scrollToItem(libraryRowScrollIndex(index,library.loading,library.error!=null));revealImported=null}
+            if(index>=0){libraryScroll.scrollToItem(libraryRowScrollIndex(index,library.loading,library.error!=null,localAudioNotice(phone,library.query,localFiles,rowsEmpty=false)!=null));revealImported=null}
         }
     }
     val accountVersion=model.graph.session.version()
@@ -343,6 +343,21 @@ import com.soundq.android.product.preferences.*
                         val mixedNeeded=phone.snapshot?.files?.isNotEmpty()==true||downloadTracks.isNotEmpty()||localFiles||recentOrder||auth !is AuthState.SignedIn
                         LaunchedEffect(accountVersion,library,mixedNeeded) {if(mixedNeeded&&auth is AuthState.SignedIn)kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){model.graph.library.completeProjection(library)}}
                         val mixedRows=remember(library,phone.snapshot,downloads,account,projectionOwner,accountVersion,localFiles,recentOrder,mixedQuery) {unifiedLibraryRows(model.graph.endpoint.identity,account,if(auth is AuthState.SignedIn&&projectionOwner!=null)library.rows else emptyList(),downloadTracks,phone.snapshot,mixedQuery,localFiles,recentOrder)}
+                        val localAudioVisit=remember {java.util.concurrent.atomic.AtomicBoolean(true)}
+                        DisposableEffect(localAudioVisit){onDispose {localAudioVisit.set(false)}}
+                        // Same captured picker/access owner as Settings > Local audio.
+                        // Session versions are captured per callback: a retired scope need not recompose this route.
+                        val localPickers=com.soundq.android.product.preferences.rememberAudioPickers(model.graph,
+                            {uri,flags,current->model.graph.phoneAudio.selected(uri,flags,false){localAudioVisit.get()&&current()}},
+                            {uri,flags,current->model.graph.phoneAudio.selected(uri,flags,true){localAudioVisit.get()&&current()}},
+                            {
+                                // The scan belongs to the phone owner's session scope, not this visit: leaving
+                                // Library must not cancel a first scan that is still proving files.
+                                val version=model.graph.session.version()
+                                if(localAudioVisit.get()&&model.graph.phoneAudio.current(version)&&localAudioAccessChanged(model.graph.phoneAudio.state.value,model.graph.phoneAudio.platform.storageAllowed(),model.graph.phoneAudio.platform.indexedAllowed()))
+                                    model.graph.phoneAudio.refresh {model.graph.phoneAudio.current(version)}
+                            })
+                        val localNotice=localAudioNotice(phone,mixedQuery,localFiles,mixedRows.isEmpty())
                         LibraryHeader({openSettings()},{navigate("Catalog")})
                         LibrarySearch(mixedQuery.text) {if(auth is AuthState.SignedIn)model.refine(library.query.copy(text=it))else localQuery=localQuery.copy(text=it)}
                         LibraryFilters(mixedQuery.liked,if(mixedNeeded)mixedRows.size else library.total,{if(auth is AuthState.SignedIn)model.refine(library.query.copy(liked=it))else localQuery=localQuery.copy(liked=it)},{panel="Refine"})
@@ -364,7 +379,8 @@ import com.soundq.android.product.preferences.*
                             onLoadMore={expected,current->model.loadMore(expected,current)})
                         LazyColumn(Modifier.weight(1f).fillMaxWidth().semantics {contentDescription=library.total?.let {"Library, $it tracks"} ?: "Library tracks"},state=libraryScroll) {
                         if(library.loading) item {LibraryStateCell {SoundQFeedback(if(library.rows.isEmpty())"Loading library" else "Loading more tracks",FeedbackKind.Loading)}}
-                        if(!library.loading&&library.error==null&&mixedRows.isEmpty())item {LibraryStateCell {SoundQFeedback(if(mixedQuery==LibraryQuery()&&!localFiles)"No tracks yet" else "No matching tracks",FeedbackKind.Empty,action="Clear refinement",onAction={if(auth is AuthState.SignedIn)model.refine(LibraryQuery())else localQuery=LibraryQuery();localFiles=false;recentOrder=false})}}
+                        if(!library.loading&&library.error==null&&mixedRows.isEmpty()&&localNotice!=LocalAudioNotice.NoneFound&&(localNotice==null||mixedQuery!=LibraryQuery()))item {LibraryStateCell {SoundQFeedback(if(mixedQuery==LibraryQuery()&&!localFiles)"No tracks yet" else "No matching tracks",FeedbackKind.Empty,action="Clear refinement",onAction={if(auth is AuthState.SignedIn)model.refine(LibraryQuery())else localQuery=LibraryQuery();localFiles=false;recentOrder=false})}}
+                        localNotice?.let {notice->item(key="local-audio-notice") {LibraryStateCell {Column {LocalAudioNoticeContent(notice,localPickers.permission)}}}}
                         itemsIndexed(if(mixedNeeded)mixedRows else mixedRows.filter {it.server!=null},key={_,row -> row.stable}) {_,mixedRow ->
                             val phoneRow=mixedRow.phone
                             if(phoneRow!=null) {
@@ -493,8 +509,8 @@ import com.soundq.android.product.preferences.*
         }
     }
 }
-// Header/search/filter are fixed chrome. Loading precedes rows; recovery follows them.
-internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_PARAMETER") error:Boolean):Int = index+(if(loading)1 else 0)
+// Header/search/filter are fixed chrome. Loading and the local-audio notice precede rows; recovery follows them.
+internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_PARAMETER") error:Boolean,notice:Boolean=false):Int = index+(if(loading)1 else 0)+(if(notice)1 else 0)
 
 @Composable private fun LibraryIconCell(icon:SoundQIcon,label:String,onClick:()->Unit,modifier:Modifier=Modifier,enabled:Boolean=true) {
     Box(modifier.sizeIn(minWidth=SoundQ.sizes.target,minHeight=SoundQ.sizes.target)

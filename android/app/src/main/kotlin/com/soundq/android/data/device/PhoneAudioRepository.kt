@@ -12,8 +12,15 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.UUID
 
+/** [permission] is all files access, the single user-facing grant; [indexedAccess] is MediaStore audio read
+ * access. While [refreshing], both are the values the running refresh was admitted with. */
 internal data class PhoneAudioState(val ready: Boolean = false, val snapshot: DeviceListeningSnapshot? = null,
-    val refreshing: Boolean = false, val permission: Boolean = false, val message: String? = null)
+    val refreshing: Boolean = false, val permission: Boolean = false, val message: String? = null,
+    val scan: PhoneScanObservation? = null, val indexedAccess: Boolean = false)
+/** What the last finished refresh in this scope observed: [indexed] when the Android audio index was
+ * enumerated and published, [storage] when it ran with all files access (shared storage walked and
+ * unlisted audio indexed first), [complete] when that coverage was whole and every row was proved. Not persisted. */
+internal data class PhoneScanObservation(val indexed: Boolean, val complete: Boolean, val storage: Boolean = false)
 internal data class PhoneSourceAdmission(val row: DeviceAudio, val source: SourceCapture, val sessionVersion: Long, val resumeMs: Long)
 
 /** Android composition for the single released catalog/journal. Every disk-backed store call is IO-only.
@@ -26,6 +33,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     private var store: DeviceListeningStore? = null
     private var access: AccessCapture? = null
     @Volatile private var acceptedVersion = -1L
+    @Volatile private var lastScan: PhoneScanObservation? = null
     private val mutable = MutableStateFlow(PhoneAudioState())
     val state: StateFlow<PhoneAudioState> = mutable.asStateFlow()
     fun start() {
@@ -36,10 +44,10 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                         if (store == null) store = DeviceListeningStore(File(graph.directory, "phone-listening.v1.json"))
                         val owner = requireNotNull(store)
                         if (auth is AuthState.LocalLocked || auth is AuthState.Pending || auth is AuthState.Restoring || auth is AuthState.SaveRequired) {
-                            acceptedVersion = -1; owner.lock(); access = null; mutable.value = PhoneAudioState(); return@withLock
+                            acceptedVersion = -1; owner.lock(); access = null; lastScan = null; mutable.value = PhoneAudioState(); return@withLock
                         }
                         val account = graph.session.capture()?.let { ServerAccount(graph.endpoint.identity, it.accountId) }
-                        access = owner.unlock(account); acceptedVersion = version
+                        access = owner.unlock(account); acceptedVersion = version; lastScan = null
                         publish()
                     } catch (_: Exception) { fail("Local audio storage could not be opened. Saved state has not been replaced.") }
                 }
@@ -54,7 +62,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         val snapshot = access?.let { store?.snapshot(it) }
         val previous=mutable.value.snapshot
         if(previous!=null&&snapshot!=null&&(previous.grants!=snapshot.grants||previous.files.any {old->snapshot.files.singleOrNull {it.id==old.id}?.let {it.owner!=old.owner||it.aliases!=old.aliases}==true}))authorityVersion++
-        mutable.value = PhoneAudioState(snapshot != null, snapshot, false, platform.indexedAllowed(), message ?: if (snapshot == null) "Local audio storage is unavailable. Saved state has not been replaced." else null)
+        mutable.value = PhoneAudioState(snapshot != null, snapshot, false, platform.storageAllowed(), message ?: if (snapshot == null) "Local audio storage is unavailable. Saved state has not been replaced." else null, lastScan, platform.indexedAllowed())
     }
     private fun fail(message: String) { mutable.value = mutable.value.copy(refreshing = false, message = message) }
     private val refreshEpoch=java.util.concurrent.atomic.AtomicLong()
@@ -65,7 +73,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     private val admissions=Dispatchers.IO.limitedParallelism(1)
     private var refreshRunning=false
     private var pendingRefresh:(()->Unit)?=null
-    private data class RefreshScope(val version:Long,val indexed:Boolean,val trees:Set<String>,val reads:Set<String>)
+    private data class RefreshScope(val version:Long,val indexed:Boolean,val trees:Set<String>,val reads:Set<String>,val storage:Boolean=false)
     private var refreshScope:RefreshScope?=null
     fun refresh(valid: () -> Boolean = { true }) {
         // UI callers never wait for a held catalog publication. Uncontended admission stays inline;
@@ -80,7 +88,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         // Only redundant owner/access observations may share admitted exact-byte work.
         // Observe under the same lock as publication; every observed ABA retires the old epoch.
         val scope=RefreshScope(graph.session.version(),platform.indexedAllowed(),platform.persistedTrees().toSet(),
-            graph.applicationContext.contentResolver.persistedUriPermissions.filter {it.isReadPermission}.map {it.uri.toString()}.toSet())
+            graph.applicationContext.contentResolver.persistedUriPermissions.filter {it.isReadPermission}.map {it.uri.toString()}.toSet(),platform.storageAllowed())
         if(refreshRunning){
             if(refreshScope!=scope)refreshEpoch.incrementAndGet()
             refreshScope=scope
@@ -94,7 +102,8 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         jobs.launch {
             try {
                 if (!active()) return@launch
-                mutable.value = mutable.value.copy(refreshing = true, permission = platform.indexedAllowed(), message = null)
+                // Publish the access this refresh was admitted with, so a grant after admission is not masked.
+                mutable.value = mutable.value.copy(refreshing = true, permission = scope.storage, indexedAccess = scope.indexed, message = null)
                 val owner = requireNotNull(store); val accepted = requireNotNull(access)
                 val prior = owner.snapshot(accepted) ?: error("Local audio state refused")
                 val indexed = ScanGrant(grantId("indexed:external-audio"), GrantKind.INDEXED, "Android audio index", ProviderLocator("android", "indexed:external-audio"), false,
@@ -103,6 +112,8 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                 val retained = scope.trees
                 val grants = listOf(indexed) + prior.grants.filter { it.kind != GrantKind.INDEXED && it.state != AccessState.REMOVED }
                 var partial = false
+                var indexedScan: PhoneScanObservation? = null
+                var storageComplete = true
                 for (old in grants) {
                     if (!active()) throw CancellationException()
                     val granted = when {
@@ -112,13 +123,16 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                         else -> old
                     }
                     refreshLocked{if(!active())throw CancellationException();check(owner.putGrant(accepted, granted) != Mutation.REFUSED)}
-                    if (granted.state != AccessState.AVAILABLE) continue
+                    if (granted.state != AccessState.AVAILABLE) { if (granted.kind == GrantKind.INDEXED) indexedScan = PhoneScanObservation(false, true, scope.storage); continue }
                     val scan = owner.beginScan(accepted, granted.id) ?: continue
                     var complete=true
                     val descriptors = try {
                         val rows = when (granted.kind) {
                             GrantKind.FILE -> listOf(platform.metadata(Uri.parse(granted.locator.value), granted.locator.value))
                             GrantKind.INDEXED -> {
+                                // All files access: index audio MediaStore missed, then read the index as before.
+                                val indexedUnlisted = !scope.storage || try { platform.indexUnlisted { active() } } catch (e: CancellationException) { throw e } catch (_: Exception) { false }
+                                if (!indexedUnlisted) { storageComplete = false; partial = true }
                                 val result = platform.discover(emptyList(), { active() })
                                 check(result.indexedComplete && !result.truncated) { "Android audio coverage is partial" }; result.observations
                             }
@@ -141,13 +155,16 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                         // A denied/partial grant is not an empty scan and must not block siblings.
                         // Incomplete enumeration is not permission to publish a prefix.
                         partial = true
+                        if (granted.kind == GrantKind.INDEXED) indexedScan = PhoneScanObservation(true, false, scope.storage)
                         continue
                     }
                     refreshLocked{
                         if (!active()) throw CancellationException()
                         check(owner.publishScan(scan, descriptors, complete) != Mutation.REFUSED)
                     }
+                    if (granted.kind == GrantKind.INDEXED) indexedScan = PhoneScanObservation(true, complete && storageComplete, scope.storage)
                 }
+                refreshLocked { if (!active()) throw CancellationException(); lastScan = indexedScan }
                 publish(if (partial) "Some audio could not be refreshed. Existing files and saved progress were kept."
                     else "Available audio refreshed. Coverage is limited to audio Android exposes and added locations.")
             } catch (_: CancellationException) { if(refreshEpoch.get()==refresh)mutable.value = mutable.value.copy(refreshing = false) }

@@ -16,6 +16,20 @@ import com.soundq.android.data.AuthState
 
 internal data class AudioPickerActions(val permission: () -> Unit, val file: () -> Unit, val folder: () -> Unit)
 
+/** All files access is granted in system Settings; returning re-checks it (Android restarts the app when it changes).
+ * Before Android 11 the equivalent storage permission lives on the app's own settings page. */
+internal fun allFilesAccessIntents(packageName: String): List<Intent> = if (android.os.Build.VERSION.SDK_INT < 30)
+    listOf(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+    else listOf(
+        Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")),
+        Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
+    )
+internal fun openAllFilesAccess(context: android.content.Context) {
+    for (intent in allFilesAccessIntents(context.packageName)) {
+        try { context.startActivity(intent); return } catch (_: android.content.ActivityNotFoundException) {}
+    }
+}
+
 /** One captured user request. A replacement account, lock, close or stale callback cannot enroll a grant. */
 @Composable internal fun rememberAudioPickers(
     graph: AppGraph,
@@ -31,13 +45,12 @@ internal data class AudioPickerActions(val permission: () -> Unit, val file: () 
     var sequence by remember { mutableLongStateOf(0) }
     var fileRequest by remember { mutableStateOf<Capture?>(null) }
     var folderRequest by remember { mutableStateOf<Capture?>(null) }
-    var permissionRequest by remember { mutableStateOf<Capture?>(null) }
     val currentFile by rememberUpdatedState(onFile)
     val currentFolder by rememberUpdatedState(onFolder)
     val currentAccess by rememberUpdatedState(onAccessChanged)
     fun valid(captured: Capture) = alive.get() && sequence == captured.serial && graph.session.owns(captured.version) && graph.session.state.value !is AuthState.LocalLocked
     fun capture(): Capture? {
-        if (!alive.get() || graph.session.state.value is AuthState.LocalLocked || fileRequest != null || folderRequest != null || permissionRequest != null) return null
+        if (!alive.get() || graph.session.state.value is AuthState.LocalLocked || fileRequest != null || folderRequest != null) return null
         return Capture(graph.session.version(), ++sequence)
     }
     val file = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -52,31 +65,13 @@ internal data class AudioPickerActions(val permission: () -> Unit, val file: () 
         if (captured != null && valid(captured) && result.resultCode == Activity.RESULT_OK && uri != null && uri.scheme == "content")
             currentFolder(uri, data.flags) { valid(captured) }
     }
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        val captured = permissionRequest; permissionRequest = null
-        if (captured != null && valid(captured)) currentAccess()
-    }
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME && alive.get() && graph.session.state.value !is AuthState.LocalLocked) currentAccess() }
         lifecycle.addObserver(observer)
         onDispose { alive.set(false); sequence++; activity?.localAudioPickerPending = false; lifecycle.removeObserver(observer) }
     }
-    val permissionName = graph.applicationContext.let { if (android.os.Build.VERSION.SDK_INT >= 33) android.Manifest.permission.READ_MEDIA_AUDIO else android.Manifest.permission.READ_EXTERNAL_STORAGE }
     return AudioPickerActions(
-        permission = {
-            val captured = capture()
-            if (captured != null) {
-                // After an actual permanent denial, the OS settings page is the recovery, not a prompt loop.
-                val asked = context.getSharedPreferences("audio-permission", android.content.Context.MODE_PRIVATE).getBoolean(permissionName, false)
-                if (asked && activity?.shouldShowRequestPermissionRationale(permissionName) == false) {
-                    context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
-                } else {
-                    permissionRequest = captured
-                    context.getSharedPreferences("audio-permission", android.content.Context.MODE_PRIVATE).edit().putBoolean(permissionName, true).apply()
-                    permission.launch(permissionName)
-                }
-            }
-        },
+        permission = { if (capture() != null) openAllFilesAccess(context) },
         file = {
             capture()?.let { captured ->
                 fileRequest = captured; activity?.localAudioPickerPending = true
