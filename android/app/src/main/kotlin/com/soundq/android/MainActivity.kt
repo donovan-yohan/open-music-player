@@ -25,9 +25,6 @@ import kotlinx.serialization.Serializable
 @Serializable data object Infrastructure : NavKey
 
 class MainActivity : ComponentActivity() {
-    // Only the mounted system audio-picker request may temporarily leave this Activity.
-    // It is never persisted and is cleared on result/disposal. No account unlock is granted.
-    internal var localAudioPickerPending = false
     lateinit var deviceUnlock:com.soundq.android.localunlock.PlatformDeviceUnlock
         private set
     private var interactionRecorder:com.soundq.android.performance.WindowInteractionRecorder?=null
@@ -46,7 +43,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy(){deviceUnlock.cancel();interactionRecorder?.close();interactionRecorder=null;super.onDestroy()}
     override fun onStop(){
         interactionRecorder?.stop()
-        if(!isChangingConfigurations&&!deviceUnlock.credentialActivityPending&&!localAudioPickerPending) {
+        if(!isChangingConfigurations&&!deviceUnlock.credentialActivityPending) {
             deviceUnlock.cancel()
             val graph=(application as SoundQApplication).graph
             graph.localUnlock.cancel();graph.localUnlock.lock()

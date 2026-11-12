@@ -1,7 +1,6 @@
 package com.soundq.android
 
 import android.content.ContentValues
-import android.content.Intent
 import android.os.Environment
 import android.provider.MediaStore
 import androidx.compose.foundation.layout.Box
@@ -42,9 +41,7 @@ class PhoneArtworkAdmissionTest {
             instrumentation.context.assets.open("local-audio/embedded-cover.flac").use {input->resolver.openOutputStream(uri,"w")!!.use {input.copyTo(it)}}
             resolver.update(uri,ContentValues().apply {put(MediaStore.MediaColumns.IS_PENDING,0)},null,null)
             val version=graph.session.version()
-            graph.phoneAudio.selected(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION,false){graph.session.owns(version)}
-            compose.waitUntil(15000){graph.phoneAudio.state.value.snapshot?.files?.any {f->f.available&&f.aliases.any {it.locator.value==uri.toString()}}==true}
-            val row=graph.phoneAudio.state.value.snapshot!!.files.single {f->f.available&&f.aliases.any {it.locator.value==uri.toString()}}
+            val row=graph.phoneAudio.awaitIndexed(uri,{graph.session.owns(version)})
             val ref=graph.phoneAudio.reference(row)
             compose.setContent {SoundQTheme {Box(Modifier.size(72.dp).testTag("owned cover")) {PhoneArtwork(graph,ref,72.dp,{eligible.value})}}}
             fun painted():Boolean {

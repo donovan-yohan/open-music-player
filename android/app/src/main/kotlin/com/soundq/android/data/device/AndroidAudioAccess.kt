@@ -15,7 +15,6 @@ import androidx.annotation.RequiresApi
 import android.net.Uri
 import android.os.Build
 import android.os.CancellationSignal
-import android.provider.DocumentsContract
 import android.provider.MediaStore
 import java.io.File
 import java.io.FileOutputStream
@@ -24,23 +23,23 @@ import java.util.concurrent.CancellationException
 
 /** Platform observations, not Library identities. The catalog alone reconciles aliases/revisions. */
 internal data class AudioAccessObservation(
-    val locator: String, val providerObject: String, val aliases: Set<String>, val grant: String?,
+    val locator: String, val providerObject: String, val aliases: Set<String>,
     val filename: String, val title: String, val artist: String?, val album: String?,
     val durationMs: Long?, val size: Long?, val modified: Long?, val mime: String?,
 )
-internal data class AudioCoverage(val indexedAllowed: Boolean, val indexedComplete: Boolean,
-    val observations: List<AudioAccessObservation>, val unavailableGrants: Set<String>, val truncated: Boolean)
+internal data class AudioCoverage(val complete: Boolean, val observations: List<AudioAccessObservation>, val truncated: Boolean)
 internal data class AudioContentProof(val bytes: Long, val sha256: String)
+/** A picker key proved to name the audio-index object [key]. [sameContent]: the route only names the row, so the
+ * stored row's bytes must also equal the index row's. */
+internal data class IndexKeyProof(val key: String, val sameContent: Boolean)
 
-/** No filesystem crawl, writes to source, upload, backend or account dependency. Call on IO. */
+/** All files access is the only route to phone audio: walk shared storage, index what MediaStore missed, then read
+ * the MediaStore audio index. No writes to source, upload, backend or account dependency. Call on IO. */
 internal class AndroidAudioAccess(private val context: Context) {
     private val resolver = context.contentResolver
-    val permission: String get() = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
-    /** All files access: the user-facing grant. It also lets the MediaStore audio index be read. Before
-     * Android 11 there is no all files access; the legacy storage permission is the equivalent read grant. */
+    /** All files access. Before Android 11 there is none; the legacy storage permission is the equivalent read grant. */
     fun storageAllowed() = if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
         else context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-    fun indexedAllowed() = storageAllowed() || context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
     @RequiresApi(30) fun storageRoots(): List<File> =
         context.getSystemService(StorageManager::class.java).storageVolumes.filter { it.state == Environment.MEDIA_MOUNTED || it.state == Environment.MEDIA_MOUNTED_READ_ONLY }.mapNotNull { it.directory }
     /** With all files access, ask MediaStore to index audio on shared storage it does not list yet, so the
@@ -71,44 +70,23 @@ internal class AndroidAudioAccess(private val context: Context) {
         }
         return failed.get() == 0
     }
-    fun persistedTrees(): List<String> = resolver.persistedUriPermissions.filter { it.isReadPermission && DocumentsContract.isTreeUri(it.uri) }.map { it.uri.toString() }
-    fun persist(uri: Uri, flags: Int, tree: Boolean) {
-        require(uri.scheme == "content")
-        if (tree) require(validTree(uri)) { "Choose a supported subfolder, not a storage or Downloads root" }
-        val read = flags and Intent.FLAG_GRANT_READ_URI_PERMISSION
-        require(read != 0)
-        resolver.takePersistableUriPermission(uri, read)
-    }
-    fun release(locator: String) {
-        resolver.releasePersistableUriPermission(Uri.parse(locator), Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    fun validTree(uri: Uri): Boolean {
-        if (!DocumentsContract.isTreeUri(uri)) return false
-        val id = runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull() ?: return false
-        if (uri.authority == "com.android.externalstorage.documents") {
-            val relative = id.substringAfter(':', "").trim('/')
-            if (relative.isEmpty() || relative.equals("Download", true) || relative.equals("Downloads", true) ||
-                relative.startsWith("Android/data", true) || relative.startsWith("Android/obb", true)) return false
+    /** Releases every URI permission older builds' file and folder pickers persisted. Returns how many were held. */
+    fun releaseUriPermissions(): Int {
+        val held = resolver.persistedUriPermissions
+        for (permission in held) {
+            val flags = (if (permission.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or
+                (if (permission.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
+            runCatching { resolver.releasePersistableUriPermission(permission.uri, flags) }
         }
-        if (uri.authority == "com.android.providers.downloads.documents" && id in setOf("downloads", "root")) return false
-        return true
+        return held.size
     }
-    fun folderLabel(locator: String): String {
-        val tree = Uri.parse(locator)
-        val doc = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
-        return resolver.query(doc, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use {
-            if (it.moveToFirst()) it.getString(0) else null
-        } ?: "Added folder"
-    }
-    /** Audio index includes exposed Documents/Downloads entries; it is not exhaustive folder access. */
-    fun discover(trees: List<String>, current: () -> Boolean, signal: CancellationSignal = CancellationSignal(), includeIndexed: Boolean = true): AudioCoverage {
+    /** The MediaStore audio index, read with all files access. */
+    fun discover(current: () -> Boolean, signal: CancellationSignal = CancellationSignal()): AudioCoverage {
         val found = linkedMapOf<String, AudioAccessObservation>()
         var truncated = false
         fun checkCurrent() { if (!current()) { signal.cancel(); throw CancellationException("Audio discovery retired") } }
-        fun add(row: AudioAccessObservation) { if (found.size < MAX_FILES) found[row.providerObject] = row else truncated = true }
-        val allowed = indexedAllowed()
-        var complete = false
-        if (allowed && includeIndexed) try {
+        if (!storageAllowed()) return AudioCoverage(false, emptyList(), false)
+        try {
             val volumes = if (Build.VERSION.SDK_INT >= 29) MediaStore.getExternalVolumeNames(context) else setOf("external")
             for (volume in volumes) {
                 checkCurrent()
@@ -119,68 +97,58 @@ internal class AndroidAudioAccess(private val context: Context) {
                     MediaStore.Audio.Media.MIME_TYPE), null, null, "_id ASC", signal)?.use { cursor ->
                     while (cursor.moveToNext()) {
                         checkCurrent()
+                        if (found.size >= MAX_FILES) { truncated = true; break }
                         val uri = ContentUris.withAppendedId(collection, cursor.getLong(0))
                         val filename = cursor.getString(1) ?: "Audio file"
                         val identity = identity(uri)
-                        add(AudioAccessObservation(uri.toString(), identity.key, identity.all, null, filename,
+                        found[identity.key] = AudioAccessObservation(uri.toString(), identity.key, identity.all, filename,
                             cursor.getString(2).cleanTag() ?: filename, cursor.getString(3).cleanTag(), cursor.getString(4).cleanTag(),
-                            cursor.nullLong(5), cursor.nullLong(6), cursor.nullLong(7), cursor.getString(8)))
-                        if (truncated) break
+                            cursor.nullLong(5), cursor.nullLong(6), cursor.nullLong(7), cursor.getString(8))
                     }
                 } ?: throw java.io.IOException("Audio index unavailable")
+                if (truncated) break
             }
-            complete = !truncated
-        } catch (e: CancellationException) { throw e } catch (_: Exception) { complete = false }
-        val unavailable = mutableSetOf<String>()
-        for (grant in trees) {
-            checkCurrent()
-            try {
-                val tree = Uri.parse(grant); require(validTree(tree))
-                val pending = ArrayDeque<String>(); pending.add(DocumentsContract.getTreeDocumentId(tree))
-                val visited = mutableSetOf<String>()
-                while (pending.isNotEmpty()) {
-                    checkCurrent()
-                    val id = pending.removeFirst()
-                    if (!visited.add(id)) continue
-                    if (visited.size > MAX_FOLDERS) { truncated = true; break }
-                    val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, id)
-                    resolver.query(children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                        DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE,
-                        DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null, signal)?.use { cursor ->
-                        while (cursor.moveToNext()) {
-                            checkCurrent()
-                            val child = cursor.getString(0)
-                            val mime = cursor.getString(2).orEmpty()
-                            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) pending.add(child)
-                            else if (mime.startsWith("audio/") || cursor.getString(1).orEmpty().substringAfterLast('.').lowercase() in AUDIO_EXTENSIONS) {
-                                val uri = DocumentsContract.buildDocumentUriUsingTree(tree, child)
-                                add(metadata(uri, grant, cursor.getString(1) ?: "Audio file", cursor.nullLong(3), cursor.nullLong(4), mime))
-                            }
-                            if (truncated) break
-                        }
-                    } ?: throw java.io.IOException("Folder unavailable")
-                    if (truncated) break
-                }
-            } catch (e: CancellationException) { throw e } catch (_: Exception) { unavailable.add(grant) }
-        }
-        return AudioCoverage(allowed, complete, found.values.toList(), unavailable, truncated)
+        } catch (e: CancellationException) { throw e } catch (_: Exception) { return AudioCoverage(false, found.values.toList(), truncated) }
+        return AudioCoverage(!truncated, found.values.toList(), truncated)
     }
-    fun metadata(uri: Uri, grant: String? = null, fallback: String = "Audio file", size: Long? = null, modified: Long? = null, mime: String? = null): AudioAccessObservation {
-        require(uri.scheme == "content")
-        var filename = fallback; var bytes = size
-        resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE), null, null, null)?.use {
-            if (it.moveToFirst()) { filename = it.getString(0) ?: fallback; bytes = it.nullLong(1) ?: size }
+    /** Whether a scan walks shared storage before reading the index. Only then can coverage be whole enough to
+     * retire picker rows the provider could not prove. */
+    fun walksSharedStorage() = Build.VERSION.SDK_INT >= 30
+    /** Maps object keys an older build's picker stored to the audio-index key of the same object, where the provider
+     * proves it: a `media:` key must be a key MediaStore still gives that row (same row, same incarnation); an
+     * external-storage or downloads document is found by its path. A `provider:` key from Android 10 or earlier only
+     * names the row, so it also needs the index row's bytes to equal the stored row's. Keys it cannot prove are absent. */
+    fun provenIndexKeys(objectIds: Collection<String>): Map<String, IndexKeyProof> {
+        if (objectIds.isEmpty() || !storageAllowed()) return emptyMap()
+        val result = linkedMapOf<String, IndexKeyProof>()
+        for (old in objectIds) {
+            val route = LegacyPickerIdentity.route(old, ::volumeRoot) ?: continue
+            val media = when (route) { is LegacyRoute.Media -> route.uri; is LegacyRoute.Path -> indexedAudioAt(route.path) } ?: continue
+            val identity = runCatching { identity(Uri.parse(media)) }.getOrNull() ?: continue
+            if (identity.key == old) continue
+            when {
+                route is LegacyRoute.Path -> result[old] = IndexKeyProof(identity.key, sameContent = false)
+                old in identity.all -> result[old] = IndexKeyProof(identity.key, sameContent = false)
+                old.startsWith("provider:") -> result[old] = IndexKeyProof(identity.key, sameContent = true)
+            }
         }
-        val retriever = MediaMetadataRetriever()
-        try {
-            retriever.setDataSource(context, uri)
-            val identity = identity(uri)
-            return AudioAccessObservation(uri.toString(), identity.key, identity.all, grant, filename,
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE).cleanTag() ?: filename,
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST).cleanTag(),
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM).cleanTag(),
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull(), bytes, modified, mime ?: resolver.getType(uri))
-        } finally { retriever.release() }
+        return result
+    }
+    @Suppress("DEPRECATION") private fun volumeRoot(volume: String): String =
+        if (volume == "primary") Environment.getExternalStorageDirectory().path else "/storage/$volume"
+    /** The audio-index URI of the file at [path]: on the row's concrete volume where Android has volumes. */
+    private fun indexedAudioAt(path: String): String? {
+        @Suppress("DEPRECATION") val data = MediaStore.MediaColumns.DATA
+        val volumes = Build.VERSION.SDK_INT >= 29
+        val collection = if (volumes) MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL) else MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        val columns = if (volumes) arrayOf(MediaStore.Audio.Media._ID, MediaStore.MediaColumns.VOLUME_NAME) else arrayOf(MediaStore.Audio.Media._ID)
+        return runCatching {
+            resolver.query(collection, columns, "$data=?", arrayOf(path), null)?.use { cursor ->
+                if (cursor.count != 1 || !cursor.moveToFirst()) null
+                else if (!volumes) ContentUris.withAppendedId(collection, cursor.getLong(0)).toString()
+                else cursor.getString(1)?.takeIf { it.isNotBlank() }?.let { ContentUris.withAppendedId(MediaStore.Audio.Media.getContentUri(it), cursor.getLong(0)).toString() }
+            }
+        }.getOrNull()
     }
     fun embeddedArtwork(locator: String): ByteArray? {
         val retriever = MediaMetadataRetriever()
@@ -219,17 +187,11 @@ internal class AndroidAudioAccess(private val context: Context) {
         if (!current()) throw CancellationException("Audio source retired")
         return AudioContentProof(total, digest.digest().joinToString("") { "%02x".format(it) })
     }
-    /** Object identity, not the route used to reach it. A document resolves to its MediaStore row; a
-     * MediaStore row is keyed on its audio-index URI (see [MediaStoreIdentity]), with any earlier key kept as
-     * former so stored rows fold into one Library row. */
-    private fun identity(uri: Uri): ProviderIdentity {
-        if (Build.VERSION.SDK_INT >= 29 && DocumentsContract.isDocumentUri(context, uri)) {
-            runCatching { MediaStore.getMediaUri(context, uri) }.getOrNull()?.let { return identity(it) }
-        }
-        if (uri.authority == MediaStore.AUTHORITY && Build.VERSION.SDK_INT >= 29) return MediaStoreIdentity.of(uri.toString(), uri.pathSegments, mediaRows)
-        return ProviderIdentity(if (DocumentsContract.isDocumentUri(context, uri))
-            "document:${uri.authority}:${DocumentsContract.getDocumentId(uri)}" else "provider:$uri")
-    }
+    /** Object identity, not the route used to reach it: a MediaStore row is keyed on its audio-index URI (see
+     * [MediaStoreIdentity]), with any earlier key kept as former so stored rows fold into one Library row. */
+    private fun identity(uri: Uri): ProviderIdentity =
+        if (uri.authority == MediaStore.AUTHORITY && Build.VERSION.SDK_INT >= 29) MediaStoreIdentity.of(uri.toString(), uri.pathSegments, mediaRows)
+        else ProviderIdentity("provider:$uri")
     @RequiresApi(29) private val mediaRows = object : MediaStoreRows {
         override fun row(uri: String): MediaRowFacts {
             val generation = Build.VERSION.SDK_INT >= 30
@@ -254,10 +216,8 @@ internal class AndroidAudioAccess(private val context: Context) {
     private fun String?.cleanTag(): String? = this?.trim()?.takeIf { it.isNotEmpty() && it != "<unknown>" }
     companion object {
         const val MAX_FILES = 20_000
-        const val MAX_FOLDERS = 4096
         const val MAX_SOURCE_BYTES = 8L * 1024 * 1024 * 1024
         const val DISK_RESERVE_BYTES = 64L * 1024 * 1024
         const val MAX_ART_BYTES = 4 * 1024 * 1024
-        private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "aiff", "alac")
     }
 }

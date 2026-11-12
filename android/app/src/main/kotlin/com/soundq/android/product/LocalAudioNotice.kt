@@ -27,11 +27,10 @@ internal fun localAudioNotice(phone:PhoneAudioState,query:LibraryQuery,localFile
  * Compare live access with what a finished scan observed; the published flag alone is re-read by any journal
  * publication without scanning. A running refresh publishes the access it was admitted with. Before first
  * publication the startup refresh owns the scan. */
-internal fun localAudioAccessChanged(phone:PhoneAudioState,storageAllowed:Boolean,indexedAllowed:Boolean):Boolean {
+internal fun localAudioAccessChanged(phone:PhoneAudioState,storageAllowed:Boolean):Boolean {
     if(!phone.ready||phone.snapshot==null)return false
-    if(phone.refreshing)return phone.permission!=storageAllowed||phone.indexedAccess!=indexedAllowed
-    val scan=phone.scan
-    return (scan?.storage ?: false)!=storageAllowed||(scan?.indexed ?: false)!=indexedAllowed
+    if(phone.refreshing)return phone.permission!=storageAllowed
+    return (phone.scan?.storage ?: false)!=storageAllowed
 }
 
 @Composable internal fun LocalAudioNoticeContent(notice:LocalAudioNotice,onAllow:()->Unit) {

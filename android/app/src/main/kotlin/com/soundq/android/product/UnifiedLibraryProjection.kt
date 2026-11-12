@@ -12,11 +12,10 @@ internal data class UnifiedLibraryRow(val ref:PlaybackRef,val title:String,val a
 }
 /** Present on the phone but SoundQ could not read or decode it (e.g. protected audio). Not an access loss. */
 internal val DeviceAudio.unplayable:Boolean get()=!available&&aliases.any {it.state==AccessState.UNSUPPORTED||it.state==AccessState.UNREADABLE}
-internal fun phoneRowUnavailableLabel(row:DeviceAudio,grants:List<ScanGrant>):String {
+internal fun phoneRowUnavailableLabel(row:DeviceAudio):String {
     if(row.unplayable)return "Can’t play this file"
-    val indexed=grants.filter {it.kind==GrantKind.INDEXED}.map {it.id}.toSet()
-    if(row.aliases.isNotEmpty()&&row.aliases.all {it.state==AccessState.REVOKED&&it.grantId in indexed})return "Unavailable · File access is off"
-    return "Unavailable · Choose file again"
+    if(row.aliases.isNotEmpty()&&row.aliases.all {it.state==AccessState.REVOKED})return "Unavailable · File access is off"
+    return "Unavailable"
 }
 internal fun unifiedLibraryRows(endpoint:String,account:String?,server:List<Track>,downloads:List<Track>,phone:DeviceListeningSnapshot?,query:LibraryQuery,localOnly:Boolean,recent:Boolean):List<UnifiedLibraryRow> {
     fun matches(title:String,artist:String,album:String,filename:String="")=query.text.trim().let {it.isEmpty()||listOf(title,artist,album,filename).any {field->field.contains(it,true)}}

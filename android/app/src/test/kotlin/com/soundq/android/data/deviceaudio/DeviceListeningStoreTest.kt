@@ -29,7 +29,7 @@ class DeviceListeningStoreTest {
         return File(Files.createTempDirectory(File(requireNotNull(base)).toPath(), "device-domain-case-").toFile(), "domain.json")
     }
     private fun revision(c: Char = 'a') = ContentRevision(c.toString().repeat(64), 123)
-    private fun grant(id: ScanGrantId = ScanGrantId(UUID.randomUUID())) = ScanGrant(id, GrantKind.FOLDER, "Selected folder", ProviderLocator("provider", "folder"), true)
+    private fun grant(id: ScanGrantId = ScanGrantId(UUID.randomUUID())) = ScanGrant(id, GrantKind.INDEXED, "Android audio index", ProviderLocator("android", "indexed:external-audio"), true)
     private fun audio(id: String = "one", rev: ContentRevision = revision()) = DiscoveredAudio(ProviderObjectId("provider", id), ProviderLocator("provider", id), rev, OriginalMetadata("same.mp3", "Original", "Artist", "Album", "private-art-key"), 601000)
 
     private fun installed(store: DeviceListeningStore, rows: List<DiscoveredAudio> = listOf(audio())): Pair<AccessCapture, List<DeviceAudio>> {
@@ -168,7 +168,7 @@ class DeviceListeningStoreTest {
             assertNull(store.bookmark(store.bindServerContent(returnA, ka, revision(), 601000)!!))
         }
     }
-    @Test fun aliasIdentityDistinctSameBytesAndGrantRemovalKeepFilesAndProgress() {
+    @Test fun aliasIdentityDistinctSameBytesAndRouteRemovalKeepFilesAndProgress() {
         val path = target()
         val original = File(path.parentFile, "original.mp3").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
         val originalBytes = original.readBytes()
@@ -185,12 +185,12 @@ class DeviceListeningStoreTest {
             assertEquals(2, store.snapshot(access)!!.files.size)
             val t = traversal(store, access, store.snapshot(access)!!.files.first())
             played(store, t); checkpoint(store, t)
-            assertEquals(Mutation.APPLIED, store.removeGrant(access, firstGrant.id))
+            assertEquals(Mutation.APPLIED, store.putGrant(access, firstGrant.copy(state = AccessState.REMOVED)))
             assertTrue(store.snapshot(access)!!.files.first().available)
             assertEquals(Mutation.REFUSED, checkpoint(store, t, 99, 10))
             val valid = store.captureSource(access, retained)!!
             assertEquals(42000L, store.bookmark(valid)!!.positionMs)
-            assertEquals(Mutation.APPLIED, store.removeGrant(access, secondGrant.id))
+            assertEquals(Mutation.APPLIED, store.putGrant(access, secondGrant.copy(state = AccessState.REMOVED)))
             assertFalse(store.snapshot(access)!!.files.first().available)
             assertNull(store.captureSource(access, retained))
             assertEquals(42000L, store.snapshot(access)!!.history.single().bookmark!!.positionMs)
@@ -293,7 +293,7 @@ class DeviceListeningStoreTest {
             assertEquals(Mutation.REFUSED, checkpoint(store, t, 9, 10))
             assertEquals(Mutation.REFUSED, store.complete(end(t, 10)))
             assertEquals(Mutation.REFUSED, store.publishScan(scan, listOf(audio())))
-            assertEquals(Mutation.REFUSED, store.removeGrant(access, scan.grantId))
+            assertEquals(Mutation.REFUSED, store.putGrant(access, grant(scan.grantId).copy(state = AccessState.REVOKED)))
             assertEquals(Mutation.REFUSED, store.putGrant(access, grant()))
             assertNull(store.captureSource(access, files.single().id))
             assertNull(store.beginTraversal(t.source, UUID.randomUUID(), 8, 0, 0, 601000))
@@ -436,7 +436,7 @@ class DeviceListeningStoreTest {
     @Test fun removedTransientGrantKeepsRemovedStatusAcrossReopen() {
         val path = target(); val g = grant().copy(persisted = false)
         DeviceListeningStore(path).use { store ->
-            val access = store.unlock(); store.putGrant(access, g); store.removeGrant(access, g.id)
+            val access = store.unlock(); store.putGrant(access, g); store.putGrant(access, g.copy(state = AccessState.REMOVED))
         }
         DeviceListeningStore(path).use { store ->
             assertEquals(AccessState.REMOVED, store.snapshot(store.unlock())!!.grants.single().state)

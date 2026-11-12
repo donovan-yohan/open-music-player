@@ -12,11 +12,11 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.UUID
 
-/** [permission] is all files access, the single user-facing grant; [indexedAccess] is MediaStore audio read
- * access. While [refreshing], both are the values the running refresh was admitted with. */
+/** [permission] is all files access, the only phone-audio grant. While [refreshing], it is the access the running
+ * refresh was admitted with. */
 internal data class PhoneAudioState(val ready: Boolean = false, val snapshot: DeviceListeningSnapshot? = null,
     val refreshing: Boolean = false, val permission: Boolean = false, val message: String? = null,
-    val scan: PhoneScanObservation? = null, val indexedAccess: Boolean = false)
+    val scan: PhoneScanObservation? = null)
 /** What the last finished refresh in this scope observed: [indexed] when the Android audio index was
  * enumerated and published, [storage] when it ran with all files access (shared storage walked and
  * unlisted audio indexed first), [complete] when that coverage was whole and every row was proved. Not persisted. */
@@ -37,6 +37,8 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     private val mutable = MutableStateFlow(PhoneAudioState())
     val state: StateFlow<PhoneAudioState> = mutable.asStateFlow()
     fun start() {
+        // Older builds persisted file/folder picker grants. All files access replaces them; holding them is moot.
+        jobs.launch { runCatching { platform.releaseUriPermissions() } }
         jobs.launch {
             graph.session.scopeRevision.combine(graph.session.state) { _, auth -> graph.session.version() to auth }.collect { (version, auth) ->
                 serial.withLock {
@@ -62,7 +64,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         val snapshot = access?.let { store?.snapshot(it) }
         val previous=mutable.value.snapshot
         if(previous!=null&&snapshot!=null&&(previous.grants!=snapshot.grants||previous.files.any {old->snapshot.files.singleOrNull {it.id==old.id}?.let {it.owner!=old.owner||it.aliases!=old.aliases}==true}))authorityVersion++
-        mutable.value = PhoneAudioState(snapshot != null, snapshot, false, platform.storageAllowed(), message ?: if (snapshot == null) "Local audio storage is unavailable. Saved state has not been replaced." else null, lastScan, platform.indexedAllowed())
+        mutable.value = PhoneAudioState(snapshot != null, snapshot, false, platform.storageAllowed(), message ?: if (snapshot == null) "Local audio storage is unavailable. Saved state has not been replaced." else null, lastScan)
     }
     private fun fail(message: String) { mutable.value = mutable.value.copy(refreshing = false, message = message) }
     private val refreshEpoch=java.util.concurrent.atomic.AtomicLong()
@@ -73,7 +75,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     private val admissions=Dispatchers.IO.limitedParallelism(1)
     private var refreshRunning=false
     private var pendingRefresh:(()->Unit)?=null
-    private data class RefreshScope(val version:Long,val indexed:Boolean,val trees:Set<String>,val reads:Set<String>,val storage:Boolean=false)
+    private data class RefreshScope(val version:Long,val storage:Boolean)
     private var refreshScope:RefreshScope?=null
     fun refresh(valid: () -> Boolean = { true }) {
         // UI callers never wait for a held catalog publication. Uncontended admission stays inline;
@@ -87,8 +89,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     private fun admit(valid: () -> Boolean) {
         // Only redundant owner/access observations may share admitted exact-byte work.
         // Observe under the same lock as publication; every observed ABA retires the old epoch.
-        val scope=RefreshScope(graph.session.version(),platform.indexedAllowed(),platform.persistedTrees().toSet(),
-            graph.applicationContext.contentResolver.persistedUriPermissions.filter {it.isReadPermission}.map {it.uri.toString()}.toSet(),platform.storageAllowed())
+        val scope=RefreshScope(graph.session.version(),platform.storageAllowed())
         if(refreshRunning){
             if(refreshScope!=scope)refreshEpoch.incrementAndGet()
             refreshScope=scope
@@ -103,71 +104,54 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
             try {
                 if (!active()) return@launch
                 // Publish the access this refresh was admitted with, so a grant after admission is not masked.
-                mutable.value = mutable.value.copy(refreshing = true, permission = scope.storage, indexedAccess = scope.indexed, message = null)
+                mutable.value = mutable.value.copy(refreshing = true, permission = scope.storage, message = null)
                 val owner = requireNotNull(store); val accepted = requireNotNull(access)
-                val prior = owner.snapshot(accepted) ?: error("Local audio state refused")
                 val indexed = ScanGrant(grantId("indexed:external-audio"), GrantKind.INDEXED, "Android audio index", ProviderLocator("android", "indexed:external-audio"), false,
-                    if (scope.indexed) AccessState.AVAILABLE else AccessState.REVOKED)
+                    if (scope.storage) AccessState.AVAILABLE else AccessState.REVOKED)
                 refreshLocked{if(!active())throw CancellationException();check(owner.putGrant(accepted, indexed) != Mutation.REFUSED)}
-                val retained = scope.trees
-                val grants = listOf(indexed) + prior.grants.filter { it.kind != GrantKind.INDEXED && it.state != AccessState.REMOVED }
-                var partial = false
-                var indexedScan: PhoneScanObservation? = null
-                var storageComplete = true
-                for (old in grants) {
-                    if (!active()) throw CancellationException()
-                    val granted = when {
-                        old.kind == GrantKind.INDEXED -> indexed
-                        old.kind == GrantKind.FOLDER -> old.copy(state = if (old.locator.value in retained) AccessState.AVAILABLE else AccessState.REVOKED)
-                        old.persisted -> old.copy(state = if (old.locator.value in scope.reads) AccessState.AVAILABLE else AccessState.REVOKED)
-                        else -> old
-                    }
-                    refreshLocked{if(!active())throw CancellationException();check(owner.putGrant(accepted, granted) != Mutation.REFUSED)}
-                    if (granted.state != AccessState.AVAILABLE) { if (granted.kind == GrantKind.INDEXED) indexedScan = PhoneScanObservation(false, true, scope.storage); continue }
-                    val scan = owner.beginScan(accepted, granted.id) ?: continue
-                    var complete=true
-                    val descriptors = try {
-                        val rows = when (granted.kind) {
-                            GrantKind.FILE -> listOf(platform.metadata(Uri.parse(granted.locator.value), granted.locator.value))
-                            GrantKind.INDEXED -> {
-                                // All files access: index audio MediaStore missed, then read the index as before.
-                                val indexedUnlisted = !scope.storage || try { platform.indexUnlisted { active() } } catch (e: CancellationException) { throw e } catch (_: Exception) { false }
-                                if (!indexedUnlisted) { storageComplete = false; partial = true }
-                                val result = platform.discover(emptyList(), { active() })
-                                check(result.indexedComplete && !result.truncated) { "Android audio coverage is partial" }; result.observations
-                            }
-                            GrantKind.FOLDER -> {
-                                val result = platform.discover(listOf(granted.locator.value), { active() }, includeIndexed = false)
-                                check(result.unavailableGrants.isEmpty() && !result.truncated) { "Folder access unavailable or partial" }; result.observations
-                            }
-                        }
-                        rows.mapNotNull { observation ->
-                            if (!active()) throw CancellationException()
-                            try {
-                                val proof = platform.proof(observation.locator) { active() }
-                                DiscoveredAudio(ProviderObjectId("android-content", observation.providerObject), locator(observation.locator), ContentRevision(proof.sha256, proof.bytes),
-                                    OriginalMetadata(observation.filename, observation.title, observation.artist, observation.album, observation.locator), observation.durationMs?.takeIf { it > 0 },
-                                    formerObjectIds = (observation.aliases - observation.providerObject).map { ProviderObjectId("android-content", it) }.toSet())
-                            } catch(e:CancellationException){throw e}
-                            catch(_:Exception){complete=false;partial=true;null}
-                        }
-                    } catch (e: CancellationException) { throw e }
-                    catch (_: Exception) {
-                        // A denied/partial grant is not an empty scan and must not block siblings.
-                        // Incomplete enumeration is not permission to publish a prefix.
-                        partial = true
-                        if (granted.kind == GrantKind.INDEXED) indexedScan = PhoneScanObservation(true, false, scope.storage)
-                        continue
-                    }
-                    refreshLocked{
-                        if (!active()) throw CancellationException()
-                        check(owner.publishScan(scan, descriptors, complete) != Mutation.REFUSED)
-                    }
-                    if (granted.kind == GrantKind.INDEXED) indexedScan = PhoneScanObservation(true, complete && storageComplete, scope.storage)
+                if (!scope.storage) {
+                    refreshLocked { if (!active()) throw CancellationException(); lastScan = PhoneScanObservation(false, true, false) }
+                    publish(); return@launch
                 }
-                refreshLocked { if (!active()) throw CancellationException(); lastScan = indexedScan }
-                publish(if (partial) "Some audio could not be refreshed. Existing files and saved progress were kept."
-                    else "Available audio refreshed. Coverage is limited to audio Android exposes and added locations.")
+                val scan = owner.beginScan(accepted, indexed.id) ?: error("Android audio index refused")
+                // All files access: index audio MediaStore missed, then read the index.
+                val storageComplete = try { platform.indexUnlisted { active() } } catch (e: CancellationException) { throw e } catch (_: Exception) { false }
+                var complete = true
+                val descriptors = try {
+                    val result = platform.discover({ active() })
+                    check(result.complete && !result.truncated) { "Android audio coverage is partial" }
+                    // Rows an older build's picker keyed fold into the index row the provider proves is the same object.
+                    val legacy = (owner.legacyObjects(accepted) ?: throw CancellationException()).mapKeys { it.key.objectId }
+                    val proven = platform.provenIndexKeys(legacy.keys)
+                    result.observations.mapNotNull { observation ->
+                        if (!active()) throw CancellationException()
+                        try {
+                            val proof = platform.proof(observation.locator) { active() }
+                            val revision = ContentRevision(proof.sha256, proof.bytes)
+                            val former = proven.filter { (old, key) -> key.key == observation.providerObject && (!key.sameContent || legacy[old] == revision) }.keys
+                            DiscoveredAudio(ProviderObjectId("android-content", observation.providerObject), locator(observation.locator), revision,
+                                OriginalMetadata(observation.filename, observation.title, observation.artist, observation.album, observation.locator), observation.durationMs?.takeIf { it > 0 },
+                                formerObjectIds = (observation.aliases - observation.providerObject + former).map { ProviderObjectId("android-content", it) }.toSet())
+                        } catch(e:CancellationException){throw e}
+                        catch(_:Exception){complete=false;null}
+                    }
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) {
+                    // Incomplete enumeration is not an empty scan and never permission to publish a prefix.
+                    refreshLocked { if (!active()) throw CancellationException(); lastScan = PhoneScanObservation(true, false, true) }
+                    publish("Some audio could not be refreshed. Existing files and saved progress were kept."); return@launch
+                }
+                val whole = complete && storageComplete
+                refreshLocked{
+                    if (!active()) throw CancellationException()
+                    // The index enumeration is whole even if the walk was not: omitted index rows are gone.
+                    check(owner.publishScan(scan, descriptors, complete) != Mutation.REFUSED)
+                    // Whole coverage, with shared storage walked, has folded every picker row the provider could prove;
+                    // the rest are dropped. Without a walk an unindexed picked file could still be proved later.
+                    if (whole && platform.walksSharedStorage()) check(owner.retireLegacyAccess(accepted) != Mutation.REFUSED)
+                    lastScan = PhoneScanObservation(true, whole, true)
+                }
+                publish(if (whole) null else "Some audio could not be refreshed. Existing files and saved progress were kept.")
             } catch (_: CancellationException) { if(refreshEpoch.get()==refresh)mutable.value = mutable.value.copy(refreshing = false) }
             catch (_: Exception) { if(active())publish("Some audio could not be refreshed. Existing files and saved progress were kept.") }
             finally {
@@ -175,41 +159,6 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                 next?.invoke()
             }
         }
-    }
-    fun selected(uri: Uri, flags: Int, folder: Boolean, valid: () -> Boolean) {
-        val version = graph.session.version()
-        jobs.launch { serial.withLock {
-            if (!valid() || !current(version)) return@withLock
-            try {
-                if (folder) require(platform.validTree(uri))
-                val persisted = runCatching { platform.persist(uri, flags, folder); true }.getOrDefault(false)
-                require(!folder || persisted) { "Folder read access could not be retained" }
-                if (!valid() || !current(version)) return@withLock
-                val name = if (folder) platform.folderLabel(uri.toString()) else platform.metadata(uri).filename
-                val grant = ScanGrant(grantId((if (folder) "folder:" else "file:") + uri), if (folder) GrantKind.FOLDER else GrantKind.FILE,
-                    name, locator(uri.toString()), persisted)
-                refreshLocked {
-                    refreshEpoch.incrementAndGet()
-                    check(requireNotNull(store).putGrant(requireNotNull(access), grant) != Mutation.REFUSED)
-                }
-                publish()
-            } catch (_: Exception) { fail("Couldn’t retain audio access. Choose an accessible audio file or subfolder.") }
-        }; refresh(valid) }
-    }
-    fun remove(grant: ScanGrant, valid: () -> Boolean) {
-        if(valid())authorityVersion++
-        val version = graph.session.version()
-        jobs.launch { serial.withLock {
-            if (!valid() || !current(version)) return@withLock
-            try {
-                refreshLocked {
-                    refreshEpoch.incrementAndGet()
-                    check(requireNotNull(store).removeGrant(requireNotNull(access), grant.id) != Mutation.REFUSED)
-                }
-                if (grant.persisted) runCatching { platform.release(grant.locator.value) }
-                publish("Folder removed. Your files and saved progress were not deleted.")
-            } catch (_: Exception) { fail("Folder removal was not confirmed. Your files and saved progress were kept.") }
-        } }
     }
     /** A saved reference to a row later folded into another (one provider object) resolves to the survivor. */
     fun observed(ref: com.soundq.android.playback.PlaybackRef.Device): DeviceAudio? =
