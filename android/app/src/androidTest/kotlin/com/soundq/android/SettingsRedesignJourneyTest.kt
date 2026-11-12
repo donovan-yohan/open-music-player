@@ -23,7 +23,7 @@ class SettingsRedesignJourneyTest {
     }
     private fun heading(text:String)=compose.onNode(hasText(text) and isHeading())
     private fun row(text:String)=compose.onNode(hasText(text) and hasClickAction())
-    // The app bar title is the first heading; a detail page may repeat it as its section label.
+    // The app bar title is the page's first heading (an embedded auth form can add its own).
     private fun open(text:String){row(text).performScrollTo().performClick();compose.onAllNodes(hasText(text) and isHeading()).onFirst().assertIsDisplayed()}
     private fun back()=compose.onNodeWithContentDescription("Back").performClick()
     private fun systemBack(){InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);compose.waitForIdle()}
@@ -36,7 +36,9 @@ class SettingsRedesignJourneyTest {
         compose.onNodeWithContentDescription("Close Settings").assertDoesNotExist()
         compose.onNodeWithText("Back to Library").assertDoesNotExist()
         compose.onNodeWithContentDescription("Library search query").assertDoesNotExist()
-        for(section in listOf("Account","Library","Playback","Appearance","More"))heading(section).performScrollTo().assertIsDisplayed()
+        for(section in listOf("Library","Playback","Appearance","More"))heading(section).performScrollTo().assertIsDisplayed()
+        // Account is a single row; no section label repeats its title.
+        heading("Account").assertDoesNotExist()
         compose.onNode(hasText("Account") and hasText("Signed out") and hasClickAction()).performScrollTo().assertIsDisplayed()
         back()
         compose.waitUntil(5000){compose.onAllNodesWithContentDescription("Library search query").fetchSemanticsNodes().isNotEmpty()}
@@ -175,7 +177,7 @@ class SettingsRedesignJourneyTest {
         row("About").performScrollTo()
         row("Listening history").assertIsDisplayed()
         val opener=row("Listening history").fetchSemanticsNode().boundsInRoot
-        heading("Account").assertIsNotDisplayed()
+        row("Account").assertIsNotDisplayed()
         row("Listening history").performClick()
         compose.waitUntil(10000){compose.onAllNodes(hasText("Settings") and isHeading()).fetchSemanticsNodes().isEmpty()}
         systemBack()
@@ -195,6 +197,28 @@ class SettingsRedesignJourneyTest {
         compose.onAllNodesWithText("Sign out").filterToOne(hasAnyAncestor(isDialog())).performClick()
         compose.waitUntil(15000){graph.session.state.value is AuthState.SignedOut}
         compose.waitUntil(10000){compose.onAllNodes(hasText("Account") and hasText("Signed out") and hasClickAction()).fetchSemanticsNodes().isNotEmpty()}
+        heading("Settings").assertIsDisplayed()
+    }
+
+    private fun texts(matcher:SemanticsMatcher)=compose.onAllNodes(matcher,useUnmergedTree=true).fetchSemanticsNodes()
+        .flatMap {node->node.config.getOrElse(androidx.compose.ui.semantics.SemanticsProperties.Text){emptyList()}.map {it.text}}
+    /** The page title is its only heading with that text, and no section label repeats any row title on the page. */
+    private fun assertNoRepeatedLabels(page:String) {
+        compose.waitForIdle()
+        val headings=texts(isHeading())
+        assertEquals("$page names itself once: $headings",1,headings.count {it==page})
+        val repeated=headings.filter {it!=page}.toSet() intersect texts(SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsProperties.Text) and !isHeading()).toSet()
+        assertTrue("$page section labels repeat row titles: $repeated",repeated.isEmpty())
+    }
+
+    @Test fun noSectionLabelRepeatsItsPageTitleOrARowTitle() {
+        signedOut();gear()
+        assertNoRepeatedLabels("Settings")
+        for(page in listOf("Account","Local audio","Storage","End of queue","Swipe to queue","Crossfade","Key notation","Theme","Music tools","About")) {
+            open(page);assertNoRepeatedLabels(page)
+            if(page=="Storage"){open("Storage details");assertNoRepeatedLabels("Storage details");back()}
+            back()
+        }
         heading("Settings").assertIsDisplayed()
     }
 
@@ -241,14 +265,13 @@ class SettingsRedesignJourneyTest {
             gear();compose.waitForIdle();Thread.sleep(500);captureListeningStage("settings-top")
             row("About").performScrollTo();compose.waitForIdle();Thread.sleep(500);captureListeningStage("settings-bottom")
             compose.onNode(hasScrollAction()).performTouchInput {swipeDown()};compose.waitForIdle()
-            row("Account").performScrollTo();open("Account");captureListeningStage("account")
-            back();open("Local audio");captureListeningStage("local-audio")
-            back();open("Storage");captureListeningStage("storage")
-            back();open("Crossfade");captureListeningStage("crossfade")
-            back();open("Theme");captureListeningStage("theme")
-            back();open("Music tools");captureListeningStage("music-tools")
-            back();open("About");captureListeningStage("about")
-            back();back()
+            row("Account").performScrollTo()
+            for((page,label) in listOf("Account" to "account","Local audio" to "local-audio","Storage" to "storage","Crossfade" to "crossfade",
+                "Theme" to "theme","Music tools" to "music-tools","About" to "about")) {
+                open(page);compose.waitForIdle();Thread.sleep(500);captureListeningStage(label)
+                back();compose.waitForIdle()
+            }
+            back()
         } finally {
             compose.runOnIdle {graph.appearancePreferences.capture()?.let {graph.appearancePreferences.setChoice(it,Appearance.System){true}}}
         }
