@@ -49,6 +49,17 @@ class SharedStorageAudioWalkerTest {
         assertEquals(listOf(2,2,1),batches)
     }
 
+    @Test fun unlistableDirectoryIsIncompleteCoverage() {
+        val root=tree {it.put("Music/a.mp3");it.put("Locked/b.mp3")}
+        val locked=File(root,"Locked")
+        try {
+            assertTrue(locked.setReadable(false,false))
+            org.junit.Assume.assumeTrue("Host user can still list unreadable directories",locked.listFiles()==null)
+            val walk=SharedStorageAudioWalker.walk(listOf(root),{true})
+            assertTrue(walk.truncated);assertEquals(setOf("Music/a.mp3"),names(walk,root))
+        } finally {locked.setReadable(true,false);root.deleteRecursively()}
+    }
+
     @Test fun unreadableOrMissingRootIsEmptyNotFatal() {
         val walk=SharedStorageAudioWalker.walk(listOf(File("/definitely/not/mounted")),{true})
         assertTrue(walk.files.isEmpty());assertFalse(walk.truncated)

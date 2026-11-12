@@ -47,7 +47,7 @@ private class Platform {
  fun discover(trees:List<String>,current:()->Boolean,includeIndexed:Boolean=true):Coverage {discoveries++;order+="discover";return Coverage(rows,indexedComplete=complete)}
  fun proof(uri:String,current:()->Boolean):Proof {proofs++;entered.countDown();gate?.await();if(!current()){cancelled++;throw CancellationException()};if(uri==fail)error("Unreadable original");return Proof()}
 }
-private data class State(val refreshing:Boolean=false,val permission:Boolean=true,val message:String?=null)
+private data class State(val refreshing:Boolean=false,val permission:Boolean=true,val message:String?=null,val indexedAccess:Boolean=true)
 // Record attempted obsolete publications, not merely domain refusal or eventual trailing state.
 private class RecordingStore(val domain:DeviceListeningStore,val platform:Platform) {
  val scans=mutableMapOf<ScanCapture,Int>();var obsoletePublications=0;var publications=0
@@ -209,13 +209,14 @@ class PhoneRefreshTest {
   try {DeviceListeningStore(File(root,"domain.json")).use {store->
    val repo=Repository(store,jobs)
    assertNotEquals(Mutation.REFUSED,store.putGrant(repo.access,ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.FILE,"session",ProviderLocator("fixture","session:one"),false)))
-   repo.platform.storage=false;repo.platform.gate=gate
+   repo.platform.storage=false;repo.platform.allowed=false;repo.platform.gate=gate
    executor.submit {hold.await()}
    repo.refresh()   // admits without all files access; its worker is queued behind the held executor
-   repo.platform.storage=true;hold.countDown()
+   repo.platform.storage=true;repo.platform.allowed=true;hold.countDown()
    assertTrue(repo.platform.entered.await(5,java.util.concurrent.TimeUnit.SECONDS))
    assertTrue(repo.mutable.value.refreshing)
    assertFalse("A running refresh must publish its admitted access, not access granted after admission",repo.mutable.value.permission)
+   assertFalse("Admitted media read access is published too",repo.mutable.value.indexedAccess)
    gate.countDown();repo.settled()
   }}finally{hold.countDown();gate.countDown();jobs.cancel();executor.shutdownNow();root.deleteRecursively()}
  }

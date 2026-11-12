@@ -91,7 +91,9 @@ class LocalAudioAccessJourneyTest {
         compose.onNodeWithText("No matching tracks").assertDoesNotExist()
     }
     private fun rowAppears(model:ProductViewModel,stem:String) {
-        try {compose.waitUntil(60000){compose.onAllNodes(hasText(stem,substring=true) and hasClickAction() and !hasSetTextAction()).fetchSemanticsNodes().isNotEmpty()}}
+        val row=hasText(stem,substring=true) and hasClickAction() and !hasSetTextAction()
+        // The Library is lazy: scroll toward the row so an off-viewport item is composed before it is judged absent.
+        try {compose.waitUntil(60000){runCatching {compose.onNode(hasScrollToIndexAction()).performScrollToNode(row)}.isSuccess&&compose.onAllNodes(row).fetchSemanticsNodes().isNotEmpty()}}
         catch(timeout:androidx.compose.ui.test.ComposeTimeoutException) {
             val phone=model.graph.phoneAudio.state.value
             fail("Row $stem absent: ready=${phone.ready} access=${phone.permission} refreshing=${phone.refreshing} scan=${phone.scan} message=${phone.message} "+

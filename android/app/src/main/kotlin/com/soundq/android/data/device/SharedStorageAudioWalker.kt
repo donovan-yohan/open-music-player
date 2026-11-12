@@ -4,7 +4,8 @@ import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.CancellationException
 
-/** Audio files found on shared storage. [truncated] means a bound stopped the walk early. */
+/** Audio files found on shared storage. [truncated] means coverage is incomplete: a bound stopped the walk
+ * or an existing directory could not be listed. */
 internal data class StorageAudioWalk(val files: List<File>, val truncated: Boolean)
 
 /** Bounded walk of shared-storage roots for audio files, including the Download root.
@@ -28,7 +29,8 @@ internal object SharedStorageAudioWalker {
                 val dir = pending.removeFirst()
                 if (!visited.add(dir.absolutePath)) continue
                 if (++folders > maxFolders) { truncated = true; break }
-                val children = dir.listFiles() ?: continue
+                // listFiles() is null for an I/O failure as well as a missing root; only the latter is complete.
+                val children = dir.listFiles() ?: run { if (dir.exists()) truncated = true; null } ?: continue
                 if (children.any { it.name == ".nomedia" }) continue
                 for (child in children.sortedBy { it.name }) {
                     if (child.name.startsWith(".") || Files.isSymbolicLink(child.toPath())) continue

@@ -16,11 +16,14 @@ import com.soundq.android.data.AuthState
 
 internal data class AudioPickerActions(val permission: () -> Unit, val file: () -> Unit, val folder: () -> Unit)
 
-/** All files access is granted in system Settings; returning re-checks it (Android restarts the app when it changes). */
-internal fun allFilesAccessIntents(packageName: String): List<Intent> = if (android.os.Build.VERSION.SDK_INT < 30) emptyList() else listOf(
-    Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")),
-    Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
-)
+/** All files access is granted in system Settings; returning re-checks it (Android restarts the app when it changes).
+ * Before Android 11 the equivalent storage permission lives on the app's own settings page. */
+internal fun allFilesAccessIntents(packageName: String): List<Intent> = if (android.os.Build.VERSION.SDK_INT < 30)
+    listOf(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+    else listOf(
+        Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")),
+        Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
+    )
 internal fun openAllFilesAccess(context: android.content.Context) {
     for (intent in allFilesAccessIntents(context.packageName)) {
         try { context.startActivity(intent); return } catch (_: android.content.ActivityNotFoundException) {}

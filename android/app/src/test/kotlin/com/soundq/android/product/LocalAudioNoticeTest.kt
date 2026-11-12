@@ -13,8 +13,8 @@ class LocalAudioNoticeTest {
     private fun file(available:Boolean=true)=DeviceAudio(DeviceFileId(UUID(0,1)),ProviderObjectId("fixture","1"),ContentRevision("a".repeat(64),40),1,
         OriginalMetadata("1.wav","Song","Artist","Album"),1000,listOf(LocatorAccess(ScanGrantId(UUID(1,1)),ProviderLocator("fixture","1"),if(available)AccessState.AVAILABLE else AccessState.REVOKED)))
     /** [storage] is all files access (Environment.isExternalStorageManager()). */
-    private fun phone(storage:Boolean,grants:List<ScanGrant> = emptyList(),files:List<DeviceAudio> = emptyList(),refreshing:Boolean=false,ready:Boolean=true,scan:PhoneScanObservation?=null)=
-        PhoneAudioState(ready,DeviceListeningSnapshot(1,files,grants,emptyList()),refreshing,storage,scan=scan)
+    private fun phone(storage:Boolean,grants:List<ScanGrant> = emptyList(),files:List<DeviceAudio> = emptyList(),refreshing:Boolean=false,ready:Boolean=true,scan:PhoneScanObservation?=null,indexed:Boolean=storage)=
+        PhoneAudioState(ready,DeviceListeningSnapshot(1,files,grants,emptyList()),refreshing,storage,scan=scan,indexedAccess=indexed)
     private val fullScan=PhoneScanObservation(indexed=true,complete=true,storage=true)
     private val offScan=PhoneScanObservation(indexed=false,complete=true,storage=false)
 
@@ -74,6 +74,9 @@ class LocalAudioNoticeTest {
         // A running refresh admitted with the current access owns the scan; one admitted before the change does not.
         assertFalse(localAudioAccessChanged(phone(true,refreshing=true),storageAllowed=true,indexedAllowed=true))
         assertTrue(localAudioAccessChanged(phone(false,refreshing=true),storageAllowed=true,indexedAllowed=true))
+        // Media read access granted after a media-less refresh was admitted.
+        assertTrue(localAudioAccessChanged(phone(false,refreshing=true,indexed=false),storageAllowed=false,indexedAllowed=true))
+        assertFalse(localAudioAccessChanged(phone(false,refreshing=true,indexed=true),storageAllowed=false,indexedAllowed=true))
         // Before the owner publishes, its startup refresh owns the first scan.
         assertFalse(localAudioAccessChanged(PhoneAudioState(),storageAllowed=true,indexedAllowed=true))
         assertFalse(localAudioAccessChanged(phone(false,ready=false),storageAllowed=true,indexedAllowed=true))

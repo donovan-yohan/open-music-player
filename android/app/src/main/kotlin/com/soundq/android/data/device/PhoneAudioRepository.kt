@@ -12,10 +12,11 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.UUID
 
-/** [permission] is all files access, the single user-facing grant. */
+/** [permission] is all files access, the single user-facing grant; [indexedAccess] is MediaStore audio read
+ * access. While [refreshing], both are the values the running refresh was admitted with. */
 internal data class PhoneAudioState(val ready: Boolean = false, val snapshot: DeviceListeningSnapshot? = null,
     val refreshing: Boolean = false, val permission: Boolean = false, val message: String? = null,
-    val scan: PhoneScanObservation? = null)
+    val scan: PhoneScanObservation? = null, val indexedAccess: Boolean = false)
 /** What the last finished refresh in this scope observed: [indexed] when the Android audio index was
  * enumerated and published, [storage] when it ran with all files access (shared storage walked and
  * unlisted audio indexed first), [complete] when that coverage was whole and every row was proved. Not persisted. */
@@ -61,7 +62,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         val snapshot = access?.let { store?.snapshot(it) }
         val previous=mutable.value.snapshot
         if(previous!=null&&snapshot!=null&&(previous.grants!=snapshot.grants||previous.files.any {old->snapshot.files.singleOrNull {it.id==old.id}?.let {it.owner!=old.owner||it.aliases!=old.aliases}==true}))authorityVersion++
-        mutable.value = PhoneAudioState(snapshot != null, snapshot, false, platform.storageAllowed(), message ?: if (snapshot == null) "Local audio storage is unavailable. Saved state has not been replaced." else null, lastScan)
+        mutable.value = PhoneAudioState(snapshot != null, snapshot, false, platform.storageAllowed(), message ?: if (snapshot == null) "Local audio storage is unavailable. Saved state has not been replaced." else null, lastScan, platform.indexedAllowed())
     }
     private fun fail(message: String) { mutable.value = mutable.value.copy(refreshing = false, message = message) }
     private val refreshEpoch=java.util.concurrent.atomic.AtomicLong()
@@ -102,7 +103,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
             try {
                 if (!active()) return@launch
                 // Publish the access this refresh was admitted with, so a grant after admission is not masked.
-                mutable.value = mutable.value.copy(refreshing = true, permission = scope.storage, message = null)
+                mutable.value = mutable.value.copy(refreshing = true, permission = scope.storage, indexedAccess = scope.indexed, message = null)
                 val owner = requireNotNull(store); val accepted = requireNotNull(access)
                 val prior = owner.snapshot(accepted) ?: error("Local audio state refused")
                 val indexed = ScanGrant(grantId("indexed:external-audio"), GrantKind.INDEXED, "Android audio index", ProviderLocator("android", "indexed:external-audio"), false,

@@ -29,7 +29,7 @@ internal fun localAudioNotice(phone:PhoneAudioState,query:LibraryQuery,localFile
  * publication the startup refresh owns the scan. */
 internal fun localAudioAccessChanged(phone:PhoneAudioState,storageAllowed:Boolean,indexedAllowed:Boolean):Boolean {
     if(!phone.ready||phone.snapshot==null)return false
-    if(phone.refreshing)return phone.permission!=storageAllowed
+    if(phone.refreshing)return phone.permission!=storageAllowed||phone.indexedAccess!=indexedAllowed
     val scan=phone.scan
     return (scan?.storage ?: false)!=storageAllowed||(scan?.indexed ?: false)!=indexedAllowed
 }

@@ -36,11 +36,13 @@ internal data class AudioContentProof(val bytes: Long, val sha256: String)
 internal class AndroidAudioAccess(private val context: Context) {
     private val resolver = context.contentResolver
     val permission: String get() = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
-    /** All files access: the user-facing grant. It also lets the MediaStore audio index be read. */
-    fun storageAllowed() = Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()
+    /** All files access: the user-facing grant. It also lets the MediaStore audio index be read. Before
+     * Android 11 there is no all files access; the legacy storage permission is the equivalent read grant. */
+    fun storageAllowed() = if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
+        else context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
     fun indexedAllowed() = storageAllowed() || context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
     @RequiresApi(30) fun storageRoots(): List<File> =
-        context.getSystemService(StorageManager::class.java).storageVolumes.filter { it.state == Environment.MEDIA_MOUNTED }.mapNotNull { it.directory }
+        context.getSystemService(StorageManager::class.java).storageVolumes.filter { it.state == Environment.MEDIA_MOUNTED || it.state == Environment.MEDIA_MOUNTED_READ_ONLY }.mapNotNull { it.directory }
     /** With all files access, ask MediaStore to index audio on shared storage it does not list yet, so the
      * indexed scan keeps owning identity. Returns false when the walk or indexing was incomplete. */
     fun indexUnlisted(current: () -> Boolean): Boolean {
@@ -49,9 +51,10 @@ internal class AndroidAudioAccess(private val context: Context) {
         val unlisted = SharedStorageAudioWalker.unlisted(walk.files, ::listedPaths)
         return scanFiles(unlisted, current) && !walk.truncated
     }
+    /** Membership in the audio index itself: a Files row can exist with a non-audio media type. */
     @RequiresApi(30) private fun listedPaths(paths: List<String>): Set<String> {
         @Suppress("DEPRECATION") val data = MediaStore.MediaColumns.DATA
-        return resolver.query(MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL), arrayOf(data),
+        return resolver.query(MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL), arrayOf(data),
             "$data IN (${paths.joinToString(",") { "?" }})", paths.toTypedArray(), null)?.use { cursor ->
             buildSet { while (cursor.moveToNext()) cursor.getString(0)?.let(::add) }
         } ?: throw java.io.IOException("Media index unavailable")
