@@ -124,7 +124,7 @@ private fun jamRequestStatus(status:String)=when(status) {
                         request.source?.let {source ->
                             if(source.artist.isNotEmpty())Text(source.artist,style=SoundQ.typography.body)
                             Text("${if(source.provider=="youtube")"YouTube" else "SoundCloud"} · ${source.sourceId}",style=SoundQ.typography.caption)
-                            if(source.durationMs>0)Text("${source.durationMs/60000}:${(source.durationMs/1000%60).toString().padStart(2,'0')}",style=SoundQ.typography.caption)
+                            if(source.durationMs>0)Text(formatSongTime(source.durationMs),style=SoundQ.typography.caption)
                             else Text("Duration unavailable",style=SoundQ.typography.caption)
                         }
                         if(request.status in setOf("pending","approved","importing","ready","uncertain")) {

@@ -173,6 +173,7 @@ data class TextStyle(val lineHeight:Int=0)
 object IntrinsicSize {val Min=0;val Max=1}
 class Local<T>(var current:T) {infix fun provides(value:T)=this to value}
 val LocalMediaRowCompactMetadata=Local(false)
+val LocalMediaMarqueeIdentity=Local<Any?>(null)
 fun <T> CompositionLocalProvider(value:Pair<Local<T>,T>,content:()->Unit) {
  val previous=value.first.current
  try {value.first.current=value.second;content()} finally {value.first.current=previous}
@@ -224,6 +225,9 @@ object SoundQ {
  object spacing {val gutter=20;val medium=12}
 }
 fun Text(value:String,modifier:Modifier=Modifier,color:Int=0,style:TextStyle,maxLines:Int=Int.MAX_VALUE,softWrap:Boolean=true,overflow:Int=0){text.add(value)}
+// Identity animation is outside this artwork-slot facade. Native Compose tests exercise motion.
+fun SoundQMediaIdentityText(text:String,selected:Boolean,identity:Any?,style:TextStyle,color:Int=0,modifier:Modifier=Modifier)=
+ Text(text,modifier,color,style,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
 fun SoundQDivider(modifier:Modifier=Modifier){}
 fun CellIcon(icon:Int,label:String,action:()->Unit,modifier:Modifier=Modifier){}
 fun SoundQRow(title:String,subtitle:String,current:Boolean,onActivate:()->Unit,modifier:Modifier,leading:()->Unit,trailing:()->Unit,supportingContent:(()->Unit)?=null){text.add(subtitle);leading();supportingContent?.invoke();trailing()}

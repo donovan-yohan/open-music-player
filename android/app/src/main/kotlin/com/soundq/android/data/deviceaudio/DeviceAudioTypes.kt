@@ -97,10 +97,17 @@ internal data class RetiredDeviceIdentity(val from: ContentOwner, val into: Devi
 internal data class DeviceListeningSnapshot(val revision: Long, val files: List<DeviceAudio>, val grants: List<ScanGrant>, val history: List<ListeningHistory>,
     val retired: List<RetiredDeviceIdentity> = emptyList()) {
     /** The available row a saved reference names: itself, or the row its retired identity folded into. */
-    fun resolve(id: DeviceFileId, revision: ContentRevision, incarnation: Long): DeviceAudio? {
-        files.singleOrNull { it.id == id }?.let { return it.takeIf { it.revision == revision && it.incarnation == incarnation && it.available } }
+    fun resolve(id: DeviceFileId, revision: ContentRevision, incarnation: Long): DeviceAudio? =
+        resolveIdentity(id, revision, incarnation) { it.available }
+
+    /** Retained source identity, including provider-proven folds, independent of read readiness. */
+    fun resolveRetained(id: DeviceFileId, revision: ContentRevision, incarnation: Long): DeviceAudio? =
+        resolveIdentity(id, revision, incarnation) { true }
+
+    private fun resolveIdentity(id: DeviceFileId, revision: ContentRevision, incarnation: Long, accepts: (DeviceAudio) -> Boolean): DeviceAudio? {
+        files.singleOrNull { it.id == id }?.let { return it.takeIf { it.revision == revision && it.incarnation == incarnation && accepts(it) } }
         val folded = retired.singleOrNull { it.from == ContentOwner(HistoryKey.Device(id), revision, incarnation) } ?: return null
-        return files.singleOrNull { it.id == folded.into && it.revision == revision && it.available }
+        return files.singleOrNull { it.id == folded.into && it.revision == revision && accepts(it) }
     }
 }
 /** Length-prefixed source-scoped encoding. Never concatenate bare account/endpoint/id delimiters. */

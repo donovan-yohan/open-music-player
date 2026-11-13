@@ -5,6 +5,9 @@ import com.soundq.android.AppGraph
 import com.soundq.android.data.AuthState
 import com.soundq.android.data.deviceaudio.*
 import com.soundq.android.playback.nativeengine.PhoneAudioStage
+import com.soundq.android.playback.nativeengine.AndroidPlatformWindowReader
+import com.soundq.android.playback.nativeengine.LiveOriginalVersions
+import com.soundq.android.playback.nativeengine.NativePlaybackSource
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -31,6 +34,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     private val jobs = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val serial = Mutex()
     private var store: DeviceListeningStore? = null
+    private var liveVersions:LiveOriginalVersions? = null
     private var access: AccessCapture? = null
     @Volatile private var acceptedVersion = -1L
     @Volatile private var lastScan: PhoneScanObservation? = null
@@ -58,12 +62,43 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         }
     }
     fun current(version: Long) = acceptedVersion == version && graph.session.owns(version) && graph.session.state.value !is AuthState.LocalLocked
-    @Volatile var authorityVersion=0L
-        private set
-    private fun publish(message: String? = null) {
+    // One sequence fences every proof publication. Broad transport and physical-file
+    // grants expose separate epochs so a local mutation never retires unrelated audio.
+    private val authoritySequence=java.util.concurrent.atomic.AtomicLong()
+    private val authorityEpoch=java.util.concurrent.atomic.AtomicLong()
+    val authorityVersion get()=authorityEpoch.get()
+    private val fileAuthorities=java.util.concurrent.ConcurrentHashMap<DeviceFileId,Long>()
+    private fun advanceAuthority(file:DeviceFileId?=null):Long=refreshLocked {
+        val next=authoritySequence.updateAndGet {Math.addExact(it,1L)}
+        if(file==null)authorityEpoch.set(next) else fileAuthorities[file]=next
+        next
+    }
+    fun sourceFileId(ref:com.soundq.android.playback.PlaybackRef.Device):DeviceFileId {
+        val id=DeviceFileId(UUID.fromString(ref.id))
+        val owner=ContentOwner(HistoryKey.Device(id),ContentRevision(ref.sha256,ref.bytes),ref.incarnation)
+        return state.value.snapshot?.retired?.singleOrNull {it.from==owner}?.into ?: id
+    }
+    fun originalDescriptorsDrained(fileId:String?):Boolean {
+        val keys=fileId?.let {id->setOf(id)+state.value.snapshot?.files.orEmpty().filter {it.id.value.toString()==id}.flatMap {row->row.aliases.map {it.locator.value}}}
+        return com.soundq.android.playback.nativeengine.OriginalDescriptorCustody.drained(keys)
+    }
+    fun sourceAuthority(ref:com.soundq.android.playback.PlaybackRef.Device):Long =
+        maxOf(authorityVersion,fileAuthorities[sourceFileId(ref)] ?: 0L)
+    private fun publish(message: String? = null, unavailable: ContentOwner? = null) {
         val snapshot = access?.let { store?.snapshot(it) }
         val previous=mutable.value.snapshot
-        if(previous!=null&&snapshot!=null&&(previous.grants!=snapshot.grants||previous.files.any {old->snapshot.files.singleOrNull {it.id==old.id}?.let {it.owner!=old.owner||it.aliases!=old.aliases}==true}))authorityVersion++
+        // Only an acknowledged row-local failure may spare unrelated transport grants.
+        // Ordinary scans, revisions, folds and real access changes retain global cancellation.
+        if(previous!=null&&snapshot!=null&&(previous.grants!=snapshot.grants||previous.files.any {old->snapshot.files.singleOrNull {it.id==old.id}?.let {next->
+            next.owner!=old.owner||(next.aliases!=old.aliases&&!(old.owner==unavailable&&next.aliases.size==old.aliases.size&&old.aliases.all {alias->
+                next.aliases.any {it==alias||(it.grantId==alias.grantId&&it.locator==alias.locator&&it.state in setOf(AccessState.MISSING,AccessState.UNREADABLE,AccessState.UNSUPPORTED))}
+            }))
+        }==true}))advanceAuthority()
+        if(previous!=null&&snapshot!=null&&unavailable!=null) {
+            val old=previous.files.singleOrNull {it.owner==unavailable}
+            val next=snapshot.files.singleOrNull {it.owner==unavailable}
+            if(old!=null&&next!=null&&old.aliases!=next.aliases)advanceAuthority(old.id)
+        }
         mutable.value = PhoneAudioState(snapshot != null, snapshot, false, platform.storageAllowed(), message ?: if (snapshot == null) "Local audio storage is unavailable. Saved state has not been replaced." else null, lastScan)
     }
     private fun fail(message: String) { mutable.value = mutable.value.copy(refreshing = false, message = message) }
@@ -99,7 +134,8 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         refreshRunning=true
         val refresh=refreshEpoch.incrementAndGet()
         val version = scope.version
-        fun active()=valid()&&current(version)&&refreshEpoch.get()==refresh
+        val proofAuthority=authoritySequence.get()
+        fun active()=valid()&&current(version)&&refreshEpoch.get()==refresh&&authoritySequence.get()==proofAuthority
         jobs.launch {
             try {
                 if (!active()) return@launch
@@ -161,13 +197,30 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         }
     }
     /** A saved reference to a row later folded into another (one provider object) resolves to the survivor. */
+    private val fileMutations=java.util.concurrent.ConcurrentHashMap<String,UUID>()
+    fun beginFileMutation(ref:com.soundq.android.playback.PlaybackRef.Device):UUID? {
+        val row=observed(ref) ?: return null
+        val token=UUID.randomUUID()
+        return if(fileMutations.putIfAbsent(row.id.value.toString(),token)==null)token else null
+    }
+    fun endFileMutation(token:UUID) {fileMutations.entries.firstOrNull {it.value==token}?.let {fileMutations.remove(it.key,token)}}
+    fun sameFile(a:com.soundq.android.playback.PlaybackRef.Device,b:com.soundq.android.playback.PlaybackRef.Device):Boolean {
+        val snapshot=state.value.snapshot ?: return false
+        fun resolve(ref:com.soundq.android.playback.PlaybackRef.Device)=snapshot.resolve(DeviceFileId(UUID.fromString(ref.id)),ContentRevision(ref.sha256,ref.bytes),ref.incarnation)
+        val left=resolve(a) ?: return false
+        return resolve(b)?.id==left.id
+    }
+    suspend fun markFileMissing(admission:PhoneSourceAdmission,uri:String):Boolean=journal(true,admission.source.owner) {owner,_->
+        owner.reportUnavailable(admission.source,ProviderLocator(Uri.parse(uri).authority ?: "android",uri),AccessState.MISSING,allAliases=true)!=Mutation.REFUSED
+    }==true
     fun observed(ref: com.soundq.android.playback.PlaybackRef.Device): DeviceAudio? =
         state.value.snapshot?.resolve(DeviceFileId(UUID.fromString(ref.id)), ContentRevision(ref.sha256, ref.bytes), ref.incarnation)
+            ?.takeUnless {fileMutations.containsKey(it.id.value.toString())}
     fun reference(row:DeviceAudio)=com.soundq.android.playback.PlaybackRef.Device(row.id.value.toString(),row.revision.sha256,row.revision.byteLength,row.incarnation)
-    suspend fun <T> journal(publishState:Boolean=false,block:(DeviceListeningStore,AccessCapture)->T):T?=withContext(Dispatchers.IO) {serial.withLock {
+    suspend fun <T> journal(publishState:Boolean=false,unavailable:ContentOwner?=null,block:(DeviceListeningStore,AccessCapture)->T):T?=withContext(Dispatchers.IO) {serial.withLock {
         if(!current(graph.session.version()))return@withLock null
         val owner=store ?: return@withLock null;val accepted=access ?: return@withLock null
-        block(owner,accepted).also {if(publishState)publish()}
+        block(owner,accepted).also {if(publishState)publish(unavailable=unavailable)}
     }}
     suspend fun admit(row: DeviceAudio): PhoneSourceAdmission? = withContext(Dispatchers.IO) { serial.withLock {
         val version = graph.session.version()
@@ -178,7 +231,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         PhoneSourceAdmission(observed, captured, version, owner.bookmark(captured)?.positionMs ?: 0)
     } }
     suspend fun reportFailure(admission:PhoneSourceAdmission,failure:Exception) {
-        journal(true) {owner,_->
+        journal(true,admission.source.owner) {owner,_->
             if(current(admission.sessionVersion)) {
                 val reason=when {failure is java.io.FileNotFoundException->AccessState.MISSING;failure.message?.contains("unsupported",true)==true||failure.message?.contains("not supported",true)==true->AccessState.UNSUPPORTED;else->AccessState.UNREADABLE}
                 admission.row.aliases.firstOrNull {it.state==AccessState.AVAILABLE}?.let {owner.reportUnavailable(admission.source,it.locator,reason)}
@@ -191,6 +244,47 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         PhoneAudioStage(platform, graph.directory).prepare(route, AudioContentProof(admission.row.revision.byteLength, admission.row.revision.sha256)) {
             current(admission.sessionVersion) && valid()
         }
+    }
+    /** Direct original acquisition. No encoded copy, checksum or whole PCM preparation.
+     * Live-version resume policy is an explicit candidate, NOT old SHA equality. */
+    suspend fun openOriginal(admission:PhoneSourceAdmission,valid:()->Boolean):Pair<NativePlaybackSource.BorrowedOriginal,PhoneSourceAdmission> = withContext(Dispatchers.IO) {
+        check(current(admission.sessionVersion) && valid())
+        val route=admission.row.aliases.first {it.state==AccessState.AVAILABLE}.locator.value
+        val live=java.util.concurrent.atomic.AtomicBoolean(true)
+        val capture=java.util.concurrent.atomic.AtomicReference(admission)
+        fun active()=live.get() && current(admission.sessionVersion) && valid()
+        fun changed() {
+            if(live.compareAndSet(true,false)) {
+                // Revoke synchronously, before any late read/EOF/journal publication.
+                advanceAuthority(admission.row.id)
+                jobs.launch {serial.withLock {store?.retireChangedOriginal(capture.get().source);publish("Original audio changed. Saved progress was reset; refresh Local audio.")}}
+            }
+        }
+        val original=platform.openOriginal(route,::active,::changed,admission.row.id.value.toString())
+        try {
+            val accepted=serial.withLock {
+                check(active())
+                val owner=requireNotNull(store);requireNotNull(access)
+                val versions=liveVersions ?: LiveOriginalVersions(File(graph.directory,"phone-live-versions.v1.properties")).also {liveVersions=it}
+                val observation=versions.observe("$route:${admission.row.owner}",original.version) {
+                    check(owner.retireChangedOriginal(admission.source)!=Mutation.REFUSED)
+                }
+                if(observation==LiveOriginalVersions.Observation.Changed) {
+                    advanceAuthority(admission.row.id) // revoke this original, never unrelated transport
+                    throw java.io.IOException("Original audio version changed. Saved progress was reset; refresh Local audio before retrying.")
+                } else admission
+            }
+            capture.set(accepted)
+            val result=NativePlaybackSource.BorrowedOriginal(AndroidPlatformWindowReader(original),accepted.resumeMs,accepted.row.durationMs,accepted.row.id.value.toString()) {active() && original.active}
+            jobs.launch {
+                try {
+                    while(original.active && active()) {original.checkCurrent();delay(250)}
+                } catch(_:Exception) {
+                    if(original.active && live.compareAndSet(true,false))advanceAuthority(admission.row.id)
+                }
+            }
+            result to accepted
+        } catch(error:Throwable) {try {original.close()}catch(close:Throwable){error.addSuppressed(close)};throw error}
     }
     override fun close() { acceptedVersion = -1; jobs.cancel(); jobs.launch(NonCancellable) { serial.withLock { store?.close(); store = null; access = null } } }
     private fun grantId(value: String) = ScanGrantId(UUID.nameUUIDFromBytes(value.toByteArray(Charsets.UTF_8)))

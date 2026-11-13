@@ -1,6 +1,7 @@
 #include "callback_host.hpp"
 #include "worker_deck.hpp"
 #include "schedule_worker.hpp"
+#include "decoder_budget.hpp"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -171,6 +172,7 @@ struct Host final : Callbacks {
         // stopClose is the callback-exit fence. Joins finish decoder destroy before
         // source/page storage can disappear. Never delete Engine before workers.
         for (auto& worker : workers) worker.reset();
+        if(retainedPlatformDecoders.load(std::memory_order_acquire)!=0)return false;
         for (auto& worker : scheduleWorkers) worker.reset();
         schedule.reset(); candidate.reset();tempoGraph.reset();
         engine.reset();
@@ -219,6 +221,11 @@ struct Host final : Callbacks {
                 // Destructor joins the obsolete fill and closes the decoder. Only
                 // then allocate the successor empty worker, keeping the RAM bound.
                 worker.reset();
+                if(retainedPlatformDecoders.load(std::memory_order_acquire)!=0) {
+                    // Keep original identity/unloading visible. A failed codec
+                    // release must never satisfy explicit original-delete drain.
+                    outputError(closedError);continue;
+                }
                 intent.identity = 0; intent.path.clear(); intent.unloading = false;
                 try { worker = std::make_unique<WorkerDeck>(i, *engine, sequence); }
                 catch (...) { outputError(internalError); }
@@ -433,6 +440,14 @@ struct Host final : Callbacks {
         intent = std::move(accepted);
         return true;
     }
+    bool loadReader(int deck,std::shared_ptr<const PcmReaderFactory> factory,uint64_t identity,uint64_t generation,uint64_t position,double speed) {
+        if(schedule || scheduleRetiring || deck<0 || deck>=4 || error.load()!=0 || !identity || !generation || !factory || !admittedSpeed(speed))return false;
+        auto& intent=intents[deck];
+        if(!workers[deck] || intent.unloading || generation<=intent.generation)return false;
+        Intent accepted{generation,identity,position,0,{},intent.gain,speed,false,true,true,false};
+        if(!workers[deck]->replaceReader(std::move(factory),identity,generation,position,speed))return false;
+        intent=std::move(accepted);return true;
+    }
     bool crossfade(int out,uint64_t og,int in,uint64_t ig,uint64_t ms) {
         pump();
         if(schedule || scheduleRetiring || out<0 || out>1 || in<0 || in>1 || out==in || ms>12000 ||
@@ -490,9 +505,11 @@ struct Host final : Callbacks {
         switch (operation) {
         case 3: {
             if (value < 0 || w->sourceRate() == 0) return false;
-            const auto frame = std::min(static_cast<long double>(w->sourceFrames()),
+            const auto frame = std::min(static_cast<long double>(w->sourceFrames()?w->sourceFrames():(uint64_t{1}<<52)),
                 static_cast<long double>(value) * w->sourceRate() / 1000.0L);
-            return command(Operation::Seek, static_cast<uint32_t>(deck), static_cast<double>(frame));
+            const bool accepted=command(Operation::Seek, static_cast<uint32_t>(deck), static_cast<double>(frame));
+            if(accepted)w->fenceSeek();
+            return accepted;
         }
         case 4: {
             if (intent.gesture != 0) return false;
@@ -517,7 +534,7 @@ struct Host final : Callbacks {
         Snapshot snap = last;
         const bool coherent = capture(snap);
         if (coherent) last = snap;
-        uint32_t decoders = 0;
+        uint32_t decoders = retainedPlatformDecoders.load(std::memory_order_acquire);
         for (const auto& w : workers) if (w) decoders += w->stats().openDecoders;
         for (const auto& w : scheduleWorkers) if (w) decoders += w->openDecoders();
         std::ostringstream out; out.imbue(std::locale::classic()); out << std::setprecision(17);
@@ -638,6 +655,10 @@ bool Registry::load(uint64_t h, int d, const std::string& p, uint64_t id, uint64
 bool Registry::loadSpeed(uint64_t h, int d, const std::string& p, uint64_t id, uint64_t g, uint64_t ms, double speed) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->valid(h) && impl_->host->load(d, p, id, g, ms, speed);
+}
+bool Registry::loadReader(uint64_t h,int d,std::shared_ptr<const PcmReaderFactory> factory,uint64_t id,uint64_t g,uint64_t ms,double speed) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->valid(h) && impl_->host->loadReader(d,std::move(factory),id,g,ms,speed);
 }
 bool Registry::control(uint64_t h, int op, int d, double v, uint64_t t) {
     std::lock_guard<std::mutex> lock(impl_->mutex);

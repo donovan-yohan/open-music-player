@@ -1,4 +1,5 @@
 #include "tempo_processor.hpp"
+#include "sq_file_decoder.h"
 #include "soundq_tempo_map.hpp"
 #include "signalsmith-stretch.h"
 #include <algorithm>
@@ -27,18 +28,21 @@ struct TempoProcessor::Impl {
     double map(double u)const {
         return transport::sourceAt(c,static_cast<double>(c.start)+u*outputRate/c.sourceRate,outputRate);
     }
-    float sample(sq_file_decoder* decoder,int64_t frame,unsigned channel) {
+    float sample(PcmReader& decoder,int64_t frame,unsigned channel) {
         if(status)return 0;
-        if(frame<static_cast<int64_t>(std::ceil(c.trimIn)) || frame>=static_cast<int64_t>(std::ceil(c.trimOut)))return 0;
+        if(frame<static_cast<int64_t>(std::ceil(c.trimIn)) || (c.sourceFrames && frame>=static_cast<int64_t>(std::ceil(c.trimOut))))return 0;
+        const auto end=decoder.endFrames();
+        if(end && static_cast<uint64_t>(frame)>=end)return 0;
         if(decodedFirst<0 || frame<decodedFirst || frame>=decodedFirst+decodedCount) {
             decodedFirst=frame/16384*16384;
-            const auto count=static_cast<uint32_t>(std::min<uint64_t>(16384,c.sourceFrames-static_cast<uint64_t>(decodedFirst)));
-            status=sq_file_decoder_read_window(decoder,decodedFirst,count,decoded.data(),decoded.size()*sizeof(float),&decodedCount);
-            if(status || decodedCount!=count){status=status?status:SQ_FILE_DECODE;return 0;}
+            const auto count=static_cast<uint32_t>(end?std::min<uint64_t>(16384,end-static_cast<uint64_t>(decodedFirst)):16384);
+            status=decoder.read(static_cast<uint64_t>(decodedFirst),count,decoded.data(),decoded.size()*sizeof(float),decodedCount);
+            if(status || (decodedCount!=count && (!decoder.endFrames() || static_cast<uint64_t>(decodedFirst)+decodedCount!=decoder.endFrames()))){status=status?status:SQ_FILE_DECODE;return 0;}
+            if(frame>=decodedFirst+decodedCount)return 0;
         }
         return decoded[size_t(frame-decodedFirst)*2+channel];
     }
-    void reset(sq_file_decoder* decoder,uint64_t first) {
+    void reset(PcmReader& decoder,uint64_t first) {
         // Re-prime only for a discontinuous seek/bank reassignment. Normal forward
         // refills retain exact processor history and the overlapping cached page.
         const uint64_t history=uint64_t{inputLatency+outputLatency}*2;
@@ -51,7 +55,7 @@ struct TempoProcessor::Impl {
         stretch.seek(in,static_cast<int>(inputLatency),transport::tempoRate(c,global));
         previous=start+inputLatency;
     }
-    void process(sq_file_decoder* decoder,uint64_t first,uint32_t count,float* target) {
+    void process(PcmReader& decoder,uint64_t first,uint32_t count,float* target) {
         const uint64_t wantedEnd=first+count+outputLatency;
         while(origin+produced<wantedEnd && !status) {
             const auto n=static_cast<unsigned>(std::min<uint64_t>(128,wantedEnd-origin-produced));
@@ -66,16 +70,18 @@ struct TempoProcessor::Impl {
                 if(u<static_cast<int64_t>(first) || u>=static_cast<int64_t>(first+count))continue;
                 // Strict finite half-open output and a 128-PCM-frame edge declick.
                 // This clips spectral tails deliberately, it is not natural EOF.
-                const double edge=std::clamp(std::min(static_cast<double>(u)/128.,static_cast<double>(extent-1-static_cast<uint64_t>(u))/128.),0.,1.);
+                const auto end=extent?extent:decoder.endFrames();
+                const double tail=end?static_cast<double>(end)-1-static_cast<double>(u):128.;
+                const double edge=std::clamp(std::min(static_cast<double>(u)/128.,tail/128.),0.,1.);
                 for(unsigned ch=0;ch<2;++ch){const double v=output[ch][j]*edge;if(!std::isfinite(v)){status=SQ_FILE_DECODE;break;}target[size_t(u-static_cast<int64_t>(first))*2+ch]=static_cast<float>(std::clamp(v,-1.,1.));}
             }
             previous=end;produced+=n;
         }
     }
-    int window(sq_file_decoder* decoder,uint64_t first,float* a,uint32_t& na,float* b,uint32_t& nb) {
-        if(first>=extent)return SQ_FILE_INVALID_ARGUMENT;
-        na=static_cast<uint32_t>(std::min<uint64_t>(tempoPageFrames,extent-first));
-        nb=static_cast<uint32_t>(std::min<uint64_t>(tempoPageFrames,extent-first-na));
+    int window(PcmReader& decoder,uint64_t first,float* a,uint32_t& na,float* b,uint32_t& nb) {
+        if(extent && first>=extent)return SQ_FILE_INVALID_ARGUMENT;
+        na=static_cast<uint32_t>(extent?std::min<uint64_t>(tempoPageFrames,extent-first):tempoPageFrames);
+        nb=static_cast<uint32_t>(extent?std::min<uint64_t>(tempoPageFrames,extent-first-na):tempoPageFrames);
         if(cacheFirst!=first) {
             if(cacheFirst!=~uint64_t{0} && first==cacheFirst+tempoPageFrames) {
                 cache[0].swap(cache[1]);
@@ -90,5 +96,18 @@ struct TempoProcessor::Impl {
 };
 TempoProcessor::TempoProcessor(const transport::ScheduleClip& c,uint32_t outputRate,double transpose):impl(std::make_unique<Impl>(c,outputRate,transpose)){}
 TempoProcessor::~TempoProcessor()=default;
-int TempoProcessor::window(sq_file_decoder* d,uint64_t first,float* a,uint32_t& na,float* b,uint32_t& nb){return impl->window(d,first,a,na,b,nb);}
+int TempoProcessor::window(PcmReader& d,uint64_t first,float* a,uint32_t& na,float* b,uint32_t& nb){return impl->window(d,first,a,na,b,nb);}
+int TempoProcessor::window(sq_file_decoder* d,uint64_t first,float* a,uint32_t& na,float* b,uint32_t& nb){
+    // Schedule has already admitted exact format/extent and owns decoder close.
+    struct Borrowed final:PcmReader {
+        sq_file_decoder* decoder;uint32_t hz;uint64_t frames;
+        Borrowed(sq_file_decoder* p,uint32_t rate,uint64_t end):decoder(p),hz(rate),frames(end){}
+        uint32_t sampleRate()const override{return hz;}
+        uint64_t endFrames()const override{return frames;}
+        int read(uint64_t start,uint32_t count,float* out,size_t bytes,uint32_t& n)override {
+            return sq_file_decoder_read_window(decoder,static_cast<int64_t>(start),count,out,bytes,&n);
+        }
+    } reader(d,impl->c.sourceRate,impl->c.sourceFrames);
+    return window(reader,first,a,na,b,nb);
+}
 }

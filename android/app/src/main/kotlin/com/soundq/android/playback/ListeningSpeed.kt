@@ -7,6 +7,11 @@ import java.security.MessageDigest
 
 internal const val SET_LISTENING_SPEED = "soundq.listening.speed.v1"
 internal const val LISTENING_SPEED_STATE = "listeningSpeed"
+internal const val SONG_SPEED = "soundq.song.speed.v1"
+internal const val RETIRE_PHONE_FILE = "soundq.phone.retire.v1"
+
+@Serializable internal data class SongSpeedState(val speed:Double,val min:Double,val max:Double,
+    val current:Boolean,val persisted:Boolean=true,val unavailable:ListeningSpeedUnavailable?=null)
 
 /** Why ordinary speed is unavailable for the current selection. */
 @Serializable enum class ListeningSpeedUnavailable { Arrangement, Jam, Source }
@@ -34,6 +39,10 @@ internal object ListeningSpeedPolicy {
  * new incarnations); server tracks are scoped to endpoint + account. Only hashes persist. */
 @JvmInline value class ListeningSpeedKey private constructor(val value: String) {
     companion object {
+        fun of(ref:PlaybackRef):ListeningSpeedKey=when(ref) {
+            is PlaybackRef.Device->device(ref)
+            is PlaybackRef.Server->server(ref.endpoint,ref.account,ref.id)
+        }
         private fun hash(vararg parts: String) = MessageDigest.getInstance("SHA-256")
             .digest(parts.joinToString("\u0000").toByteArray()).joinToString("") { "%02x".format(it) }
         fun device(ref: PlaybackRef.Device) = ListeningSpeedKey("d:" + hash("device", ref.sha256, ref.bytes.toString()))

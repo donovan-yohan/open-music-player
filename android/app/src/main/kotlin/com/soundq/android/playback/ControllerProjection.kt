@@ -23,7 +23,11 @@ data class PlaybackProjection(val connection:Connection=Connection.Connecting,va
     val canPlayMix:Boolean=false,val canAuditionArrangement:Boolean=false,
     val performanceDecks:Map<String,PerformanceDeck> = emptyMap(),val canPerformArrangement:Boolean=false,val tempoPreview:TempoPreviewState?=null,val clockAuthority:PlaybackClockAuthority?=null,
     /** Accepted ordinary listening speed of [selectedOccurrence]; null when the playback owner has no speed capability. */
-    val listeningSpeed:ListeningSpeedState?=null) {
+    val listeningSpeed:ListeningSpeedState?=null,
+    /** Accepted error-event revision for one-shot product feedback; cursor polls never advance it. */
+    val failureRevision:Long=0,
+    /** Selected phone grant version/source, independent of accountEpoch's guest sentinel. */
+    val selectedDeviceOwner:SelectedDevicePlaybackOwner?=null) {
     enum class Connection {Connecting,Connected,Disconnected,Unavailable}
 }
 /** Disposable immutable projection and standard controller-command adapter; no playlist ownership. */
@@ -35,6 +39,7 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
     private var controller:MediaController?=null
     private var closed=false
     private var queueRevision=0L
+    private val failureEvents=PlaybackFailureEvents()
     private var selectionIncarnation=0L
     private var observedSelection:List<Any?>?=null
     private var observedSelectionMediaId:String?=null
@@ -55,6 +60,9 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
     fun captureReorder(authority:()->Boolean)=reorder.capture(authority)
     private val appContext=context.applicationContext
     private val listener=object:Player.Listener {
+        override fun onPlayerErrorChanged(error:PlaybackException?) {
+            failureEvents.audio(error?.errorCode,error?.message)
+        }
         override fun onMediaItemTransition(mediaItem:MediaItem?,reason:Int) {
             if(observedSelectionMediaId!=mediaItem?.mediaId){observedSelectionMediaId=mediaItem?.mediaId;retireSelection()}
         }
@@ -78,7 +86,7 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
             }).buildAsync()
         val next=ControllerConnection(future,Executor {handler.post(it)},{it.isConnected},
             {c -> controller=c;c.addListener(listener);handler.post(tick);retries=0;projectedRevision=-1},
-            {c -> retireSelection();observedSelection=null;observedSelectionMediaId=null;c.removeListener(listener);controller=null;handler.removeCallbacks(tick)},
+            {c -> retireSelection();observedSelection=null;observedSelectionMediaId=null;failureEvents.audio(null,null);c.removeListener(listener);controller=null;handler.removeCallbacks(tick)},
             {MediaController.releaseFuture(future)},
             {status -> if(status==PlaybackProjection.Connection.Connected)publish() else {
                 mutable.value=PlaybackProjection(status)
@@ -90,7 +98,7 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
     }
     @Volatile private var contextIntent=0L
     private var contextError:String?=null
-    private fun refuseContext(message:String) {contextError=message;mutable.value=mutable.value.copy(error=message)}
+    private fun refuseContext(message:String) {contextError=message;failureEvents.contextRefused();mutable.value=mutable.value.copy(error=message,failureRevision=failureEvents.revision)}
     internal fun captureContextRead():()->Boolean {
         contextError=null
         val revision=++contextIntent
@@ -220,6 +228,30 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
                 runCatching {future.get().resultCode==SessionResult.RESULT_SUCCESS}.getOrDefault(false))
         },Executor {handler.post(it)})
     }
+    /** Read/save one captured song. No queue or selection mutation for another song. */
+    fun songSpeed(ref:PlaybackRef,version:Long,speed:Double?,valid:()->Boolean,done:(SongSpeedState?)->Unit) {
+        val c=controller ?: return done(null)
+        val command=SessionCommand(SONG_SPEED,Bundle.EMPTY)
+        if(closed||!connection.accepts(c)||!valid()||!c.isSessionCommandAvailable(command))return done(null)
+        val future=c.sendCustomCommand(command,Bundle().apply {
+            putString("target",ref.wire());putLong("version",version);speed?.let {putDouble("speed",it)}
+        })
+        future.addListener({
+            publish()
+            val result=if(!closed&&connection.accepts(c)&&valid())runCatching {
+                val reply=future.get().takeIf {it.resultCode==SessionResult.RESULT_SUCCESS} ?: return@runCatching null
+                reply.extras.getString("songSpeed")?.let {Json.decodeFromString<SongSpeedState>(it)}
+            }.getOrNull() else null
+            done(result)
+        },Executor {handler.post(it)})
+    }
+    suspend fun retirePhoneFile(ref:PlaybackRef.Device,version:Long,valid:()->Boolean):Boolean = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) { kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+        val c=controller
+        val command=SessionCommand(RETIRE_PHONE_FILE,Bundle.EMPTY)
+        if(c==null||closed||!connection.accepts(c)||!valid()||!c.isSessionCommandAvailable(command)) {continuation.resumeWith(Result.success(false));return@suspendCancellableCoroutine}
+        val future=c.sendCustomCommand(command,Bundle().apply {putString("target",ref.wire());putLong("version",version)})
+        future.addListener({if(continuation.isActive)continuation.resumeWith(Result.success(!closed&&connection.accepts(c)&&valid()&&runCatching {future.get().resultCode==SessionResult.RESULT_SUCCESS}.getOrDefault(false)))},Executor {handler.post(it)})
+    } }
     fun next(){contextIntent++;controller?.seekToNextMediaItem()}
     fun previous(){contextIntent++;controller?.seekToPrevious()}
     fun shuffle(){contextIntent++;controller?.let {it.shuffleModeEnabled=!it.shuffleModeEnabled}}
@@ -457,7 +489,12 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
         }
         val source=if(accepted!=null)PlaybackSource.Arrangement else if(c.currentMediaItem?.mediaId?.startsWith("mix:")==true || c.currentMediaItem?.localConfiguration?.uri?.scheme=="soundqmix")PlaybackSource.SavedMix else PlaybackSource.Queue
         val queue=accepted?.sources ?: if(source==PlaybackSource.SavedMix)emptyList() else projectedQueue
-        val selection=listOf(c.sessionExtras.getString("incarnation"),c.sessionExtras.getLong("accountEpoch",-1),c.sessionExtras.getString("sourceQueueIncarnation"),source,c.currentMediaItem?.mediaId,c.currentMediaItem?.mediaMetadata?.extras?.getBoolean("localOnly")==true)
+        val deviceOwner=c.sessionExtras.getString("selectedDeviceOwner")?.takeIf {it.length<=4096}
+            ?.let {runCatching {Json.decodeFromString<SelectedDevicePlaybackOwner>(it)}.getOrNull()}?.takeIf {
+                source==PlaybackSource.Queue&&c.currentMediaItem?.mediaMetadata?.extras?.getBoolean("localOnly")==true&&
+                    it.occurrence==c.currentMediaItem?.mediaId&&queue.singleOrNull {row->row.occurrenceId==it.occurrence}?.ref==it.ref
+            }
+        val selection=listOf(c.sessionExtras.getString("incarnation"),c.sessionExtras.getLong("accountEpoch",-1),c.sessionExtras.getString("sourceQueueIncarnation"),source,c.currentMediaItem?.mediaId,c.currentMediaItem?.mediaMetadata?.extras?.getBoolean("localOnly")==true,deviceOwner)
         if(observedSelection!=selection){contextError=null;observedSelection=selection;observedSelectionMediaId=c.currentMediaItem?.mediaId;retireSelection()}
         val decks=PerformanceCommands.read<Map<String,PerformanceDeck>>(c.sessionExtras,PerformanceCommands.DECKS).orEmpty().filter {(id,deck)->id==deck.target.occurrence&&deck.target.identity==accepted?.identity}.entries.take(4).associate {it.toPair()}
         val completedUnlinks=syncAdmissions.entries.toList().mapNotNull {(occurrence,admission)->
@@ -476,7 +513,8 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
             performanceDecks=decks,
             listeningSpeed=c.sessionExtras.getString(LISTENING_SPEED_STATE)?.takeIf {it.length<=4096&&c.isSessionCommandAvailable(SessionCommand(SET_LISTENING_SPEED,Bundle.EMPTY))}
                 ?.let {runCatching {Json.decodeFromString<ListeningSpeedState>(it)}.getOrNull()}?.takeIf {it.occurrence==c.currentMediaItem?.mediaId},
-            canPerformArrangement=accepted!=null&&c.sessionExtras.getBoolean("canPerformArrangement")&&c.isSessionCommandAvailable(SessionCommand(PerformanceCommands.BEGIN,Bundle.EMPTY)))
+            canPerformArrangement=accepted!=null&&c.sessionExtras.getBoolean("canPerformArrangement")&&c.isSessionCommandAvailable(SessionCommand(PerformanceCommands.BEGIN,Bundle.EMPTY)),
+            failureRevision=failureEvents.revision,selectedDeviceOwner=deviceOwner)
         completedUnlinks.forEach {(admission,observed)->admission.completeUnlink(observed)}
     }
     override fun close(){if(closed)return;cancelTempo(tempoLease);retireScratch();closed=true;handler.removeCallbacks(reconnect);handler.removeCallbacks(tick);connection.close();controller=null;retireSyncAdmissions();projectedQueue=emptyList()}

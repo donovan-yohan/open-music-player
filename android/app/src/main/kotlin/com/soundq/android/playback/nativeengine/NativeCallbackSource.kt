@@ -10,9 +10,11 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CancellationException
 
-/** One immutable encoded file. Native borrows this path until concrete unload or close. */
+/** Ordinary listening acquires typed custody. [prepare] retains the owned-file
+ * compatibility seam for exact finite consumers and existing server fixtures. */
 internal fun interface NativeCallbackSource {
     fun prepare(item: MediaItem, current: () -> Boolean): File
+    fun acquire(item:MediaItem,current:()->Boolean):NativePlaybackSource = NativePlaybackSource.OwnedTemporary(prepare(item,current))
 }
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -20,6 +22,19 @@ internal class GrantedNativeCallbackSource(
     private val graph: AppGraph,
     private val grants: ConcurrentHashMap<String, MediaGrant>,
 ) : NativeCallbackSource {
+    override fun acquire(item:MediaItem,current:()->Boolean):NativePlaybackSource {
+        val uri=item.localConfiguration?.uri.toString()
+        val permit=grants[uri] ?: error("Source grant required")
+        val device=permit.device ?: return NativePlaybackSource.OwnedTemporary(prepareBounded(item,MAX_BYTES,current))
+        return kotlinx.coroutines.runBlocking {
+            check(current() && permit.current(graph))
+            val row=graph.phoneAudio.observed(device) ?: error("Phone audio unavailable")
+            val admission=graph.phoneAudio.admit(row) ?: error("Phone source retired")
+            val (source,accepted)=graph.phoneAudio.openOriginal(admission) {current() && grants[uri]===permit && permit.current(graph)}
+            permit.phoneAdmission=accepted
+            source
+        }
+    }
     override fun prepare(item: MediaItem, current: () -> Boolean): File {
         val permit=grants[item.localConfiguration?.uri.toString()] ?: error("Source grant required")
         val device=permit.device ?: return prepareBounded(item, MAX_BYTES, current)

@@ -45,7 +45,7 @@ fun main() {
     verify(projectCompactSongTiming(p.copy(sourceQueueIncarnation="new"),a).identity!=t.identity)
     verify(projectCompactSongTiming(p.copy(selectionIncarnation=9),a).identity!=t.identity)
     verify(CompactSongTiming(elapsedMs=null,totalMs=12000).clockText=="—:— / 0:12")
-    verify(formatSongTime(3661000)=="1:01:01")
+    verify(formatSongTime(3661000)=="01:01:01")
     println("PASS $checks production timing/adapter assertions (not native UI)")
 }
 ''')

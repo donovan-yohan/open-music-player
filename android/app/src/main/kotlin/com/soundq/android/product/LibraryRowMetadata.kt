@@ -3,6 +3,7 @@ package com.soundq.android.product
 import com.soundq.android.data.LibraryAnalysisFacts
 import com.soundq.android.data.preferences.KeyNotationState
 import com.soundq.android.product.trackdetails.formatAnalysisKey
+import com.soundq.designsystem.formatSongTime
 
 
 internal enum class LibraryMetadataKind { Duration, Tempo, Key }
@@ -15,7 +16,7 @@ internal fun memberDurationMetadata(durationMs:Long):List<LibraryMetadataField> 
 internal fun libraryRowMetadata(durationMs:Long,facts:LibraryAnalysisFacts?,notation:KeyNotationState):List<LibraryMetadataField> = buildList {
     if(durationMs>0) {
         val seconds=durationMs/1000;val hours=seconds/3600;val minutes=seconds/60%60;val remaining=seconds%60
-        val display=if(hours>0)"$hours:${minutes.toString().padStart(2,'0')}:${remaining.toString().padStart(2,'0')}" else "${seconds/60}:${remaining.toString().padStart(2,'0')}"
+        val display=formatSongTime(durationMs)
         val spoken=buildList {
             fun unit(value:Long,name:String){add("$value $name${if(value==1L)"" else "s"}")}
             if(hours>0)unit(hours,"hour")

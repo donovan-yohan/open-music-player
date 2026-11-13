@@ -1,6 +1,181 @@
 {
   "scope": "Controlled test payload, not production media or provider recordings. Hashes identify existing bytes; they do not assert a newly reproduced generator run.",
   "files": {
+    "native-song-actions/a-0.f32": {
+      "sha256": "7138548e1df54736beb2736fa2e27ab40a353aa02046c61236f03a218440f4d5",
+      "bytes": 16384,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/a-1919500.f32": {
+      "sha256": "77fff77396775a9b231b7d4f30b8f03f596c4f4048e195846554c59a3dceb96b",
+      "bytes": 4000,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/a-48000.f32": {
+      "sha256": "c4456a67a194be689895ffb7eb233c387146397e7930a58ba8917d0dd3c2b714",
+      "bytes": 16384,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/a-960000.f32": {
+      "sha256": "c68e675d2f7f16d6fc40e9d9cafd868283e974af45df6e3bde0f9e52c407d7ee",
+      "bytes": 16384,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/a.mp3": {
+      "sha256": "5f34607795e8d09b4ecdfe31b0144d9085bc385d272fa26025b9a0ac0bedc30d",
+      "bytes": 360793,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/b-0.f32": {
+      "sha256": "20ec80c64f164007bf3999bbc4166e79194af2beff601f0c5a9661c0c3cca83f",
+      "bytes": 16384,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/b-2880000.f32": {
+      "sha256": "1230770e47552dbab1c4a4ea133374f80fb2492579f21e15605aaa59f16733d4",
+      "bytes": 16384,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/b-48000.f32": {
+      "sha256": "74ef67f1e540c561a54c6914522f2b1931af361d9cd81a6c72f9ab06eac563d2",
+      "bytes": 16384,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/b-5759500.f32": {
+      "sha256": "4b4d80ddb7661b79d156c8ddb395195dc5348a6ba1faa3122e93d49cb8ce5e78",
+      "bytes": 4000,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/b.mp3": {
+      "sha256": "fcecb6c7b18b58109920c3c29fb4ce3d124a75e7ebeb2de5df88d57708569565",
+      "bytes": 1080727,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/c-0.f32": {
+      "sha256": "314fedfc1739526cd495f5f0964ab3cb38d31d90faaf06d57e45654b940b20cb",
+      "bytes": 16384,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/c-224000.f32": {
+      "sha256": "51060095b81a9ec6645f42588fbc6a48c7374206b7771da6be2f38f1a169ee4c",
+      "bytes": 16384,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/c-479500.f32": {
+      "sha256": "b08ceaf8327bf449ee7f702bed4dba1fa651ce15bf5d73c5cd75533449b9c494",
+      "bytes": 4000,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/c-48000.f32": {
+      "sha256": "bddcaa619853813405e6296e6c4ee4f3ff7f483f51cfd938eda74953825a9a18",
+      "bytes": 16384,
+      "distribution": "instrumentation APK only"
+    },
+    "native-song-actions/c.mp3": {
+      "sha256": "ecceeb9f8b8d4f97ab7180fab047909f200a806b10e451938523c8b07e0ff7f5",
+      "bytes": 90633,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/flac-2048.f32": {
+      "sha256": "b0ad0a3e3b97910f50ac075cb4a6e04401e68d770243fedd56ced6a14dffbfbb",
+      "bytes": 8192,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/flac-59904.f32": {
+      "sha256": "b0ad0a3e3b97910f50ac075cb4a6e04401e68d770243fedd56ced6a14dffbfbb",
+      "bytes": 8192,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/m4a-2048.f32": {
+      "sha256": "b060982ba8057565c6b5878b86265f976ec4646aa33ea2f62888d5e12f827581",
+      "bytes": 8192,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/m4a-59904.f32": {
+      "sha256": "5ed7e71320370cd739d74bff49e4667126e22fa719c3483f2ff01da5eaf167d2",
+      "bytes": 8192,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/manifest.json": {
+      "sha256": "e2d73bf28ffd30913ef8aa7089b9000a673d992fc4597fc7ce6fe40976b3a3b4",
+      "bytes": 725,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/mp3-2048.f32": {
+      "sha256": "8eca0fef17f5d1fb5e876e66b1ddc9dda7921a612b701393475620ddb135da17",
+      "bytes": 8192,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/mp3-61568.f32": {
+      "sha256": "f55d359ce685735f03539be1a9e0746a5d586916f6386afd32c02c19213ca71a",
+      "bytes": 8192,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/ogg-2048.f32": {
+      "sha256": "bcb5843ec134df68fe0d53e3ad7f2323962b2f57c0566e3234bd230ad1a43d5b",
+      "bytes": 8192,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/ogg-59904.f32": {
+      "sha256": "8b1eacca5de6012aaa5f0773c71bf2c55c88f51dbbbd57c987b50fd82678b83c",
+      "bytes": 8192,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/opus-2048.f32": {
+      "sha256": "6f6d9f07fa5b3ac6ba4da0e8f520c6e2f81573accbee606bcde138ba6b299f45",
+      "bytes": 8192,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/opus-91904.f32": {
+      "sha256": "fd46f31e9e45222fe6f45650406a7be7d8e08979bf47163ff40220fea5bc0c0e",
+      "bytes": 8192,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/repeatable-mp3-frame.bin": {
+      "sha256": "256cdd2ed9b58930ce9d4496604a8f04a0b6517cd0f9b9bab67ec59fd7803395",
+      "bytes": 576,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/tone.flac": {
+      "sha256": "23422fa241f6f2452f6e714b1fb610721973442dfcd17f358c0e630eaa0728fd",
+      "bytes": 30190,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/tone.m4a": {
+      "sha256": "14ffdcf562875cbc6b1ab786812458344f3b211b0b50347ba63c053814a22027",
+      "bytes": 27241,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/tone.mp3": {
+      "sha256": "4db9cf2af13fb146c6bdf3c318ce2d4baec1566897da76af5fb6911b96cff442",
+      "bytes": 32832,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/tone.ogg": {
+      "sha256": "c444555623f72540409f9b037de0b4ba723bcadd288a83c1ab96f210cad3efd6",
+      "bytes": 9611,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/tone.opus": {
+      "sha256": "b070bc0d81dbd0a4d142694dbfabd37a0a5f40274dce4a7a1844d82270517916",
+      "bytes": 31093,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/tone.wav": {
+      "sha256": "f4b10f6e796e1556923291cde5e8613b0ac76c2e2b942239c0b7251c67076801",
+      "bytes": 128078,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/wav-2048.f32": {
+      "sha256": "b0ad0a3e3b97910f50ac075cb4a6e04401e68d770243fedd56ced6a14dffbfbb",
+      "bytes": 8192,
+      "distribution": "instrumentation APK only"
+    },
+    "streaming-codecs/wav-59904.f32": {
+      "sha256": "b0ad0a3e3b97910f50ac075cb4a6e04401e68d770243fedd56ced6a14dffbfbb",
+      "bytes": 8192,
+      "distribution": "instrumentation APK only"
+    },
     "arrangement.opus": {
       "sha256": "23a02900406e2824af0a06124a7033ad9f295459b954fd973738e9fb31d5db41",
       "bytes": 179407,

@@ -1,4 +1,5 @@
 #pragma once
+#include "pcm_reader.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -43,6 +44,8 @@ public:
     // its first window. Operation 10 changes an assigned ordinary deck's speed.
     bool loadSpeed(uint64_t handle, int deck, const std::string& path,
                    uint64_t identity, uint64_t generation, uint64_t positionMs, double speed);
+    bool loadReader(uint64_t handle, int deck, std::shared_ptr<const PcmReaderFactory> factory,
+                    uint64_t identity, uint64_t generation, uint64_t positionMs, double speed);
     // Operation 9 reopens failed output paused, preserving engine/cursor/custody.
     // Explicit user intent only. A changed actual output rate is refused.
     bool control(uint64_t handle, int operation, int deck, double value, uint64_t eventNanos);

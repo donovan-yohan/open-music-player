@@ -14,7 +14,7 @@ listener=block('    private val listener=')
 detach=next(line for line in s.splitlines() if '{c -> ' in line and 'c.removeListener(listener)' in line)
 detach=detach[detach.index('->')+2:detach.rindex('}')]
 publish=block('    private fun publish(')
-fields='\n'.join(line for line in s.splitlines() if line.startswith(('    private var ','    private val ')) and any(x in line for x in ['selectionIncarnation','observedSelection','performancePublication','syncAdmissions=']))
+fields='\n'.join(line for line in s.splitlines() if line.startswith(('    private var ','    private val ')) and any(x in line for x in ['selectionIncarnation','observedSelection','performancePublication','syncAdmissions=','failureEvents=']))
 sync_admission=block('    private class SyncAdmission(') if '    private class SyncAdmission(' in s else ''
 helper=block('    private fun retireSelection(') if '    private fun retireSelection(' in s else ''
 text='''package com.soundq.android.playerdetailssource
@@ -29,7 +29,8 @@ class Meta(val extras:Bundle?=Bundle(),val title:String="Queued",val artist:Stri
 class Local(val uri:Uri);class Uri(val scheme:String)
 class MediaItem(val mediaId:String,val mediaMetadata:Meta=Meta(),val localConfiguration:Local?=null)
 class Timeline
-interface Player {class Events;interface Listener {fun onTimelineChanged(t:Timeline,reason:Int){};fun onEvents(p:Player,e:Events){};fun onMediaItemTransition(item:MediaItem?,reason:Int){}};companion object {const val COMMAND_PLAY_PAUSE=1;const val STATE_BUFFERING=2;const val REPEAT_MODE_OFF=0}}
+class PlaybackException(val errorCode:Int=1,message:String="failure"):Exception(message)
+interface Player {class Events;interface Listener {fun onPlayerErrorChanged(error:PlaybackException?){};fun onTimelineChanged(t:Timeline,reason:Int){};fun onEvents(p:Player,e:Events){};fun onMediaItemTransition(item:MediaItem?,reason:Int){}};companion object {const val COMMAND_PLAY_PAUSE=1;const val STATE_BUFFERING=2;const val REPEAT_MODE_OFF=0}}
 class Facade:Player {var items=listOf(MediaItem("a",Meta(Bundle().apply {fields["trackId"]=7L})),MediaItem("b",Meta(Bundle().apply {fields["trackId"]=8L})));var index=0;val mediaItemCount get()=items.size;fun getMediaItemAt(i:Int)=items[i];val currentMediaItem get()=items.getOrNull(index);val mediaMetadata get()=currentMediaItem!!.mediaMetadata;var currentPosition=0L;val duration=12000L;var isPlaying=true;val shuffleModeEnabled=false;val repeatMode=0;val playerError:Exception?=null;val playbackState=3;val sessionExtras=Bundle().apply {fields["accountEpoch"]=1L;fields["incarnation"]="service";fields["sourceQueueIncarnation"]="queue"};fun removeListener(listener:Player.Listener){};fun isCommandAvailable(c:Int)=true;fun hasNextMediaItem()=true;fun hasPreviousMediaItem()=true}
 class Handler {fun removeCallbacks(value:Any){}}
 class Connection {fun accepts(c:Facade)=true}

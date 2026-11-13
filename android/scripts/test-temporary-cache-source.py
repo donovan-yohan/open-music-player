@@ -44,7 +44,7 @@ class OkHttpDataSource(private val client:OkHttpClient):DataSource {
  override fun close(){response?.close();response=null}
 }
 class Downloads {fun load(s:AccountScope){};fun acquire(s:AccountScope,t:TrackId):LocalAudioLease?=null}
-class CachePhone {val authorityVersion=0L;fun current(version:Long)=false;internal fun observed(ref:com.soundq.android.playback.PlaybackRef.Device):com.soundq.android.data.deviceaudio.DeviceAudio?=null}
+class CachePhone {val authorityVersion=0L;fun sourceAuthority(ref:com.soundq.android.playback.PlaybackRef.Device)=authorityVersion;fun current(version:Long)=false;internal fun observed(ref:com.soundq.android.playback.PlaybackRef.Device):com.soundq.android.data.deviceaudio.DeviceAudio?=null}
 class CacheGraph(val directory:File,val session:AccountSession,val mediaClient:OkHttpClient) {val phoneAudio=CachePhone();
  val api=SoundQApi(session,mediaClient);val downloads=Downloads()
  val storagePreferences=StoragePreferences(File(directory,"storage")).also {it.load()}

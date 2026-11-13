@@ -34,7 +34,7 @@ internal val LocalRecording=staticCompositionLocalOf<Recording>{error("No record
     modifier.choice?.let {click->SideEffect {r.choices+=click}}
     content()
 }
-@Composable @NonRestartableComposable internal fun Text(text:String,modifier:Modifier=Modifier,color:Int=0,style:Int=0) {
+@Composable @NonRestartableComposable internal fun Text(text:String,modifier:Modifier=Modifier,color:Int=0,style:Int=0,textAlign:androidx.compose.ui.text.style.TextAlign?=null) {
     val r=LocalRecording.current
     SideEffect {r.texts+=text}
 }

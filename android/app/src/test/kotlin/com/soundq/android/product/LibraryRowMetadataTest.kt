@@ -15,7 +15,7 @@ class LibraryRowMetadataTest {
     @Test fun durationOmitsUnknownButPreservesPositiveSubsecondAndHours() {
         assertTrue(libraryRowMetadata(0,null,ready).isEmpty());assertTrue(libraryRowMetadata(-1,null,ready).isEmpty())
         assertEquals(LibraryMetadataField("0:00","Duration 0 seconds"),libraryRowMetadata(1,null,ready).single())
-        assertEquals(LibraryMetadataField("1:01:01","Duration 1 hour 1 minute 1 second"),libraryRowMetadata(3661000,null,ready).single())
+        assertEquals(LibraryMetadataField("01:01:01","Duration 1 hour 1 minute 1 second"),libraryRowMetadata(3661000,null,ready).single())
     }
     @Test fun malformedOrAbsentFactsNeverInventLabelsAndSiblingValuesRemain() {
         assertTrue(libraryRowMetadata(0,null,ready).isEmpty())

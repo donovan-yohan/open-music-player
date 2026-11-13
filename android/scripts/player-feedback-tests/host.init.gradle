@@ -1,0 +1,10 @@
+// Compile the exact product Toast owner in the existing Robolectric test host.
+// No app dependency or fixture audio graph is introduced into designsystem production.
+gradle.projectsEvaluated {
+    def project = gradle.rootProject.project(':designsystem')
+    project.tasks.named('compileDebugUnitTestKotlin') {
+        source(gradle.rootProject.file('app/src/main/kotlin/com/soundq/android/product/PlayerFailureFeedback.kt'))
+        source(gradle.rootProject.file('app/src/main/kotlin/com/soundq/android/playback/PlaybackFailureEvents.kt'))
+        source(gradle.rootProject.file('scripts/player-feedback-tests/PlayerFailureFeedbackTest.kt'))
+    }
+}

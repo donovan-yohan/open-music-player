@@ -1,0 +1,56 @@
+[
+  {
+    "file": "tone.wav",
+    "rate": 32000,
+    "frames": 64000,
+    "windows": [
+      2048,
+      59904
+    ]
+  },
+  {
+    "file": "tone.mp3",
+    "rate": 32000,
+    "frames": 65664,
+    "windows": [
+      2048,
+      61568
+    ]
+  },
+  {
+    "file": "tone.m4a",
+    "rate": 32000,
+    "frames": 64000,
+    "windows": [
+      2048,
+      59904
+    ]
+  },
+  {
+    "file": "tone.flac",
+    "rate": 32000,
+    "frames": 64000,
+    "windows": [
+      2048,
+      59904
+    ]
+  },
+  {
+    "file": "tone.ogg",
+    "rate": 32000,
+    "frames": 64000,
+    "windows": [
+      2048,
+      59904
+    ]
+  },
+  {
+    "file": "tone.opus",
+    "rate": 48000,
+    "frames": 96000,
+    "windows": [
+      2048,
+      91904
+    ]
+  }
+]

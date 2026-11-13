@@ -425,8 +425,7 @@ internal fun waveformCardFacts(document:TimelineDocument,clip:TimelineClip,sourc
 }
 
 private fun timelineTime(ms:Long):String {
-    val seconds=(ms/1000).coerceAtLeast(0)
-    return "${seconds/60}:${(seconds%60).toString().padStart(2,'0')}"
+    return formatSongTime(ms)
 }
 
 /** Full 48dp target with native indication/focus semantics; glyph padding is not a cell gap. */

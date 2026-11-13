@@ -143,4 +143,4 @@ private fun LazyListScope.catalogHeader(content:@Composable ()->Unit) {
         Text("Recording MusicBrainz ID: ${row.id.value}",style=SoundQ.typography.mono)
     }}
 }
-private fun duration(ms:Long?):String = if(ms==null || ms==0L)"Duration unavailable" else "${ms/60000}:${((ms/1000)%60).toString().padStart(2,'0')}"
+private fun duration(ms:Long?):String = if(ms==null || ms==0L)"Duration unavailable" else if(ms>0)formatSongTime(ms) else "${ms/60000}:${((ms/1000)%60).toString().padStart(2,'0')}"

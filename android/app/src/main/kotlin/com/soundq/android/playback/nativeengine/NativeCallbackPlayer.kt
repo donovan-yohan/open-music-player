@@ -94,6 +94,9 @@ internal class NativeCallbackPlayer(
         val preference = graph.crossfadePreferences.state.value
         if (!preference.ready || preference.error || preference.seconds == 0 || released || arrangement != null ||
             !selectedLoaded || playback != Player.STATE_READY || successor != null || successorJob != null || desiredSeek != null) return
+        // Finite crossfade scheduling needs sealed endpoints. Do not repeatedly
+        // acquire/cancel successors while this local source end is still unknown.
+        if(activeGrant?.device!=null && selected()?.mediaId !in durations)return
         val next = NativeCallbackTraversal.next(activeOrder(), index, repeat, true) ?: return
         if (next == index) return // Repeat One is the existing source-local cycle.
         val item = items[next]; val uri = item.localConfiguration!!.uri.toString()
@@ -110,13 +113,13 @@ internal class NativeCallbackPlayer(
         val predecessor = tail
         preparing.incrementAndGet()
         val job = lifetime.launch(start = CoroutineStart.LAZY) {
-            var file: File? = null; var transferred = false
+            var file: NativePlaybackSource? = null; var transferred = false
             try {
                 predecessor?.join(); check(current())
-                withContext(NonCancellable + Dispatchers.IO) { file = source.prepare(item, ::current) }
+                withContext(NonCancellable + Dispatchers.IO) { file = source.acquire(item, ::current) }
                 ensureActive(); check(current())
                 transferred = true
-                check(withContext(NonCancellable) { owner.loadDeck(c.deck, requireNotNull(file), c.identity, c.identity, 0, ::current, c.speed) })
+                check(withContext(NonCancellable) { owner.loadDeck(c.deck, requireNotNull(file), c.identity, c.identity, journal.initialResume(requireNotNull(file),grant,c.deck), ::current, c.speed) })
                 check(current())
                 bindJournal(item,grant,requireNotNull(file),c.deck,c.identity,true,::current)
                 owner.controlDeck(c.deck, 7, volume.toDouble(), ::current)
@@ -124,7 +127,7 @@ internal class NativeCallbackPlayer(
             catch (_: Exception) { if (current()) cancelSuccessor(preserveAttempt = true) }
             finally {
                 try {
-                    if (!transferred) withContext(NonCancellable + Dispatchers.IO) { file?.delete() }
+                    if (!transferred) withContext(NonCancellable + Dispatchers.IO) { file?.let {owner.releaseUnborrowed(it)} }
                 } finally {
                     // Returning from NonCancellable IO to a revoked job can throw
                     // again. That must not strand the retained acquisition handle.
@@ -148,7 +151,7 @@ internal class NativeCallbackPlayer(
             val preference = graph.crossfadePreferences.state.value
             if (!preference.ready || preference.error || preference.seconds == 0) { cancelSuccessor(); return false }
             val length = minOf(preference.seconds * 1000L, a.durationMs / 2, b.durationMs / 2)
-            if (length <= 0) { cancelSuccessor(); return false }
+            if (length <= 0) { cancelSuccessor(preserveAttempt = true); return false }
             c.arming = true
             val generation = epoch; val revision = successorRevision
             lifetime.launch {
@@ -209,7 +212,7 @@ internal class NativeCallbackPlayer(
     private val preparing = AtomicInteger()
     // Intentionally not a child of service jobs. Cancellation may revoke IO, never native close.
     private val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val owner = NativeCallbackOwner(calls, ::observe)
+    private val owner = NativeCallbackOwner(calls, ::observe,graph.phoneAudio::originalDescriptorsDrained)
     private val journal = NativeListeningJournal(graph,lifetime)
     private var explicitSeek=0L
 
@@ -218,6 +221,30 @@ internal class NativeCallbackPlayer(
     var speedFor: (MediaItem) -> Double = { 1.0 }
     var onSpeedChanged: (() -> Unit)? = null
     private var speedBounds = 1.0 to 1.0
+    internal val listeningSpeedBounds get() = speedBounds
+    /** Explicit original-file mutation barrier. It grants no filesystem deletion authority. */
+    internal suspend fun retirePhoneFile(ref:com.soundq.android.playback.PlaybackRef.Device):Boolean {
+        fun matches(item:MediaItem)=(com.soundq.android.playback.PlaybackRef.read(item.mediaMetadata.extras?.getString("playbackRef")) as? com.soundq.android.playback.PlaybackRef.Device)?.let {graph.phoneAudio.sameFile(it,ref)}==true
+        if(arrangement!=null&&arrangementSourceItems.any(::matches))return false
+        val fileId=graph.phoneAudio.sourceFileId(ref).value.toString()
+        // A previously failed close can retain custody without a native identity or queue row.
+        if(items.none(::matches))return owner.sourcesDrained(fileId)
+        val acquisition=if(selected()?.let(::matches)==true)pending else null
+        val nextAcquisition=successorJob
+        val identities=mutableSetOf<Long>()
+        if(selected()?.let(::matches)==true)identities+=ordinaryIdentity
+        successor?.let {if(matches(it.item))identities+=it.identity;if(matches(it.outgoing))identities+=it.outgoingIdentity}
+        if(selected()?.let(::matches)==true) {pause();stop()}
+        val remaining=items.filterNot(::matches)
+        val fallback=index.coerceIn(0,(remaining.size-1).coerceAtLeast(0))
+        mutate(remaining,rebuilt(remaining,fallback),fallback,selected()?.let(::matches)!=true)
+        invalidateState()
+        return withTimeoutOrNull(30_000) {
+            acquisition?.join();nextAcquisition?.join();tail?.join()
+            val snapshot=owner.snapshot {true} ?: return@withTimeoutOrNull false
+            snapshot.decks.none {it.identity in identities} && owner.sourcesDrained(fileId)
+        }==true
+    }
     /** Set when the native capability first arrives (or changes): a deck loaded before it
      * could only start at 1.0, so the selected source re-applies its stored speed once. */
     private var reconcileSpeed = false
@@ -744,6 +771,9 @@ internal class NativeCallbackPlayer(
         ?: (item.mediaMetadata.extras?.getLong("durationMs") ?: 0L).takeIf { it > 0 }
         ?: C.TIME_UNSET
     private fun bounded(item: MediaItem, value: Long): Long {
+        // Local metadata duration is a UI hint until a decoded-EOS seal arrives.
+        if(grants[item.localConfiguration?.uri.toString()]?.device!=null && item.mediaId !in durations)
+            return value.coerceIn(0,24L*60*60*1000)
         val duration = duration(item)
         return if (duration == C.TIME_UNSET) value.coerceAtLeast(0) else value.coerceIn(0, duration)
     }
@@ -1016,7 +1046,7 @@ internal class NativeCallbackPlayer(
         eofCount = 0
         preparing.incrementAndGet()
         val job = lifetime.launch(start = CoroutineStart.LAZY) {
-            var file: File? = null
+            var file: NativePlaybackSource? = null
             var transferred = false
             try {
                 predecessor?.join()
@@ -1024,11 +1054,13 @@ internal class NativeCallbackPlayer(
                 check(owner.recoverOutput(::current)) { "Audio output could not be reopened" }
                 check(current())
                 outputUnavailable = false; error = null
-                // NonCancellable lets the coroutine recover and delete a late unborrowed result.
-                withContext(NonCancellable + Dispatchers.IO) { file = source.prepare(item, ::current) }
+                // NonCancellable recovers and releases a late result using its typed custody.
+                withContext(NonCancellable + Dispatchers.IO) { file = source.acquire(item, ::current) }
                 ensureActive()
                 check(current())
-                val initialPosition = position
+                val original=file as? NativePlaybackSource.BorrowedOriginal
+                val initialPosition = if(position==0L && explicitSeek==seekAtPreparation && original!=null)journal.initialResume(original,grant,ordinaryDeck) else position
+                if(initialPosition!=position){position=initialPosition;acknowledgedSeekPosition=initialPosition}
                 transferred = true
                 val accepted = withContext(NonCancellable) { owner.load(requireNotNull(file), generation, generation, initialPosition, ::current, loadSpeed(item)) }
                 check(current())
@@ -1045,7 +1077,7 @@ internal class NativeCallbackPlayer(
             } catch (_: Exception) {
                 if (generation==epoch&&currentScope()&&grants[uri]===grant) { fail(if(grant.device!=null)"Audio source could not be prepared. Check Local audio access or choose the file again." else "Audio source could not be prepared. Try again when the server is available."); retireSelection() }
             } finally {
-                if (!transferred) withContext(NonCancellable + Dispatchers.IO) { file?.delete() }
+                if (!transferred) withContext(NonCancellable + Dispatchers.IO) { file?.let {owner.releaseUnborrowed(it)} }
                 if (generation == epoch) {
                     pending = null
                     if (!selectedLoaded && playback == Player.STATE_BUFFERING) {
@@ -1063,7 +1095,7 @@ internal class NativeCallbackPlayer(
         return done()
     }
 
-    private suspend fun bindJournal(item:MediaItem,grant:MediaGrant,file:File,slot:Int,identity:Long,allowResume:Boolean,current:()->Boolean) {
+    private suspend fun bindJournal(item:MediaItem,grant:MediaGrant,file:NativePlaybackSource,slot:Int,identity:Long,allowResume:Boolean,current:()->Boolean) {
         val ready=withTimeout(15_000) {
             var value:NativeCallbackDeck?=null
             while(value==null) {
@@ -1071,14 +1103,14 @@ internal class NativeCallbackPlayer(
                 val d=owner.snapshot(current)?.decks?.getOrNull(slot)
                 if(d!=null&&d.identity==identity&&d.generation==identity) {
                     check(d.error==0)
-                    if(d.ready&&!d.preparing&&d.sourceFrames>0&&d.sourceRate>0)value=d
+                    if(d.ready&&!d.preparing&&d.sourceRate>0)value=d
                 }
                 if(value==null)delay(20)
             }
             value
         }
         val resume=try {journal.bind(item,grant,file,requireNotNull(ready),slot,current)}catch(failure:Exception){if(grant.device!=null)throw failure else {check(current());return}}
-        if(allowResume&&resume>0) {
+        if(allowResume&&resume>0 && file !is NativePlaybackSource.BorrowedOriginal) {
             journal.fenceSeek(slot)
             check(journal.beginSeek(slot,2,ready.naturalEnd?.count ?: 0))
             check(current()&&owner.controlDeck(slot,3,resume.toDouble(),current))

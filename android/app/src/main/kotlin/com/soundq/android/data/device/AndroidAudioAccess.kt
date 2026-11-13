@@ -155,8 +155,29 @@ internal class AndroidAudioAccess(private val context: Context) {
         return try { retriever.setDataSource(context, Uri.parse(locator)); retriever.embeddedPicture?.takeIf { it.size <= MAX_ART_BYTES } }
         finally { retriever.release() }
     }
+    fun openOriginal(locator:String,current:()->Boolean,changed:()->Unit,sourceKey:String=locator) =
+        com.soundq.android.playback.nativeengine.OriginalAudioReadLease.open(resolver,locator,{storageAllowed()&&current()},changed,sourceKey)
     /** Exact-byte proof used by the catalog to establish revision, never by filename similarity. */
-    fun proof(locator: String, current: () -> Boolean): AudioContentProof = copyOrHash(locator, null, current)
+    fun proof(locator: String, current: () -> Boolean): AudioContentProof {
+        // A late hash may not certify bytes from a replaced/mutated original.
+        val original=openOriginal(locator,current,{})
+        try {
+            // Hash exactly the validated descriptor slice. Reopening the mutable URI
+            // could produce another inode or another range even through route ABA.
+            val digest=MessageDigest.getInstance("SHA-256")
+            val buffer=ByteArray(64*1024)
+            var total=0L
+            while(total<original.length) {
+                if(!current())throw CancellationException("Audio source retired")
+                original.beginOperation()
+                val count=original.readAt(total,buffer,0,minOf(buffer.size.toLong(),original.length-total).toInt())
+                check(count>0) {"Original proof made no progress"}
+                digest.update(buffer,0,count);total=Math.addExact(total,count.toLong())
+            }
+            original.checkCurrent();check(current())
+            return AudioContentProof(total,digest.digest().joinToString("") {"%02x".format(it)})
+        } finally {original.close()}
+    }
     /** Target must be a newly created private stage; original provider bytes are read-only. */
     fun copy(locator: String, target: File, current: () -> Boolean): AudioContentProof = copyOrHash(locator, target, current)
     private fun copyOrHash(locator: String, target: File?, current: () -> Boolean): AudioContentProof {

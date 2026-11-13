@@ -182,4 +182,4 @@ internal class QueueClearCapture(private val captured:PlaybackProjection) {
         }
     }
 }
-private fun queueTime(ms:Long):String {val seconds=ms/1000;return "${seconds/60}:${(seconds%60).toString().padStart(2,'0')}"}
+private fun queueTime(ms:Long):String {val seconds=ms/1000;return if(ms>=0)formatSongTime(ms) else "${seconds/60}:${(seconds%60).toString().padStart(2,'0')}"}

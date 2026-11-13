@@ -23,6 +23,8 @@ struct Source {
 // pages, then the serialized control producer publishes descriptors. Missing
 // interpolation taps hold/silence only that deck, never create logical EOF.
 struct PagedSource {
+    // Zero explicitly means unknown/unsealed decoded end, NOT current coverage.
+    // Positive frames are exact. Only ordinary paged playback permits unknown.
     uint64_t frames = 0;
     uint32_t sourceRate = 0;
     uint64_t identity = 0;
@@ -215,6 +217,10 @@ public:
     // unchanged; only consumption pace changes. Refused while scratching.
     bool publishWindowRate(uint32_t deck, uint64_t sequence, uint64_t generation,
                            const PcmWindow& window, double rate) noexcept;
+    // Same-generation decoded-EOS seal plus final window/rate. Positive exact end
+    // is immutable once sealed. Does not move cursor or mint a traversal/receipt.
+    bool publishWindowEnd(uint32_t deck, uint64_t sequence, uint64_t generation,
+                          const PcmWindow& window, uint64_t exactEnd, double speed) noexcept;
     // Keeps generation tombstone, clears source/play/gesture. A newer assignment
     // must use a larger generation. Pending old decoder replies stay inadmissible.
     bool unassign(uint32_t deck, uint64_t sequence, uint64_t generation) noexcept;

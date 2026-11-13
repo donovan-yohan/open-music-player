@@ -15,12 +15,14 @@ import androidx.compose.ui.semantics.semantics
 import com.soundq.android.data.TrackId
 import com.soundq.android.data.playlists.*
 import com.soundq.android.playback.QueuePolicy
+import com.soundq.android.playback.PlaybackProjection
+import com.soundq.android.playback.PlaybackSource
 import com.soundq.designsystem.*
 
 private fun LazyListScope.playlistHeader(key:Any?=null,content:@Composable ()->Unit) {
     item(key=key) {Column(Modifier.fillMaxWidth().padding(horizontal=SoundQ.spacing.gutter,vertical=SoundQ.spacing.small)) {content()}}
 }
-private fun mixTime(ms:Long):String {val seconds=ms/1000;return "${seconds/60}:${(seconds%60).toString().padStart(2,'0')}"}
+private fun mixTime(ms:Long):String {val seconds=ms/1000;return if(ms>=0)formatSongTime(ms) else "${seconds/60}:${(seconds%60).toString().padStart(2,'0')}"}
 private fun transitionLabel(t:kotlinx.serialization.json.JsonObject):String {
     val confidence=t.getValue("confidence") as kotlinx.serialization.json.JsonObject
     val label=when {
@@ -58,7 +60,13 @@ private fun transitionLabel(t:kotlinx.serialization.json.JsonObject):String {
     harmonic:@Composable (()->Boolean)->Unit={},
     artwork:@Composable (com.soundq.android.data.Track,()->Boolean)->Unit={_,_->},
     harmonicFeedback:@Composable ()->Unit={},
+    playback:PlaybackProjection=PlaybackProjection(),
 ) {
+    // Member rows represent tracks, not the saved mix's global cursor or an editor selection.
+    // Reuse the accepted queue projection, including paused selection, in every list branch.
+    val selectedTrack=remember(playback.source,playback.queue,playback.selectedOccurrence) {
+        if(playback.source==PlaybackSource.Queue)playback.queue.singleOrNull {it.occurrenceId==playback.selectedOccurrence}?.trackId else null
+    }
     val lifetime=com.soundq.android.product.rememberTrackRowLifetime(state.detail)
     var seam by remember(state.id,state.detail) {mutableStateOf<Int?>(null)}
     seam?.let {index->state.detail?.let {detail->blend.transitions.getOrNull(index)?.let {transition->
@@ -141,7 +149,7 @@ private fun transitionLabel(t:kotlinx.serialization.json.JsonObject):String {
                         SoundQSwipeQueue(track.title,reveal,capture!=null,queue) {front,admit->
                             val rowLifetime=com.soundq.android.product.rememberTrackRowLifetime(track)
                             val rowCurrent={lifetime.current()&&rowLifetime.current()}
-                            SoundQMediaRow(track.title,track.artist,false,{if(admit())capture?.let {onPlayAt(it,track.id,index)}},
+                            SoundQMediaRow(track.title,track.artist,selectedTrack==track.id.value,{if(admit())capture?.let {onPlayAt(it,track.id,index)}},
                                 onMore={reveal.close();memberTarget=target;member=index},modifier=front,
                                 metadata={com.soundq.android.product.LibraryMetadataContent(com.soundq.android.product.memberDurationMetadata(track.durationMs))},
                                 artwork={key(lifetime,rowLifetime){artwork(track,rowCurrent)}},enabled=capture!=null||target!=null,supporting="${(index+1).toString().padStart(2,'0')} · Starts ${mixTime(plan.clips[index].start)}")
@@ -151,7 +159,7 @@ private fun transitionLabel(t:kotlinx.serialization.json.JsonObject):String {
                 }
             } else if(orderActions!=null && !detail.playlist.draft.isPublic) item {
                 val tracks=detail.tracks.associateBy {it.id.value.toString()}
-                PlaylistMemberOrderList(detail.tracks.map {QueueRowVisual(it.id.value.toString(),it.title,it.artist,false,it.durationMs)},
+                PlaylistMemberOrderList(detail.tracks.map {QueueRowVisual(it.id.value.toString(),it.title,it.artist,selectedTrack==it.id.value,it.durationMs)},
                     onSelect={key->tracks[key]?.let {track->capture?.let {onPlay(it,track.id)}}},onMove={_,_->},
                     onRemove={key->tracks[key]?.let {track->target?.let {actions?.remove(it,track.id)}}},
                     onQueue={key->val index=detail.tracks.indexOfFirst {it.id.value.toString()==key};detail.tracks.getOrNull(index)?.let {track->if(lifetime.current())capture?.let {onQueue(it,index,track,lifetime::current)}}},
@@ -169,7 +177,7 @@ private fun transitionLabel(t:kotlinx.serialization.json.JsonObject):String {
                 SoundQSwipeQueue(track.title,reveal,capture!=null,queue) {front,admit->
                     val rowLifetime=com.soundq.android.product.rememberTrackRowLifetime(track)
                     val rowCurrent={lifetime.current()&&rowLifetime.current()}
-                    SoundQMediaRow(track.title,track.artist,false,{if(admit())capture?.let {onPlayAt(it,track.id,index)}},
+                    SoundQMediaRow(track.title,track.artist,selectedTrack==track.id.value,{if(admit())capture?.let {onPlayAt(it,track.id,index)}},
                         onMore={reveal.close();memberTarget=target;member=index},modifier=front,
                                 metadata={com.soundq.android.product.LibraryMetadataContent(com.soundq.android.product.memberDurationMetadata(track.durationMs))},
                         artwork={key(lifetime,rowLifetime){artwork(track,rowCurrent)}},enabled=capture!=null||target!=null)

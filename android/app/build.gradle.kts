@@ -332,6 +332,31 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
     if(name=="compileDebugUnitTestKotlin"){source(phoneConsumersProbe);dependsOn(generatePhoneConsumersProbe)}
 }
 tasks.matching {it.name in setOf("generateDebugUnitTestLintModel","lintAnalyzeDebugUnitTest")}.configureEach {dependsOn(generatePhoneConsumersProbe)}
+// Exact menu publication and selected-song command bodies; real domain/preference owners.
+val songMenuProbe=layout.buildDirectory.dir("generated/song-menu-test")
+val generateSongMenuProbe=tasks.register<Exec>("generateSongMenuProbe") {
+    inputs.file(rootProject.file("scripts/test-song-menu-boundaries.py"))
+    inputs.files(fileTree("src/main/kotlin") {include("**/PhoneAudioRepository.kt","**/SignedAudioDataSource.kt","**/SoundQLibraryService.kt","**/NativeCallbackPlayer.kt","**/NativeCallbackOwner.kt")})
+    outputs.dir(songMenuProbe)
+    commandLine(providers.environmentVariable("SOUNDQ_PYTHON").orElse("python3").get(),rootProject.file("scripts/test-song-menu-boundaries.py"),"--generate",songMenuProbe.get().asFile)
+}
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    if(name=="compileDebugUnitTestKotlin"){source(songMenuProbe);dependsOn(generateSongMenuProbe)}
+}
+tasks.matching {it.name in setOf("generateDebugUnitTestLintModel","lintAnalyzeDebugUnitTest")}.configureEach {dependsOn(generateSongMenuProbe)}
+
+// Exact service grant publication, controller projection and root failure eligibility.
+val playerFailureOwnerProbe=layout.buildDirectory.dir("generated/player-failure-owner-test")
+val generatePlayerFailureOwnerProbe=tasks.register<Exec>("generatePlayerFailureOwnerProbe") {
+    inputs.file(rootProject.file("scripts/test-player-failure-owner.py"))
+    inputs.files(fileTree("src/main/kotlin") {include("**/SoundQLibraryService.kt","**/ControllerProjection.kt","**/SignedAudioDataSource.kt","**/SelectedDevicePlaybackOwner.kt","**/PlayerFailureToasts.kt","**/PlayerFailureFeedback.kt","**/PlaybackFailureEvents.kt","**/AccountSession.kt","**/Contracts.kt","**/DeviceAudioTypes.kt","**/PlaybackRef.kt","**/QueueOrigin.kt")})
+    outputs.dir(playerFailureOwnerProbe)
+    commandLine(providers.environmentVariable("SOUNDQ_PYTHON").orElse("python3").get(),rootProject.file("scripts/test-player-failure-owner.py"),"--generate",playerFailureOwnerProbe.get().asFile)
+}
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    if(name=="compileDebugUnitTestKotlin"){source(playerFailureOwnerProbe);dependsOn(generatePlayerFailureOwnerProbe)}
+}
+tasks.matching {it.name in setOf("generateDebugUnitTestLintModel","lintAnalyzeDebugUnitTest")}.configureEach {dependsOn(generatePlayerFailureOwnerProbe)}
 
 dependencies {
     implementation(project(":designsystem"))

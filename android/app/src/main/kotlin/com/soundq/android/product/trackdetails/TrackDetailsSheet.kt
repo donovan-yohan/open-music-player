@@ -153,8 +153,7 @@ import com.soundq.designsystem.*
 }
 internal fun detailsDuration(ms:Long?):String {
     if(ms==null||ms<=0)return "Not available"
-    val seconds=ms/1000
-    return "${seconds/60}:${(seconds%60).toString().padStart(2,'0')}"
+    return formatSongTime(ms)
 }
 @Composable internal fun DetailsFact(label:String,value:String,modifier:Modifier=Modifier) {
     Column(modifier) {Text(label,style=SoundQ.typography.caption,color=SoundQ.colors.muted);Text(value,style=SoundQ.typography.body)}

@@ -1,5 +1,6 @@
 #pragma once
 #include "soundq_transport.hpp"
+#include "pcm_reader.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -35,11 +36,14 @@ public:
     // startMs is converted on worker only after exact source rate/extent resolve.
     bool replace(const std::string& path, uint64_t identity, uint64_t generation,
                  uint64_t startMs, double speed = 1);
+    bool replaceReader(std::shared_ptr<const PcmReaderFactory> factory, uint64_t identity, uint64_t generation,
+                       uint64_t startMs, double speed = 1);
     // Ordinary listening speed. Pages for speed != 1 are the source pitch-shifted
     // by 1/speed in ORIGINAL source coordinates; the engine consumes them at
     // `speed`, so position/seek/EOF stay source-time and pitch is preserved.
     // Applied atomically with its window; never a traversal discontinuity.
     bool setSpeed(double speed);
+    void fenceSeek(); // revoke unpublished old-target work, never borrowed pages
     double speed() const noexcept;         // intended
     double appliedSpeed() const noexcept;  // last window/rate submitted to Engine
     bool retire(); // no new decode; caller destroys only after retired()

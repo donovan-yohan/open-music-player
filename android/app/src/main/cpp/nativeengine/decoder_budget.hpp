@@ -4,6 +4,8 @@ namespace soundq::nativeengine {
 // One process-wide cap includes synchronous extent probes and retained workers.
 // A full pool refuses a new probe rather than opening an uncounted fifth decoder.
 inline std::atomic<unsigned> decoderPermits{0};
+// Failed platform closes remain real codec owners even after their worker exits.
+inline std::atomic<unsigned> retainedPlatformDecoders{0};
 struct DecoderPermit {
     bool held=false;
     bool acquire() noexcept {

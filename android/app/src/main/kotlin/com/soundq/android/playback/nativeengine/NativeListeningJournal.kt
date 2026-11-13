@@ -5,7 +5,6 @@ import com.soundq.android.AppGraph
 import com.soundq.android.playback.MediaGrant
 import com.soundq.android.data.deviceaudio.*
 import kotlinx.coroutines.*
-import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
 
@@ -18,10 +17,19 @@ internal class NativeListeningJournal(private val graph:AppGraph,private val job
     private val bindings=mutableMapOf<Int,Bound>()
     private var tail:Job?=null
     private var lastPublication=0L
-    suspend fun bind(item:MediaItem,grant:MediaGrant,file:File,deck:NativeCallbackDeck,slot:Int,current:()->Boolean):Long {
+    /** Decide before decoder priming. A concurrently prepared duplicate is a replay,
+     * never an immediate jump to the outgoing occurrence's saved checkpoint. */
+    fun initialResume(lease:NativePlaybackSource,grant:MediaGrant,slot:Int):Long {
+        val original=lease as? NativePlaybackSource.BorrowedOriginal ?: return 0
+        val owner=grant.phoneAdmission?.source?.owner ?: return 0
+        return if(bindings.any {(peer,b)->peer!=slot && b.current() && b.owner==owner})0 else original.resumeMs
+    }
+    suspend fun bind(item:MediaItem,grant:MediaGrant,lease:NativePlaybackSource,deck:NativeCallbackDeck,slot:Int,current:()->Boolean):Long {
+        val original=lease as? NativePlaybackSource.BorrowedOriginal
+        val file=(lease as? NativePlaybackSource.OwnedTemporary)?.file
         val revision=if(grant.device!=null)null else withContext(Dispatchers.IO) {
             val digest=MessageDigest.getInstance("SHA-256")
-            file.inputStream().use {input->val buffer=ByteArray(65536);while(true){check(current());val n=input.read(buffer);if(n<0)break;digest.update(buffer,0,n)}}
+            requireNotNull(file).inputStream().use {input->val buffer=ByteArray(65536);while(true){check(current());val n=input.read(buffer);if(n<0)break;digest.update(buffer,0,n)}}
             ContentRevision(digest.digest().joinToString(""){"%02x".format(it)},file.length())
         }
         check(current())
@@ -34,8 +42,8 @@ internal class NativeListeningJournal(private val graph:AppGraph,private val job
             }
             // A simultaneous duplicate is a replay, not a paused-source restoration. Never cache
             // the outgoing cursor in a prepared deck: its completion may reset the source meanwhile.
-            val saved=if(deck.durationMs>600000&&source.owner !in peers)store.bookmark(source)?.positionMs ?: 0 else 0
-            Bound(NativeListeningBinding(store,source,UUID.fromString(item.mediaId),deck.generation,slot,saved,deck.durationMs,{grant.current(graph)}),source.owner,current)
+            val saved=if((deck.durationMs>600000 || original?.reader?.longFormConfirmed()==true)&&source.owner !in peers)store.bookmark(source)?.positionMs ?: 0 else 0
+            Bound(NativeListeningBinding(store,source,UUID.fromString(item.mediaId),deck.generation,slot,saved,deck.durationMs,original?.reader?.longFormConfirmed(),{grant.current(graph) && (original?.versionCurrent?.invoke()!=false)}),source.owner,{current() && original?.versionCurrent?.invoke()!=false})
         } ?: error("Listening journal unavailable")
         check(current());bindings[slot]=bound
         return bound.binding.resumeMs
