@@ -24,13 +24,13 @@ def digest(data):
 
 
 def load(path):
-    return json.loads(Path(path).read_text())
+    return json.loads(Path(path).read_text(encoding='utf-8'))
 
 
 def save(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
 
 
 def mask(text, strings=True):
@@ -67,9 +67,9 @@ def mask(text, strings=True):
 def adoption_errors(text):
     code = mask(text)
     forbidden = {'Button', 'OutlinedButton', 'TextButton', 'IconButton', 'TextField', 'OutlinedTextField', 'BasicTextField'}
-    aliases = dict(re.findall(r'import\s+[\w.]+\.(\w+)\s+as\s+(\w+)', code))
-    forbidden |= {alias for name, alias in aliases.items() if name in forbidden}
-    colors = {'Color'} | {alias for name, alias in aliases.items() if name == 'Color'}
+    aliases = re.findall(r'import\s+[\w.]+\.(\w+)\s+as\s+(\w+)', code)
+    forbidden |= {alias for name, alias in aliases if name in forbidden}
+    colors = {'Color'} | {alias for name, alias in aliases if name == 'Color'}
     errors = []
     for name in sorted(forbidden):
         for m in re.finditer(r'\b' + re.escape(name) + r'\s*\(', code):
@@ -119,7 +119,7 @@ def identities(root=None):
 
 
 def catalog():
-    all_kt = [(p, text, mask(text)) for p in (ROOT / 'android').glob('**/src/**/*.kt') if '/build/' not in str(p) for text in (p.read_text(),)]
+    all_kt = [(p, text, mask(text)) for p in (ROOT / 'android').glob('**/src/**/*.kt') if '/build/' not in str(p) for text in (p.read_text(encoding='utf-8'),)]
     entries = []
     for p, text, code in all_kt:
         if not str(p.relative_to(ROOT)).startswith(DS + 'main/'): continue
@@ -318,7 +318,7 @@ def report(output, result, captures, baselines):
                 panels += f'<h3>Difference (pink = changed pixel)</h3><img src="{diff_name}" alt="Pixel difference map">'
         cards.append(f'<article><h2>{html.escape(case["id"])}</h2><pre>{html.escape(json.dumps(case,indent=2))}</pre>{panels}</article>')
     heading = 'HARNESS ONLY — synthetic pixel evidence' if result.get('kind') == 'harness-only' else 'Native evidence'
-    (output/'index.html').write_text('<!doctype html><meta charset="utf-8"><title>'+heading+'</title><style>body{font:16px system-ui;background:#151719;color:#eee;margin:32px}article{display:inline-block;vertical-align:top;width:380px}img{max-width:360px}pre{white-space:pre-wrap}</style><h1>'+heading+' — '+html.escape(result['status'])+'</h1><p>No human approval implied. Exact pixels; zero tolerated changes.</p>'+''.join(cards)+'<h2>Environment and source identities</h2><pre>'+html.escape(json.dumps({'environment':result['environment'],'sources':result['sources'],'build_provenance':result.get('build_provenance', {})},indent=2))+'</pre>')
+    (output/'index.html').write_text('<!doctype html><meta charset="utf-8"><title>'+heading+'</title><style>body{font:16px system-ui;background:#151719;color:#eee;margin:32px}article{display:inline-block;vertical-align:top;width:380px}img{max-width:360px}pre{white-space:pre-wrap}</style><h1>'+heading+' — '+html.escape(result['status'])+'</h1><p>No human approval implied. Exact pixels; zero tolerated changes.</p>'+''.join(cards)+'<h2>Environment and source identities</h2><pre>'+html.escape(json.dumps({'environment':result['environment'],'sources':result['sources'],'build_provenance':result.get('build_provenance', {})},indent=2))+'</pre>', encoding='utf-8')
 
 
 def catalog_html(data):
@@ -346,8 +346,8 @@ def main():
         if args.command=='catalog':
             data=catalog(); index=catalog_html(data)
             output=Path(args.output)
-            if args.action=='generate': save(output/'catalog.json',data); (output/'index.html').write_text(index)
-            elif load(output/'catalog.json') != data or (output/'index.html').read_text()!=index: raise ValueError('catalog stale; regenerate')
+            if args.action=='generate': save(output/'catalog.json',data); (output/'index.html').write_text(index, encoding='utf-8')
+            elif load(output/'catalog.json') != data or (output/'index.html').read_text(encoding='utf-8')!=index: raise ValueError('catalog stale; regenerate')
             print(json.dumps({'status':'ok','components':len(data['components'])})); return 0
         if args.command=='check':
             old=load(args.catalog)
@@ -362,8 +362,8 @@ def main():
                     raise ValueError('--source must not escape the repository')
                 if not path.is_file(): raise ValueError('adoption source missing: '+name)
                 targets.append(path)
-            errors=[f'{p.relative_to(ROOT)}: {e}' for p in targets for e in adoption_errors(p.read_text())]
-            calls=set(re.findall(r'\bSoundQ\w+(?=\s*\()', '\n'.join(mask(p.read_text()) for p in targets)))
+            errors=[f'{p.relative_to(ROOT)}: {e}' for p in targets for e in adoption_errors(p.read_text(encoding='utf-8'))]
+            calls=set(re.findall(r'\bSoundQ\w+(?=\s*\()', '\n'.join(mask(p.read_text(encoding='utf-8')) for p in targets)))
             known={c['name'] for c in old['components']}
             errors += ['unknown component: '+c for c in calls-known]
             if not calls: errors.append('no actual SoundQ component adoption')

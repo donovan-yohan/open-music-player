@@ -65,13 +65,25 @@ class VisualTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'native'):s.validate(self.captures,self.request)
     def test_native_build_provenance_requires_installed_hash(self):
         sources={'HARNESS':'0'*64}
-        with self.assertRaisesRegex(ValueError,'build'):
+        binding={'schema':1,'build_mode':'isolated-source-snapshot','sources':sources}
+        proof={'producer':'design-studio/native_capture.py collect','apk_sha256':'a'*64,
+               'installed_apk_sha256':'a'*64,'source_identity_sha256':s.digest(json.dumps(sources,sort_keys=True).encode()),
+               'build_mode':'isolated-source-snapshot','embedded_binding':binding,
+               'embedded_asset_sha256':s.digest(json.dumps(binding).encode('utf-8'))}
+        # Complete valid proof gets past the embedded-binding prerequisite.
+        s.validate_build(proof,sources)
+        for installed in ('b'*64, None):
+            with self.subTest(installed=installed):
+                with self.assertRaisesRegex(ValueError,'native build provenance'):
+                    s.validate_build({**proof,'installed_apk_sha256':installed},sources)
+        s.validate_build(proof,sources)
+
+    def test_legacy_proof_without_embedded_binding_remains_refused(self):
+        sources={'HARNESS':'0'*64}
+        with self.assertRaisesRegex(ValueError,'embedded build'):
             s.validate_build({},sources)
-        proof={'producer':'design-studio/native_capture.py collect','apk_sha256':'a'*64,'installed_apk_sha256':'b'*64,'source_identity_sha256':s.digest(json.dumps(sources,sort_keys=True).encode())}
-        with self.assertRaisesRegex(ValueError,'build'):
-            s.validate_build(proof,sources)
-        proof['installed_apk_sha256']='a'*64
-        # Legacy timestamp/request-only proof remains invalid even with byte equality.
+        proof={'producer':'design-studio/native_capture.py collect','apk_sha256':'a'*64,
+               'installed_apk_sha256':'a'*64,'source_identity_sha256':s.digest(json.dumps(sources,sort_keys=True).encode())}
         with self.assertRaisesRegex(ValueError,'embedded build'):
             s.validate_build(proof,sources)
     def test_accept_exact_hash_and_agent_not_human(self):

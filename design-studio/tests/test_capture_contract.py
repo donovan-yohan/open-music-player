@@ -174,8 +174,148 @@ class TransportTest(unittest.TestCase):
                         contract.collect_archive(archive(files), out, req, {}, harness=True)
                     self.assertEqual(before, {p.name:p.read_bytes() for p in out.iterdir()})
             (out/'stale.txt').write_text('not from this transfer')
+            with self.assertRaisesRegex(ValueError, 'recognized collection'):
+                contract.collect_archive(archive(before), out, req, {}, harness=True)
+            self.assertEqual('not from this transfer', (out/'stale.txt').read_text())
+            (out/'stale.txt').unlink()  # Remove only this test-owned sentinel.
             contract.collect_archive(archive(before), out, req, {}, harness=True)
             self.assertEqual(before, {p.name:p.read_bytes() for p in out.iterdir()})
+
+
+
+class CollectionAdmissionTest(unittest.TestCase):
+    """Real filesystem transactions, exclusively inside synthetic owned TMPDIRs."""
+    maxDiff = None
+
+    def fixture(self, root, native=False):
+        repo = root/'repo'
+        source = repo/'android/src/Widget.kt'
+        source.parent.mkdir(parents=True)
+        source.write_bytes('HARNESS ONLY source café'.encode('utf-8'))
+        host = repo/studio.NATIVE_HOST
+        host.parent.mkdir(parents=True)
+        host.write_bytes(b'HARNESS ONLY host presence; no native execution')
+        sources = studio.identities(repo)
+        env = {'sdk':1,'fingerprint':'HARNESS ONLY','model':'harness','density':2,'fontScale':1,'locale':'en-US','renderer':'harness-only','widthDp':360}
+        req = root/'inputs/request.json'
+        ids = studio.CASE_IDS if native else ['components-harness']
+        studio.save(req, {'schema':1,'sources':sources,'environment':env,'cases':ids})
+        incoming = root/'incoming'; incoming.mkdir()
+        cases = []
+        for case_id in ids:
+            image = incoming/(case_id+'.png')
+            studio.write_png(image, 720 if native else 1, 100 if native else 1,
+                             bytes([0,0,0,255])*(72000 if native else 1))
+            cases.append({'id':case_id,'file':image.name,'sha256':studio.digest(image.read_bytes())})
+        binding = {'schema':1,'build_mode':'isolated-source-snapshot','sources':sources}
+        receipt = {'schema':1,'kind':'android-compose-native' if native else 'harness-only',
+                   'sources':sources,'environment':env,'cases':cases}
+        if native: receipt['build_binding'] = binding
+        studio.save(incoming/'receipt.json', receipt)
+        files = {p.name:p.read_bytes() for p in incoming.iterdir()}
+        return repo, source, req, files, binding
+
+    def hashes(self, paths):
+        return {str(p):studio.digest(p.read_bytes()) if p.is_file() else None for p in paths}
+
+    def test_request_source_and_symlink_ancestor_overlap_preserve_all_bytes(self):
+        for target in ('request', 'source', 'symlink-request', 'symlink-source'):
+            with self.subTest(target=target), tempfile.TemporaryDirectory(prefix='studio-owned-admission-') as temp:
+                root = Path(temp).resolve()
+                repo, source, req, files, _ = self.fixture(root)
+                unrelated = root/'unrelated.bin'; unrelated.write_bytes(b'UNRELATED sentinel')
+                apk = root/'supplied.apk'; apk.write_bytes(b'APK sentinel')
+                out = req.parent if 'request' in target else repo
+                if target.startswith('symlink'):
+                    alias = root/'alias'; alias.symlink_to(out.parent, target_is_directory=True)
+                    out = alias/out.name
+                before = self.hashes([req, apk, source, unrelated])
+                error = None
+                with mock.patch.object(studio, 'ROOT', repo):
+                    try: contract.collect_archive(archive(files), out, req, {}, harness=True)
+                    except ValueError as caught: error = caught
+                self.assertEqual(before, self.hashes([req, apk, source, unrelated]))
+                self.assertIsNotNone(error, 'overlapping input must be refused')
+                self.assertIn('overlap', str(error))
+
+    def test_unowned_nonempty_directory_and_regular_file_are_not_deleted(self):
+        for regular_file in (False, True):
+            with self.subTest(regular_file=regular_file), tempfile.TemporaryDirectory(prefix='studio-owned-admission-') as temp:
+                root = Path(temp).resolve()
+                repo, source, req, files, _ = self.fixture(root)
+                out = root/'unowned'
+                if regular_file:
+                    out.write_bytes(b'UNOWNED file'); sentinel = out
+                else:
+                    out.mkdir(); sentinel = out/'unrelated.bin'; sentinel.write_bytes(b'UNOWNED contents')
+                before = self.hashes([req, source, sentinel])
+                error = None
+                with mock.patch.object(studio, 'ROOT', repo):
+                    try: contract.collect_archive(archive(files), out, req, {}, harness=True)
+                    except ValueError as caught: error = caught
+                self.assertEqual(before, self.hashes([req, source, sentinel]))
+                self.assertIsNotNone(error, 'unowned output must be refused')
+                self.assertIn('recognized collection', str(error))
+
+    def test_safe_collection_replacement_and_publish_failure_rollback(self):
+        with tempfile.TemporaryDirectory(prefix='studio-owned-admission-') as temp:
+            root = Path(temp).resolve()
+            repo, source, req, files, _ = self.fixture(root)
+            unrelated = root/'unrelated.bin'; unrelated.write_bytes(b'UNRELATED sentinel')
+            apk = root/'supplied.apk'; apk.write_bytes(b'APK sentinel')
+            out = root/'captures'
+            before = self.hashes([req, apk, source, unrelated])
+            with mock.patch.object(studio, 'ROOT', repo):
+                contract.collect_archive(archive(files), out, req, {}, harness=True)
+                # Historical sources are not a reason to delete unrelated files, nor
+                # a reason to forbid replacing an otherwise intact owned collection.
+                old = studio.load(out/'receipt.json'); old['sources'] = {'historical':'0'*64}
+                studio.save(out/'receipt.json', old)
+                previous = {p.name:p.read_bytes() for p in out.iterdir()}
+                rename = Path.rename
+                def fail_publish(path, target):
+                    if path.name == 'captures' and path.parent.name.startswith('.native-transfer-'):
+                        raise OSError('HARNESS forced publication failure')
+                    return rename(path, target)
+                with mock.patch.object(Path, 'rename', fail_publish):
+                    with self.assertRaisesRegex(OSError, 'forced publication failure'):
+                        contract.collect_archive(archive(files), out, req, {}, harness=True)
+                self.assertEqual(previous, {p.name:p.read_bytes() for p in out.iterdir()})
+                contract.collect_archive(archive(files), out, req, {}, harness=True)
+                self.assertEqual(files, {p.name:p.read_bytes() for p in out.iterdir()})
+            self.assertEqual(before, self.hashes([req, apk, source, unrelated]))
+            self.assertEqual([], list(root.glob('.native-transfer-*')))
+
+    def test_collect_caller_protects_actual_supplied_apk_through_symlink_ancestor(self):
+        import native_capture
+        for aliased in (False, True):
+            with self.subTest(aliased=aliased), tempfile.TemporaryDirectory(prefix='studio-owned-admission-') as temp:
+                root = Path(temp).resolve()
+                repo, source, req, files, binding = self.fixture(root, native=True)
+                out = root/'apk-input'; out.mkdir()
+                apk = out/'supplied.apk'
+                with zipfile.ZipFile(apk, 'w') as zipped:
+                    zipped.writestr('assets/studio-build.json', json.dumps(binding))
+                unrelated = root/'unrelated.bin'; unrelated.write_bytes(b'UNRELATED sentinel')
+                before = self.hashes([req, apk, source, unrelated])
+                if aliased:
+                    alias = root/'alias'; alias.symlink_to(root, target_is_directory=True)
+                    supplied = alias/'apk-input/supplied.apk'
+                else: supplied = apk
+                argv = ['native_capture.py','collect','--serial','HARNESS','--apk',str(supplied),
+                        '--request',str(req),'--output',str(out)]
+                def output(command, **kwargs):
+                    if 'path' in command: return 'package:/HARNESS.apk'
+                    if 'sha256sum' in command: return studio.digest(apk.read_bytes())+' /HARNESS.apk'
+                    return archive(files)
+                error = None
+                with mock.patch.object(studio, 'ROOT', repo), mock.patch.object(sys, 'argv', argv), \
+                        mock.patch.object(native_capture.subprocess, 'check_output', side_effect=output), mock.patch('builtins.print'):
+                    try: native_capture.main()
+                    except ValueError as caught: error = caught
+                self.assertEqual(before, self.hashes([req, apk, source, unrelated]))
+                self.assertIsNotNone(error, 'actual caller APK input must be protected')
+                self.assertIn('overlap', str(error))
 
 
 class BindingTest(unittest.TestCase):

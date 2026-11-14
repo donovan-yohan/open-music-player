@@ -76,7 +76,7 @@ def main():
             'com.soundq.designsystem.StudioNativeComponentTest','-e','studioRequestFile',request_file,
             a.package+'/androidx.test.runner.AndroidJUnitRunner'], capture_output=True, text=True)
         out = Path(a.output); out.mkdir(parents=True, exist_ok=True)
-        (out/'instrumentation.log').write_text(result.stdout+result.stderr)
+        (out/'instrumentation.log').write_text(result.stdout+result.stderr, encoding='utf-8')
         print(result.stdout[-5000:])
         if result.returncode or not re.search(r'OK \(1 test\)', result.stdout) or 'FAILURES!!!' in result.stdout:
             raise ValueError('native component instrumentation did not report exactly one successful test')
@@ -88,7 +88,7 @@ def main():
         raise ValueError('source/request changed during collection')
     if proof['apk_sha256'] != studio.digest(apk.read_bytes()):
         raise ValueError('local APK changed during collection')
-    capture_contract.collect_archive(data, a.output, a.request, proof)
+    capture_contract.collect_archive(data, a.output, a.request, proof, input_paths=(apk,))
     print(str(a.output)+' (validated native transport; embedded source binding; isolated-source-snapshot; visual comparison still required)')
 
 

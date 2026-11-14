@@ -184,7 +184,15 @@ The runner uses `install -r` for only the isolated test package, reads back
 installed APK bytes, streams the request into private files with hash readback
 and invokes the one capture test. Collection validates the complete archive,
 case hashes, current source identities and packaged binding before replacing
-an existing collection. The helpers still refuse if the active host is absent.
+an existing collection. The output must not overlap the request, supplied APK
+or source inputs (including symlink aliases). Replacement admits only an empty
+output or an intact collection containing exactly its receipt and hashed case
+images; unrelated files, links and directories are refused, not deleted. A
+historical source identity in an otherwise intact collection does not prevent
+replacement, and a failed publication restores the previous bytes. This ownership
+check is not approval of historical evidence. Workbench JSON, Kotlin source and
+HTML text boundaries use UTF-8 explicitly. The helpers still refuse if the active
+host is absent.
 Run the visual commands above against these actual captures. Select each case
 explicitly with an agent or human attribution, then make a second mounted run
 and collect it into another directory for strict comparison. Never silently

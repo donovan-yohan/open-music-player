@@ -1,5 +1,8 @@
 """Native artifact contracts; no ADB, builds, or import-time side effects."""
 import io
+import re
+import struct
+import zlib
 import json
 from pathlib import Path
 import zipfile
@@ -56,10 +59,58 @@ def read_archive(data):
     return files
 
 
-def collect_archive(data, output, request, proof, harness=False):
+def admit_output(output, request, input_paths=()):
+    """Only replace an empty target or an intact, exclusively owned collection.
+
+    Resolve ancestors as well as leaf aliases before comparing inputs. Historical
+    collection sources may differ; recognition is not current evidence approval.
+    """
+    target = Path(output)
+    out = target.resolve()
+    protected = [Path(request), *studio.source_files(), *map(Path, input_paths)]
+    for path in protected:
+        path = path.resolve()
+        if out == path or out in path.parents or path in out.parents:
+            raise ValueError('collection output must not overlap inputs: '+str(path))
+    refusal = 'output must be empty or a recognized collection containing only receipt case files'
+    if target.is_symlink():
+        raise ValueError(refusal)
+    if not out.exists():
+        return out
+    if not out.is_dir():
+        raise ValueError(refusal)
+    entries = list(out.iterdir())
+    if not entries:
+        return out
+    if any(p.is_symlink() or not p.is_file() for p in entries):
+        raise ValueError(refusal)
+    try:
+        receipt = studio.load(out/'receipt.json')
+        if (receipt.get('schema') != 1 or receipt.get('kind') not in ('harness-only', 'android-compose-native')
+                or not isinstance(receipt.get('sources'), dict) or not isinstance(receipt.get('environment'), dict)):
+            raise ValueError(refusal)
+        cases = receipt['cases']
+        if not isinstance(cases, list) or not cases:
+            raise ValueError(refusal)
+        names = {'receipt.json'}
+        for case in cases:
+            name = case['file']
+            if (not re.fullmatch(r'[a-z0-9-]+', case['id']) or name != case['id']+'.png'
+                    or name in names or studio.digest((out/name).read_bytes()) != case['sha256']):
+                raise ValueError(refusal)
+            studio.png(out/name)
+            names.add(name)
+        if {p.name for p in entries} != names:
+            raise ValueError(refusal)
+    except (ValueError, KeyError, TypeError, AttributeError, OSError, struct.error, zlib.error) as error:
+        raise ValueError(refusal) from error
+    return out
+
+
+def collect_archive(data, output, request, proof, harness=False, input_paths=()):
     """Validate an isolated complete transfer before replacing any prior collection."""
     files = read_archive(data)
-    out = Path(output).resolve()
+    out = admit_output(output, request, input_paths)
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.native-transfer-', dir=out.parent) as temp:
         stage = Path(temp)/'captures'
@@ -79,6 +130,7 @@ def collect_archive(data, output, request, proof, harness=False):
             raise ValueError('unexpected files outside receipt case set')
         # Same-filesystem renames: no stale files are merged into the new result.
         # On publish failure restore the original, including its provenance bytes.
+        admit_output(output, request, input_paths)
         backup = Path(temp)/'previous'
         if out.exists():
             out.rename(backup)
