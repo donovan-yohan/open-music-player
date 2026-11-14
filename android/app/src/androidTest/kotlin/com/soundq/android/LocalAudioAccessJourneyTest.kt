@@ -90,7 +90,7 @@ class LocalAudioAccessJourneyTest {
         } finally {assertEquals(1,resolver.delete(uri,null,null))}
     }
     private fun localFilesShowsAccessOff(hidden:String?=null) {
-        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.selectLibrarySource("Local")
         compose.onNodeWithText("File access is off").assertIsDisplayed()
         compose.onNodeWithText("Allow file access").assertIsDisplayed()
         hidden?.let {compose.onAllNodes(hasText(it,substring=true)).assertCountEquals(0)}
@@ -130,7 +130,7 @@ class LocalAudioAccessJourneyTest {
             assertEquals("package:$packageName",launched.get()!!.dataString)
         } finally {instrumentation.removeMonitor(monitor)}
         // Settings > Local audio offers the same single action (Local files off so only Settings shows it).
-        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.selectLibrarySource("All")
         openLocalAudioSettings()
         compose.onNode(hasText("File access") and hasText("Off")).assertIsDisplayed()
         compose.onNodeWithText("Allow file access").performScrollTo().assertIsDisplayed()
@@ -155,7 +155,7 @@ class LocalAudioAccessJourneyTest {
         val downloadStem=arg("downloadStem");val unindexedStem=arg("unindexedStem");val unindexedPath=arg("unindexedPath")
         val model=model(fileAccess=true)
         noMediaPermission()
-        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.selectLibrarySource("Local")
         for(stem in listOf(downloadStem,unindexedStem))rowAppears(model,stem)
         noPickerActions()
         compose.onNodeWithText("File access is off").assertDoesNotExist()
@@ -193,7 +193,7 @@ class LocalAudioAccessJourneyTest {
             assertEquals(1,resolver.update(uri,ContentValues().apply {put(MediaStore.MediaColumns.IS_PENDING,0)},null,null))
             compose.runOnIdle {model.graph.phoneAudio.refresh()}
             compose.waitUntil(30000){model.graph.phoneAudio.state.value.snapshot?.files?.any {it.available&&it.metadata.filename=="$stem.mp3"}==true}
-            compose.onNodeWithContentDescription("Local files").performClick()
+            compose.selectLibrarySource("Local")
             val row=hasText(stem,substring=true) and hasClickAction() and !hasSetTextAction()
             compose.onNode(hasScrollToIndexAction()).performScrollToNode(row)
             compose.onNode(row).performClick()
@@ -236,13 +236,13 @@ class LocalAudioAccessJourneyTest {
         // The store itself no longer holds picker grants or the dropped rows.
         val stored=java.io.File(model.graph.directory,"phone-listening.v1.json").readText()
         for(gone in listOf("\"FILE\"","\"FOLDER\"")+dropped.map {it.toString()})assertFalse(gone,stored.contains(gone))
-        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.selectLibrarySource("Local")
         rowAppears(model,stem)
         // The folded row keeps its resume point.
         compose.onAllNodes(hasText(stem,substring=true) and hasText("Resume at 0:${"%02d".format(resumeMs/1000)}",substring=true)).assertCountEquals(1)
         capture("upgrade-folded-row")
         // All tracks also lists unavailable phone rows: none are left from the pickers.
-        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.selectLibrarySource("All")
         compose.waitForIdle()
         compose.onAllNodes(hasText("Unavailable",substring=true)).assertCountEquals(0)
         compose.onAllNodes(hasText(stem,substring=true) and hasClickAction() and !hasSetTextAction()).assertCountEquals(1)
@@ -254,10 +254,10 @@ class LocalAudioAccessJourneyTest {
     @Test fun upgradeLocalFilesAsShown() {
         val model=model(fileAccess=true)
         compose.waitUntil(120000){model.graph.phoneAudio.state.value.let {!it.refreshing&&it.scan!=null}}
-        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.selectLibrarySource("Local")
         compose.waitForIdle();Thread.sleep(500)
         capture("upgrade-local-files")
-        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.selectLibrarySource("All")
         compose.waitForIdle();Thread.sleep(500)
         capture("upgrade-all-tracks")
         android.util.Log.i("SoundQUpgrade","rows=${model.graph.phoneAudio.state.value.snapshot?.files?.map {it.metadata.filename to it.available}} grants=${model.graph.phoneAudio.state.value.snapshot?.grants?.map {it.kind to it.state}} persisted=${instrumentation.targetContext.contentResolver.persistedUriPermissions.map {it.uri}}")

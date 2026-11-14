@@ -10,17 +10,18 @@ import com.soundq.designsystem.*
 /** Why phone audio is missing from the visible Library, from the phone owner's published state only. */
 internal enum class LocalAudioNotice { AccessOff, Finding, NoneFound }
 
-internal fun localAudioNotice(phone:PhoneAudioState,query:LibraryQuery,localFiles:Boolean,rowsEmpty:Boolean):LocalAudioNotice? {
+internal fun localAudioNotice(phone:PhoneAudioState,query:LibraryQuery,source:LibrarySource,rowsEmpty:Boolean):LocalAudioNotice? {
+    if(source==LibrarySource.Server)return null
     val snapshot=phone.snapshot?.takeIf {phone.ready} ?: return null
     // These refinements never include phone files, so phone access cannot explain their results.
     if(query.liked||query.verified!=null||query.genre.isNotBlank())return null
-    if(!localFiles&&!rowsEmpty)return null
+    if(source!=LibrarySource.Local&&!rowsEmpty)return null
     if(!phone.permission)return LocalAudioNotice.AccessOff
     if(!rowsEmpty)return null
     if(phone.refreshing)return LocalAudioNotice.Finding
     // "None found" needs a finished, whole all-files scan and no query that could have hidden files.
     val scanned=phone.scan?.let {it.indexed&&it.storage&&it.complete}==true
-    return if(scanned&&localFiles&&query.text.isBlank()&&query.collection==null&&snapshot.files.none {it.available})LocalAudioNotice.NoneFound else null
+    return if(scanned&&source==LibrarySource.Local&&query.text.isBlank()&&query.collection==null&&snapshot.files.none {it.available})LocalAudioNotice.NoneFound else null
 }
 
 /** Resume refresh is for an actual access change, not every resume: a refresh re-proves every file's bytes.

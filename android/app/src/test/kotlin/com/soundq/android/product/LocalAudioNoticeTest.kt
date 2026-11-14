@@ -18,42 +18,47 @@ class LocalAudioNoticeTest {
     private val fullScan=PhoneScanObservation(indexed=true,complete=true,storage=true)
     private val offScan=PhoneScanObservation(indexed=false,complete=true,storage=false)
 
+    @Test fun serverSourceNeverExplainsEmptinessWithPhoneAccessScanOrNoFiles() {
+        for(state in listOf(phone(false),phone(true,refreshing=true),phone(true,scan=fullScan),PhoneAudioState()))
+            for(empty in listOf(true,false))assertNull(localAudioNotice(state,LibraryQuery(),LibrarySource.Server,empty))
+    }
+
     @Test fun fileAccessOffIsExplainedForLocalFilesAndForEmptyResults() {
         val off=phone(false,listOf(grant(GrantKind.INDEXED,AccessState.REVOKED)))
-        assertEquals(LocalAudioNotice.AccessOff,localAudioNotice(off,LibraryQuery(),localFiles=true,rowsEmpty=true))
+        assertEquals(LocalAudioNotice.AccessOff,localAudioNotice(off,LibraryQuery(),source=LibrarySource.Local,rowsEmpty=true))
         // Device downloads or earlier index rows can populate Local files; file access is still off.
-        assertEquals(LocalAudioNotice.AccessOff,localAudioNotice(off,LibraryQuery(),localFiles=true,rowsEmpty=false))
-        assertEquals(LocalAudioNotice.AccessOff,localAudioNotice(phone(false,listOf(grant(GrantKind.INDEXED,AccessState.REVOKED)),listOf(file(false))),LibraryQuery(),localFiles=true,rowsEmpty=false))
+        assertEquals(LocalAudioNotice.AccessOff,localAudioNotice(off,LibraryQuery(),source=LibrarySource.Local,rowsEmpty=false))
+        assertEquals(LocalAudioNotice.AccessOff,localAudioNotice(phone(false,listOf(grant(GrantKind.INDEXED,AccessState.REVOKED)),listOf(file(false))),LibraryQuery(),source=LibrarySource.Local,rowsEmpty=false))
         // A search with no rows while phone files would have been included.
-        assertEquals(LocalAudioNotice.AccessOff,localAudioNotice(off,LibraryQuery(text="nothing"),localFiles=false,rowsEmpty=true))
+        assertEquals(LocalAudioNotice.AccessOff,localAudioNotice(off,LibraryQuery(text="nothing"),source=LibrarySource.All,rowsEmpty=true))
         // Ordinary populated All tracks stays quiet.
-        assertNull(localAudioNotice(off,LibraryQuery(),localFiles=false,rowsEmpty=false))
+        assertNull(localAudioNotice(off,LibraryQuery(),source=LibrarySource.All,rowsEmpty=false))
     }
 
     @Test fun refinementsThatNeverIncludePhoneFilesStayQuiet() {
         for(query in listOf(LibraryQuery(liked=true),LibraryQuery(verified=true),LibraryQuery(genre="House")))
-            assertNull(localAudioNotice(phone(false),query,localFiles=true,rowsEmpty=true))
+            assertNull(localAudioNotice(phone(false),query,source=LibrarySource.Local,rowsEmpty=true))
     }
 
     @Test fun grantedAccessDistinguishesScanningFromGenuinelyNoAudio() {
         val indexed=listOf(grant(GrantKind.INDEXED))
-        assertEquals(LocalAudioNotice.Finding,localAudioNotice(phone(true,indexed,refreshing=true),LibraryQuery(),localFiles=true,rowsEmpty=true))
-        assertEquals(LocalAudioNotice.NoneFound,localAudioNotice(phone(true,indexed,scan=fullScan),LibraryQuery(),localFiles=true,rowsEmpty=true))
+        assertEquals(LocalAudioNotice.Finding,localAudioNotice(phone(true,indexed,refreshing=true),LibraryQuery(),source=LibrarySource.Local,rowsEmpty=true))
+        assertEquals(LocalAudioNotice.NoneFound,localAudioNotice(phone(true,indexed,scan=fullScan),LibraryQuery(),source=LibrarySource.Local,rowsEmpty=true))
         // Unavailable rows are not audio that can be listed.
-        assertEquals(LocalAudioNotice.NoneFound,localAudioNotice(phone(true,indexed,listOf(file(false)),scan=fullScan),LibraryQuery(),localFiles=true,rowsEmpty=true))
+        assertEquals(LocalAudioNotice.NoneFound,localAudioNotice(phone(true,indexed,listOf(file(false)),scan=fullScan),LibraryQuery(),source=LibrarySource.Local,rowsEmpty=true))
         // Files exist but the search excluded them: the generic no-match state owns this.
-        assertNull(localAudioNotice(phone(true,indexed,listOf(file()),scan=fullScan),LibraryQuery(text="zzz"),localFiles=true,rowsEmpty=true))
+        assertNull(localAudioNotice(phone(true,indexed,listOf(file()),scan=fullScan),LibraryQuery(text="zzz"),source=LibrarySource.Local,rowsEmpty=true))
         // Never claim none were found before a whole all-files scan finished.
-        assertNull(localAudioNotice(phone(true,indexed),LibraryQuery(),localFiles=true,rowsEmpty=true))
-        assertNull(localAudioNotice(phone(true,indexed,scan=PhoneScanObservation(true,true,storage=false)),LibraryQuery(),localFiles=true,rowsEmpty=true))
-        assertNull(localAudioNotice(phone(true,indexed,scan=PhoneScanObservation(true,false,storage=true)),LibraryQuery(),localFiles=true,rowsEmpty=true))
+        assertNull(localAudioNotice(phone(true,indexed),LibraryQuery(),source=LibrarySource.Local,rowsEmpty=true))
+        assertNull(localAudioNotice(phone(true,indexed,scan=PhoneScanObservation(true,true,storage=false)),LibraryQuery(),source=LibrarySource.Local,rowsEmpty=true))
+        assertNull(localAudioNotice(phone(true,indexed,scan=PhoneScanObservation(true,false,storage=true)),LibraryQuery(),source=LibrarySource.Local,rowsEmpty=true))
         // Rows visible: nothing to explain.
-        assertNull(localAudioNotice(phone(true,indexed,listOf(file()),refreshing=true),LibraryQuery(),localFiles=true,rowsEmpty=false))
+        assertNull(localAudioNotice(phone(true,indexed,listOf(file()),refreshing=true),LibraryQuery(),source=LibrarySource.Local,rowsEmpty=false))
     }
 
     @Test fun unavailableOwnerStateMakesNoClaim() {
-        assertNull(localAudioNotice(PhoneAudioState(),LibraryQuery(),localFiles=true,rowsEmpty=true))
-        assertNull(localAudioNotice(phone(false,ready=false),LibraryQuery(),localFiles=true,rowsEmpty=true))
+        assertNull(localAudioNotice(PhoneAudioState(),LibraryQuery(),source=LibrarySource.Local,rowsEmpty=true))
+        assertNull(localAudioNotice(phone(false,ready=false),LibraryQuery(),source=LibrarySource.Local,rowsEmpty=true))
     }
 
     @Test fun resumeRefreshOnlyFollowsAnActualAccessChange() {
