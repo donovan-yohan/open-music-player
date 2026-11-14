@@ -39,7 +39,7 @@ import com.soundq.android.product.preferences.*
     val onlineRestore by model.onlineRestore.collectAsStateWithLifecycle()
     val library by model.library.collectAsStateWithLifecycle()
     val phone by model.graph.phoneAudio.state.collectAsStateWithLifecycle()
-    var localFiles by rememberSaveable {mutableStateOf(false)}
+    var librarySource by rememberSaveable {mutableStateOf(LibrarySource.All)}
     var recentOrder by rememberSaveable {mutableStateOf(false)}
     var localQuery by remember {mutableStateOf(LibraryQuery())}
     var selectedPhone by remember {mutableStateOf<com.soundq.android.data.deviceaudio.DeviceAudio?>(null)}
@@ -54,7 +54,7 @@ import com.soundq.android.product.preferences.*
     LaunchedEffect(revealImported,library.rows,library.loading,library.error) {
         revealImported?.let {id ->
             val index=library.rows.indexOfFirst {it.id==id}
-            if(index>=0){libraryScroll.scrollToItem(libraryRowScrollIndex(index,library.loading,library.error!=null,localAudioNotice(phone,library.query,localFiles,rowsEmpty=false)!=null));revealImported=null}
+            if(index>=0){libraryScroll.scrollToItem(libraryRowScrollIndex(index,library.loading,library.error!=null,localAudioNotice(phone,library.query,librarySource,rowsEmpty=false)!=null));revealImported=null}
         }
     }
     val accountVersion=model.graph.session.version()
@@ -362,9 +362,9 @@ import com.soundq.android.product.preferences.*
                         val account=(auth as? AuthState.SignedIn)?.accountId ?: (auth as? AuthState.DeviceOnly)?.accountId
                         val projectionOwner=model.graph.library.projectionScope(library)
                         val downloadTracks=downloads.rows.filter {row->paginationScope?.let {model.graph.downloads.ownsComplete(it,row)}==true}.map {it.track}
-                        val mixedNeeded=phone.snapshot?.files?.isNotEmpty()==true||downloadTracks.isNotEmpty()||localFiles||recentOrder||auth !is AuthState.SignedIn
+                        val mixedNeeded=phone.snapshot?.files?.isNotEmpty()==true||downloadTracks.isNotEmpty()||librarySource!=LibrarySource.All||recentOrder||auth !is AuthState.SignedIn
                         LaunchedEffect(accountVersion,library,mixedNeeded) {if(mixedNeeded&&auth is AuthState.SignedIn)kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){model.graph.library.completeProjection(library)}}
-                        val mixedRows=remember(library,phone.snapshot,downloads,account,projectionOwner,accountVersion,localFiles,recentOrder,mixedQuery) {unifiedLibraryRows(model.graph.endpoint.identity,account,if(auth is AuthState.SignedIn&&projectionOwner!=null)library.rows else emptyList(),downloadTracks,phone.snapshot,mixedQuery,localFiles,recentOrder)}
+                        val mixedRows=remember(library,phone.snapshot,downloads,account,projectionOwner,accountVersion,librarySource,recentOrder,mixedQuery) {unifiedLibraryRows(model.graph.endpoint.identity,account,if(auth is AuthState.SignedIn&&projectionOwner!=null)library.rows else emptyList(),downloadTracks,phone.snapshot,mixedQuery,librarySource,recentOrder)}
                         val localAudioVisit=remember {java.util.concurrent.atomic.AtomicBoolean(true)}
                         DisposableEffect(localAudioVisit){onDispose {localAudioVisit.set(false)}}
                         // Same access action as Settings > Local audio.
@@ -376,17 +376,15 @@ import com.soundq.android.product.preferences.*
                             if(localAudioVisit.get()&&model.graph.phoneAudio.current(version)&&localAudioAccessChanged(model.graph.phoneAudio.state.value,model.graph.phoneAudio.platform.storageAllowed()))
                                 model.graph.phoneAudio.refresh {model.graph.phoneAudio.current(version)}
                         }
-                        val localNotice=localAudioNotice(phone,mixedQuery,localFiles,mixedRows.isEmpty())
+                        val localNotice=localAudioNotice(phone,mixedQuery,librarySource,mixedRows.isEmpty())
+                        val refined=mixedQuery!=LibraryQuery()||librarySource!=LibrarySource.All||recentOrder
+                        fun clearRefinement(){if(auth is AuthState.SignedIn)model.refine(LibraryQuery())else localQuery=LibraryQuery();librarySource=LibrarySource.All;recentOrder=false}
                         LibraryHeader({openSettings()},{navigate("Catalog")})
                         LibrarySearch(mixedQuery.text) {if(auth is AuthState.SignedIn)model.refine(library.query.copy(text=it))else localQuery=localQuery.copy(text=it)}
                         LibraryFilters(mixedQuery.liked,if(mixedNeeded)mixedRows.size else library.total,{if(auth is AuthState.SignedIn)model.refine(library.query.copy(liked=it))else localQuery=localQuery.copy(liked=it)},{panel="Refine"})
-                        Row(Modifier.fillMaxWidth().heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically) {
-                            Checkbox(localFiles,{localFiles=it},Modifier.semantics {contentDescription="Local files"});Text("Local files",Modifier.weight(1f),style=SoundQ.typography.caption)
-                            TextButton({panel="Refine"}) {Text(if(recentOrder)"Recently played ✓"else "Recently played",style=SoundQ.typography.caption)}
-                        }
-                        SoundQDivider()
+
                         if(mixedNeeded&&auth is AuthState.SignedIn&&!library.completeProjection)Text(if(library.projectionError||library.error!=null)"Partial server coverage · ordering shown results only" else "Loading complete server coverage · ordering shown results only",Modifier.padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.caption,color=SoundQ.colors.muted)
-                        phone.message?.takeIf {phone.snapshot==null}?.let {Text(it,Modifier.padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.caption)}
+                        phone.message?.takeIf {librarySource!=LibrarySource.Server&&phone.snapshot==null}?.let {Text(it,Modifier.padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.caption)}
                         val collectionCurrent={collectionVisit.current()&&panel==null&&picker==null&&destination=="Library"&&rowLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)&&paginationScope?.let(model.graph.session::remoteCurrent)==true}
                         LibraryCollectionControls(library,{model.refine(library.query.copy(collection=null))},
                             {model.playLibraryCollection(library,current=collectionCurrent)},
@@ -397,8 +395,11 @@ import com.soundq.android.product.preferences.*
                             onLoadMore={expected,current->model.loadMore(expected,current)})
                         LazyColumn(Modifier.weight(1f).fillMaxWidth().semantics {contentDescription=library.total?.let {"Library, $it tracks"} ?: "Library tracks"},state=libraryScroll) {
                         if(library.loading) item {LibraryStateCell {SoundQFeedback(if(library.rows.isEmpty())"Loading library" else "Loading more tracks",FeedbackKind.Loading)}}
-                        if(!library.loading&&library.error==null&&mixedRows.isEmpty()&&localNotice!=LocalAudioNotice.NoneFound&&(localNotice==null||mixedQuery!=LibraryQuery()))item {LibraryStateCell {SoundQFeedback(if(mixedQuery==LibraryQuery()&&!localFiles)"No tracks yet" else "No matching tracks",FeedbackKind.Empty,action="Clear refinement",onAction={if(auth is AuthState.SignedIn)model.refine(LibraryQuery())else localQuery=LibraryQuery();localFiles=false;recentOrder=false})}}
-                        localNotice?.let {notice->item(key="local-audio-notice") {LibraryStateCell {Column {LocalAudioNoticeContent(notice,allowFileAccess)}}}}
+                        if(!library.loading&&library.error==null&&mixedRows.isEmpty()&&localNotice!=LocalAudioNotice.NoneFound&&(localNotice==null||mixedQuery!=LibraryQuery()))item {LibraryStateCell {SoundQFeedback(if(!refined)"No tracks yet" else "No matching tracks",FeedbackKind.Empty,action="Clear refinement",onAction=::clearRefinement)}}
+                        localNotice?.let {notice->item(key="local-audio-notice") {LibraryStateCell {Column {
+                            LocalAudioNoticeContent(notice,allowFileAccess)
+                            if(mixedRows.isEmpty()&&refined&&(notice==LocalAudioNotice.NoneFound||mixedQuery==LibraryQuery()))SoundQButton("Clear refinement",::clearRefinement,variant=SoundQButtonVariant.Quiet)
+                        }}}}
                         itemsIndexed(if(mixedNeeded)mixedRows else mixedRows.filter {it.server!=null},key={_,row -> row.stable}) {_,mixedRow ->
                             val phoneRow=mixedRow.phone
                             if(phoneRow!=null) {
@@ -451,7 +452,11 @@ import com.soundq.android.product.preferences.*
                         },enabled=!imports.pending)
                         SoundQButton("Discard shared link",{model.graph.incomingShares.dismiss(share);panel=null},variant=SoundQButtonVariant.Quiet)
                     }}
-                    "Refine"->RefineSheet(if(auth is AuthState.SignedIn)library.query else localQuery,{panel=null},recent=recentOrder,onRecentApply={recentOrder=it}) {if(auth is AuthState.SignedIn)model.refine(it)else localQuery=it;panel=null}
+                    "Refine"->RefineSheet(if(auth is AuthState.SignedIn)library.query else localQuery,{panel=null},source=librarySource,recent=recentOrder) {query,source,recent->
+                        librarySource=source;recentOrder=recent
+                        if(auth is AuthState.SignedIn)model.refine(query)else localQuery=query
+                        panel=null
+                    }
                     "PhoneTrack"->selectedPhone?.let {row->PhoneTrackSheet(model,row,{panel=null},{openSettings(listOf(SettingsRoute.LocalAudio))})}
                     "Devices"->com.soundq.android.product.connect.ConnectedDevicesPanel(model,{panel=null},{panel="Jam"})
                     "Jam"->com.soundq.android.product.jam.JamHostPanel(model,{panel=null})
@@ -719,10 +724,13 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
         Text(model.graph.endpoint.identity,style=SoundQ.typography.caption,color=SoundQ.colors.muted)
     }
 }
-@Composable private fun RefineSheet(query:LibraryQuery,onDismiss:()->Unit,recent:Boolean=false,onRecentApply:(Boolean)->Unit={},onApply:(LibraryQuery)->Unit) {
+@Composable private fun RefineSheet(query:LibraryQuery,onDismiss:()->Unit,source:LibrarySource=LibrarySource.All,recent:Boolean=false,onApply:(LibraryQuery,LibrarySource,Boolean)->Unit) {
     var draft by remember {mutableStateOf(query)}
     var draftRecent by remember {mutableStateOf(recent)}
+    var draftSource by remember {mutableStateOf(source)}
     SoundQSheet("Refine library",onDismiss) {
+        Text("Source",style=SoundQ.typography.title)
+        SoundQTabs(LibrarySource.entries.map {it.name},LibrarySource.entries.indexOf(draftSource),{draftSource=LibrarySource.entries[it]})
         Text("Sort",style=SoundQ.typography.title)
         SoundQTabs(LibrarySort.entries.map {it.name},LibrarySort.entries.indexOf(draft.sort),{draftRecent=false;draft=draft.copy(sort=LibrarySort.entries[it])})
         Row(Modifier.fillMaxWidth().heightIn(min=48.dp).selectable(selected=draftRecent,role=Role.RadioButton,onClick={draftRecent=true}),verticalAlignment=Alignment.CenterVertically) {
@@ -739,8 +747,8 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
             val album=value.takeUnless {it.isEmpty()};val artist=draft.collection?.artist
             draft=draft.copy(collection=if(artist==null&&album==null)null else LibraryCollection(artist,album))
         },"Album (exact match)")
-        SoundQButton("Apply refinement",{onRecentApply(draftRecent);onApply(draft)})
-        SoundQButton("Reset refinement",{draft=LibraryQuery();draftRecent=false},variant=SoundQButtonVariant.Secondary)
+        SoundQButton("Apply refinement",{onApply(draft,draftSource,draftRecent)})
+        SoundQButton("Reset refinement",{draft=LibraryQuery();draftRecent=false;draftSource=LibrarySource.All},variant=SoundQButtonVariant.Secondary)
         SoundQButton("Cancel",onDismiss,variant=SoundQButtonVariant.Quiet)
     }
 }

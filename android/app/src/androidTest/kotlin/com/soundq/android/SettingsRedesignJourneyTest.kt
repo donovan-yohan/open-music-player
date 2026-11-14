@@ -46,9 +46,9 @@ class SettingsRedesignJourneyTest {
         gear();heading("Settings").assertIsDisplayed();systemBack()
         heading("Settings").assertDoesNotExist()
         compose.onNodeWithContentDescription("Library search query").assertExists()
-        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.selectLibrarySource("Local")
         compose.onNodeWithText("Offline Library",substring=true).assertDoesNotExist()
-        compose.onNodeWithContentDescription("Local files").performClick()
+        compose.selectLibrarySource("All")
     }
 
     @Test fun rowsTitlesAndSectionLabelsShareTheTwentyDpGutter() {
@@ -259,9 +259,9 @@ class SettingsRedesignJourneyTest {
         compose.runOnIdle {graph.appearancePreferences.capture()?.let {graph.appearancePreferences.setChoice(it,if(dark)Appearance.Dark else Appearance.Light){true}}}
         try {
             captureListeningStage("library")
-            compose.onNodeWithContentDescription("Local files").performClick();compose.waitForIdle();Thread.sleep(500)
+            compose.selectLibrarySource("Local");compose.waitForIdle();Thread.sleep(500)
             captureListeningStage("library-local-files")
-            compose.onNodeWithContentDescription("Local files").performClick();compose.waitForIdle()
+            compose.selectLibrarySource("All");compose.waitForIdle()
             gear();compose.waitForIdle();Thread.sleep(500);captureListeningStage("settings-top")
             row("About").performScrollTo();compose.waitForIdle();Thread.sleep(500);captureListeningStage("settings-bottom")
             compose.onNode(hasScrollAction()).performTouchInput {swipeDown()};compose.waitForIdle()
