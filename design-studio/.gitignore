@@ -1,0 +1,11 @@
+# Source-only allowlist. Generated or captured evidence stays private.
+*
+!.gitignore
+!README.md
+!*.py
+!tests/
+tests/*
+!tests/test_*.py
+!pending/
+pending/*
+!pending/StudioNativeComponentTest.kt
