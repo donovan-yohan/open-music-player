@@ -79,6 +79,17 @@ run_extension() {
 }
 
 case "$TARGET" in
+  design-studio)
+    (
+      export PYTHONDONTWRITEBYTECODE=1
+      work="$(mktemp -d "${TMPDIR:-/tmp}/soundq-studio-lint.XXXXXXXX")"
+      trap 'rm -rf "$work"' EXIT
+      cd "$ROOT"
+      python3 -B -c 'import ast,pathlib; files=sorted(pathlib.Path("design-studio").glob("*.py"))+sorted(pathlib.Path("design-studio/tests").glob("test_*.py")); [ast.parse(p.read_text(),filename=str(p)) for p in files]; print("studio syntax ok")'
+      python3 -B design-studio/studio.py catalog generate --output "$work/catalog"
+      python3 -B design-studio/studio.py catalog check --output "$work/catalog"
+    )
+    ;;
   android-product)
     python3 "$ROOT/scripts/android-product" lint "${@:2}"
     ;;
@@ -116,7 +127,7 @@ case "$TARGET" in
     run_extension
     ;;
   *)
-    echo "usage: scripts/lint [android-product|native|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
+    echo "usage: scripts/lint [design-studio|android-product|native|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
     exit 2
     ;;
 esac

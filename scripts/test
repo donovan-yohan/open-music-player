@@ -100,6 +100,17 @@ run_extension() {
 }
 
 case "$TARGET" in
+  design-studio)
+    (
+      export PYTHONDONTWRITEBYTECODE=1
+      work="$(mktemp -d "${TMPDIR:-/tmp}/soundq-studio-test.XXXXXXXX")"
+      trap 'rm -rf "$work"' EXIT
+      cd "$ROOT"
+      python3 -B -m unittest discover -s design-studio/tests -v
+      python3 -B design-studio/harness.py --output "$work/harness"
+      "$ROOT/scripts/lint" design-studio
+    )
+    ;;
   android-product)
     python3 "$ROOT/scripts/test-android-product.py"
     python3 "$ROOT/scripts/android-product" test "${@:2}"
@@ -142,7 +153,7 @@ case "$TARGET" in
     run_extension
     ;;
   *)
-    echo "usage: scripts/test [android-product|native|private-vm|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
+    echo "usage: scripts/test [design-studio|android-product|native|private-vm|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
     exit 2
     ;;
 esac
