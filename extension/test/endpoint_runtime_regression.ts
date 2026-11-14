@@ -53,6 +53,33 @@ async function main(): Promise<void> {
   equal(await getAuthTokens(), null);
   delete store.auth_endpoint;
   equal(await getAuthTokens(), null); // Custom bundles cannot adopt unbound legacy credentials.
+  // A signed-out add checks only the configured health URL, then asks for sign-in.
+  // Advance past the cached probe without changing the configured destinations.
+  const originalNow = Date.now;
+  const nextProbeTime = Date.now() + 40_000;
+  Date.now = () => nextProbeTime;
+  calls.length = 0;
+  globalThis.fetch = async (url, options) => {
+    calls.push(String(url));
+    equal(options?.method, 'GET');
+    equal(new Headers(options?.headers).get('Authorization'), null);
+    return Response.json({ status: 'ok' });
+  };
+  try {
+    const request = {
+      type: 'ADD_TO_LIBRARY', url: 'https://www.youtube.com/watch?v=test',
+      sourceType: 'youtube', metadata: { title: 'Synthetic video' },
+    };
+    const result = await new Promise<{ success: boolean; error?: string }>(resolve => {
+      listener(request, {}, value => resolve(value as { success: boolean; error?: string }));
+    });
+    equal(calls.length, 1);
+    equal(calls[0], fixture.healthUrl);
+    equal(result.success, false);
+    equal(result.error, 'not_logged_in');
+  } finally {
+    Date.now = originalNow;
+  }
   const elements = new Map<string, { addEventListener: (event: string, fn: () => void) => void; classList: { add(): void; remove(): void } }>();
   const events = new Map<string, () => void>();
   let initialize: () => Promise<void>;

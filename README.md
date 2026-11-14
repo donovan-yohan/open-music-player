@@ -183,7 +183,24 @@ flutter run -d chrome   # Web
 # Android uses android/ and scripts/android-product instead of Flutter.
 ```
 
-Configure the API endpoint in the client settings to point to your backend (default: `http://localhost:8080`).
+Flutter web and desktop clients select their API endpoint at build time. The local
+default is `http://localhost:8080/api/v1`; Settings displays the compiled value and
+does not change it. To select another backend, supply its complete API base,
+including `/api/v1`, when running or building:
+
+```bash
+flutter run -d chrome --dart-define=OMP_API_BASE_URL=https://api.example.test/api/v1
+```
+
+Rebuild the client after changing the destination. For a custom extension build,
+set all three independent inputs, `OMP_API_BASE_URL`, `OMP_HEALTH_URL` and
+`OMP_WEB_LOGIN_URL`, before `npm run build`, then reload the extension and review
+its generated host permissions. Do not derive health or login paths from the API
+base. Optional `OMP_WS_URL` configures a full WebSocket URL but does not enable
+the currently unconnected progress client.
+
+See [endpoint configuration and migration boundaries](docs/PRIVATE_VM_MIGRATION.md#configuration-contracts)
+for validation, session compatibility and private deployment prerequisites.
 
 ## API Endpoints
 
