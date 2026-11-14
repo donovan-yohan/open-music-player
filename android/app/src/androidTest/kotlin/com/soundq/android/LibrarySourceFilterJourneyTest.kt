@@ -21,7 +21,7 @@ import java.util.UUID
 internal fun ComposeTestRule.selectLibrarySource(source:String) {
     onNodeWithContentDescription("Refine library").performClick()
     onNodeWithText("Source").performScrollTo().assertIsDisplayed()
-    onNodeWithText(source).performScrollTo().performClick()
+    onNode(hasText(source) and hasAnyAncestor(isDialog())).performScrollTo().performClick()
     onNodeWithText("Apply refinement").performScrollTo().performClick()
     waitForIdle()
 }
@@ -38,7 +38,7 @@ class LibrarySourceFilterJourneyTest {
     private fun filters(){compose.onNodeWithContentDescription("Refine library").performClick();compose.onNodeWithText("Source").performScrollTo().assertIsDisplayed()}
     private fun back(){instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);compose.waitForIdle()}
     private fun noPhoneNotice(){for(text in listOf("File access is off","Allow file access","Finding audio on this phone","No audio found on this phone"))compose.onNodeWithText(text).assertDoesNotExist()}
-    private fun sourceSelected(source:String){filters();compose.onNodeWithText(source).assertIsSelected();click("Cancel")}
+    private fun sourceSelected(source:String){filters();compose.onNode(hasText(source) and hasAnyAncestor(isDialog())).assertIsSelected();click("Cancel")}
 
     @Test fun signedOutServerEmptyIsClearableAndCancelBackResetKeepAppliedSource() {
         assertFalse("Runner must deny all files access for this method",Environment.isExternalStorageManager())

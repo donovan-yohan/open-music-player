@@ -7,10 +7,13 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.soundq.android.data.MutationOutcome
 import com.soundq.android.data.playlists.*
+import com.soundq.android.product.MainPageHeader
 import com.soundq.designsystem.*
 
 // Immutable business bindings for lifecycle checks; framework OnClick belongs to its mutable node.
@@ -29,7 +32,8 @@ internal val PlaylistReloadBinding=SemanticsPropertyKey<()->Unit>("PlaylistReloa
     val name = form.name
     val description = form.description
     val creating = form.open
-    var search by remember(scope, state.query.text) { mutableStateOf(state.query.text) }
+    var search by remember(scope, state.query.text) { mutableStateOf(TextFieldValue(state.query.text)) }
+    val focus = LocalFocusManager.current
     var sorting by remember(scope) { mutableStateOf(false) }
     if (sorting) SoundQSheet("Sort playlists", { sorting = false }) {
         Column {
@@ -66,30 +70,28 @@ internal val PlaylistReloadBinding=SemanticsPropertyKey<()->Unit>("PlaylistReloa
             else SoundQButton("Close", { form = form.copy(open = false) }, variant = SoundQButtonVariant.Quiet)
         }
     }
-    LazyColumn(Modifier.fillMaxSize()) {
-        item {
-            Column {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    Text("Playlists", style = SoundQ.typography.heading,
-                        modifier = Modifier.weight(1f).padding(horizontal = SoundQ.spacing.gutter).semantics { heading() })
+    Column(Modifier.fillMaxSize()) {
+        MainPageHeader("Playlists") {
                     SoundQIconButton(SoundQIcon.Retry, "Reload playlists", onReload,
-                        modifier=Modifier.size(48.dp).semantics {this[PlaylistReloadBinding]=onReload}, enabled = !pending && !state.loading, outlined = false)
+                        modifier=Modifier.heightIn(min=56.dp).semantics {this[PlaylistReloadBinding]=onReload}, enabled = !pending && !state.loading, outlined = false)
                     SoundQIconButton(SoundQIcon.Plus, "Create playlist", { form = form.copy(open = true) },
-                        modifier = Modifier.size(48.dp), enabled = capture != null, outlined = false)
-                }
-                SoundQDivider()
-            }
+                        modifier = Modifier.heightIn(min=56.dp), enabled = capture != null, outlined = false)
         }
-        item {
-            Row(Modifier.fillMaxWidth().padding(horizontal = SoundQ.spacing.gutter, vertical = SoundQ.spacing.small),
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                SoundQTextField(search, { search = it }, "Search playlists", Modifier.weight(1f), enabled = !pending)
-                SoundQIconButton(SoundQIcon.Search, "Search playlists", { onRefine(state.query.copy(text = search)) },
-                    Modifier.size(48.dp), enabled = capture != null && !pending, outlined = false)
+        SoundQSearchStrip(search, { search = it }, "Search playlists", "Playlist search query", "Search playlists", "Clear playlist search",
+            onSubmit = {
+                if (capture != null && !pending) {
+                    val text = search.text
+                    focus.clearFocus()
+                    onRefine(state.query.copy(text = text))
+                }
+            },
+            onClear = { search = TextFieldValue(""); onRefine(state.query.copy(text = "")) },
+            enabled = !pending, submitEnabled = capture != null && !pending,
+            clearEnabled = capture != null && !pending && search.text.isNotEmpty(), trailing = {
                 SoundQIconButton(SoundQIcon.Sort, "Sort playlists", { sorting = true }, Modifier.size(48.dp),
                     enabled = capture != null && !pending, outlined = false)
-            }
-        }
+            })
+        LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
         item { Column(Modifier.padding(horizontal = SoundQ.spacing.gutter)) { management() } }
         if (!creating && state.mutation != null) item {
             Column(Modifier.padding(SoundQ.spacing.gutter)) { PlaylistCreateFeedback(state, onReload) }
@@ -103,6 +105,7 @@ internal val PlaylistReloadBinding=SemanticsPropertyKey<()->Unit>("PlaylistReloa
             // No authorized collection-image loader is supplied here: use the shared square fallback.
             SoundQMediaRow(playlist.name, "${playlist.trackCount} tracks · ${if (playlist.draft.isPublic) "Public" else "Private"}", false,
                 open, open, enabled = capture != null && !state.loading && state.error == null)
+        }
         }
     }
 }

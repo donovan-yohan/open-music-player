@@ -145,8 +145,8 @@ class FirstEightLaterPageJourneyTest {
         try {
             val model=signIn();val before=model.playback.value
             compose.onAllNodesWithText("Discover").filterToOne(hasClickAction()).performClick()
-            compose.onNodeWithContentDescription("Search sources").performTextInput("Captured source")
-            compose.onNodeWithContentDescription("Search",useUnmergedTree=true).performClick()
+            compose.onNodeWithContentDescription("Music search query").performTextInput("Captured source")
+            compose.onNodeWithContentDescription("Search music",useUnmergedTree=true).performClick()
             compose.waitUntil(10000){compose.onAllNodesWithText("Captured source 21").fetchSemanticsNodes().isNotEmpty()}
             compose.onNodeWithText("Captured source 21").performScrollTo().performClick()
             click("Import source")

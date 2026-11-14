@@ -43,8 +43,8 @@ class DiscoveryRootAdmissionTest {
             compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
             compose.waitUntil(10000){graph.library.state.value.rows.isNotEmpty()}
             compose.onAllNodesWithText("Discover").filterToOne(hasClickAction()).performClick()
-            compose.onNodeWithContentDescription("Search sources").performTextInput("admission")
-            compose.onNodeWithContentDescription("Search",useUnmergedTree=true).performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Music search query").performTextInput("admission")
+            compose.onNodeWithContentDescription("Search music",useUnmergedTree=true).performClick()
             compose.waitUntil(10000){graph.discovery.state.value.results?.rows?.size==1}
             val rootNode=if(openImports)compose.onNodeWithContentDescription("Imports",useUnmergedTree=true) else compose.onAllNodesWithText("Library").filterToOne(hasClickAction())
             val action=rootNode.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!

@@ -40,7 +40,7 @@ class HistoryRefinementJourneyTest {
     @Test fun ordinaryHistorySearchAndSkippedTabReachEventsAfterFirstPageWithoutAutoplay() {
         val graph=(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as FixtureApplication).graph
         compose.signInThroughSettings("history-parity@example.test","fixture-password"){graph.session.state.value is AuthState.SignedIn}
-        compose.waitUntil(10000){compose.onAllNodes(hasText("Search library") and hasSetTextAction()).fetchSemanticsNodes().isNotEmpty()}
+        compose.waitUntil(10000){compose.onAllNodes(hasContentDescription("Library search query") and hasSetTextAction()).fetchSemanticsNodes().isNotEmpty()}
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
         compose.onAllNodesWithText("Home").filterToOne(hasClickAction()).performClick()
         compose.onNodeWithContentDescription("Settings").assertExists()
@@ -62,7 +62,7 @@ class HistoryRefinementJourneyTest {
         compose.waitUntil(15000){model.playback.value.isPlaying&&model.playback.value.queue.map {it.trackId}==listOf(1L)}
         compose.onNodeWithContentDescription("Pause").performClick()
         compose.onAllNodesWithText("Library").filterToOne(hasClickAction()).performClick()
-        compose.onNode(hasText("Search library") and hasSetTextAction()).assertExists()
+        compose.onNode(hasContentDescription("Library search query") and hasSetTextAction()).assertExists()
         assertFalse(model.playback.value.isPlaying)
     }
 }

@@ -1,12 +1,10 @@
 package com.soundq.android.product.home
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
+
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.ImeAction
+
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.lazy.*
 import androidx.compose.material3.Text
@@ -15,12 +13,13 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.contentDescription
+
 import androidx.compose.ui.semantics.semantics
 
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.soundq.android.data.home.*
 import com.soundq.android.product.ProductViewModel
+import com.soundq.android.product.MainPageHeader
 import com.soundq.designsystem.*
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -40,13 +39,17 @@ import java.time.format.DateTimeFormatter
     val acceptedHistory=model.home.owns(route,HomeSection.History)
     val historyState=if(acceptedHistory)history else HistoryReadState(loading=true)
     Column(Modifier.fillMaxSize().closeRowRevealOutside(revealOwner)) {
-        Row(Modifier.fillMaxWidth().heightIn(min=56.dp),verticalAlignment=Alignment.CenterVertically) {
-            Text(if(route.destination==HomeDestination.History) "Listening history" else "Home",Modifier.weight(1f).padding(horizontal=SoundQ.spacing.gutter).semantics {heading()},style=SoundQ.typography.title)
-            if(route.destination==HomeDestination.History)SoundQIconButton(SoundQIcon.Retry,"Refresh history",{model.loadHome(route,HomeSection.History,historyState)},enabled=acceptedHistory&&!historyState.loading,outlined=false)
-            else onHistory?.let {SoundQIconButton(SoundQIcon.List,"Listening history",it,outlined=false)}
-            SoundQIconButton(SoundQIcon.Settings,"Settings",onAccount,outlined=false)
+        if(route.destination==HomeDestination.History) {
+            Row(Modifier.fillMaxWidth().heightIn(min=56.dp),verticalAlignment=Alignment.CenterVertically) {
+                Text("Listening history",Modifier.weight(1f).padding(horizontal=SoundQ.spacing.gutter).semantics {heading()},style=SoundQ.typography.title)
+                SoundQIconButton(SoundQIcon.Retry,"Refresh history",{model.loadHome(route,HomeSection.History,historyState)},enabled=acceptedHistory&&!historyState.loading,outlined=false)
+                SoundQIconButton(SoundQIcon.Settings,"Settings",onAccount,outlined=false)
+            }
+            SoundQDivider()
+        } else MainPageHeader("Home") {
+            onHistory?.let {SoundQIconButton(SoundQIcon.List,"Listening history",it,Modifier.heightIn(min=56.dp),outlined=false)}
+            SoundQIconButton(SoundQIcon.Settings,"Settings",onAccount,Modifier.heightIn(min=56.dp),outlined=false)
         }
-        SoundQDivider()
         if(route.destination==HomeDestination.History) {
             HistorySearch(route,historyState.query.text,enabled=acceptedHistory) {text->model.loadHome(route,HomeSection.History,historyState,query=historyState.query.copy(text=text))}
             SoundQTabs(listOf("All","Listened","Skipped"),historyState.query.kind.ordinal) {index->
@@ -82,19 +85,8 @@ import java.time.format.DateTimeFormatter
 
 @Composable private fun HistorySearch(route:HomeRoute,committed:String,enabled:Boolean,onSearch:(String)->Unit) {
     var draft by remember(route){mutableStateOf(TextFieldValue(committed))}
-    val colors=SoundQ.colors
-    Row(Modifier.fillMaxWidth().heightIn(min=64.dp),verticalAlignment=Alignment.CenterVertically) {
-        SoundQIconButton(SoundQIcon.Search,"Search history",{val text=draft.text;onSearch(text)},enabled=enabled,outlined=false)
-        BasicTextField(draft,{draft=it},Modifier.weight(1f).heightIn(min=64.dp).semantics {contentDescription="History title or artist"},
-            singleLine=true,textStyle=SoundQ.typography.body.copy(color=colors.text),cursorBrush=androidx.compose.ui.graphics.SolidColor(colors.focus),
-            keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search),keyboardActions=KeyboardActions(onSearch={if(enabled){val text=draft.text;onSearch(text)}}),
-            decorationBox={editor->Column(Modifier.fillMaxWidth().padding(horizontal=SoundQ.spacing.small,vertical=SoundQ.spacing.small),verticalArrangement=Arrangement.Center) {
-                Text("Title or artist",style=SoundQ.typography.caption,color=colors.muted)
-                editor()
-            }})
-        SoundQIconButton(SoundQIcon.Close,"Clear history search",{draft=TextFieldValue("");onSearch("")},enabled=enabled&&draft.text.isNotEmpty(),outlined=false)
-    }
-    SoundQDivider()
+    SoundQSearchStrip(draft,{draft=it},"Title or artist","History title or artist","Search history","Clear history search",
+        onSubmit={val text=draft.text;onSearch(text)},onClear={draft=TextFieldValue("");onSearch("")},enabled=enabled)
 }
 
 private fun LazyListScope.homeSection(title:String,section:HomeSection,state:HomeReadState,model:ProductViewModel,route:HomeRoute,onLibrary:()->Unit,revealOwner:RowRevealOwner) {
