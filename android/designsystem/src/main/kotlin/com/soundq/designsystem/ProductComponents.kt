@@ -103,18 +103,20 @@ private val LocalMediaRowBottomRule=staticCompositionLocalOf {true}
 
 val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
 
-/** compactSupporting is an optional concise visible fact; supporting retains complete spoken detail. */
-@Composable fun SoundQMediaRow(title:String,subtitle:String,current:Boolean,onActivate:()->Unit,onMore:()->Unit,modifier:Modifier=Modifier,artwork:(@Composable ()->Unit)?=null,supporting:String?=null,metadata:(@Composable ()->Unit)?=null,enabled:Boolean=true,compactSupporting:String?=supporting) {
+/** compactSupporting retains dense facts; supportingMaxLines > 1 opts into natural-height event facts. */
+@Composable fun SoundQMediaRow(title:String,subtitle:String,current:Boolean,onActivate:()->Unit,onMore:()->Unit,modifier:Modifier=Modifier,artwork:(@Composable ()->Unit)?=null,supporting:String?=null,metadata:(@Composable ()->Unit)?=null,enabled:Boolean=true,compactSupporting:String?=supporting,supportingMaxLines:Int=1) {
+    require(supportingMaxLines>0)
     val colors=SoundQ.colors
+    val multiline=supportingMaxLines>1
     val enlarged=LocalDensity.current.fontScale>=1.3f
     // Normal geometry stays fixed; enlarged text reserves title, artist/duration, then analysis.
     val rowHeight=if(enlarged&&metadata!=null)106.dp else SoundQ.sizes.mediaRow
     val compactFact=compactSupporting?.takeIf {it.isNotBlank()} ?: supporting
     val density=LocalDensity.current
-    val titleStyle=if(enlarged)SoundQ.typography.title.copy(lineHeight=with(density){38.dp.toSp()}) else SoundQ.typography.title
-    val artistStyle=if(enlarged)SoundQ.typography.caption.copy(lineHeight=with(density){34.dp.toSp()}) else SoundQ.typography.caption
+    val titleStyle=if(enlarged&&!multiline)SoundQ.typography.title.copy(lineHeight=with(density){38.dp.toSp()}) else SoundQ.typography.title
+    val artistStyle=if(enlarged&&!multiline)SoundQ.typography.caption.copy(lineHeight=with(density){34.dp.toSp()}) else SoundQ.typography.caption
     val identity=listOf(LocalMediaMarqueeIdentity.current,title,subtitle)
-    Box(modifier.fillMaxWidth().height(rowHeight)
+    Box(modifier.fillMaxWidth().then(if(multiline)Modifier.heightIn(min=SoundQ.sizes.mediaRow)else Modifier.height(rowHeight))
         .background(mediaRowBackground(current))
         .mediaRowBottomRule()
         .semantics(mergeDescendants=true) {
@@ -123,12 +125,20 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
             contentDescription=listOfNotNull(title,subtitle,supporting ?: compactFact).joinToString(", ")
         }
         .clickable(enabled=enabled,role=Role.Button,onClick=onActivate)) {
-        Row(Modifier.fillMaxSize(),verticalAlignment=Alignment.CenterVertically) {
-            SoundQArtworkSlot(Modifier.testTag("media-artwork"),size=rowHeight,artwork=artwork)
-            Column(Modifier.weight(1f).fillMaxHeight().padding(horizontal=if(enlarged&&metadata!=null)4.dp else 8.dp),verticalArrangement=Arrangement.Center) {
-                SoundQMediaIdentityText(title,current,identity,modifier=(if(enlarged)Modifier.height(38.dp) else Modifier).testTag("media-title"),
+        Row(if(multiline)Modifier.fillMaxWidth().height(IntrinsicSize.Min).heightIn(min=SoundQ.sizes.mediaRow)else Modifier.fillMaxSize(),verticalAlignment=Alignment.CenterVertically) {
+            SoundQArtworkSlot(Modifier.testTag("media-artwork"),size=if(multiline)SoundQ.sizes.mediaRow else rowHeight,artwork=artwork)
+            Column(Modifier.weight(1f).then(if(multiline)Modifier else Modifier.fillMaxHeight()).padding(horizontal=if(enlarged&&metadata!=null&&!multiline)4.dp else 8.dp),verticalArrangement=Arrangement.Center) {
+                SoundQMediaIdentityText(title,current,identity,modifier=(if(multiline)Modifier.fillMaxWidth() else if(enlarged)Modifier.height(38.dp) else Modifier).testTag("media-title"),
                     style=titleStyle,color=if(current)colors.primary else colors.text)
-                if(enlarged)Box(Modifier.height(if(metadata!=null)68.dp else 34.dp).fillMaxWidth()) {
+                if(multiline) {
+                    // History facts own the full lane below identity and optional real metadata.
+                    SoundQMediaIdentityText(subtitle,current,identity,modifier=Modifier.fillMaxWidth().testTag("media-artist"),style=artistStyle,color=colors.muted)
+                    metadata?.invoke()
+                    supporting?.let {
+                        Text(it,Modifier.fillMaxWidth(),color=colors.muted,style=SoundQ.typography.caption,
+                            maxLines=supportingMaxLines,softWrap=true,overflow=TextOverflow.Ellipsis)
+                    }
+                } else if(enlarged)Box(Modifier.height(if(metadata!=null)68.dp else 34.dp).fillMaxWidth()) {
                     // The metadata slot paints duration at the right of this first line and analysis below.
                     Row(Modifier.height(34.dp).fillMaxWidth(if(metadata!=null)0.4f else 1f),verticalAlignment=Alignment.CenterVertically) {
                         SoundQMediaIdentityText(subtitle,current,identity,modifier=Modifier.weight(1f).testTag("media-artist"),style=artistStyle,color=colors.muted)

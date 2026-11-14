@@ -60,8 +60,9 @@ import java.time.format.DateTimeFormatter
             if(!state.loading&&state.error==null&&state.rows.isEmpty())item {HomeStateCell {SoundQFeedback(if(state.query==HistoryQuery())"No listening history yet" else "No matching history",FeedbackKind.Empty,action="Open Library",onAction=onLibrary)}}
             items(state.rows,key={it.id}) {event ->
                 val metadata=listOfNotNull(
+                    if(event.skipped) "Skipped" else "Listened",
                     event.playedAt.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("MMM d, yyyy HH:mm")),
-                    if(event.skipped) "Skipped" else "Listened",event.contextType,
+                    event.contextType,
                 ).joinToString(" · ")
                 HomeTrackRow(model,route,HomeSection.History,state.rows,event.entry,model.homePlay(route,HomeSection.History,state.rows,event.entry,event.id),model.homeQueue(route,HomeSection.History,state.rows,event.entry,event.id),revealOwner,metadata)
             }
@@ -121,13 +122,16 @@ private fun LazyListScope.homeSection(title:String,section:HomeSection,state:Hom
     val playback=model.playback.collectAsStateWithLifecycle().value
     val current=playback.queue.firstOrNull {it.occurrenceId==playback.selectedOccurrence}?.trackId==row.track.id.value
     val notation=model.graph.keyNotationPreferences.state.collectAsStateWithLifecycle().value
+    val fields=com.soundq.android.product.libraryRowMetadata(row.track.durationMs,null,notation)
+    val rowMetadata:(@Composable ()->Unit)?=if(section==HomeSection.History&&fields.isEmpty())null
+        else {{com.soundq.android.product.LibraryMetadataContent(fields)}}
     SoundQSwipeQueue(row.track.title,state,row.eligible&&valid(),queue,current=current) {front,admit->
         Box {
             SoundQMediaRow(row.track.title,row.track.artist,current,
                 {if(valid()&&admit())onPlay()},{state.close();menu=true},modifier=front,enabled=row.eligible&&valid(),
                 artwork={com.soundq.android.product.artwork.TrackArtwork(model.graph,scope,row.track,valid,sourceOwner=lifetime)},
-                supporting=listOfNotNull(if(!row.eligible)"Not in your library"else null,metadata).joinToString(" · ").takeIf {it.isNotEmpty()},
-                metadata={com.soundq.android.product.LibraryMetadataContent(com.soundq.android.product.libraryRowMetadata(row.track.durationMs,null,notation))})
+                supporting=listOfNotNull(metadata,if(!row.eligible)"Not in your library"else null).joinToString(" · ").takeIf {it.isNotEmpty()},
+                supportingMaxLines=if(section==HomeSection.History)6 else 1,metadata=rowMetadata)
             DropdownMenu(menu,{menu=false}) {
                 DropdownMenuItem(text={Text("Play")},onClick={menu=false;if(valid())onPlay()},enabled=row.eligible&&valid())
                 DropdownMenuItem(text={Text("Add to listening queue")},onClick={menu=false;queue()},enabled=row.eligible&&valid())

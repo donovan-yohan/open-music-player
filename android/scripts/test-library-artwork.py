@@ -182,6 +182,7 @@ class ImageBitmap
 object ContentScale {val Crop=0}
 object TextOverflow {val Ellipsis=0}
 object Modifier {
+ fun then(other:Modifier)=this
  fun fillMaxWidth(fraction:Float=1f)=this
  fun fillMaxSize()=this
  fun fillMaxHeight()=this
