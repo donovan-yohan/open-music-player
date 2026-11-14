@@ -2,10 +2,14 @@
 """Execute exact repository refresh against real domain storage and declared provider facade."""
 from pathlib import Path
 import argparse
-p=argparse.ArgumentParser();p.add_argument('--generate',type=Path,required=True);a=p.parse_args()
-root=Path(__file__).resolve().parents[1]
+p=argparse.ArgumentParser();p.add_argument('--generate',type=Path,required=True);p.add_argument('--root',type=Path);a=p.parse_args()
+root=a.root or Path(__file__).resolve().parents[1]
 s=(root/'app/src/main/kotlin/com/soundq/android/data/device/PhoneAudioRepository.kt').read_text()
-refresh=s[s.index('    private val refreshEpoch='):s.index('    fun observed(')]
+refresh=s[s.index('    private val refreshEpoch='):s.index('    /** A saved reference')]
+start=s.index('    private fun advanceAuthority(');end=s.index('{',start)+1;depth=1
+while depth:depth+=(s[end]=='{')-(s[end]=='}');end+=1
+advance=s[start:end]
+proof_epoch='authoritySequence.get()' if 'val proofAuthority=authoritySequence.get()' in s else 'authorityEpoch.get()'
 header='''package com.soundq.android.refreshprobe
 import com.soundq.android.data.deviceaudio.*
 import com.soundq.android.data.device.PhoneScanObservation
@@ -46,15 +50,17 @@ private class Platform {
 private data class State(val refreshing:Boolean=false,val permission:Boolean=true,val message:String?=null)
 // Record attempted obsolete publications, not merely domain refusal or eventual trailing state.
 private class RecordingStore(val domain:DeviceListeningStore,val platform:Platform) {
+ val proofAuthorities=mutableMapOf<ScanCapture,Long>();var authority:()->Long={0L}
  val scans=mutableMapOf<ScanCapture,Int>();var obsoletePublications=0;var publications=0;var retirements=0
  @Volatile var publishGate:java.util.concurrent.CountDownLatch?=null;val publishing=java.util.concurrent.CountDownLatch(1)
  fun snapshot(a:AccessCapture)=domain.snapshot(a)
  @Volatile var grantGate:java.util.concurrent.CountDownLatch?=null;val granting=java.util.concurrent.CountDownLatch(1)
  fun putGrant(a:AccessCapture,g:ScanGrant):Mutation {granting.countDown();grantGate?.await();return domain.putGrant(a,g)}
- fun beginScan(a:AccessCapture,g:ScanGrantId)=domain.beginScan(a,g)?.also {scans[it]=platform.accessRevision}
+ fun beginScan(a:AccessCapture,g:ScanGrantId)=domain.beginScan(a,g)?.also {scans[it]=platform.accessRevision;proofAuthorities[it]=authority()}
  fun publishScan(s:ScanCapture,rows:List<DiscoveredAudio>,complete:Boolean=true):Mutation {
   publications++;if(scans[s]!=platform.accessRevision)obsoletePublications++
   publishing.countDown();publishGate?.await()
+  if(proofAuthorities[s]!=authority())obsoletePublications++
   return domain.publishScan(s,rows,complete)
  }
  fun legacyObjects(a:AccessCapture)=domain.legacyObjects(a)
@@ -62,7 +68,13 @@ private class RecordingStore(val domain:DeviceListeningStore,val platform:Platfo
 }
 private class Repository(domain:DeviceListeningStore,val jobs:CoroutineScope) {
  val graph=Graph();val platform=Platform();val store=RecordingStore(domain,platform);val access=domain.unlock();val mutable=MutableStateFlow(State())
- val serial=Mutex();var authorityVersion=0L
+ val serial=Mutex();private val authoritySequence=java.util.concurrent.atomic.AtomicLong()
+ private val authorityEpoch=java.util.concurrent.atomic.AtomicLong();val authorityVersion get()=authorityEpoch.get()
+ private val fileAuthorities=java.util.concurrent.ConcurrentHashMap<DeviceFileId,Long>()
+ADVANCE
+ fun revokeAuthority()=advanceAuthority()
+ fun revocationQueued(thread:Thread)=refreshLock.hasQueuedThread(thread)
+ init {store.authority={PROOF_EPOCH}}
  @Volatile var lastScan:PhoneScanObservation?=null
  fun current(version:Long)=version==graph.session.version()
  fun publish(message:String?=null){mutable.value=State(message=message)}
@@ -89,6 +101,29 @@ private object Legacy {
   listOf(entry(heard,1000,700000),entry(picked,3000,650000),entry(unproven,2000,610000)))).toString().toByteArray())}
 }
 class PhoneRefreshTest {
+ @Test fun authorityRevocationAndFinalCheckCommitHaveOneOrder()=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-authority-order-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO);val gate=java.util.concurrent.CountDownLatch(1)
+  try {DeviceListeningStore(File(root,"domain.json")).use {store->
+   val repo=Repository(store,jobs);repo.store.publishGate=gate;repo.refresh()
+   assertTrue(repo.store.publishing.await(5,java.util.concurrent.TimeUnit.SECONDS))
+   val done=java.util.concurrent.CountDownLatch(1);val requested=java.util.concurrent.CountDownLatch(1)
+   val revoke=Thread {requested.countDown();repo.revokeAuthority();done.countDown()};revoke.start();assertTrue(requested.await(5,java.util.concurrent.TimeUnit.SECONDS))
+   withTimeout(5000){while(done.count!=0L&&!repo.revocationQueued(revoke))delay(1)}
+   gate.countDown();revoke.join(5000);repo.settled()
+   assertEquals("No publication forwards to the real store after authority retirement wins",0,repo.store.obsoletePublications)
+   assertEquals(1,repo.store.publications);assertEquals(0L,done.count)
+  }}finally{gate.countDown();jobs.cancel();root.deleteRecursively()}
+ }
+ @Test fun revocationBeforeFinalCheckRefusesEvenAttemptingPublication()=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-authority-proof-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO);val gate=java.util.concurrent.CountDownLatch(1)
+  try {DeviceListeningStore(File(root,"domain.json")).use {store->
+   val repo=Repository(store,jobs);repo.platform.gate=gate;repo.refresh();assertTrue(repo.platform.entered.await(5,java.util.concurrent.TimeUnit.SECONDS))
+   repo.revokeAuthority();gate.countDown();repo.settled()
+   assertEquals(0,repo.store.publications);assertEquals(0,repo.store.obsoletePublications)
+   repo.platform.gate=null;repo.refresh();repo.settled();assertEquals(1,repo.store.publications)
+  }}finally{gate.countDown();jobs.cancel();root.deleteRecursively()}
+ }
+
  @Test fun indexedObservedRevokeRegrantCannotReviveHeldProof()=runBlocking {
   val root=java.nio.file.Files.createTempDirectory("refresh-scope-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
   val gate=java.util.concurrent.CountDownLatch(1)
@@ -308,4 +343,4 @@ class PhoneRefreshTest {
 }
 '''
 a.generate.mkdir(parents=True,exist_ok=True)
-(a.generate/'PhoneRefreshTest.kt').write_text(header.replace('REFRESH',refresh))
+(a.generate/'PhoneRefreshTest.kt').write_text(header.replace('REFRESH',refresh).replace('ADVANCE',advance).replace('PROOF_EPOCH',proof_epoch))

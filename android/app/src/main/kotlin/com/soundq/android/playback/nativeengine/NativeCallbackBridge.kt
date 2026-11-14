@@ -8,6 +8,7 @@ internal object NativeCallbackBridge {
     @JvmStatic external fun load(handle: Long, deck: Int, path: String, identity: Long, generation: Long, positionMs: Long): Boolean
     // Same assignment prepared and applied at an ordinary listening speed from its first window.
     @JvmStatic external fun loadSpeed(handle: Long, deck: Int, path: String, identity: Long, generation: Long, positionMs: Long, speed: Double): Boolean
+    @JvmStatic external fun loadReader(handle: Long, deck: Int, reader: NativePcmReader, identity: Long, generation: Long, positionMs: Long, speed: Double): Boolean
     // Operation 10 sets an assigned ordinary deck's listening speed (admission only).
     // Operation 9 is explicit paused output recovery, not Play or source release.
     @JvmStatic external fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long): Boolean
@@ -34,6 +35,7 @@ internal interface NativeCallbackCalls {
     fun open(): Long
     fun load(handle: Long, deck: Int, path: String, identity: Long, generation: Long, positionMs: Long): Boolean
     fun loadSpeed(handle: Long, deck: Int, path: String, identity: Long, generation: Long, positionMs: Long, speed: Double): Boolean = false
+    fun loadReader(handle: Long, deck: Int, reader: NativePcmReader, identity: Long, generation: Long, positionMs: Long, speed: Double): Boolean = false
     fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long): Boolean
     fun prepareSchedule(handle: Long, revision: Long, paths: Array<String>, values: LongArray): Boolean = false
     fun prepareScheduleV2(handle: Long, revision: Long, paths: Array<String>, values: LongArray, tempo: DoubleArray): Boolean = false
@@ -55,6 +57,8 @@ internal object JniNativeCallbackCalls : NativeCallbackCalls {
         NativeCallbackBridge.load(handle, deck, path, identity, generation, positionMs)
     override fun loadSpeed(handle: Long, deck: Int, path: String, identity: Long, generation: Long, positionMs: Long, speed: Double) =
         NativeCallbackBridge.loadSpeed(handle, deck, path, identity, generation, positionMs, speed)
+    override fun loadReader(handle: Long, deck: Int, reader: NativePcmReader, identity: Long, generation: Long, positionMs: Long, speed: Double) =
+        NativeCallbackBridge.loadReader(handle, deck, reader, identity, generation, positionMs, speed)
     override fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long) =
         NativeCallbackBridge.control(handle, operation, deck, value, eventNanos)
     override fun prepareSchedule(handle: Long, revision: Long, paths: Array<String>, values: LongArray) = NativeCallbackBridge.prepareSchedule(handle, revision, paths, values)

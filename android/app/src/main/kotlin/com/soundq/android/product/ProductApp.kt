@@ -34,6 +34,7 @@ import com.soundq.android.product.imports.ImportsScreen
 import com.soundq.android.product.preferences.*
 
 @Composable fun ProductApp(model:ProductViewModel=viewModel()) {
+    PlayerFailureToasts(model)
     val auth by model.auth.collectAsStateWithLifecycle()
     val onlineRestore by model.onlineRestore.collectAsStateWithLifecycle()
     val library by model.library.collectAsStateWithLifecycle()
@@ -260,6 +261,10 @@ import com.soundq.android.product.preferences.*
         com.soundq.android.data.preferences.Appearance.Light->soundq.design.generated.SoundQAppearance.Light
         com.soundq.android.data.preferences.Appearance.Dark->soundq.design.generated.SoundQAppearance.Dark
     }) {
+        // Only identity/incarnation changes reset row motion; 500ms playback cursor ticks do not.
+        CompositionLocalProvider(LocalMediaMarqueeIdentity provides listOf(playback.accountEpoch,playback.sessionIdentity,
+            playback.source,playback.sourceQueueIncarnation,playback.selectionIncarnation,playback.selectedOccurrence,
+            playback.queue.singleOrNull {it.occurrenceId==playback.selectedOccurrence}?.ref)) {
         AppearanceSystemBars(SoundQ.colors.roles==soundq.design.generated.SoundQAppearanceMapping.dark)
         Surface(Modifier.fillMaxSize().closeRowRevealOutside(revealOwner),color=SoundQ.colors.background) {
             Box(Modifier.safeDrawingPadding().imePadding(),contentAlignment=Alignment.TopCenter) {
@@ -348,7 +353,7 @@ import com.soundq.android.product.preferences.*
                             model.graph.playlistBlend.acceptedPlan(),model.graph.playlistBlend.capture()?.let(model.graph.playlistBlend::canGenerate)==true,
                             model.graph.playlistBlend.capture()?.let(model.graph.playlistBlend::canRecover)==true,model::playPlaylist,
                             {p,index,track,valid->model.quickQueuePlaylist(p,index,track,valid)},revealOwner,harmonicEntry,
-                            harmonicFeedback=harmonicFeedback,artwork={track,rowCurrent->com.soundq.android.product.artwork.TrackArtwork(model.graph,artworkCapture?.scope,track.takeIf {it.artwork!=null} ?: model.graph.track(track.id) ?: track,
+                            playback=playback,harmonicFeedback=harmonicFeedback,artwork={track,rowCurrent->com.soundq.android.product.artwork.TrackArtwork(model.graph,artworkCapture?.scope,track.takeIf {it.artwork!=null} ?: model.graph.track(track.id) ?: track,
                                 {rowCurrent()&&artworkCapture?.let {captured->model.graph.playlistDetail.ownsPlayback(captured)&&captured.detail.tracks.any {it===track}}==true},sourceOwner=artworkCapture)})}
                         else playlistActions?.let { actions -> com.soundq.android.product.playlists.PlaylistsScreen(playlists,actions.capture,actions::create,actions::reload,actions::startNew,model::openPlaylist,
                             {managementActions?.let {com.soundq.android.product.playlists.PlaylistManagementFeedback(playlistManagement,it)}},onRefine=actions::refine) }
@@ -408,7 +413,8 @@ import com.soundq.android.product.preferences.*
                             if(index<0) {
                                 val scope=model.graph.session.capture()
                                 val row=downloads.rows.singleOrNull {it.track.id==track.id&&it.status==com.soundq.android.data.offline.DownloadStatus.Complete}
-                                SoundQMediaRow(track.title,track.artist,false,{if(scope!=null&&row!=null)model.playDownload(scope,row){model.graph.session.current(scope)}},{navigate("Downloads")},supporting="Downloaded · SoundQ",metadata={LibraryMetadataContent(memberDurationMetadata(track.durationMs))})
+                                val current=playback.source==com.soundq.android.playback.PlaybackSource.Queue&&playback.queue.any {it.occurrenceId==playback.selectedOccurrence&&it.trackId==track.id.value}
+                                SoundQMediaRow(track.title,track.artist,current,{if(scope!=null&&row!=null)model.playDownload(scope,row){model.graph.session.current(scope)}},{navigate("Downloads")},supporting="Downloaded · SoundQ",metadata={LibraryMetadataContent(memberDurationMetadata(track.durationMs))})
                             } else {
                             val mutation=library.mutations[track.id]
                             val capturedRow=remember(RowIdentity(track),rowLifetime,library.query,library.loading,library.error){model.graph.library.captureTrack(track)}
@@ -450,38 +456,49 @@ import com.soundq.android.product.preferences.*
                     "Devices"->com.soundq.android.product.connect.ConnectedDevicesPanel(model,{panel=null},{panel="Jam"})
                     "Jam"->com.soundq.android.product.jam.JamHostPanel(model,{panel=null})
                     "Track"->selected?.let {track -> SoundQSheet(track.title,{panel=null}) {
-                        Text(track.artist);if(track.album.isNotBlank())Text(track.album)
                         val captured=trackCapture
                         val capturedActions=trackPlaylistActions
+                        var songSpeed by remember(captured){mutableStateOf(false)}
+                        var songSpeedValue by remember(captured){mutableStateOf<String?>(null)}
                         val downloadActive=remember(captured){java.util.concurrent.atomic.AtomicBoolean(true)}
                         DisposableEffect(downloadActive){onDispose {downloadActive.set(false)}}
+                        val speedRef=captured?.let {com.soundq.android.playback.PlaybackRef.Server(model.graph.endpoint.identity,it.scope.accountId,track.id.value)}
+                        val songValid={downloadActive.get()&&captured?.let(model.graph.library::owns)==true}
+                        LaunchedEffect(speedRef,songSpeed) {
+                            if(!songSpeed&&speedRef!=null)model.controller.songSpeed(speedRef,model.graph.session.version(),null,songValid) {value->if(songValid())songSpeedValue=value?.let {SoundQSpeedScale.label(it.speed)}}
+                        }
+                        if(songSpeed&&speedRef!=null)SongSpeedEditor(model,speedRef,songValid){songSpeed=false}
+                        else Column {
+                        Text(track.artist);if(track.album.isNotBlank())Text(track.album)
                         val downloadRow=downloads.rows.firstOrNull {it.track.id==track.id}
-                        SoundQButton(if(downloadRow?.status==com.soundq.android.data.offline.DownloadStatus.Complete)"Downloaded to device" else if(downloadRow?.status==com.soundq.android.data.offline.DownloadStatus.Downloading)"Downloading to device" else "Download to device",{
-                            captured?.let {source->model.downloadLibrary(source){downloadActive.get()&&model.graph.library.owns(source)}}
-                        },enabled=captured!=null&&model.graph.library.owns(captured)&&downloadRow?.status !in listOf(com.soundq.android.data.offline.DownloadStatus.Complete,com.soundq.android.data.offline.DownloadStatus.Downloading),variant=SoundQButtonVariant.Secondary)
-                        SoundQButton("Song details",{
-                            captured?.let {source->model.graph.trackDetails.open(source)?.let {detailsRoute=it;model.loadTrackDetails(it);panel="Details"}}
-                        },enabled=captured!=null&&model.graph.library.owns(captured),variant=SoundQButtonVariant.Secondary)
-                        SoundQButton("Open Downloads",{navigate("Downloads")},variant=SoundQButtonVariant.Secondary)
-                        SoundQButton("Add to playlist",{
-                            captured?.let {source->capturedActions?.open(source)?.let {picker=it;panel="Membership"}}
-                        },enabled=captured!=null && model.graph.library.owns(captured),variant=SoundQButtonVariant.Secondary)
-                        SoundQButton("Play",{if(downloadActive.get()&&captured?.let(model.graph.library::owns)==true){
+                        SongActionRow("Play",{if(downloadActive.get()&&captured?.let(model.graph.library::owns)==true){
                             if(library.query.liked||library.query.collection!=null)model.playLibraryCollection(library,selected=track.id) {collectionVisit.current()&&(panel==null||panel=="Track")&&destination=="Library"&&rowLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)}
                             else model.play(library.rows.indexOfFirst {it===track},library.rows)
                             panel=null
-                        }},enabled=captured?.let(model.graph.library::owns)==true)
-                        if(track.artist.isNotEmpty())SoundQButton("Open artist in Library",{
+                        }},SoundQIcon.Play,enabled=songValid())
+                        SongActionRow("Play next",{captured?.let {model.enqueueLibrary(it,songValid,true)};panel=null},SoundQIcon.Next,enabled=songValid())
+                        SongActionRow("Add to listening queue",{captured?.let {model.enqueueLibrary(it,songValid)};panel=null},SoundQIcon.AddQueue,enabled=songValid())
+                        SoundQDivider()
+                        SongActionRow("Playback speed",{songSpeed=true},value=songSpeedValue,opensDestination=true,enabled=songValid())
+                        SongActionRow("Add to playlist",{
+                            captured?.let {source->capturedActions?.open(source)?.let {picker=it;panel="Membership"}}
+                        },SoundQIcon.Plus,opensDestination=true,enabled=captured!=null && model.graph.library.owns(captured))
+                        SongActionRow(if(track.liked==true)"Unlike" else "Like",{captured?.let {model.likeLibrary(it,songValid)}},SoundQIcon.Heart,enabled=captured?.let {model.graph.library.offerLike(it.scope,track.id)}!=null)
+                        SoundQDivider()
+                        SongActionRow(if(downloadRow?.status==com.soundq.android.data.offline.DownloadStatus.Complete)"Downloaded to device" else if(downloadRow?.status==com.soundq.android.data.offline.DownloadStatus.Downloading)"Downloading to device" else "Download to device",{
+                            captured?.let {source->model.downloadLibrary(source){downloadActive.get()&&model.graph.library.owns(source)}}
+                        },SoundQIcon.Download,enabled=captured!=null&&model.graph.library.owns(captured)&&downloadRow?.status !in listOf(com.soundq.android.data.offline.DownloadStatus.Complete,com.soundq.android.data.offline.DownloadStatus.Downloading))
+                        SongActionRow("Open Downloads",{navigate("Downloads")},SoundQIcon.Download,opensDestination=true)
+                        SongActionRow("Song details",{
+                            captured?.let {source->model.graph.trackDetails.open(source)?.let {detailsRoute=it;model.loadTrackDetails(it);panel="Details"}}
+                        },SoundQIcon.Info,opensDestination=true,enabled=captured!=null&&model.graph.library.owns(captured))
+                        if(track.artist.isNotEmpty())SongActionRow("Open artist in Library",{
                             if(captured?.let(model.graph.library::owns)==true){model.refine(LibraryQuery(sort=library.query.sort,ascending=library.query.ascending,collection=LibraryCollection(artist=track.artist)));panel=null}
-                        },enabled=captured?.let(model.graph.library::owns)==true,variant=SoundQButtonVariant.Secondary)
-                        if(track.album.isNotEmpty())SoundQButton("Open album in Library",{
+                        },SoundQIcon.Library,opensDestination=true,enabled=songValid())
+                        if(track.album.isNotEmpty())SongActionRow("Open album in Library",{
                             if(captured?.let(model.graph.library::owns)==true){model.refine(LibraryQuery(sort=library.query.sort,ascending=library.query.ascending,collection=LibraryCollection(artist=track.artist,album=track.album)));panel=null}
-                        },enabled=captured?.let(model.graph.library::owns)==true,variant=SoundQButtonVariant.Secondary)
-                        val mutation=library.mutations[track.id]
-                        val sheetValid={downloadActive.get()&&captured?.let(model.graph.library::owns)==true}
-                        SoundQButton(if(track.liked==true)"Unlike" else "Like",{captured?.let {model.likeLibrary(it,sheetValid)}},enabled=captured?.let {model.graph.library.offerLike(it.scope,track.id)}!=null,variant=SoundQButtonVariant.Secondary)
-                        SoundQButton("Play next",{captured?.let {model.enqueueLibrary(it,sheetValid,true)};panel=null},enabled=sheetValid(),variant=SoundQButtonVariant.Secondary)
-                        SoundQButton("Add to listening queue",{captured?.let {model.enqueueLibrary(it,sheetValid)};panel=null},enabled=sheetValid(),variant=SoundQButtonVariant.Secondary)
+                        },SoundQIcon.Library,opensDestination=true,enabled=songValid())
+                        }
                     }}
                     "Details"->detailsRoute?.let {captured->key(captured) {
                         com.soundq.android.product.trackdetails.TrackDetailsSheet(trackDetails,
@@ -519,6 +536,7 @@ import com.soundq.android.product.preferences.*
                     "QueueSave"->queueSave?.let {actions->com.soundq.android.product.playlists.QueuePlaylistSheet(queuePlaylist,actions,{closeQueueSave();panel="Queue"})}
                 }
             }
+        }
         }
     }
 }

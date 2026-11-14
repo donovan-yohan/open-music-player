@@ -182,9 +182,7 @@ import androidx.compose.ui.window.SecureFlagPolicy
                         Text(artist,Modifier.fillMaxWidth(),style=SoundQ.typography.body,color=SoundQ.colors.muted,
                             textAlign=TextAlign.Center,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
                     }
-                    if(error!=null)Text(error,Modifier.fillMaxWidth().padding(horizontal=8.dp).semantics {liveRegion=LiveRegionMode.Polite},
-                        color=SoundQ.colors.error,style=SoundQ.typography.caption,textAlign=TextAlign.Center)
-                    if(preparing)Text("Preparing audio",color=SoundQ.colors.muted,style=SoundQ.typography.caption)
+                    // Preparation is transport state, not a layout row. Product owns failure toasts.
                     Column(Modifier.fillMaxWidth().padding(horizontal=8.dp),horizontalAlignment=Alignment.CenterHorizontally) {
                         if(clockContent!=null)clockContent() else SoundQSeek(position,duration,selectedOccurrence,onSeek)
                     }

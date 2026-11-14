@@ -96,7 +96,8 @@ bool validWindow(const PcmWindow& window, uint64_t extent) noexcept {
     for (uint32_t i = 0; i < window.count; ++i) {
         const auto& page = window.pages[i];
         if (!page.samples || page.frames == 0 || page.frames > maxPcmPageFrames ||
-            page.firstFrame > extent || page.frames > extent - page.firstFrame ||
+            page.firstFrame > (extent ? extent : (uint64_t{1} << 52)) ||
+            page.frames > (extent ? extent : (uint64_t{1} << 52)) - page.firstFrame ||
             page.firstFrame < previousEnd) return false;
         const auto bytes = static_cast<uint64_t>(page.frames) * 2 * sizeof(float);
         if (bytes > std::numeric_limits<std::size_t>::max() ||
@@ -313,7 +314,7 @@ struct Engine::Impl {
         } else if (c.operation == Operation::EndScratch || c.operation == Operation::CancelScratch) {
             if (d.scratching && d.gesture == c.gesture) {
                 d.scratching = false; d.gesture = 0;
-                d.playing = d.savedPlaying && (d.cursor < static_cast<double>(d.source.frames) || d.savedRate < 0);
+                d.playing = d.savedPlaying && (!d.source.frames || d.cursor < static_cast<double>(d.source.frames) || d.savedRate < 0);
                 d.rate.set(d.savedRate);
             }
         }
@@ -428,6 +429,7 @@ struct Engine::Impl {
                 // by the producer; a scratch admitted later in FIFO order owns
                 // rate afterwards. Not a traversal: cursor/EOF evidence remain.
                 if (d.generation == c.generation && !d.scratching) {
+                    if (envelope.frame) d.source.frames = envelope.frame;
                     const auto previous = d.rate.value;
                     d.window = envelope.window;
                     d.rate.value = d.rate.target = d.listening = c.value; d.rate.remaining = 0;
@@ -682,8 +684,8 @@ bool Engine::submit(const Command& c) noexcept {
         if (c.generation <= next.generation) return p.reject();
         next = ProducerDeck{}; next.generation = c.generation; next.frames = c.source.frames;
     } else {
-        if (c.generation != next.generation || next.frames == 0) return p.reject();
-        if (c.operation == Operation::Seek && (c.value < 0 || c.value > static_cast<double>(next.frames)))
+        if (c.generation != next.generation || (next.frames == 0 && !next.paged)) return p.reject();
+        if (c.operation == Operation::Seek && (c.value < 0 || c.value > static_cast<double>(next.frames ? next.frames : (uint64_t{1} << 52))))
             return p.reject();
         if (c.operation == Operation::BeginScratch) {
             if (c.gesture == 0 || c.gesture <= next.lastGesture || next.gesture != 0) return p.reject();
@@ -708,7 +710,7 @@ bool Engine::assignPaged(uint32_t deck, uint64_t sequence, uint64_t generation,
     auto& p = *impl_;
     if (p.producerSchedule || deck >= 4 || sequence == 0 || sequence <= p.admittedSequence || generation == 0 ||
         generation <= p.producerDecks[deck].generation ||
-        !validExtent(source.frames, source.sourceRate, source.identity) ||
+        !(source.frames ? validExtent(source.frames, source.sourceRate, source.identity) : source.sourceRate != 0 && source.identity != 0) ||
         !std::isfinite(source.speed) || source.speed < minListeningSpeed || source.speed > maxListeningSpeed ||
         !validWindow(window, source.frames)) return p.reject();
     Envelope envelope;
@@ -728,7 +730,7 @@ bool Engine::publishWindow(uint32_t deck, uint64_t sequence, uint64_t generation
     if (p.producerSchedule || deck >= 4 || sequence == 0 || sequence <= p.admittedSequence || generation == 0)
         return p.reject();
     const auto& current = p.producerDecks[deck];
-    if (generation != current.generation || current.frames == 0 || !current.paged ||
+    if (generation != current.generation || !current.paged ||
         !validWindow(window, current.frames)) return p.reject();
     Envelope envelope;
     envelope.kind = EnvelopeKind::Window;
@@ -743,7 +745,7 @@ bool Engine::publishWindowRate(uint32_t deck, uint64_t sequence, uint64_t genera
         !std::isfinite(rate) || rate < minListeningSpeed || rate > maxListeningSpeed)
         return p.reject();
     const auto& current = p.producerDecks[deck];
-    if (generation != current.generation || current.frames == 0 || !current.paged || current.gesture != 0 ||
+    if (generation != current.generation || !current.paged || current.gesture != 0 ||
         !validWindow(window, current.frames)) return p.reject();
     Envelope envelope;
     envelope.kind = EnvelopeKind::WindowRate;
@@ -751,12 +753,26 @@ bool Engine::publishWindowRate(uint32_t deck, uint64_t sequence, uint64_t genera
     envelope.command.generation = generation; envelope.command.value = rate; envelope.window = window;
     return p.enqueue(envelope, current);
 }
+bool Engine::publishWindowEnd(uint32_t deck, uint64_t sequence, uint64_t generation,
+                              const PcmWindow& window, uint64_t end, double speed) noexcept {
+    auto& p = *impl_;
+    if (p.producerSchedule || deck >= 4 || !sequence || sequence <= p.admittedSequence || !generation ||
+        !end || end > (uint64_t{1} << 52) || !std::isfinite(speed) || speed < minListeningSpeed || speed > maxListeningSpeed)
+        return p.reject();
+    auto next = p.producerDecks[deck];
+    if (generation != next.generation || !next.paged || next.gesture ||
+        (next.frames && next.frames != end) || !validWindow(window,end)) return p.reject();
+    Envelope e; e.kind=EnvelopeKind::WindowRate; e.command.deck=deck;
+    e.command.sequence=sequence; e.command.generation=generation; e.command.value=speed;
+    e.window=window; e.frame=end; next.frames=end;
+    return p.enqueue(e,next);
+}
 bool Engine::unassign(uint32_t deck, uint64_t sequence, uint64_t generation) noexcept {
     auto& p = *impl_;
     if (p.producerSchedule || deck >= 4 || sequence == 0 || sequence <= p.admittedSequence || generation == 0)
         return p.reject();
     const auto& current = p.producerDecks[deck];
-    if (generation != current.generation || current.frames == 0) return p.reject();
+    if (generation != current.generation || (current.frames == 0 && !current.paged)) return p.reject();
     Envelope envelope;
     envelope.kind = EnvelopeKind::Unassign;
     envelope.command.deck = deck; envelope.command.sequence = sequence;
@@ -865,6 +881,7 @@ bool Engine::crossfade(uint64_t sequence,uint32_t out,uint64_t og,uint32_t in,ui
     auto& p=*impl_;
     if(p.producerSchedule || out>=4 || in>=4 || out==in || !og || !ig ||
         p.producerDecks[out].generation!=og || p.producerDecks[in].generation!=ig ||
+        (frames && (!p.producerDecks[out].frames || !p.producerDecks[in].frames)) ||
         !sequence || sequence<=p.admittedSequence || frames>uint64_t{p.outputRate}*12)return p.reject();
     Envelope e;e.kind=EnvelopeKind::Crossfade;e.command.deck=out;e.command.generation=og;
     e.command.gesture=ig;e.command.sequence=sequence;e.clip=in;e.frame=frames;
@@ -1035,7 +1052,7 @@ void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
             d.rate.advance(); d.gain.advance();
             if (!d.playing || d.rate.value == 0 || (!boundaryReady && p.boundaryCurrent() && (&d==&p.decks[p.boundary.out] || &d==&p.decks[p.boundary.in]))) continue;
             double position = d.cursor;
-            if (position >= static_cast<double>(d.source.frames)) {
+            if (d.source.frames && position >= static_cast<double>(d.source.frames)) {
                 if (d.rate.value >= 0) {
                     if (!d.scratching) {
                         if (!d.atEnd) { ++d.eofCount; d.atEnd = true; }
@@ -1047,7 +1064,7 @@ void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
             }
             if (position == 0 && d.rate.value < 0) continue;
             const auto index = static_cast<uint64_t>(position);
-            const auto next = std::min(index + 1, d.source.frames - 1);
+            const auto next = d.source.frames ? std::min(index + 1, d.source.frames - 1) : index + 1;
             const auto fraction = position - static_cast<double>(index);
             // Scratch/varispeed slow motion attenuates; an accepted listening speed does not.
             const auto slow = d.scratching ? std::abs(d.rate.value) : std::abs(d.rate.value) / d.listening;
@@ -1058,7 +1075,7 @@ void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
             left += level * (firstTap[0] * (1 - fraction) + nextTap[0] * fraction);
             right += level * (firstTap[1] * (1 - fraction) + nextTap[1] * fraction);
             d.cursor = position + d.rate.value * d.source.sourceRate / p.outputRate;
-            if (d.cursor >= static_cast<double>(d.source.frames)) {
+            if (d.source.frames && d.cursor >= static_cast<double>(d.source.frames)) {
                 d.cursor = static_cast<double>(d.source.frames);
                 // Both resident taps were consumed from before true decoded EOF.
                 // Do not reuse generic EOF: it also marks sought endpoints and

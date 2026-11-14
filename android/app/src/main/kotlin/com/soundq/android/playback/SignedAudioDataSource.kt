@@ -14,7 +14,7 @@ internal class MediaGrant private constructor(private val serverScope:AccountSco
     @Volatile var phoneAdmission:com.soundq.android.data.device.PhoneSourceAdmission?=null
     val scope:AccountScope get()=requireNotNull(serverScope) { "Phone audio has no server scope" }
     val track:TrackId get()=requireNotNull(serverTrack) { "Phone audio has no server TrackId" }
-    fun current(graph:AppGraph):Boolean=if(device==null)graph.session.current(scope) else graph.phoneAudio.current(version)&&graph.phoneAudio.authorityVersion==audioRevision&&graph.phoneAudio.observed(device)!=null
+    fun current(graph:AppGraph):Boolean=if(device==null)graph.session.current(scope) else graph.phoneAudio.current(version)&&graph.phoneAudio.sourceAuthority(device)==audioRevision&&graph.phoneAudio.observed(device)!=null
 }
 /** Runs on ExoPlayer's loader, not its application looper. Internal URIs never reach the network. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)

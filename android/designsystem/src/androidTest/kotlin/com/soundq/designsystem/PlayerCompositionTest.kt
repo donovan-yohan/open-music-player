@@ -117,13 +117,13 @@ class PlayerCompositionTest {
         var calls=0;val available=mutableStateOf(false)
         compose.setContent {SoundQTheme {SoundQTransport(false,available.value,true,{calls++},{calls++},{calls++},false,false,
             onShuffle={calls++},onRepeat={calls++})}}
-        listOf("Shuffle off","Previous track","Pause preparation","Next track","Repeat off").forEach {
+        listOf("Shuffle off","Previous track","Pause","Next track","Repeat off").forEach {
             compose.onNodeWithContentDescription(it).assertIsNotEnabled().performTouchInput {click()}
         }
         compose.runOnIdle {assertEquals(0,calls);available.value=true}
         compose.onNodeWithContentDescription("Previous track").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Next track").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("Pause preparation").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("Pause").assertIsEnabled().performClick()
         compose.runOnIdle {assertEquals(1,calls)}
     }
 
@@ -174,7 +174,7 @@ class PlayerCompositionTest {
     @Test fun shortPortraitReducesArtworkBeforeControls()=fullPlayer(393,640)
     @Test fun landscapePlayerKeepsInlineTransportAndUtilities()=fullPlayer(852,393)
 
-    @Test fun fullWindowDialogPreservesErrorAndCloseDoesNotInvokeTransport() {
+    @Test fun fullWindowDialogLeavesFailureFeedbackToProductAndCloseDoesNotInvokeTransport() {
         var closes=0;var primary=0
         var dialogView:android.view.View?=null
         compose.setContent {SoundQTheme {SoundQFullPlayer("Track","Artist",false,true,false,0,1000,"a",
@@ -186,7 +186,7 @@ class PlayerCompositionTest {
             near(dialogView!!.rootView.width.toFloat(),window.width)
             near(dialogView!!.rootView.height.toFloat(),window.height)
         }
-        compose.onNodeWithText("Source refused").assertIsDisplayed()
+        compose.onNodeWithText("Source refused").assertDoesNotExist()
         compose.onNodeWithContentDescription("Close Now playing").performClick()
         compose.runOnIdle {assertEquals(1,closes);assertEquals(0,primary)}
     }

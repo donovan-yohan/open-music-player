@@ -92,7 +92,7 @@ private object Dispatchers {
  }
 }
 private class Graph(val session:AccountSession,val directory:java.io.File){val endpoint=session.endpoint;val phoneAudio=PhoneBoundary()}
-private class PhoneBoundary {val authorityVersion=0L}
+private class PhoneBoundary {val authorityVersion=0L;fun sourceAuthority(ref:PlaybackRef.Device)=authorityVersion}
 private class Continuation {fun repeatChanged(){};fun shuffleChanged(){}}
 '''
 fixture='''

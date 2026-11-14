@@ -22,6 +22,8 @@ source=block('playback/nativeengine/NativeCallbackSource.kt','    override fun p
 grant=block('playback/SignedAudioDataSource.kt','internal class MediaGrant').replace('internal class MediaGrant','private class MediaGrant').replace('AppGraph','Graph')
 journal=(b/'playback/nativeengine/NativeListeningJournal.kt').read_text()
 journal='\n'.join(l for l in journal.splitlines() if not l.startswith(('package ','import '))).replace('internal class NativeListeningJournal','private class NativeListeningJournal').replace('AppGraph','Graph')
+# File-only historical controls wrap the new typed seam; production bodies/assertions stay intact.
+journal=journal.replace('    private data class Bound(', '    suspend fun bind(item:MediaItem,grant:MediaGrant,file:File,deck:NativeCallbackDeck,slot:Int,current:()->Boolean):Long=bind(item,grant,NativePlaybackSource.OwnedTemporary(file),deck,slot,current)\n    private data class Bound(')
 header='''package com.soundq.android.phoneconsumerprobe
 import com.soundq.android.data.*
 import com.soundq.android.data.deviceaudio.*
@@ -54,6 +56,7 @@ private class MediaItem {class Local(val uri:Uri);class Request(val extras:Bundl
  class Builder {val m=MediaItem();fun setMediaId(v:String)=apply{m.mediaId=v};fun setUri(v:Uri)=apply{m.localConfiguration=Local(v)};fun setMimeType(v:String)=this;fun setMediaMetadata(v:MediaMetadata)=apply{m.mediaMetadata=v};fun setRequestMetadata(v:Request)=apply{m.requestMetadata=v};fun build()=m}}
 private class Store:SessionStore {override fun load(endpoint:ApiEndpoint):SecretTokens?=null;override fun save(endpoint:ApiEndpoint,tokens:SecretTokens){};override fun clear(){}}
 private class Phone(val graph:Graph) {
+ fun sourceAuthority(ref:PlaybackRef.Device)=authorityVersion
  val store=DeviceListeningStore(File(graph.directory,"journal.json"));var access=store.unlock();val mutex=Mutex();var authorityVersion=0L;var available=true;var stageCalls=0;var stageGate:java.util.concurrent.CountDownLatch?=null;val stageEntered=java.util.concurrent.CountDownLatch(1);var journalGate:java.util.concurrent.CountDownLatch?=null;val journalEntered=java.util.concurrent.CountDownLatch(1)
  val grant=ScanGrant(ScanGrantId(UUID.randomUUID()),GrantKind.INDEXED,"Phone file",ProviderLocator("fixture","fixture:source"),true)
  val original=File(graph.directory,"original.wav").apply{writeBytes(ByteArray(64){it.toByte()})}
@@ -73,7 +76,7 @@ private class Service(val graph:Graph) {val grants=ConcurrentHashMap<String,Medi
 SERVICE
 }
 GRANT
-private class Source(val graph:Graph,val grants:ConcurrentHashMap<String,MediaGrant>) {fun prepareBounded(item:MediaItem,max:Long,current:()->Boolean):File=error("Server source hardware outside phone fixture");val MAX_BYTES=128L*1024*1024
+private class Source(val graph:Graph,val grants:ConcurrentHashMap<String,MediaGrant>) {fun acquire(item:MediaItem,current:()->Boolean):NativePlaybackSource=NativePlaybackSource.OwnedTemporary(prepare(item,current));fun prepareBounded(item:MediaItem,max:Long,current:()->Boolean):File=error("Server source hardware outside phone fixture");val MAX_BYTES=128L*1024*1024
 SOURCE
 }
 JOURNAL
@@ -83,6 +86,8 @@ private class Hardware {
  suspend fun snapshot(current:()->Boolean)=if(current())NativeCallbackSnapshot("",0,deck())else null
  suspend fun recoverOutput(current:()->Boolean)=current()
  var loadedSpeed=0.0
+ suspend fun releaseUnborrowed(source:NativePlaybackSource)=source.release()
+ suspend fun load(source:NativePlaybackSource,id:Long,generation:Long,p:Long,current:()->Boolean,speed:Double=1.0):Boolean=load((source as NativePlaybackSource.OwnedTemporary).file,id,generation,p,current,speed)
  suspend fun load(file:File,id:Long,generation:Long,p:Long,current:()->Boolean,speed:Double=1.0):Boolean {if(!current())return false;loaded=file;identity=id;position=p;loadedSpeed=speed;return true}
  suspend fun control(operation:Int,value:Double,current:()->Boolean)=current()
  suspend fun arrangement(operation:Int,value:Long,current:()->Boolean)=current()

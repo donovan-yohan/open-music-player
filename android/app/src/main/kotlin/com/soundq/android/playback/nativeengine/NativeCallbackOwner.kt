@@ -96,6 +96,7 @@ internal class NativeTempoReservation internal constructor(internal val token: L
 internal class NativeCallbackOwner(
     private val calls: NativeCallbackCalls,
     private val observe: (NativeCallbackSnapshot?) -> Unit,
+    private val descriptorsDrained:(String?)->Boolean={true},
 ) {
     private val thread = HandlerThread("SoundQ-native-control").apply { start() }
     private val handler = Handler(thread.looper)
@@ -106,6 +107,8 @@ internal class NativeCallbackOwner(
     private var closing = false
     private val borrowed = mutableSetOf<File>()
     private val ordinaryFiles = mutableMapOf<Int, File>()
+    private val borrowedOriginals = mutableSetOf<NativePlaybackSource.BorrowedOriginal>()
+    private val ordinaryOriginals = mutableMapOf<Int, NativePlaybackSource.BorrowedOriginal>()
     private var arrangementBorrowed = false
     @Volatile private var observationRevision = 0L
     @Volatile var diagnostics: String = "{}"
@@ -141,7 +144,7 @@ internal class NativeCallbackOwner(
         withContext(dispatcher) {
             // Calling load transfers custody even if admission is revoked before JNI.
             // A throwing JNI load has uncertain custody. Keep its file through release.
-            if (deck !in 0..1 || arrangementBorrowed || ordinaryFiles.containsKey(deck)) { borrowed.add(file); return@withContext false }
+            if (deck !in 0..1 || arrangementBorrowed || (ordinaryFiles.containsKey(deck) || ordinaryOriginals.containsKey(deck))) { borrowed.add(file); return@withContext false }
             borrowed.add(file)
             ordinaryFiles[deck] = file
             if (closing || openingFailed || handle == 0L || !current()) return@withContext false
@@ -149,6 +152,19 @@ internal class NativeCallbackOwner(
                 else calls.loadSpeed(handle, deck, file.absolutePath, identity, generation, position, speed) }
             catch (_: Throwable) { false }
         }
+
+    suspend fun load(source: NativePlaybackSource, identity: Long, generation: Long, position: Long, current: () -> Boolean, speed: Double = 1.0): Boolean = loadDeck(0, source, identity, generation, position, current, speed)
+    suspend fun loadDeck(deck: Int, source: NativePlaybackSource, identity: Long, generation: Long, position: Long, current: () -> Boolean, speed: Double = 1.0): Boolean = when(source) {
+        is NativePlaybackSource.OwnedTemporary -> loadDeck(deck,source.file,identity,generation,position,current,speed)
+        is NativePlaybackSource.BorrowedOriginal -> withContext(dispatcher) {
+            // Custody precedes any throwing JNI. Original leases have no unlink capability.
+            borrowedOriginals.add(source)
+            if(deck !in 0..1 || arrangementBorrowed || ordinaryFiles.containsKey(deck) || ordinaryOriginals.containsKey(deck))return@withContext false
+            ordinaryOriginals[deck]=source
+            if(closing || openingFailed || handle==0L || !current() || !source.versionCurrent())return@withContext false
+            try {calls.loadReader(handle,deck,source.reader,identity,generation,position,speed)}catch(_:Throwable){false}
+        }
+    }
 
     suspend fun control(operation: Int, value: Double = 0.0, current: () -> Boolean = { true }): Boolean = controlDeck(0, operation, value, current)
     suspend fun controlDeck(deck: Int, operation: Int, value: Double = 0.0, current: () -> Boolean = { true }): Boolean =
@@ -163,7 +179,10 @@ internal class NativeCallbackOwner(
 
     /** Per-slot unassign ACK plus concrete WorkerDeck destruction, never EOF alone. */
     suspend fun unloadDeck(deck: Int): Boolean = withContext(dispatcher) {
-        val file = ordinaryFiles[deck] ?: return@withContext true
+        val file = ordinaryFiles[deck]
+        val original=ordinaryOriginals[deck]
+        if(file==null && original==null)return@withContext true
+        original?.reader?.revoke()
         if (closing || handle == 0L) return@withContext false
         val retired = try {
             calls.control(handle, 8, deck, 0.0, System.nanoTime()) && withTimeoutOrNull(15_000) {
@@ -175,8 +194,14 @@ internal class NativeCallbackOwner(
             } == true
         } catch (_: Throwable) { false }
         if (retired) {
-            ordinaryFiles.remove(deck); borrowed.remove(file)
-            withContext(Dispatchers.IO) { file.delete() }
+            if(original!=null) {
+                if(!withContext(Dispatchers.IO){original.release()})return@withContext false
+                ordinaryOriginals.remove(deck);borrowedOriginals.remove(original)
+            }
+            if(file!=null) {
+                ordinaryFiles.remove(deck); borrowed.remove(file)
+                withContext(Dispatchers.IO) { file.delete() }
+            }
         }
         retired
     }
@@ -284,6 +309,21 @@ internal class NativeCallbackOwner(
         val tag = ++tempoSequence
         if (try { calls.liveTempo(handle, revision, instance, tag, sourceBpm, targetBpm, glideMs * rate / 1000, reservation.token) } catch (_: Throwable) { false }) tag else null
     }
+    suspend fun releaseUnborrowed(source:NativePlaybackSource):Boolean {
+        if(try {withContext(Dispatchers.IO){source.release()}}catch(_:Throwable){false})return true
+        // A failed pre-transfer descriptor close also belongs to the deletion
+        // drain. Native identity zero alone cannot prove this source released.
+        withContext(dispatcher) {when(source) {
+            is NativePlaybackSource.OwnedTemporary -> borrowed.add(source.file)
+            is NativePlaybackSource.BorrowedOriginal -> borrowedOriginals.add(source)
+        }}
+        return false
+    }
+    suspend fun sourcesDrained(fileId:String?=null):Boolean = withContext(dispatcher) {
+        if(!descriptorsDrained(fileId))false
+        else if(fileId==null)borrowed.isEmpty() && borrowedOriginals.isEmpty() && ordinaryFiles.isEmpty() && ordinaryOriginals.isEmpty()
+        else (borrowedOriginals+ordinaryOriginals.values).none {it.physicalFileId==null || it.physicalFileId==fileId}
+    }
     suspend fun retainedBytes(): Long = withContext(dispatcher) { borrowed.sumOf { it.length() } }
     suspend fun prepareSchedule(candidate: NativeCallbackArrangement, revision: Long, current: () -> Boolean): Boolean = withContext(dispatcher) {
         if (closing || handle == 0L || !current()) return@withContext false
@@ -310,10 +350,10 @@ internal class NativeCallbackOwner(
     }
     /** No successor can load until this exact source's concrete decoder-release receipt. */
     suspend fun unload(): Boolean {
-        val ordinary = withContext(dispatcher) { ordinaryFiles.keys.toList() }
+        val ordinary = withContext(dispatcher) { (ordinaryFiles.keys+ordinaryOriginals.keys).toList() }
         for (deck in ordinary) if (!unloadDeck(deck)) return false
         val result = withContext(dispatcher) {
-            if (borrowed.isEmpty()) return@withContext true
+            if (borrowed.isEmpty() && borrowedOriginals.isEmpty()) return@withContext true
             if (closing || handle == 0L) return@withContext false
             try {
                 if (arrangementBorrowed) {
@@ -332,24 +372,31 @@ internal class NativeCallbackOwner(
                 } ?: false
             } catch (_: Throwable) { false }
         }
-        if (result) { arrangementBorrowed = false; deleteBorrowed() }
-        return result
+        if (result) { arrangementBorrowed = false; return deleteBorrowed() }
+        return false
     }
 
-    private suspend fun deleteBorrowed() {
+    private suspend fun deleteBorrowed():Boolean {
+        val originals=withContext(dispatcher){borrowedOriginals.toList()}
+        for(original in originals) {
+            if(!withContext(Dispatchers.IO){original.release()})return false
+            withContext(dispatcher){borrowedOriginals.remove(original);ordinaryOriginals.entries.removeAll {it.value===original}}
+        }
         val files = withContext(dispatcher) { borrowed.toList().also { borrowed.clear(); ordinaryFiles.clear() } }
         withContext(Dispatchers.IO) { files.forEach { it.delete() } }
+        return true
     }
 
     suspend fun close() {
-        val success = withContext(dispatcher) {
+        var success = withContext(dispatcher) {
             closing = true
+            borrowedOriginals.forEach {it.reader.revoke()}
             handler.removeCallbacks(poll)
             try {
                 if (handle == 0L) !openingFailed else calls.close(handle).also { if (it) handle = 0 }
             } catch (_: Throwable) { false }
         }
-        if (success) deleteBorrowed()
+        if (success) success=deleteBorrowed()
         released.complete(success)
         // Failed close deliberately retains both owner and encoded files, never certifies release.
         if (success) thread.quitSafely() else failedOwners.add(this)

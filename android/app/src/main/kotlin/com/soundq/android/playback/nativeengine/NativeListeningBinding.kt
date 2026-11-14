@@ -11,14 +11,18 @@ import java.util.concurrent.atomic.AtomicLong
 internal class NativeListeningBinding(
     private val store:DeviceListeningStore, private var source:SourceCapture,
     private val occurrence:UUID, private val generation:Long, val deck:Int,
-    val resumeMs:Long, private val durationMs:Long, private val current:()->Boolean,
+    val resumeMs:Long, private var durationMs:Long, private val streamingLong:Boolean?=null,
+    private val current:()->Boolean,
 ) {
     // Pause/Play revokes completion intent, not genuine source-cursor evidence.
     // Only seek/retirement invalidates queued observations of this traversal.
     private val fence=AtomicLong(0)
     private val intentFence=AtomicLong(0)
     private var observedFence=0L
-    private var traversal=store.beginTraversal(source,occurrence,generation,1,0,durationMs)
+    private fun begin(source:SourceCapture,identity:Long,baseline:Long)=
+        if(durationMs>0)store.beginTraversal(source,occurrence,generation,identity,baseline,durationMs)
+        else store.beginStreamingTraversal(source,occurrence,generation,identity,baseline,streamingLong==true)
+    private var traversal=begin(source,1,0)
     private var nativeRevision=0L
     private var sequence=0L
     private var consumed=0L
@@ -43,7 +47,7 @@ internal class NativeListeningBinding(
                 is HistoryKey.Device->store.captureSource(source.access,key.id)
                 is HistoryKey.Server->store.bindServerContent(source.access,key,source.owner.revision,durationMs)
             } ?: return false
-            source=next;traversal=store.beginTraversal(next,occurrence,generation,identity,baseline,durationMs)
+            source=next;traversal=begin(next,identity,baseline)
             completed=false;played=false;started=false;checkpoint=-1
         }else traversal=traversal?.let {store.beginSeek(it,identity,baseline)}
         observedFence=fence.get();sequence=0;previous=null;consumed=baseline
@@ -52,13 +56,18 @@ internal class NativeListeningBinding(
     fun acknowledgeSeek(revision:Long,position:Long) {
         if(retired||!current()||revision<=nativeRevision)return
         nativeRevision=revision;previous=null;seeking=false
-        traversal?.let {if(played&&durationMs>600000)store.checkpoint(SourcePositionCheckpoint(it,++sequence,position.coerceIn(0,durationMs)))}
+        traversal?.let {if(played&&(durationMs>600000 || durationMs==0L && streamingLong==true))store.checkpoint(SourcePositionCheckpoint(it,++sequence,bounded(position)))}
     }
+    private fun bounded(position:Long)=if(durationMs>0)position.coerceIn(0,durationMs)else position.coerceAtLeast(0)
     fun observe(value:NativeCallbackDeck,atEpochMs:Long,stamp:Long=stamp(),allowNatural:Boolean=true) {
         if(retired||completed||!current()||seeking||stamp!=fence.get()||observedFence!=stamp||value.identity!=generation||value.generation!=generation||value.error!=0||!value.ready||value.preparing||value.scratching||value.traversalRevision<=0)return
         if(nativeRevision==0L)nativeRevision=value.traversalRevision
         if(value.traversalRevision!=nativeRevision)return
         val t=traversal ?: return
+        if(durationMs==0L && value.sourceFrames>0 && value.durationMs>0) {
+            if(store.sealStreamingEnd(t,value.durationMs)==Mutation.REFUSED)return
+            durationMs=value.durationMs
+        }
         val old=previous
         val advanced=old!=null&&old.traversalRevision==value.traversalRevision&&old.playing&&value.positionMs>old.positionMs&&value.rate>0
         if(advanced&&!started) {
@@ -68,8 +77,8 @@ internal class NativeListeningBinding(
         val end=value.naturalEnd
         if(allowNatural&&played&&end!=null&&end.generation==generation&&end.identity==generation&&end.traversalRevision==nativeRevision&&end.count>consumed) {
             if(store.complete(QualifiedNaturalEnd(t,++sequence,occurrence,generation,t.seekIdentity,end.count))!=Mutation.REFUSED){completed=true;consumed=end.count}
-        } else if(played&&durationMs>600000&&(checkpoint<0||kotlin.math.abs(value.positionMs-checkpoint)>=5000||old?.playing==true&&!value.playing)) {
-            if(store.checkpoint(SourcePositionCheckpoint(t,++sequence,value.positionMs.coerceIn(0,durationMs)))!=Mutation.REFUSED)checkpoint=value.positionMs
+        } else if(played&&(durationMs>600000 || durationMs==0L && streamingLong==true)&&(checkpoint<0||kotlin.math.abs(value.positionMs-checkpoint)>=5000||old?.playing==true&&!value.playing)) {
+            if(store.checkpoint(SourcePositionCheckpoint(t,++sequence,bounded(value.positionMs)))!=Mutation.REFUSED)checkpoint=value.positionMs
         }
         if(!value.playing)started=false
         previous=value
@@ -78,7 +87,7 @@ internal class NativeListeningBinding(
     fun finish(value:NativeCallbackDeck?) {
         val t=traversal ?: return
         if(!completed&&played&&value!=null&&value.identity==generation&&value.generation==generation&&value.error==0&&value.ready&&!seeking&&value.traversalRevision==nativeRevision)
-            store.checkpoint(SourcePositionCheckpoint(t,++sequence,value.positionMs.coerceIn(0,durationMs)))
+            store.checkpoint(SourcePositionCheckpoint(t,++sequence,bounded(value.positionMs)))
         store.retireTraversal(t)
     }
 }

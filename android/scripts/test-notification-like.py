@@ -26,7 +26,7 @@ prelude=prelude.replace('private const val LIKE="soundq.library.like."','')
 prelude=prelude.replace('private class JamPort {','private class JamPort {fun detachOwner(){};')
 prelude=prelude.replace('private class PlayerFacade {','private open class PlayerFacade {fun release(){};')
 prelude=prelude.replace('import java.util.concurrent.*','import java.util.concurrent.*\nimport java.util.UUID')
-prelude=prelude.replace('import com.soundq.android.playback.AcceptedArrangement','import com.soundq.android.playback.AcceptedArrangement\nimport com.soundq.android.playback.PerformanceCommands')
+prelude=prelude.replace('import com.soundq.android.playback.AcceptedArrangement','import com.soundq.android.playback.AcceptedArrangement\nimport com.soundq.android.playback.PlaybackRef\nimport com.soundq.android.playback.PerformanceCommands')
 
 prelude=prelude.replace('import com.soundq.android.playback.AcceptedArrangement','import com.soundq.android.data.timeline.projectTempoDocument\nimport com.soundq.android.playback.nativeArrangementPayload\nimport com.soundq.android.playback.AcceptedArrangement')
 prelude+='''
@@ -45,6 +45,7 @@ prelude+='''
 // Keep the full production branch type-checkable with this probe's MediaItem type.
 private class NativeCallbackArrangementBoundary
 private class NativeCallbackPlayerBoundary:PlayerFacade() {
+ suspend fun retirePhoneFile(ref:com.soundq.android.playback.PlaybackRef.Device):Boolean=error("Original mutation outside Like fixture")
  suspend fun prepareArrangement(document:TimelineDocument,sourceItems:List<MediaItem>,current:()->Boolean):NativeCallbackArrangementBoundary=error("Native arrangement outside Like fixture")
  fun installArrangement(candidate:NativeCallbackArrangementBoundary,item:MediaItem,sourceItems:List<MediaItem>):Unit=error("Native arrangement outside Like fixture")
  suspend fun discardArrangement(candidate:NativeCallbackArrangementBoundary):Unit=error("Native arrangement outside Like fixture")
@@ -71,6 +72,8 @@ prelude+='''
  val CLOCK_SEEK="soundq.clock.seek.v1"
  fun seekClock(args:Bundle):ListenableFuture<SessionResult> = error("Clock outside Like fixture")
  // Listening speed is outside the Like fixture and must fail closed if entered.
+ val SONG_SPEED="soundq.song.speed.v1";val RETIRE_PHONE_FILE="soundq.phone.retire.v1"
+ fun songSpeed(args:Bundle):ListenableFuture<SessionResult> = error("Selected song speed outside Like fixture")
  val SET_LISTENING_SPEED="soundq.listening.speed.v1"
  fun setListeningSpeed(args:Bundle):ListenableFuture<SessionResult> = error("Speed outside Like fixture")
  var pendingArrangement:Pair<AcceptedArrangement,Long>?=null

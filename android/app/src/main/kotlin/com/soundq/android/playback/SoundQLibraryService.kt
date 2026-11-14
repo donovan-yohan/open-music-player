@@ -305,6 +305,51 @@ class SoundQLibraryService : MediaLibraryService() {
         }
         return result
     }
+    /** Arbitrary-song preference access is scoped independently of current playback. */
+    private fun songSpeed(args:Bundle):ListenableFuture<SessionResult> {
+        fun refused()=Futures.immediateFuture(SessionResult(SessionError.ERROR_INVALID_STATE))
+        val native=player as? com.soundq.android.playback.nativeengine.NativeCallbackPlayer ?: return refused()
+        val version=args.getLong("version",-1)
+        val ref=PlaybackRef.read(args.getString("target")) ?: return refused()
+        fun current():Boolean=graph.session.owns(version)&&when(ref) {
+            is PlaybackRef.Device->localAccess()&&graph.phoneAudio.observed(ref)!=null
+            is PlaybackRef.Server->graph.endpoint.identity==ref.endpoint&&graph.session.capture()?.let {it.accountId==ref.account&&graph.session.current(it)}==true
+        }
+        if(!current())return refused()
+        val key=ListeningSpeedKey.of(ref)
+        // Preference equality is content sharing, not physical/current-source identity.
+        val item=player.currentMediaItem?.takeIf {playing->
+            when(val captured=PlaybackRef.read(playing.mediaMetadata.extras?.getString("playbackRef"))) {
+                is PlaybackRef.Device->ref is PlaybackRef.Device&&graph.phoneAudio.sameFile(captured,ref)
+                is PlaybackRef.Server->captured==ref
+                null->false
+            }
+        }
+        val state=if(item!=null)native.listeningSpeed() else null
+        val (min,max)=native.listeningSpeedBounds
+        fun reply(persisted:Boolean=true):SessionResult {
+            val accepted=if(item!=null)native.listeningSpeed()?.takeIf {it.occurrence==item.mediaId} else null
+            val value=SongSpeedState(accepted?.accepted ?: speeds.speed(key) ?: 1.0,min,max,item!=null,persisted,
+                accepted?.unavailable ?: if(min<1.0&&max>1.0)null else ListeningSpeedUnavailable.Source)
+            return SessionResult(SessionResult.RESULT_SUCCESS,Bundle().apply {putString("songSpeed",Json.encodeToString(value))})
+        }
+        if(!args.containsKey("speed"))return Futures.immediateFuture(reply())
+        if(state?.unavailable!=null)return refused()
+        val value=ListeningSpeedPolicy.quantise(args.getDouble("speed",Double.NaN),min,max) ?: return refused()
+        if(item==null) {
+            val persisted=speeds.set(key,value)
+            native.speedPreferenceChanged();publishSessionExtras()
+            return Futures.immediateFuture(reply(persisted))
+        }
+        val result=SettableFuture.create<SessionResult>()
+        native.requestSpeed(item.mediaId,value) {ok->
+            if(ok&&current()&&player.currentMediaItem===item) {
+                val persisted=speeds.set(key,value);native.speedPreferenceChanged();publishSessionExtras()
+                result.set(reply(persisted))
+            } else result.set(SessionResult(SessionError.ERROR_INVALID_STATE))
+        }
+        return result
+    }
     private fun admitted(controller:MediaSession.ControllerInfo):Boolean {
         // Legacy MediaSession only marks package verification from API 33 onward.
         val verified=controller.isPackageNameVerified || (android.os.Build.VERSION.SDK_INT<33 &&
@@ -422,7 +467,7 @@ class SoundQLibraryService : MediaLibraryService() {
         require(savedCompatible(saved))
         return saved.items.map {i ->
             val uri=Uri.parse(if(i.ref is PlaybackRef.Device)"soundqdevice://source/${i.occurrence}" else "soundq://track/${i.track}/${i.occurrence}")
-            grants[uri.toString()]=if(i.ref is PlaybackRef.Device)MediaGrant(i.ref,graph.session.version(),graph.phoneAudio.authorityVersion) else MediaGrant(scope,TrackId(i.track),i.localOnly)
+            grants[uri.toString()]=if(i.ref is PlaybackRef.Device)MediaGrant(i.ref,graph.session.version(),graph.phoneAudio.sourceAuthority(i.ref)) else MediaGrant(scope,TrackId(i.track),i.localOnly)
             val extras=Bundle().apply {putLong("trackId",i.track);putString("occurrenceId",i.occurrence);putBoolean("manual",i.manual);putBoolean("localOnly",i.localOnly);putLong("durationMs",i.durationMs);putString("origin",i.origin.name)}
             extras.putString("playbackRef",saved.reference(i).wire())
             i.jam?.let {extras.putString("soundqJam",it.encode())}
@@ -454,7 +499,7 @@ class SoundQLibraryService : MediaLibraryService() {
         if(own(controller)) {
             if(player is com.soundq.android.playback.nativeengine.NativeCallbackPlayer && account?.let(graph.session::current)==true)builder.add(SessionCommand(CLOCK_SEEK,Bundle.EMPTY))
             builder.add(SessionCommand(UNDO,Bundle.EMPTY))
-            if(player is com.soundq.android.playback.nativeengine.NativeCallbackPlayer)builder.add(SessionCommand(START_CONTEXT,Bundle.EMPTY)).add(SessionCommand(SET_LISTENING_SPEED,Bundle.EMPTY))
+            if(player is com.soundq.android.playback.nativeengine.NativeCallbackPlayer)builder.add(SessionCommand(START_CONTEXT,Bundle.EMPTY)).add(SessionCommand(SET_LISTENING_SPEED,Bundle.EMPTY)).add(SessionCommand(SONG_SPEED,Bundle.EMPTY)).add(SessionCommand(RETIRE_PHONE_FILE,Bundle.EMPTY))
             if (supportsSourceActions()) builder.add(SessionCommand(JAM_ADMIT, Bundle.EMPTY))
             if (player is com.soundq.android.playback.nativeengine.NativeCallbackPlayer && account?.let(graph.session::current)==true)PerformanceCommands.all.forEach {builder.add(SessionCommand(it,Bundle.EMPTY))}
             if (supportsMixActions()) builder.add(SessionCommand(PLAY_MIX, Bundle.EMPTY))
@@ -506,12 +551,24 @@ class SoundQLibraryService : MediaLibraryService() {
             SessionResult(if(ok&&current())SessionResult.RESULT_SUCCESS else SessionError.ERROR_INVALID_STATE)
         }
     }
+    private fun selectedDeviceOwner():SelectedDevicePlaybackOwner? {
+        if(acceptedArrangement!=null)return null
+        val item=player.currentMediaItem ?: return null
+        val uri=item.localConfiguration?.uri?.takeIf {it.scheme=="soundqdevice"} ?: return null
+        val grant=grants[uri.toString()] ?: return null
+        val ref=grant.device ?: return null
+        val extras=item.mediaMetadata.extras ?: return null
+        if(!extras.getBoolean("localOnly")||PlaybackRef.read(extras.getString("playbackRef"))!=ref)return null
+        // Do not call grant.current: the genuine failure may already have revoked read readiness.
+        return SelectedDevicePlaybackOwner(item.mediaId,ref,grant.version)
+    }
     private fun publishSessionExtras(){session?.setSessionExtras(Bundle().apply {
         clockProjection()?.clockAuthority?.let {authority->
             val raw=Json.encodeToString(authority)
             putString("playbackClock",if(raw.length<=96*1024)raw else Json.encodeToString(authority.copy(spans=null)))
         }
         putBoolean("canUndo",undo!=null);putString("incarnation",graph.jamAdmission.incarnation);putLong("accountEpoch",account?.takeIf {graph.session.current(it)}?.epoch ?: -1)
+        selectedDeviceOwner()?.let {putString("selectedDeviceOwner",Json.encodeToString(it))}
         putString("arrangementService",serviceIncarnation);putString("sourceQueueIncarnation",sourceQueueIncarnation)
         (player as? com.soundq.android.playback.nativeengine.NativeCallbackPlayer)?.listeningSpeed()?.let {putString(LISTENING_SPEED_STATE,Json.encodeToString(it))}
         (player as? com.soundq.android.playback.nativeengine.NativeCallbackPlayer)?.tempoPreviewState?.let {
@@ -556,7 +613,7 @@ class SoundQLibraryService : MediaLibraryService() {
                 if(!localAccess()||!graph.session.owns(version)||account!=null||player.mediaItemCount>0||transport.revision!=command||selectionEpoch!=selection)return@launch
                 restoring=true
                 try {
-                    val rows=saved.items.map {i->val ref=i.ref as? PlaybackRef.Device ?: error("Guest server source refused");val uri=Uri.parse("soundqdevice://source/${i.occurrence}");grants[uri.toString()]=MediaGrant(ref,version,graph.phoneAudio.authorityVersion)
+                    val rows=saved.items.map {i->val ref=i.ref as? PlaybackRef.Device ?: error("Guest server source refused");val uri=Uri.parse("soundqdevice://source/${i.occurrence}");grants[uri.toString()]=MediaGrant(ref,version,graph.phoneAudio.sourceAuthority(ref))
                         val e=Bundle().apply {putString("playbackRef",ref.wire());putBoolean("localOnly",true);putBoolean("manual",i.manual);putString("origin",i.origin.name);putLong("durationMs",i.durationMs)}
                         MediaItem.Builder().setMediaId(i.occurrence).setUri(uri).setMediaMetadata(MediaMetadata.Builder().setTitle(i.title).setArtist(i.artist).setExtras(e).setIsPlayable(true).setIsBrowsable(false).build()).build()}
                     player.pause();player.restoringShuffle(saved.shuffleEnabled){player.setMediaItems(rows,saved.selected,saved.position)};restoreModes(saved);transport.selectionCommitted()
@@ -574,7 +631,7 @@ class SoundQLibraryService : MediaLibraryService() {
         (0 until player.mediaItemCount).forEach {i->val item=player.getMediaItemAt(i);val uri=item.localConfiguration?.uri
             val prior=uri?.let {grants[it.toString()]}
             if(prior?.device!=null&&!prior.current(graph)&&graph.phoneAudio.observed(prior.device)!=null)
-                grants[uri.toString()]=MediaGrant(prior.device,graph.session.version(),graph.phoneAudio.authorityVersion)
+                grants[uri.toString()]=MediaGrant(prior.device,graph.session.version(),graph.phoneAudio.sourceAuthority(prior.device))
         }
     }
     private fun localAccess()=graph.phoneAudio.current(graph.session.version())
@@ -593,7 +650,7 @@ class SoundQLibraryService : MediaLibraryService() {
      * minted for that version and stays non-current until acceptance; PREPARE renews it if authority moved. */
     private fun grantFor(item:MediaItem,scope:AccountScope?,renewal:Boolean=false):MediaGrant {
         val ref=PlaybackRef.read(item.mediaMetadata.extras?.getString("playbackRef"))
-        return if(ref is PlaybackRef.Device) {check(renewal||localAccess());MediaGrant(ref,graph.session.version(),graph.phoneAudio.authorityVersion)}
+        return if(ref is PlaybackRef.Device) {check(renewal||localAccess());MediaGrant(ref,graph.session.version(),graph.phoneAudio.sourceAuthority(ref))}
         else MediaGrant(requireNotNull(scope),TrackId(item.mediaMetadata.extras!!.getLong("trackId")),item.mediaMetadata.extras!!.getBoolean("localOnly"))
     }
     private fun resolve(items:List<MediaItem>,startIndex:Int=0,startPositionMs:Long=0,compose:((List<MediaItem>)->List<MediaItem>)?=null):List<MediaItem> {
@@ -931,6 +988,18 @@ class SoundQLibraryService : MediaLibraryService() {
             if(customCommand.customAction==START_CONTEXT)return startContext(args)
             if(customCommand.customAction==CLOCK_SEEK)return seekClock(args)
             if(customCommand.customAction==SET_LISTENING_SPEED)return setListeningSpeed(args)
+            if(customCommand.customAction==SONG_SPEED)return songSpeed(args)
+            if(customCommand.customAction==RETIRE_PHONE_FILE) {
+                val ref=PlaybackRef.read(args.getString("target")) as? PlaybackRef.Device ?: return Futures.immediateFuture(SessionResult(SessionError.ERROR_INVALID_STATE))
+                val version=args.getLong("version",-1)
+                val native=player as? com.soundq.android.playback.nativeengine.NativeCallbackPlayer ?: return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
+                val result=SettableFuture.create<SessionResult>()
+                jobs.launch {
+                    val ok=graph.session.owns(version)&&localAccess()&&native.retirePhoneFile(ref)
+                    result.set(SessionResult(if(ok&&graph.session.owns(version))SessionResult.RESULT_SUCCESS else SessionError.ERROR_INVALID_STATE))
+                }.invokeOnCompletion {result.set(SessionResult(SessionError.ERROR_INVALID_STATE))}
+                return result
+            }
             graph.contextStarts.retire()
             if(customCommand.customAction in PerformanceCommands.all)return performanceCommand(controller,customCommand.customAction,args)
             // Preflight before any preparation, grant creation or queue mutation.

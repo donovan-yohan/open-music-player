@@ -113,6 +113,7 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
     val density=LocalDensity.current
     val titleStyle=if(enlarged)SoundQ.typography.title.copy(lineHeight=with(density){38.dp.toSp()}) else SoundQ.typography.title
     val artistStyle=if(enlarged)SoundQ.typography.caption.copy(lineHeight=with(density){34.dp.toSp()}) else SoundQ.typography.caption
+    val identity=listOf(LocalMediaMarqueeIdentity.current,title,subtitle)
     Box(modifier.fillMaxWidth().height(rowHeight)
         .background(mediaRowBackground(current))
         .mediaRowBottomRule()
@@ -125,12 +126,12 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
         Row(Modifier.fillMaxSize(),verticalAlignment=Alignment.CenterVertically) {
             SoundQArtworkSlot(Modifier.testTag("media-artwork"),size=rowHeight,artwork=artwork)
             Column(Modifier.weight(1f).fillMaxHeight().padding(horizontal=if(enlarged&&metadata!=null)4.dp else 8.dp),verticalArrangement=Arrangement.Center) {
-                Text(title,modifier=if(enlarged)Modifier.height(38.dp) else Modifier,
-                    style=titleStyle,color=if(current)colors.primary else colors.text,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+                SoundQMediaIdentityText(title,current,identity,modifier=(if(enlarged)Modifier.height(38.dp) else Modifier).testTag("media-title"),
+                    style=titleStyle,color=if(current)colors.primary else colors.text)
                 if(enlarged)Box(Modifier.height(if(metadata!=null)68.dp else 34.dp).fillMaxWidth()) {
                     // The metadata slot paints duration at the right of this first line and analysis below.
                     Row(Modifier.height(34.dp).fillMaxWidth(if(metadata!=null)0.4f else 1f),verticalAlignment=Alignment.CenterVertically) {
-                        Text(subtitle,Modifier.weight(1f),style=artistStyle,color=colors.muted,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+                        SoundQMediaIdentityText(subtitle,current,identity,modifier=Modifier.weight(1f).testTag("media-artist"),style=artistStyle,color=colors.muted)
                         compactFact?.let {fact ->
                             Text(fact,Modifier.weight(1f,fill=false).padding(start=4.dp)
                                 .clearAndSetSemantics {text=androidx.compose.ui.text.AnnotatedString(supporting ?: fact)},
@@ -141,7 +142,7 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
                         Box(Modifier.fillMaxWidth()) {metadata()}
                     }
                 } else {
-                    Text(subtitle,style=artistStyle,color=colors.muted,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+                    SoundQMediaIdentityText(subtitle,current,identity,modifier=Modifier.testTag("media-artist"),style=artistStyle,color=colors.muted)
                     if(metadata!=null||supporting!=null)Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                         if(metadata!=null)Box(Modifier.width(IntrinsicSize.Max)) {metadata()}
                         supporting?.let {
@@ -164,8 +165,8 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
                 SoundQIcon(SoundQPlayerIcon.Shuffle,null,tint=it)
             }
             PlayerControl("Previous track",onPrevious,available&&canPrevious&&onPrevious!=null) {SoundQIcon(SoundQIcon.Previous,null,tint=it)}
-            PlayerControl(if(playing)"Pause" else if(preparing)"Pause preparation" else "Play",onPrimary,available,primary=true) {
-                SoundQIcon(if(playing)SoundQIcon.Pause else SoundQIcon.Play,null,tint=it)
+            PlayerControl(if(playing||preparing)"Pause" else "Play",onPrimary,available,primary=true) {
+                SoundQIcon(if(playing||preparing)SoundQIcon.Pause else SoundQIcon.Play,null,tint=it)
             }
             PlayerControl("Next track",onNext,available&&canNext&&onNext!=null) {SoundQIcon(SoundQIcon.Next,null,tint=it)}
             val repeatLabel="Repeat ${when(repeat){1->"one";2->"all";else->"off"}}"
@@ -185,7 +186,8 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
     val artistHeight=with(density){measurer.measure("Ag",SoundQ.typography.caption,maxLines=1).size.height.toDp()}
     val clockWidth=with(density){measurer.measure(timing.clockText,SoundQ.typography.mono,maxLines=1).size.width.toDp()}
     val hasClock=timing.selected
-    val displayTitle=if(preparing&&!timing.selected)"Preparing audio" else title
+    val displayTitle=title
+    val identity=listOf(timing.identity ?: LocalMediaMarqueeIdentity.current,displayTitle,artist)
     val colors=SoundQ.colors
     BoxWithConstraints(Modifier.fillMaxWidth().background(colors.player)) {
         val footer=hasClock&&(density.fontScale>=1.3f||clockWidth>maxWidth-72.dp-96.dp-16.dp)
@@ -193,7 +195,7 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
         val stackClock=clockWidth>maxWidth-16.dp
         val clock:@Composable ()->Unit={
             Text(if(footer&&stackClock)timing.clockText.replace(" / ","\n/ ") else timing.clockText,
-                Modifier.semantics {contentDescription=timing.clockDescription},
+                Modifier.fillMaxWidth().semantics {contentDescription=timing.clockDescription},
                 style=SoundQ.typography.mono,color=colors.muted,softWrap=false)
         }
         Column(Modifier.fillMaxWidth()) {
@@ -201,18 +203,18 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
                 Row(Modifier.weight(1f).fillMaxHeight()
                     .semantics(mergeDescendants=true) {
                         contentDescription="$displayTitle, $artist"
-                        stateDescription=when {preparing->"Preparing audio";timing.state==CompactPlaybackState.Failed->"Playback failed";timing.state==CompactPlaybackState.Ended->"Playback ended";playing->"Playing";timing.state==CompactPlaybackState.None->"Nothing playing";else->"Paused"}
+                        stateDescription=when {timing.state==CompactPlaybackState.Ended->"Playback ended";playing->"Playing";timing.state==CompactPlaybackState.None->"Nothing playing";else->"Paused"}
                     }
                     .clickable(role=Role.Button,onClickLabel="Open now playing",onClick=onExpand),verticalAlignment=Alignment.CenterVertically) {
                     SoundQArtworkSlot(Modifier.testTag("compact-artwork"),size=rowHeight,artwork=artwork)
                     Column(Modifier.weight(1f).padding(horizontal=8.dp),verticalArrangement=Arrangement.Center) {
-                        Text(displayTitle,style=SoundQ.typography.title,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
-                        if(artist.isNotEmpty())Text(artist,style=SoundQ.typography.caption,color=colors.muted,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+                        SoundQMediaIdentityText(displayTitle,selected=timing.selected,identity=identity,modifier=Modifier.testTag("compact-title"),style=SoundQ.typography.title)
+                        if(artist.isNotEmpty())SoundQMediaIdentityText(artist,selected=timing.selected,identity=identity,modifier=Modifier.testTag("compact-artist"),style=SoundQ.typography.caption,color=colors.muted)
                         if(hasClock&&!footer)clock()
                     }
                 }
-                CellIcon(if(playing||preparing&&timing.selected)SoundQIcon.Pause else SoundQIcon.Play,
-                    if(preparing)"Pause preparation" else if(playing)"Pause" else "Play",onPrimary,
+                CellIcon(if(playing||preparing)SoundQIcon.Pause else SoundQIcon.Play,
+                    if(playing||preparing)"Pause" else "Play",onPrimary,
                     modifier=Modifier.width(48.dp).fillMaxHeight().cellRule(start=true),enabled=available)
                 CellIcon(SoundQIcon.List,"Open listening queue",onQueue,Modifier.width(48.dp).fillMaxHeight().cellRule(start=true))
             }
@@ -306,9 +308,10 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
         enabled=known,onValueChangeFinished={if(known)draft?.let {onSeek((it*duration).toLong())};draft=null})
     val elapsed=formatTime(if(known)draft?.let {it*duration}?.toLong() ?: position else position)
     Text("$elapsed / ${if(known)formatTime(duration) else "—"}",
-        modifier=if(known)Modifier else Modifier.semantics {contentDescription="Elapsed $elapsed, Duration unavailable"},style=SoundQ.typography.mono)
+        modifier=Modifier.fillMaxWidth().then(if(known)Modifier else Modifier.semantics {contentDescription="Elapsed $elapsed, Duration unavailable"}),
+        style=SoundQ.typography.mono,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
 }
-private fun formatTime(ms:Long):String {val seconds=(ms/1000).coerceAtLeast(0);return "${seconds/60}:${(seconds%60).toString().padStart(2,'0')}"}
+private fun formatTime(ms:Long):String = formatSongTime(ms)
 
 /** Only downs in this full-size target may request drag dismissal. Body/nested scroll never may. */
 @Composable private fun SoundQSheetDragHandle(title:String,onDismiss:()->Unit) {

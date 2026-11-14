@@ -74,6 +74,7 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     val discovery=com.soundq.android.data.discovery.DiscoveryRepository(session,api,historyDirectory=File(directory,"discover-history"))
     val io=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     internal val phoneAudio=com.soundq.android.data.device.PhoneAudioRepository(this)
+    internal val phoneFiles=com.soundq.android.data.device.PhoneFileActions(this)
     private val controllerOwner=lazy {com.soundq.android.playback.ControllerProjection(context)}
     internal val controller by controllerOwner
     private val playerArtworkOwner=lazy {com.soundq.android.product.artwork.SelectedPlayerArtwork(session,mediaClient,controller.state,::track,libraryArtwork,false)}

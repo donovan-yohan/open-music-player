@@ -32,7 +32,7 @@ import kotlinx.coroutines.delay
 private fun LazyListScope.discoverHeader(content:@Composable ()->Unit) {
     item {Column(Modifier.fillMaxWidth().padding(horizontal=SoundQ.spacing.gutter,vertical=SoundQ.spacing.small)) {content()}}
 }
-private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else "${ms/60000}:${(ms/1000%60).toString().padStart(2,'0')}"
+private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else formatSongTime(ms)
 @Composable fun DiscoverScreen(model:ProductViewModel,view:DiscoveryView?,intake:com.soundq.android.data.imports.ImportView?,onImports:()->Unit,onAccount:()->Unit,onAcquisition:()->Unit) {
     val repository=model.graph.discovery
     DisposableEffect(view,intake){onDispose {view?.let(repository::close);intake?.let(model.graph.imports::close)}}

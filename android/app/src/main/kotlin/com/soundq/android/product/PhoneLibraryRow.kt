@@ -9,6 +9,16 @@ import com.soundq.android.data.deviceaudio.DeviceAudio
 import com.soundq.android.playback.PlaybackRef
 import com.soundq.designsystem.*
 import java.util.concurrent.atomic.AtomicBoolean
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.launch
+import com.soundq.android.data.device.PhoneFileTarget
+import com.soundq.android.data.device.FileDeleteOutcome
 
 @Composable internal fun PhoneLibraryRow(model:ProductViewModel,row:DeviceAudio,selected:Boolean,revealOwner:RowRevealOwner,current:()->Boolean,onMore:()->Unit) {
     val phone by model.graph.phoneAudio.state.collectAsState()
@@ -35,18 +45,82 @@ import java.util.concurrent.atomic.AtomicBoolean
 }
 
 @Composable internal fun PhoneTrackSheet(model:ProductViewModel,row:DeviceAudio,onDismiss:()->Unit,onManage:()->Unit) {
+    val playback by model.playback.collectAsState()
     val version=model.graph.session.version();val ref=model.graph.phoneAudio.reference(row)
     val alive=remember(ref,version){AtomicBoolean(true)}
     DisposableEffect(alive){onDispose {alive.set(false)}}
-    val valid={alive.get()&&model.graph.phoneAudio.current(version)&&model.graph.phoneAudio.observed(ref)!=null}
+    val lifetime={alive.get()&&model.graph.phoneAudio.current(version)}
+    val valid={lifetime()&&model.graph.phoneAudio.observed(ref)!=null}
+    val scope=rememberCoroutineScope()
+    val context=LocalContext.current
+    val deleteUnavailable=model.graph.phoneFiles.deleteUnavailableReason
+    var speed by remember(ref,version){mutableStateOf(false)}
+    var busy by remember(ref,version){mutableStateOf(false)}
+    var confirmation by remember(ref,version){mutableStateOf<PhoneFileTarget?>(null)}
+    var deleting by remember(ref,version){mutableStateOf(false)}
+    var message by remember(ref,version){mutableStateOf<String?>(null)}
+    var savedSpeed by remember(ref,version){mutableStateOf<String?>(null)}
+    LaunchedEffect(ref,version,speed) {
+        if(!speed)model.controller.songSpeed(ref,version,null,valid) {state->if(valid())savedSpeed=state?.let {SoundQSpeedScale.label(it.speed)}}
+    }
     SoundQSheet(row.metadata.displayTitle,onDismiss) {
-        Text(row.metadata.artist.orEmpty());row.metadata.album?.let {Text(it)}
-        Text("Phone file · ${row.metadata.filename}",style=SoundQ.typography.caption)
-        Text("Your original file stays on this phone. Playback does not upload it.",style=SoundQ.typography.caption)
-        if(!row.available)Text(phoneRowUnavailableLabel(row),style=SoundQ.typography.caption)
-        SoundQButton("Play / resume",{if(valid()){model.controller.playDevice(ref,valid);onDismiss()}},enabled=valid())
-        SoundQButton("Play next",{if(valid()){model.controller.enqueueDevice(ref,true,valid);onDismiss()}},enabled=valid(),variant=SoundQButtonVariant.Secondary)
-        SoundQButton("Add to listening queue",{if(valid()){model.controller.enqueueDevice(ref,false,valid);onDismiss()}},enabled=valid(),variant=SoundQButtonVariant.Secondary)
-        SoundQButton("Local audio",onManage,variant=SoundQButtonVariant.Secondary)
+        if(speed)SongSpeedEditor(model,ref,valid){speed=false}
+        else Column {
+            row.metadata.artist?.takeIf {it.isNotBlank()}?.let {Text(it)}
+            row.metadata.album?.takeIf {it.isNotBlank()}?.let {Text(it)}
+            Text(row.metadata.filename,style=SoundQ.typography.caption)
+            if(!row.available)Text(phoneRowUnavailableLabel(row),style=SoundQ.typography.caption)
+            SongActionRow("Play / resume",{if(valid()){model.controller.playDevice(ref,valid);onDismiss()}},SoundQIcon.Play,enabled=valid()&&!busy)
+            SongActionRow("Play next",{if(valid()){model.controller.enqueueDevice(ref,true,valid);onDismiss()}},SoundQIcon.Next,enabled=valid()&&!busy)
+            SongActionRow("Add to listening queue",{if(valid()){model.controller.enqueueDevice(ref,false,valid);onDismiss()}},SoundQIcon.AddQueue,enabled=valid()&&!busy)
+            SoundQDivider()
+            SongActionRow("Playback speed",{speed=true},value=savedSpeed,opensDestination=true,enabled=valid()&&!busy)
+            SongActionRow("Open in file browser",{
+                busy=true;message=null
+                scope.launch {
+                    val target=runCatching {model.graph.phoneFiles.capture(ref,valid)}.getOrNull()
+                    val opened=target!=null&&runCatching {model.graph.phoneFiles.open(target,valid)}.getOrDefault(false)
+                    if(lifetime()){busy=false;if(opened)onDismiss()else message="No file manager can open this location."}
+                }
+            },opensDestination=true,enabled=valid()&&!busy)
+            SongActionRow("Local audio",onManage,SoundQIcon.Settings,opensDestination=true)
+            SoundQDivider()
+            SongActionRow("Delete file",{
+                busy=true;message=null
+                scope.launch {
+                    val target=runCatching {model.graph.phoneFiles.capture(ref,valid)}.getOrNull()
+                    if(lifetime()){busy=false;confirmation=target;if(target==null)message="File changed or unavailable. Nothing was deleted."}
+                }
+            },SoundQIcon.Trash,value=deleteUnavailable,enabled=valid()&&!busy&&deleteUnavailable==null,destructive=true)
+            message?.let {Text(it,style=SoundQ.typography.caption,color=SoundQ.colors.error)}
+        }
+    }
+    confirmation?.let {target->
+        AlertDialog(onDismissRequest={if(!deleting)confirmation=null},shape=RectangleShape,
+            containerColor=SoundQ.colors.sheet,title={Text("Delete file from phone?",style=SoundQ.typography.title)},
+            text={Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(row.metadata.displayTitle);Text(target.path)
+                Text("This deletes the original file from your phone. Other apps will lose access. SoundQ can't undo this.")
+                if(playback.queue.singleOrNull {it.occurrenceId==playback.selectedOccurrence}?.ref==ref)
+                    Text("Playback will stop. Another song won't start automatically.")
+                if(deleting)Text("Deleting file…")
+            }},
+            dismissButton={TextButton({if(!deleting)confirmation=null},enabled=!deleting){Text("Cancel")}},
+            confirmButton={TextButton({
+                if(!deleting){deleting=true;busy=true
+                    model.deletePhoneFile(target,lifetime) {result->
+                        if(lifetime()) {
+                            deleting=false;busy=false;confirmation=null
+                            if(result==FileDeleteOutcome.Deleted){android.widget.Toast.makeText(context,"File deleted from phone",android.widget.Toast.LENGTH_SHORT).show();onDismiss()}
+                            else message=when(result) {
+                                FileDeleteOutcome.Changed->"File changed. Nothing was deleted."
+                                FileDeleteOutcome.Missing->"File is no longer available."
+                                FileDeleteOutcome.Unconfirmed->"Couldn't confirm the library update. Refresh Local audio."
+                                else->"Couldn't delete file. Check file access and try again."
+                            }
+                        }
+                    }
+                }
+            },enabled=!deleting,colors=ButtonDefaults.textButtonColors(contentColor=SoundQ.colors.error)){Text("Delete file")}})
     }
 }

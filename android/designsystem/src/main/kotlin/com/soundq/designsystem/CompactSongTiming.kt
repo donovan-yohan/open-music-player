@@ -18,5 +18,5 @@ fun formatSongTime(ms:Long?):String {
     if(ms==null)return "—:—"
     val seconds=ms.coerceAtLeast(0)/1000
     val tail=(seconds%60).toString().padStart(2,'0')
-    return if(seconds>=3600)"${seconds/3600}:${(seconds/60%60).toString().padStart(2,'0')}:$tail" else "${seconds/60}:$tail"
+    return if(seconds>=3600)"${(seconds/3600).toString().padStart(2,'0')}:${(seconds/60%60).toString().padStart(2,'0')}:$tail" else "${seconds/60}:$tail"
 }

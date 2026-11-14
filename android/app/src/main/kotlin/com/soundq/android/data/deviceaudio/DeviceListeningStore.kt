@@ -126,7 +126,7 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
             state.journal.filter { permitted(it.key) && (it.key !is HistoryKey.Device || (it.key as HistoryKey.Device).id in shown) }.map { ListeningHistory(it.key, it.playedAt, it.bookmark) },
             state.retired.filter { it.into in shown })
     }
-    private data class Active(val capture: TraversalCapture, val duration: Long, val admissionOrder: Long, val played: Boolean = false)
+    private data class Active(val capture: TraversalCapture, val duration: Long, val admissionOrder: Long, val played: Boolean = false, val longEligible:Boolean = duration>600000)
     // Prepared occurrences coexist. Only successful advancing playback acquires the durable journal.
     private val active = mutableMapOf<UUID, Active>()
     private var admissionOrder = 0L
@@ -156,6 +156,36 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
         usedAdmissions[source.owner.key] = source.admission
         return t
     }
+    /** Unknown decoded end is explicit, never a guessed exact duration. The boolean
+     * is a real decoded sample strictly beyond 600s, not metadata duration. */
+    @Synchronized fun beginStreamingTraversal(source:SourceCapture,occurrence:UUID,generation:Long,seek:Long,baseline:Long,longFormConfirmed:Boolean):TraversalCapture? {
+        if(!sourceCurrent(source) || sources[source.owner.key]!=source || usedAdmissions[source.owner.key]==source.admission || generation<=0 || seek<0 || baseline<0)return null
+        val t=TraversalCapture(source,UUID.randomUUID(),occurrence,generation,seek,baseline)
+        admissionOrder=Math.addExact(admissionOrder,1)
+        active[t.traversal]=Active(t,0,admissionOrder,longEligible=longFormConfirmed)
+        usedAdmissions[source.owner.key]=source.admission
+        return t
+    }
+    /** Same traversal, no new occurrence, successful play or natural completion. */
+    @Synchronized fun sealStreamingEnd(t:TraversalCapture,durationMs:Long):Mutation {
+        if(!sourceCurrent(t.source) || durationMs<=0)return Mutation.REFUSED
+        val a=active[t.traversal]?.takeIf {it.capture==t} ?: return Mutation.REFUSED
+        if(a.duration!=0L && a.duration!=durationMs || a.longEligible && durationMs<=600000)return Mutation.REFUSED
+        active[t.traversal]=a.copy(duration=durationMs,longEligible=durationMs>600000)
+        return Mutation.APPLIED
+    }
+    /** Detected live original mutation revokes old progress and every old admission.
+     * Does not delete source bytes or pretend the successor has the old SHA proof. */
+    @Synchronized fun retireChangedOriginal(source:SourceCapture):Mutation {
+        if(!sourceCurrent(source))return Mutation.REFUSED
+        val key=source.owner.key
+        val result=journal(entry(key).copy(bookmark=null,traversal=null,sequence=0,completed=false))
+        if(result!=Mutation.REFUSED) {
+            sources.remove(key);usedAdmissions.remove(key)
+            active.entries.removeAll {it.value.capture.source.owner.key==key}
+        }
+        return result
+    }
     private fun accepted(t: TraversalCapture, seq: Long): Active? {
         if (!sourceCurrent(t.source)) return null
         val a = active[t.traversal] ?: return null
@@ -176,7 +206,7 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
     }
     @Synchronized fun checkpoint(checkpoint: SourcePositionCheckpoint): Mutation {
         val a = accepted(checkpoint.traversal, checkpoint.eventSequence) ?: return Mutation.REFUSED
-        if (!a.played || a.duration <= 600000 || checkpoint.positionMs !in 0..a.duration) return Mutation.REFUSED
+        if (!a.played || !a.longEligible || checkpoint.positionMs<0 || (a.duration>0 && checkpoint.positionMs>a.duration)) return Mutation.REFUSED
         val owner = checkpoint.traversal.source.owner
         return journal(entry(owner.key).copy(bookmark = Bookmark(owner, checkpoint.positionMs), sequence = checkpoint.eventSequence))
     }
@@ -254,14 +284,24 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
         return Mutation.APPLIED // memory-only admission retirement
     }
     /** Platform/service observed opening failure. No grant minting, source IO, or progress deletion. */
-    @Synchronized fun reportUnavailable(source: SourceCapture, locator: ProviderLocator, reason: AccessState): Mutation {
+    @Synchronized fun reportUnavailable(source: SourceCapture, locator: ProviderLocator, reason: AccessState, allAliases: Boolean = false): Mutation {
         if (reason !in setOf(AccessState.MISSING, AccessState.UNREADABLE, AccessState.UNSUPPORTED) || !sourceCurrent(source)) return Mutation.REFUSED
+        if (allAliases && reason != AccessState.MISSING) return Mutation.REFUSED
         val key = source.owner.key as? HistoryKey.Device ?: return Mutation.REFUSED
         val f = state.files.find { it.id == key.id } ?: return Mutation.REFUSED
         if (f.aliases.none { it.locator == locator }) return Mutation.REFUSED
-        val next = f.copy(aliases = f.aliases.map { if (it.locator == locator) it.copy(state = reason) else it })
+        // Confirmed physical deletion retires every route of that object, never same-byte copies.
+        val next = f.copy(aliases = f.aliases.map { if (allAliases || it.locator == locator) it.copy(state = reason) else it })
         val result = commit(state.copy(files = state.files.map { if (it.id == key.id) next else it }))
-        if (result == Mutation.APPLIED) accessChanged()
+        if (result == Mutation.APPLIED) {
+            // A single original/route failed, not the account or storage grant. Retire every
+            // prepared/live capture of that object, while unrelated journals keep authority.
+            // Proofs collected by an older scan cannot restore this unavailable route.
+            scans.clear()
+            sources.remove(key)
+            active.entries.removeAll { it.value.capture.source.owner.key == key }
+            usedAdmissions.remove(key)
+        }
         return result
     }
     private val sessionGrants = mutableSetOf<ScanGrantId>()

@@ -87,7 +87,7 @@ private class ClockSeekReceipt(p:PlaybackProjection,val mode:PlayerClockMode,val
         }
     })
     val elapsed=if(total!=null)draft?.let {(it.toDouble()*total).toLong()} ?: clock.elapsedMs else clock.elapsedMs
-    Text("${elapsed?.let(::formatSongTime) ?: "—"} / ${total?.let(::formatSongTime) ?: "—"}",Modifier.testTag("player-clock-time"),style=SoundQ.typography.mono)
+    Text("${elapsed?.let(::formatSongTime) ?: "—"} / ${total?.let(::formatSongTime) ?: "—"}",Modifier.fillMaxWidth().testTag("player-clock-time"),style=SoundQ.typography.mono,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
     val status=when {pending->"Seeking";failure->"Seek not confirmed. Try again.";clock.elapsedMs==null->if(mode==PlayerClockMode.Queue)"Queue clock unavailable" else "Song clock unavailable";total==null->"Duration unavailable";else->null}
     if(status!=null)Text(status,Modifier.semantics {liveRegion=LiveRegionMode.Polite},style=SoundQ.typography.caption,color=if(failure)SoundQ.colors.error else SoundQ.colors.muted)
 }

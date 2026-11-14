@@ -9,7 +9,7 @@ class TrackDetailsFactsTest {
         assertEquals("Not available",com.soundq.android.product.trackdetails.detailsDuration(null))
         assertEquals("Not available",com.soundq.android.product.trackdetails.detailsDuration(0))
         assertEquals("3:05",com.soundq.android.product.trackdetails.detailsDuration(185000))
-        assertEquals("61:02",com.soundq.android.product.trackdetails.detailsDuration(3662000))
+        assertEquals("01:01:02",com.soundq.android.product.trackdetails.detailsDuration(3662000))
     }
     @Test fun optionalRecordingFactsStayAbsentAndMalformedFactsAreRejected() {
         val suggestion="""{"mb_recording_id":"12345678-1234-1234-1234-123456789abc","title":"Original","artist":"Ensemble"}"""

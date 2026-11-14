@@ -97,7 +97,7 @@ private fun Modifier.drawBehindRule(first:Boolean,color:Color,rule:Float)=this.d
     state:SoundQSpeedPanelState,reason:String?,onRequest:(Double)->Unit,onReset:()->Unit,
     modifier:Modifier=Modifier,identity:Any?=null,measuredBpm:Double?=null,
     shortcuts:List<Double> = listOf(0.75,1.0,1.25,1.5),
-    rejected:Double?=null,
+    rejected:Double?=null,pendingVerb:String="Applying",
 ) {
     val colors=SoundQ.colors
     val enabled=state!=SoundQSpeedPanelState.Unavailable&&min<1.0&&max>1.0
@@ -138,7 +138,7 @@ private fun Modifier.drawBehindRule(first:Boolean,color:Color,rule:Float)=this.d
         val status=when {
             !enabled->reason ?: "Speed changes aren't available for this track."
             draft!=null&&pointer->"Release to set ${SoundQSpeedScale.label(draft!!)}"
-            state==SoundQSpeedPanelState.Pending&&requested!=null->"Applying ${SoundQSpeedScale.label(requested)}…"
+            state==SoundQSpeedPanelState.Pending&&requested!=null->"$pendingVerb ${SoundQSpeedScale.label(requested)}…"
             state==SoundQSpeedPanelState.Rejected&&rejected!=null->"Couldn't change speed to ${SoundQSpeedScale.label(rejected)}. Still playing at ${SoundQSpeedScale.label(accepted)}."
             else->null
         }
@@ -151,7 +151,7 @@ private fun Modifier.drawBehindRule(first:Boolean,color:Color,rule:Float)=this.d
         val spoken=if(!enabled)"Unavailable. ${reason ?: "Speed changes aren't available for this track."}"
             else SoundQSpeedScale.spoken(accepted)+when {
                 selecting!=null->", selecting ${SoundQSpeedScale.spoken(selecting)}"
-                pending->", applying ${SoundQSpeedScale.spoken(requested)}"
+                pending->", ${pendingVerb.lowercase()} ${SoundQSpeedScale.spoken(requested)}"
                 else->""
             }
         val steps=((max-min)/SoundQSpeedScale.STEP).roundToLong().toInt()-1

@@ -37,6 +37,13 @@ class ProductViewModel(app:Application):AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO){graph.trackDetails.execute(ticket)}
     }
     val downloads=graph.downloads.state
+    internal fun deletePhoneFile(target:com.soundq.android.data.device.PhoneFileTarget,valid:()->Boolean,done:(com.soundq.android.data.device.FileDeleteOutcome)->Unit) {
+        viewModelScope.launch {
+            val outcome=try {graph.phoneFiles.delete(target,valid) {controller.retirePhoneFile(target.ref,target.version,valid)}}
+                catch(_:Exception){com.soundq.android.data.device.FileDeleteOutcome.Refused}
+            done(outcome)
+        }
+    }
     fun loadDownloads(scope:AccountScope,valid:()->Boolean) {viewModelScope.launch(Dispatchers.IO){if(valid())graph.downloads.load(scope)}}
     fun downloadLibrary(capture:com.soundq.android.data.playlists.LibraryTrackCapture,valid:()->Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
