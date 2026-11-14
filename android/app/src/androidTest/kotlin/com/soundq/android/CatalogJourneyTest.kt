@@ -104,8 +104,7 @@ class CatalogJourneyTest {
             back();compose.onNodeWithText("Recording details").assertDoesNotExist()
             back();compose.waitUntil(5000){prepared.catalog.state.value.album==null}
             compose.onNodeWithContentDescription("Back").performScrollTo().performClick()
-            compose.onNode(hasScrollToNodeAction()).performScrollToNode(hasContentDescription("Library search query") and hasSetTextAction())
-            compose.onNode(hasContentDescription("Library search query") and hasSetTextAction()).assertExists()
+            compose.onNode(hasContentDescription("Library search query") and hasSetTextAction()).assertIsDisplayed()
             assertEquals(queue,model.playback.value.queue);assertEquals(selected,model.playback.value.selectedOccurrence);assertFalse(model.playback.value.isPlaying)
             assertEquals(paused.positionMs,model.playback.value.positionMs)
             compose.runOnIdle {assertActualPausedUnchanged(settlement)}
