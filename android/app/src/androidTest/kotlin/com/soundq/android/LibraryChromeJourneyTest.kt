@@ -50,6 +50,9 @@ class LibraryChromeJourneyTest {
         }
         compose.signInThroughSettings("library-chrome@example.test","test-only-password"){graph.session.state.value is AuthState.SignedIn}
         compose.waitUntil(10000){!model.library.value.loading&&model.library.value.error==null}
+        // The count oracle below reads the server repository, not the mixed All projection.
+        compose.selectLibrarySource("Server")
+        compose.waitUntil(10000){!model.library.value.loading&&model.library.value.error==null}
         val queueBefore=model.playback.value.queue
         val playingBefore=model.playback.value.isPlaying
         val editor=compose.onNode(hasContentDescription("Library search query") and hasSetTextAction())
