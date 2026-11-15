@@ -78,7 +78,7 @@ func (p pacedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// A conservative one-second cooldown after headers guarantees start spacing
 	// even if this goroutine is delayed immediately before HTTP dispatch. Body
 	// reads and JSON conversion do not hold the slot. No background timer owner.
-	resp, err := p.next.RoundTrip(req)
+	resp, err := weeklyRoundTrip(req, p.next)
 	budget.next = time.Now().Add(time.Second)
 	return resp, err
 }

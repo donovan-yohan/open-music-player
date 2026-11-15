@@ -673,6 +673,7 @@ func runServer() int {
 	listenBrainzHandlers := api.NewListenBrainzHandlers(expansionService, cfg.EnableListenBrainzMix)
 	playEventHandlers := api.NewPlayEventHandlersWithMetadataOverrides(playEventRepo, trackRepo, metadataOverrideRepo)
 	releaseRadarHandlers := newReleaseRadarHandlers(playEventRepo, libraryRepo, mbClient, database)
+	weeklyHandlers := api.NewWeeklyHandlers(db.NewWeeklyRepository(database), mbClient)
 	// libraryRepo supplies the harmonic nearby+affinity candidate read behind
 	// ENABLE_HARMONIC_LINEUP (issue #401); with the flag off the lineup is
 	// byte-identical to the themed lineup.
@@ -980,6 +981,7 @@ func runServer() int {
 		PlaybackHandlers:        playbackHandlers,
 		QueueHandlers:           queueHandlers,
 		DiscoveryHandlers:       discoveryHandlers,
+		WeeklyHandlers:          weeklyHandlers,
 		ReleaseRadarHandlers:    releaseRadarHandlers,
 		AgentToolsHandler:       agentToolsHandler,
 		PlaylistHandlers:        playlistHandlers,
