@@ -29,6 +29,26 @@ class LibraryChromeJourneyTest {
     private val models=ViewModelStore()
     @After fun closeModel(){compose.runOnIdle {models.clear()}}
 
+    // Independent identity union: Server excludes phone files, not owned downloads.
+    private fun expectedServerCount(model:ProductViewModel):Int {
+        val library=model.library.value
+        val scope=requireNotNull(model.graph.library.projectionScope(library))
+        val query=library.query
+        val acknowledged=library.rows.map {it.id}.toSet()
+        val ids=library.rows.filter {(!query.liked||it.liked==true)&&query.collection?.contains(it)!=false}.map {it.id}.toMutableSet()
+        for(row in model.downloads.value.rows) {
+            val track=row.track
+            if(track.id in acknowledged||!model.graph.downloads.ownsComplete(scope,row))continue
+            // Download-only metadata cannot establish server genre/verification matches.
+            if(query.genre.isNotBlank()||query.verified!=null)continue
+            if(query.liked&&track.liked!=true||query.collection?.contains(track)==false)continue
+            val text=query.text.trim()
+            if(text.isNotEmpty()&&listOf(track.title,track.artist,track.album).none {it.contains(text,true)})continue
+            ids.add(track.id)
+        }
+        return ids.size
+    }
+
     @Test fun normal320PlaceholderAndContentFitTabs()=journey(320,1f)
     @Test fun normal412PlaceholderAndContentFitTabs()=journey(412,1f)
     @Test fun enlarged320PlaceholderAndContentFitTabs()=journey(320,2f)
@@ -50,7 +70,7 @@ class LibraryChromeJourneyTest {
         }
         compose.signInThroughSettings("library-chrome@example.test","test-only-password"){graph.session.state.value is AuthState.SignedIn}
         compose.waitUntil(10000){!model.library.value.loading&&model.library.value.error==null}
-        // The count oracle below reads the server repository, not the mixed All projection.
+        // Server excludes phone files; the count also includes eligible owned downloads.
         compose.selectLibrarySource("Server")
         compose.waitUntil(10000){!model.library.value.loading&&model.library.value.error==null}
         val queueBefore=model.playback.value.queue
@@ -89,11 +109,12 @@ class LibraryChromeJourneyTest {
         val refine=compose.onNodeWithContentDescription("Refine library").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
         val refineBounds=refine.fetchSemanticsNode().boundsInRoot
         assertTrue("Unused room remains to the right of quick labels",liked.right<refineBounds.left)
-        if(width/scale>=400)model.library.value.total?.let {total->
+        val total=compose.runOnIdle {expectedServerCount(model)}
+        if(width/scale>=400) {
             val count=compose.onNodeWithText("$total tracks",useUnmergedTree=true).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
             assertTrue("Count remains before the fixed Refine target",count.right<=refineBounds.left+1f)
         }
-        if(width>=400&&width/scale<400)model.library.value.total?.let {total->compose.onNodeWithText("$total tracks",useUnmergedTree=true).assertDoesNotExist()}
+        if(width>=400&&width/scale<400)compose.onNodeWithText("$total tracks",useUnmergedTree=true).assertDoesNotExist()
         tab("Liked").performClick()
         compose.waitUntil(10000){model.library.value.query.liked&&!model.library.value.loading}
         tab("Liked").assertIsSelected()
