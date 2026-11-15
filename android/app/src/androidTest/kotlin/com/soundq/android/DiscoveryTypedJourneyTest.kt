@@ -52,15 +52,12 @@ class DiscoveryTypedJourneyTest {
             }
         }
         try {
-            compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Email").fetchSemanticsNodes().isNotEmpty()}
-            compose.onNodeWithContentDescription("Email").performTextInput("typed@example.test")
-            compose.onNodeWithContentDescription("Password").performTextInput("fixture-only-password")
-            compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+            compose.signInThroughSettings("typed@example.test","fixture-only-password"){app.graph.session.state.value is com.soundq.android.data.AuthState.SignedIn}
             compose.waitUntil(10000){app.graph.library.state.value.rows.isNotEmpty()}
             val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
             val queue=model.playback.value.queue;val selected=model.playback.value.selectedOccurrence
             compose.onAllNodesWithText("Discover").filterToOne(hasClickAction()).performClick()
-            compose.onNodeWithContentDescription("Search sources").performTextInput("seed")
+            compose.onNodeWithContentDescription("Music search query").performTextInput("seed")
             try {
                 compose.waitUntil(10000){app.graph.discovery.state.value.results?.query=="seed"}
             } catch(original:Throwable) {
@@ -117,7 +114,7 @@ class DiscoveryTypedJourneyTest {
             assertEquals(selected,model.playback.value.selectedOccurrence);assertFalse(model.playback.value.isPlaying)
             assertEquals(2,reads.get())
             instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
-            compose.onNodeWithContentDescription("Clear search").performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Clear search").assertIsDisplayed().performClick()
             compose.onNodeWithText("Recent searches").assertIsDisplayed()
             compose.onNode(hasText("seed") and hasClickAction()).performClick()
             compose.waitUntil(10000){app.graph.discovery.state.value.results?.query=="seed"}

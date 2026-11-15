@@ -549,28 +549,17 @@ import com.soundq.android.product.preferences.*
 internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_PARAMETER") error:Boolean,notice:Boolean=false):Int = index+(if(loading)1 else 0)+(if(notice)1 else 0)
 
 @Composable private fun LibraryIconCell(icon:SoundQIcon,label:String,onClick:()->Unit,modifier:Modifier=Modifier,enabled:Boolean=true) {
-    Box(modifier.sizeIn(minWidth=SoundQ.sizes.target,minHeight=SoundQ.sizes.target)
-        .semantics {contentDescription=label}
-        .clickable(enabled=enabled,role=Role.Button,onClick=onClick),contentAlignment=Alignment.Center) {
-        SoundQIcon(icon,null,tint=if(enabled)SoundQ.colors.text else SoundQ.colors.disabled)
-    }
+    SoundQIconButton(icon,label,onClick,modifier,enabled=enabled,outlined=false)
 }
 
 @Composable private fun LibraryHeader(onSettings:()->Unit,onCatalog:()->Unit) {
     var more by remember {mutableStateOf(false)}
-    Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().heightIn(min=56.dp),verticalAlignment=Alignment.CenterVertically) {
-            Row(Modifier.weight(1f).padding(horizontal=SoundQ.spacing.gutter),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium)) {
-                Image(painterResource(R.drawable.soundq_logo),null,Modifier.size(24.dp))
-                Text("Library",style=SoundQ.typography.title,modifier=Modifier.semantics {heading()})
-            }
-            Box {
-                LibraryIconCell(SoundQIcon.More,"Library options",{more=true},Modifier.heightIn(min=56.dp))
-                DropdownMenu(more,{more=false}) {DropdownMenuItem(text={Text("Catalog")},onClick={more=false;onCatalog()})}
-            }
-            LibraryIconCell(SoundQIcon.Settings,"Settings",onSettings,Modifier.heightIn(min=56.dp))
+    MainPageHeader("Library") {
+        Box {
+            LibraryIconCell(SoundQIcon.More,"Library options",{more=true},Modifier.heightIn(min=56.dp))
+            DropdownMenu(more,{more=false}) {DropdownMenuItem(text={Text("Catalog")},onClick={more=false;onCatalog()})}
         }
-        SoundQDivider()
+        LibraryIconCell(SoundQIcon.Settings,"Settings",onSettings,Modifier.heightIn(min=56.dp))
     }
 }
 
@@ -592,21 +581,8 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
         focus.clearFocus()
         onSearch(text)
     }
-    val colors=SoundQ.colors
-    Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().heightIn(min=64.dp),verticalAlignment=Alignment.CenterVertically) {
-            LibraryIconCell(SoundQIcon.Search,"Search library",::submit,Modifier.heightIn(min=64.dp))
-            BasicTextField(query,{query=it},Modifier.weight(1f).heightIn(min=64.dp).semantics {contentDescription="Library search query"},
-                singleLine=true,textStyle=SoundQ.typography.body.copy(color=colors.text),cursorBrush=androidx.compose.ui.graphics.SolidColor(colors.focus),
-                keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search),keyboardActions=KeyboardActions(onSearch={submit()}),
-                decorationBox={editor->Column(Modifier.fillMaxWidth().padding(horizontal=SoundQ.spacing.gutter,vertical=SoundQ.spacing.small),verticalArrangement=Arrangement.Center) {
-                    Text("Search library",style=SoundQ.typography.caption,color=colors.muted)
-                    editor()
-                }})
-            LibraryIconCell(SoundQIcon.Close,"Clear library search",{query=TextFieldValue("");submitted="";onSearch("")},Modifier.heightIn(min=64.dp),enabled=query.text.isNotEmpty())
-        }
-        SoundQDivider()
-    }
+    SoundQSearchStrip(query,{query=it},"Search library","Library search query","Search library","Clear library search",
+        onSubmit=::submit,onClear={query=TextFieldValue("");submitted="";onSearch("")})
 }
 
 @Composable private fun LibraryFilters(liked:Boolean,total:Int?,onLiked:(Boolean)->Unit,onRefine:()->Unit) {
@@ -614,19 +590,13 @@ internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_P
     val borderWidth=with(LocalDensity.current){SoundQ.sizes.border.toPx()}
     Column(Modifier.fillMaxWidth()) {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val showCount=maxWidth>=400.dp
-            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).selectableGroup(),verticalAlignment=Alignment.CenterVertically) {
-                listOf("All tracks","Liked").forEachIndexed {index,label->
-                    val selected=liked==(index==1)
-                    Box(Modifier.weight(1f).fillMaxHeight().heightIn(min=48.dp)
-                        .background(if(selected)SoundQ.colors.surface else SoundQ.colors.background)
-                        .drawBehind {if(index>0)drawLine(border,Offset.Zero,Offset(0f,size.height),borderWidth)}
-                        .selectable(selected=selected,role=Role.Tab,onClick={onLiked(index==1)})
-                        .padding(horizontal=SoundQ.spacing.gutter),contentAlignment=Alignment.CenterStart) {
-                        Text(label,style=SoundQ.typography.caption,color=if(selected)SoundQ.colors.text else SoundQ.colors.muted)
-                    }
+            // The nonessential visual count yields first; total remains on the Library list semantics.
+            val showCount=maxWidth/LocalDensity.current.fontScale>=400.dp
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min),verticalAlignment=Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) {
+                    SoundQTabs(listOf("All","Liked"),if(liked)1 else 0,Modifier.fillMaxWidth(),SoundQTabsTreatment.MainPageCells,bottomRule=false) {onLiked(it==1)}
                 }
-                if(showCount)Text(total?.let {"$it tracks"} ?: "",Modifier.padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.mono)
+                if(showCount)Text(total?.let {"$it tracks"} ?: "",Modifier.widthIn(max=this@BoxWithConstraints.maxWidth/3).padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.mono)
                 LibraryIconCell(SoundQIcon.Filter,"Refine library",onRefine,Modifier.fillMaxHeight().drawBehind {drawLine(border,Offset.Zero,Offset(0f,size.height),borderWidth)})
             }
         }

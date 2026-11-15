@@ -5,7 +5,7 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
-import androidx.compose.foundation.text.*
+
 import androidx.compose.material3.Text
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -17,15 +17,13 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.semantics.*
+
 import androidx.compose.ui.text.input.*
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.soundq.android.data.discovery.*
 import com.soundq.android.product.ProductViewModel
+import com.soundq.android.product.MainPageHeader
 import com.soundq.designsystem.*
 import kotlinx.coroutines.delay
 
@@ -81,25 +79,26 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
         return
     }
     BackHandler(state.canBack&&state.inspected==null&&entityDetails==null) {view?.let(repository::back)}
-    LazyColumn(Modifier.fillMaxSize(),state=scroll) {
-        item {Row(Modifier.fillMaxWidth().height(64.dp),verticalAlignment=Alignment.CenterVertically) {
-            if(state.canBack)SoundQIconButton(SoundQIcon.Back,"Back to previous search",{view?.let(repository::back)},Modifier.width(48.dp).fillMaxHeight(),outlined=false)
-            Text("Discover",Modifier.weight(1f).padding(start=8.dp).semantics {heading()},style=SoundQ.typography.title.copy(fontSize=20.sp,fontWeight=FontWeight.SemiBold),maxLines=1,overflow=TextOverflow.Ellipsis)
-            SoundQIconButton(SoundQIcon.Download,"Imports",onImports,Modifier.width(48.dp).fillMaxHeight(),outlined=false)
+    Column(Modifier.fillMaxSize()) {
+        MainPageHeader("Discover",navigation=if(state.canBack) ({
+            SoundQIconButton(SoundQIcon.Back,"Back to previous search",{view?.let(repository::back)},Modifier.heightIn(min=56.dp),outlined=false)
+        }) else null) {
+            SoundQIconButton(SoundQIcon.Download,"Imports",onImports,Modifier.heightIn(min=56.dp),outlined=false)
             Box {
-                SoundQIconButton(SoundQIcon.More,"Discover options",{options=true},Modifier.width(48.dp).height(64.dp),outlined=false)
+                SoundQIconButton(SoundQIcon.More,"Discover options",{options=true},Modifier.heightIn(min=56.dp),outlined=false)
                 DropdownMenu(options,{options=false}) {
                     DropdownMenuItem(text={Text("Server tools",style=SoundQ.typography.body)},leadingIcon={SoundQIcon(SoundQIcon.List,null)},onClick={options=false;onAcquisition()})
                     DropdownMenuItem(text={Text("Settings",style=SoundQ.typography.body)},leadingIcon={SoundQIcon(SoundQIcon.Settings,null)},onClick={options=false;onAccount()})
                 }
             }
-        };SoundQDivider()}
-        discoverHeader {Row(verticalAlignment=Alignment.Bottom) {
-            SoundQEntryField(editor,{next->val changed=next.text!=editor.text;editor=next;if(changed)view?.let {repository.edit(it,next.text)}},"Search sources",modifier=Modifier.weight(1f).focusRequester(queryFocus).onFocusChanged {queryFocused=it.hasFocus},
-                keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search),keyboardActions=KeyboardActions(onSearch={search()}))
-            SoundQIconButton(SoundQIcon.Search,"Search",{search()},modifier=Modifier.height(56.dp),enabled=view!=null&&state.phase!=DiscoveryPhase.Loading,outlined=false)
-            if(editor.text.isNotEmpty())SoundQIconButton(SoundQIcon.Close,"Clear search",{editor=TextFieldValue("");view?.let {repository.edit(it,"")};queryFocus.requestFocus()},modifier=Modifier.height(56.dp),outlined=false)
-        }}
+        }
+        SoundQSearchStrip(editor,{next->val changed=next.text!=editor.text;editor=next;if(changed)view?.let {repository.edit(it,next.text)}},
+            "Search music","Music search query","Search music","Clear search",onSubmit={search()},
+            onClear={editor=TextFieldValue("");view?.let {repository.edit(it,"")};queryFocus.requestFocus()},
+            editorModifier=Modifier.focusRequester(queryFocus).onFocusChanged {queryFocused=it.hasFocus},
+            submitEnabled=view!=null&&state.phase!=DiscoveryPhase.Loading,clearEnabled=view!=null&&editor.text.isNotEmpty())
+        SoundQTabs(DiscoveryResultType.entries.map {it.label},state.resultType.ordinal,Modifier.fillMaxWidth(),SoundQTabsTreatment.MainPageCells) {index->view?.let {repository.selectType(it,DiscoveryResultType.entries[index])}}
+        LazyColumn(Modifier.fillMaxWidth().weight(1f),state=scroll) {
         if(state.invalidQuery)discoverHeader {SoundQFeedback("Enter a query up to 512 UTF-8 bytes.",FeedbackKind.Error)}
         if(queryFocused&&editor.text.isBlank()&&state.recent.isNotEmpty()) {
             discoverHeader {Row(verticalAlignment=Alignment.CenterVertically) {
@@ -110,7 +109,7 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
                 view?.let {route->repository.recent(route,query)?.let {draft->editor=TextFieldValue(draft.text);model.searchSources(route,draft);focus.clearFocus()}}
             })}
         }
-        item {SoundQTabs(DiscoveryResultType.entries.map {it.label},state.resultType.ordinal,{index->view?.let {repository.selectType(it,DiscoveryResultType.entries[index])}})}
+
         discoverHeader {SourceImportContinuation(imports,{receipt->intake?.let {model.recoverSourceImport(it,receipt)}},{receipt->intake?.let {model.retrySourceImport(it,receipt)}},{intake?.let(model.graph.imports::another)})}
         if(state.phase==DiscoveryPhase.Loading)discoverHeader {SoundQFeedback("Searching",FeedbackKind.Loading)}
         if(state.phase==DiscoveryPhase.Idle&&state.draft.text.isEmpty())discoverHeader {Text("Search music",style=SoundQ.typography.body)}
@@ -139,6 +138,7 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
             }
         }
 
+        }
     }
     entityDetails?.let {entity->SoundQSheet("${entity.type.label} details",{entityDetails=null}) {
         Text(entity.title,style=SoundQ.typography.title)

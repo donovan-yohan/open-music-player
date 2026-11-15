@@ -238,7 +238,7 @@ class SettingsRedesignJourneyTest {
         back()
         compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Discover options").fetchSemanticsNodes().isNotEmpty()}
         // The remounted screen owns current handles: an edit reaches the repository.
-        compose.onNode(hasContentDescription("Search sources") and hasSetTextAction()).performTextInput("after settings")
+        compose.onNode(hasContentDescription("Music search query") and hasSetTextAction()).performTextInput("after settings")
         compose.waitUntil(5000){graph.discovery.state.value.draft.text=="after settings"}
     }
 

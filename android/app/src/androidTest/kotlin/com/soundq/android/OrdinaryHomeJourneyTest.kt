@@ -47,7 +47,7 @@ class OrdinaryHomeJourneyTest {
         compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
         val before=ProductTransportFixture.requests.size
         compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
-        compose.waitUntil(10000){ProductTransportFixture.requests.drop(before).contains("POST /api/v1/auth/login")&&graph.session.capture()!=null&&compose.onAllNodes(hasText("Search library") and hasSetTextAction()).fetchSemanticsNodes().isNotEmpty()}
+        compose.waitUntil(10000){ProductTransportFixture.requests.drop(before).contains("POST /api/v1/auth/login")&&graph.session.capture()!=null&&compose.onAllNodes(hasContentDescription("Library search query") and hasSetTextAction()).fetchSemanticsNodes().isNotEmpty()}
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
         compose.onAllNodesWithText("Home").filterToOne(hasClickAction()).performClick()
         compose.waitUntil(10000){model.home.recent.value.rows.size==2&&ProductTransportFixture.requests.drop(before).contains("GET /api/v1/me/plays/top")}
@@ -67,7 +67,7 @@ class OrdinaryHomeJourneyTest {
         compose.waitUntil(15000){model.playback.value.isPlaying&&model.playback.value.queue.map {it.trackId}==listOf(1L)&&model.playback.value.selectedOccurrence!=priorOccurrence}
         compose.onNodeWithContentDescription("Pause").performClick()
         compose.onAllNodesWithText("Library").filterToOne(hasClickAction()).performClick()
-        compose.onNode(hasText("Search library") and hasSetTextAction()).assertExists()
+        compose.onNode(hasContentDescription("Library search query") and hasSetTextAction()).assertExists()
         assertSame("ordinary graph remains the startup graph",graph,app.graph)
         assertTrue(ProductTransportFixture.requests.drop(before).none {it=="POST /api/v1/me/plays"||it=="POST /api/v1/plays/skip"})
     }

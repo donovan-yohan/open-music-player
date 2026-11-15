@@ -24,17 +24,14 @@ class CatalogJourneyTest {
     @Test fun normalCatalogArtistsGroupsAndConcreteAlbumPreservePausedListening()=journey(1f)
     @Test fun enlargedCatalogArtistsGroupsAndConcreteAlbumPreservePausedListening()=journey(2f)
     private fun journey(scale:Float) {
-        val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SoundQApplication
-        val io=Executors.newSingleThreadExecutor();val server=MockWebServer();val requests=CopyOnWriteArrayList<String>()
-        val cert=HeldCertificate.Builder().addSubjectAlternativeName("localhost").build()
-        val trust=HandshakeCertificates.Builder().addTrustedCertificate(cert.certificate).build()
-        val client=OkHttpClient.Builder().sslSocketFactory(trust.sslSocketFactory(),trust.trustManager).build()
+        val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as FixtureApplication
+        val io=Executors.newSingleThreadExecutor();val server=ProductTransportFixture.server;val requests=CopyOnWriteArrayList<String>()
+        val client=app.fixtureClient
         val models=ViewModelStore();var graph:AppGraph?=null
         val a="123e4567-e89b-12d3-a456-426614174001";val g="123e4567-e89b-12d3-a456-426614174002";val r="123e4567-e89b-12d3-a456-426614174003"
         val longTitle="A long catalog edition title — 海辺の音楽 that remains available at enlarged text"
         try {
             val prepared=io.submit<AppGraph> {
-                server.useHttps(HandshakeCertificates.Builder().heldCertificate(cert).build().sslSocketFactory())
                 server.dispatcher=object:Dispatcher(){override fun dispatch(request:RecordedRequest):MockResponse {
                     val path=request.url.encodedPath;requests.add(path)
                     fun reply(body:String)=MockResponse.Builder().body(body).build()
@@ -57,15 +54,11 @@ class CatalogJourneyTest {
                         else->MockResponse.Builder().code(404).body("{}").build()
                     }
                 }}
-                server.start()
-                AppGraph(app,ApiEndpoint.parse(server.url("/api/v1").toString()),client,object:SessionStore {
-                    override fun load(endpoint:ApiEndpoint):SecretTokens?=null
-                    override fun save(endpoint:ApiEndpoint,tokens:SecretTokens){}
-                    override fun clear(){}
-                },client).also {it.session.accept(it.session.beginIntent(),SecretTokens("synthetic-a","synthetic-r","catalog-journey"))}
+                // Keep the runner's trusted graph: its already-bound service owns this same lifetime.
+                app.graph.also {it.session.accept(it.session.beginIntent(),SecretTokens("synthetic-a","synthetic-r","catalog-journey"))}
             }.get(10,TimeUnit.SECONDS)
             graph=prepared
-            val model=compose.runOnIdle {app.graph.close();app.graph=prepared;ProductViewModel(app).also {models.put("catalog",it)}}
+            val model=compose.runOnIdle {ProductViewModel(app).also {models.put("catalog",it)}}
             compose.setContent {val density=LocalDensity.current;CompositionLocalProvider(LocalDensity provides Density(density.density,scale)){ProductApp(model)}}
             compose.waitUntil(10000){model.library.value.rows.isNotEmpty() && model.playback.value.connection==com.soundq.android.playback.PlaybackProjection.Connection.Connected}
             compose.onNodeWithText("Persistent Library song").performScrollTo().performClick()
@@ -75,6 +68,8 @@ class CatalogJourneyTest {
             val settlement=compose.settledPausedPlayback(model)
             val paused=settlement.projection
             val queue=paused.queue;val selected=paused.selectedOccurrence
+            compose.onNodeWithContentDescription("Settings").performClick()
+            compose.onNodeWithText("Music tools").performScrollTo().performClick()
             compose.onNodeWithText("Catalog").performScrollTo().performClick()
             compose.onNodeWithContentDescription("Search catalog").performTextInput("artist")
             compose.onNodeWithContentDescription("Submit catalog search").performScrollTo().performClick()
@@ -103,19 +98,38 @@ class CatalogJourneyTest {
             assertEquals(1,compose.onAllNodesWithContentDescription("Play").fetchSemanticsNodes().size) // Dock only.
             back();compose.onNodeWithText("Recording details").assertDoesNotExist()
             back();compose.waitUntil(5000){prepared.catalog.state.value.album==null}
+            // Platform Back dispatch can finish before its posted callback changes the route.
+            // Acknowledge each destination before sending the next event, within one 5s budget.
+            val returnDeadline=android.os.SystemClock.uptimeMillis()+5000
+            val heading=SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsProperties.Heading)
             compose.onNodeWithContentDescription("Back").performScrollTo().performClick()
-            compose.onNode(hasScrollToNodeAction()).performScrollToNode(hasText("Search library") and hasSetTextAction())
-            compose.onNode(hasText("Search library") and hasSetTextAction()).assertExists()
+            awaitReturnRoute(hasText("Music tools") and heading,returnDeadline)
+            back();awaitReturnRoute(hasText("Settings") and heading,returnDeadline)
+            back() // Catalog returns to Music tools, then Settings, then the opening Library.
+            try {
+                awaitReturnRoute(hasContentDescription("Library search query") and hasSetTextAction(),returnDeadline)
+            compose.onNode(hasContentDescription("Library search query") and hasSetTextAction()).assertIsDisplayed()
+            } catch(failure:Throwable) {
+                // Failure-only evidence, never synchronization on the successful path.
+                try {captureListeningStage("catalog-return-header-failure")} catch(capture:Throwable) {failure.addSuppressed(capture)}
+                throw failure
+            }
             assertEquals(queue,model.playback.value.queue);assertEquals(selected,model.playback.value.selectedOccurrence);assertFalse(model.playback.value.isPlaying)
             assertEquals(paused.positionMs,model.playback.value.positionMs)
             compose.runOnIdle {assertActualPausedUnchanged(settlement)}
             assertTrue(requests.none {it.contains("/downloads")||it.contains("source-selections")||it.contains("/queue/items")})
             assertEquals(1,requests.count {it=="/api/v1/playback/urls"})
+            captureListeningStage("catalog-return-library")
         } finally {
             compose.runOnIdle {models.clear();graph?.close()}
             io.submit {server.close();client.connectionPool.evictAll();client.dispatcher.executorService.shutdown()}.get(5,TimeUnit.SECONDS)
             io.shutdownNow()
         }
+    }
+    private fun awaitReturnRoute(matcher:SemanticsMatcher,deadline:Long) {
+        val remaining=deadline-android.os.SystemClock.uptimeMillis()
+        check(remaining>0) {"Catalog return-route admission exceeded 5s"}
+        compose.waitUntil(remaining) {compose.onAllNodes(matcher).fetchSemanticsNodes().size==1}
     }
     private fun back() {InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);compose.waitForIdle()}
 }

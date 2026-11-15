@@ -33,9 +33,9 @@ class DiscoveryJourneyTest {
             val queue=model.playback.value.queue;val selected=model.playback.value.selectedOccurrence
             assertTrue(queue.isNotEmpty())
             compose.onAllNodesWithText("Discover").filterToOne(hasClickAction()).performClick()
-            compose.onNodeWithContentDescription("Search sources").performTextInput("Source fixture")
+            compose.onNodeWithContentDescription("Music search query").performTextInput("Source fixture")
             assertEquals(0,fixture.searches.get());assertEquals(0,fixture.decisions.get())
-            compose.onNodeWithContentDescription("Search",useUnmergedTree=true).performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Search music",useUnmergedTree=true).performClick()
             compose.waitUntil(10000){compose.onAllNodesWithText("Found source fixture").fetchSemanticsNodes().isNotEmpty()}
             compose.onNodeWithText("Found source fixture").performScrollTo().performClick()
             compose.onNodeWithText("Source details").assertExists();assertEquals(0,fixture.decisions.get())
@@ -46,7 +46,7 @@ class DiscoveryJourneyTest {
             fixture.release.countDown()
             compose.waitUntil(10000){app.graph.imports.state.value.acknowledgement!=null}
             compose.onNodeWithContentDescription("Close Source details").performClick()
-            compose.onNodeWithContentDescription("Imports",useUnmergedTree=true).performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Imports",useUnmergedTree=true).performClick()
             // At 2x text the source continuation fills the viewport; the job item is not composed.
             compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Check import"))
             compose.onNodeWithText("Check import").performScrollTo().performClick()

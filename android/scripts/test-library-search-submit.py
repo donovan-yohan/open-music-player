@@ -8,13 +8,15 @@ Remember slots persist and keyed effects run after render, never per initializat
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import subprocess
-import tempfile
+import shutil
+
+# Standalone host compiler only: no Gradle cache, Android SDK or platform launch.
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--source', type=Path)
+parser.add_argument('--components', type=Path)
 parser.add_argument('--output', type=Path, required=True)
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
@@ -29,11 +31,22 @@ while depth:
     depth += (text[end] == '{') - (text[end] == '}')
     end += 1
 body = text[start:end]
+components = args.components or root / 'designsystem/src/main/kotlin/com/soundq/designsystem/ProductComponents.kt'
+component_text = components.read_text()
+component_start = component_text.index('@Composable fun SoundQSearchStrip(')
+# Its defaults contain lambdas, so locate the body after the signature explicitly.
+component_open = component_text.index(' {\n    val colors=', component_start)
+depth, component_end = 1, component_open + 2
+while depth:
+    depth += (component_text[component_end] == '{') - (component_text[component_end] == '}')
+    component_end += 1
+strip = component_text[component_start:component_end]
 args.output.mkdir(parents=True, exist_ok=True)
 (args.output / 'LibrarySearch.extracted.kt').write_text(body)
 (args.output / 'inputs.json').write_text(json.dumps({
     'source': str(source), 'source_sha256': hashlib.sha256(text.encode()).hexdigest(),
     'callback_sha256': hashlib.sha256(body.encode()).hexdigest(),
+    'shared_search_sha256': hashlib.sha256(strip.encode()).hexdigest(),
     'scope': 'Exact callback execution with declaration-only UI/IME facades; no repository or network replacement',
 }, indent=2) + '\n')
 prelude = r'''package librarysearchprobe
@@ -61,18 +74,21 @@ data class TextRange(val start:Int,val end:Int=start)
 data class TextFieldValue(val text:String,val selection:TextRange=TextRange(0),val composition:TextRange?=null) {
  companion object {val Saver=Any()}
 }
-open class Modifier {companion object:Modifier()}
-fun Modifier.fillMaxWidth()=this
-fun Modifier.heightIn(min:Int)=this
-fun Modifier.weight(weight:Float)=this
-fun Modifier.padding(horizontal:Int,vertical:Int)=this
-class Semantics {var contentDescription=""}
-fun Modifier.semantics(body:Semantics.()->Unit)=apply {Semantics().body()}
+open class Modifier(val ops:List<String> = emptyList()) {companion object:Modifier()}
+fun Modifier.fillMaxWidth()=Modifier(ops+"fillWidth")
+fun Modifier.heightIn(min:Int)=Modifier(ops+"minHeight:$min")
+fun Modifier.weight(weight:Float)=Modifier(ops+"weight:$weight")
+fun Modifier.padding(horizontal:Int,vertical:Int)=Modifier(ops+"padding:$horizontal:$vertical")
+class Semantics {var contentDescription="";var testTag=""}
+fun Modifier.semantics(body:Semantics.()->Unit)=apply {UI.purpose=Semantics().apply(body).contentDescription}
+fun Modifier.clearAndSetSemantics(body:Semantics.()->Unit)=this
 val Int.dp get()=this
-object Alignment {val CenterVertically=0}
+object Alignment {val CenterVertically=0;val CenterStart=1}
 object Arrangement {val Center=0}
 fun Column(modifier:Modifier,verticalArrangement:Int=0,body:()->Unit){body()}
-fun Row(modifier:Modifier,verticalAlignment:Int,body:()->Unit){body()}
+class RowScope
+fun Row(modifier:Modifier,verticalAlignment:Int,body:RowScope.()->Unit){RowScope().body()}
+fun Box(modifier:Modifier,contentAlignment:Int,body:()->Unit){UI.decorationModifier=modifier;UI.decorationAlignment=contentAlignment;body()}
 class Style {fun copy(color:Int)=this}
 object SoundQ {
  object typography {val body=Style();val caption=Style()}
@@ -80,17 +96,21 @@ object SoundQ {
  object spacing {val gutter=0;val small=0}
 }
 enum class SoundQIcon {Search,Close}
-fun Text(text:String,style:Style,color:Int){}
+fun Text(text:String,modifier:Modifier=Modifier,style:Style,color:Int){UI.decorations.add(text);UI.decorationStyle=style}
 fun SoundQDivider(){}
 enum class ImeAction {Search}
 class KeyboardOptions(val imeAction:ImeAction)
 class KeyboardActions(val onSearch:()->Unit)
 data class Action(val enabled:Boolean,val click:()->Unit)
 data class Editor(val value:TextFieldValue,val edit:(TextFieldValue)->Unit,val keyboard:KeyboardActions)
-object UI {val actions=mutableMapOf<String,Action>();lateinit var editor:Editor}
+object UI {val actions=mutableMapOf<String,Action>();lateinit var editor:Editor
+ val decorations=mutableListOf<String>();var editorInvocations=0;var decorationAlignment=-1;var decorationStyle:Style?=null
+ var decorationModifier:Modifier=Modifier;var purpose=""}
 fun LibraryIconCell(icon:SoundQIcon,label:String,onClick:()->Unit,modifier:Modifier,enabled:Boolean=true){UI.actions[label]=Action(enabled,onClick)}
-fun BasicTextField(value:TextFieldValue,onValueChange:(TextFieldValue)->Unit,modifier:Modifier,singleLine:Boolean,textStyle:Style,cursorBrush:Any,keyboardOptions:KeyboardOptions,keyboardActions:KeyboardActions,decorationBox:(()->Unit)->Unit) {
- UI.editor=Editor(value,onValueChange,keyboardActions);decorationBox({})
+fun SoundQIconButton(icon:SoundQIcon,label:String,onClick:()->Unit,modifier:Modifier=Modifier,enabled:Boolean=true,outlined:Boolean=true)=LibraryIconCell(icon,label,onClick,modifier,enabled)
+fun BasicTextField(value:TextFieldValue,onValueChange:(TextFieldValue)->Unit,modifier:Modifier,enabled:Boolean=true,singleLine:Boolean,textStyle:Style,cursorBrush:Any,keyboardOptions:KeyboardOptions,keyboardActions:KeyboardActions,decorationBox:(()->Unit)->Unit) {
+ UI.editor=Editor(value,onValueChange,keyboardActions);UI.decorations.clear();UI.editorInvocations=0;UI.decorationAlignment=-1
+ decorationBox({UI.editorInvocations++})
 }
 object Focus {var clears=0;var duringClear:()->Unit={};fun clearFocus(){clears++;duringClear()}}
 object LocalFocusManager {val current=Focus}
@@ -165,23 +185,40 @@ fun main() {
   val newer=TextFieldValue("after clear",TextRange(3),TextRange(0,5));Journey.edit(newer);Journey.ack("")
   verify(UI.editor.value===newer,"Clear ACK discarded newer edit")
  }
+ case("placeholder_only_while_empty_and_editor_always_present") {
+  Journey.start()
+  verify(UI.decorations==listOf("Search library"),"Empty query has no placeholder")
+  verify(UI.editorInvocations==1,"Empty editor was removed or duplicated")
+  Journey.edit(TextFieldValue("query",TextRange(2),TextRange(0,5)))
+  verify(UI.decorations.isEmpty(),"Populated editor retained a permanent label")
+  verify(UI.editorInvocations==1,"Populated editor was removed or duplicated")
+  Journey.click("Clear library search")
+  verify(UI.decorations==listOf("Search library"),"Explicit clear did not restore placeholder")
+ }
+ case("placeholder_and_editor_share_body_style_and_centered_decoration") {
+  Journey.start()
+  verify(UI.decorationStyle===SoundQ.typography.body,"Placeholder does not use editor typography")
+  verify(UI.decorationAlignment==Alignment.CenterStart,"Editor/placeholder decoration is not vertically centered")
+  verify("minHeight:64" in UI.decorationModifier.ops,"Decoration shrink-wraps rather than centering inside the existing row")
+  verify(UI.purpose=="Library search query","Empty query lost accessible purpose")
+  verify(!UI.actions.getValue("Clear library search").enabled,"Empty clear should be disabled")
+  Journey.edit(TextFieldValue("query"))
+  verify(UI.decorationAlignment==Alignment.CenterStart,"Populated editor lost vertical centering")
+  verify(UI.purpose=="Library search query","Populated query lost accessible purpose")
+  verify(UI.actions.getValue("Clear library search").enabled,"Populated clear should be enabled")
+ }
  println("RESULT passed=$passed failed=$failures; exact callback body, simulated native boundary only")
  check(failures==0){"$failures behavioral failures"}
 }
 '''
-cache = Path.home() / '.gradle/caches/modules-2/files-2.1'
-def jar(name, version='*'):
-    return next(cache.glob(f'*/{name}/{version}/*/*.jar'))
-compiler = [jar('kotlin-compiler-embeddable','2.3.21'), jar('kotlin-stdlib','2.3.21'), jar('kotlin-script-runtime','2.3.21'), jar('kotlin-reflect'), jar('kotlinx-coroutines-core-jvm'), jar('annotations','23.0.0')]
-java = '/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/java'
-with tempfile.TemporaryDirectory(prefix='library-submit-', dir=os.environ['TMPDIR']) as out:
-    d = Path(out)
-    generated = prelude + '\n' + body.replace('@Composable private fun', 'fun', 1) + '\n' + tests
-    (d / 'Probe.kt').write_text(generated)
-    (d / 'Brush.kt').write_text('package androidx.compose.ui.graphics\nclass SolidColor(color:Int)\n')
-    (args.output / 'Probe.kt').write_text(generated)
-    subprocess.run([java, '-cp', ':'.join(map(str, compiler)), 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-nowarn', '-no-stdlib', '-no-reflect', '-classpath', str(jar('kotlin-stdlib','2.3.21')), '-d', str(d / 'classes'), str(d / 'Probe.kt'), str(d / 'Brush.kt')], check=True)
-    result = subprocess.run([java, '-cp', str(d / 'classes') + ':' + str(jar('kotlin-stdlib','2.3.21')), 'librarysearchprobe.ProbeKt'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    (args.output / 'result.log').write_text(result.stdout)
-    print(result.stdout, end='')
-    raise SystemExit(result.returncode)
+kotlinc, java = shutil.which('kotlinc'), shutil.which('java')
+if not kotlinc or not java:
+    parser.error('Standalone kotlinc and java must be on PATH')
+generated = prelude + '\n' + strip.replace('@Composable ', '') + '\n' + body.replace('@Composable private fun', 'fun', 1) + '\n' + tests
+(args.output / 'Probe.kt').write_text(generated)
+(args.output / 'Brush.kt').write_text('package androidx.compose.ui.graphics\nclass SolidColor(color:Int)\n')
+subprocess.run([kotlinc, '-nowarn', '-include-runtime', '-d', str(args.output / 'probe.jar'), str(args.output / 'Probe.kt'), str(args.output / 'Brush.kt')], check=True)
+result = subprocess.run([java, '-cp', str(args.output / 'probe.jar'), 'librarysearchprobe.ProbeKt'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+(args.output / 'result.log').write_text(result.stdout)
+print(result.stdout, end='')
+raise SystemExit(result.returncode)

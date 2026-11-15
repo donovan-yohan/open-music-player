@@ -1,6 +1,8 @@
 package com.soundq.designsystem
 
 import androidx.compose.foundation.*
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.*
@@ -54,16 +56,88 @@ enum class FeedbackKind {Loading,Empty,Error,Notice}
         if(action!=null&&onAction!=null)SoundQButton(action,onAction,variant=SoundQButtonVariant.Secondary)
     }
 }
-@Composable fun SoundQTabs(labels:List<String>,selected:Int,onSelect:(Int)->Unit) {
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).selectableGroup()) {
-        labels.forEachIndexed {index,label ->
-            val active=index==selected
-            Column(Modifier.width(IntrinsicSize.Max).widthIn(min=96.dp).selectable(active,role=Role.Tab,onClick={onSelect(index)})) {
-                Box(Modifier.heightIn(min=48.dp).padding(horizontal=16.dp,vertical=12.dp),contentAlignment=Alignment.Center) {
-                    Text(label,style=SoundQ.typography.body,color=if(active)SoundQ.colors.primary else SoundQ.colors.muted,maxLines=1,softWrap=false)
-                }
-                Box(Modifier.fillMaxWidth().height(1.dp).background(if(active)SoundQ.colors.primary else SoundQ.colors.border))
+/** App resources and feature state remain caller-owned. */
+@Composable fun SoundQMainPageHeader(title:String,brand:@Composable ()->Unit,modifier:Modifier=Modifier,
+    navigation:(@Composable ()->Unit)?=null,actions:@Composable RowScope.()->Unit={}) {
+    Column(modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().heightIn(min=56.dp),verticalAlignment=Alignment.CenterVertically) {
+            navigation?.invoke()
+            Row(Modifier.weight(1f).padding(horizontal=SoundQ.spacing.gutter),verticalAlignment=Alignment.CenterVertically,
+                horizontalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium)) {
+                Box(Modifier.size(24.dp)){brand()}
+                Text(title,Modifier.weight(1f).semantics {heading()},style=SoundQ.typography.title,color=SoundQ.colors.text)
             }
+            actions()
+        }
+        SoundQDivider()
+    }
+}
+
+/** One editor lane; no draft synchronization, focus changes or network policy. */
+@Composable fun SoundQSearchStrip(value:TextFieldValue,onValueChange:(TextFieldValue)->Unit,placeholder:String,
+    queryLabel:String,searchLabel:String,clearLabel:String,onSubmit:()->Unit,onClear:()->Unit,
+    modifier:Modifier=Modifier,editorModifier:Modifier=Modifier,enabled:Boolean=true,submitEnabled:Boolean=enabled,
+    clearEnabled:Boolean=enabled&&value.text.isNotEmpty(),trailing:(@Composable RowScope.()->Unit)?=null) {
+    val colors=SoundQ.colors
+    Column(modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().heightIn(min=64.dp),verticalAlignment=Alignment.CenterVertically) {
+            SoundQIconButton(SoundQIcon.Search,searchLabel,onSubmit,Modifier.heightIn(min=64.dp),enabled=submitEnabled,outlined=false)
+            BasicTextField(value,onValueChange,
+                editorModifier.weight(1f).heightIn(min=64.dp).semantics {contentDescription=queryLabel},
+                enabled=enabled,singleLine=true,textStyle=SoundQ.typography.body.copy(color=colors.text),
+                cursorBrush=androidx.compose.ui.graphics.SolidColor(colors.focus),
+                keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search),keyboardActions=KeyboardActions(onSearch={if(submitEnabled)onSubmit()}),
+                decorationBox={editor->Box(Modifier.fillMaxWidth().heightIn(min=64.dp)
+                    .padding(horizontal=SoundQ.spacing.gutter,vertical=SoundQ.spacing.small),contentAlignment=Alignment.CenterStart) {
+                    if(value.text.isEmpty())Text(placeholder,Modifier.clearAndSetSemantics {testTag="search-placeholder:$queryLabel"},style=SoundQ.typography.body,color=colors.muted)
+                    editor()
+                }})
+            SoundQIconButton(SoundQIcon.Close,clearLabel,onClear,Modifier.heightIn(min=64.dp),enabled=clearEnabled,outlined=false)
+            trailing?.invoke(this)
+        }
+        SoundQDivider()
+    }
+}
+
+enum class SoundQTabsTreatment { Existing, MainPageCells }
+/** Retain the original source-compatible call/trailing-lambda API for unrelated callers. */
+@Composable fun SoundQTabs(labels:List<String>,selected:Int,onSelect:(Int)->Unit) =
+    SoundQTabs(labels,selected,Modifier,SoundQTabsTreatment.Existing,onSelect=onSelect)
+
+@Composable fun SoundQTabs(labels:List<String>,selected:Int,modifier:Modifier,treatment:SoundQTabsTreatment,
+    bottomRule:Boolean=true,onSelect:(Int)->Unit) {
+    if(treatment==SoundQTabsTreatment.Existing) {
+        Row(modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).selectableGroup()) {
+            labels.forEachIndexed {index,label ->
+                val active=index==selected
+                Column(Modifier.width(IntrinsicSize.Max).widthIn(min=96.dp).selectable(active,role=Role.Tab,onClick={onSelect(index)})) {
+                    Box(Modifier.heightIn(min=48.dp).padding(horizontal=16.dp,vertical=12.dp),contentAlignment=Alignment.Center) {
+                        Text(label,style=SoundQ.typography.body,color=if(active)SoundQ.colors.primary else SoundQ.colors.muted,maxLines=1,softWrap=false)
+                    }
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(if(active)SoundQ.colors.primary else SoundQ.colors.border))
+                }
+            }
+        }
+    } else {
+        val border=SoundQ.colors.border
+        val borderWidth=with(LocalDensity.current){SoundQ.sizes.border.toPx()}
+        Column(modifier) {
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).horizontalScroll(rememberScrollState()).selectableGroup()) {
+                labels.forEachIndexed {index,label->
+                    val active=index==selected
+                    val interactions=remember {androidx.compose.foundation.interaction.MutableInteractionSource()}
+                    val focused by interactions.collectIsFocusedAsState()
+                    Box(Modifier.width(IntrinsicSize.Max).fillMaxHeight().sizeIn(minWidth=48.dp,minHeight=48.dp)
+                        .background(if(active)SoundQ.colors.surface else SoundQ.colors.background)
+                        .drawBehind {if(index>0)drawLine(border,Offset.Zero,Offset(0f,size.height),borderWidth)}
+                        .soundQCellFocus(focused)
+                        .selectable(active,interactionSource=interactions,indication=LocalIndication.current,role=Role.Tab,onClick={onSelect(index)})
+                        .padding(horizontal=SoundQ.spacing.gutter,vertical=SoundQ.spacing.small),contentAlignment=Alignment.Center) {
+                        Text(label,style=SoundQ.typography.caption,color=if(active)SoundQ.colors.text else SoundQ.colors.muted,maxLines=1,softWrap=false)
+                    }
+                }
+            }
+            if(bottomRule)SoundQDivider()
         }
     }
 }
