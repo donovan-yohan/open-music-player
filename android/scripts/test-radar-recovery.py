@@ -156,6 +156,34 @@ fun initialReadback(conflated:Boolean) {
   check(f.api.reads==2&&f.repo.radar.value.page===fresh)
  } finally {release.countDown();finish.countDown();f.close();runBlocking {withTimeout(5000){f.job.join()}}}
 }
+fun explicitRetryCancellation(boundary:String) {
+ val f=Fixture();val entered=CountDownLatch(1);val release=CountDownLatch(1);val replacement=CountDownLatch(1)
+ val fresh=page(6,"replacement");val calls=java.util.concurrent.atomic.AtomicInteger()
+ com.soundq.android.product.Dispatchers.IO=object:CoroutineDispatcher(){override fun dispatch(context:kotlin.coroutines.CoroutineContext,block:Runnable)=block.run()}
+ try {
+  f.api.feed={throw SafeFailure(SafeFailure.Reason.Network)};f.render()
+  check(f.api.reads==1&&f.repo.radar.value.phase==RadarPhase.Failed)
+  com.soundq.android.product.Dispatchers.IO=kotlinx.coroutines.Dispatchers.IO
+  f.api.feed={if(calls.incrementAndGet()==1){entered.countDown();await(release);page(6,"obsolete")}else{replacement.countDown();fresh}}
+  f.model.loadReleaseRadar(f.view,true);await(entered);f.render()
+  val oldJobs=f.job.children.toList()
+  when(boundary) {
+   "library"->f.readback()
+   "draft"->{f.repo.edit(f.view,"query");f.render();f.repo.edit(f.view,"")}
+   "hidden"->{f.shown=false;f.render();f.shown=true}
+   "background"->{f.owner.lifecycle.dispatch(Lifecycle.State.STARTED);f.render();f.owner.lifecycle.dispatch(Lifecycle.State.RESUMED)}
+   "catalog"->{f.catalog=Any();f.render();f.catalog=null}
+   else->error("unknown boundary")
+  }
+  f.render()
+  check(replacement.await(2,TimeUnit.SECONDS)) {"cancelled explicit first-page retry stranded $boundary landing"}
+  runBlocking {withTimeout(5000){f.job.children.toList().filter {it !in oldJobs}.forEach {it.join()}}}
+  check(f.repo.radar.value.page===fresh&&f.api.reads==3)
+  release.countDown();runBlocking {withTimeout(5000){oldJobs.forEach {it.join()}}}
+  repeat(5){f.render()}
+  check(f.repo.radar.value.page===fresh&&f.api.reads==3) {"obsolete retry changed replacement or repeated the visit"}
+ } finally {release.countDown();f.close();runBlocking {withTimeout(5000){f.job.join()}}}
+}
 fun main(args:Array<String>) {
  when(args.single()) {
  "initial-readback" -> initialReadback(false)
@@ -193,6 +221,18 @@ fun main(args:Array<String>) {
   repeat(3){f.readback();f.render();f.owner.lifecycle.dispatch(Lifecycle.State.STARTED);f.owner.lifecycle.dispatch(Lifecycle.State.RESUMED);f.render()}
   check(f.api.reads==1&&f.repo.radar.value.phase==RadarPhase.Failed)
   f.api.feed={page(6,"explicit")};f.model.loadReleaseRadar(f.view,true);f.render()
+  check(f.api.reads==2&&f.repo.radar.value.page!=null);f.close()
+ }
+ "explicit-retry-readback" -> explicitRetryCancellation("library")
+ "explicit-retry-retirement" -> for(boundary in listOf("draft","hidden","background","catalog"))explicitRetryCancellation(boundary)
+ "explicit-unentered" -> {
+  val f=Fixture();f.api.feed={throw SafeFailure(SafeFailure.Reason.Network)};f.render()
+  val old=f.repo.claimRadar(f.view,refresh=true)!!;f.repo.abandonRadar(old)
+  f.render();check(f.api.reads==1&&f.repo.radar.value.phase==RadarPhase.Failed)
+  check(f.repo.claimRadar(f.view,automatic=true)==null)
+  val fresh=f.repo.claimRadar(f.view,refresh=true)!!;f.repo.abandonRadar(old)
+  check(f.repo.radar.value.phase==RadarPhase.Loading)
+  f.api.feed={page(6,"explicit")};f.repo.loadRadar(fresh);f.render()
   check(f.api.reads==2&&f.repo.radar.value.page!=null);f.close()
  }
  "readback-scope" -> {
@@ -269,7 +309,7 @@ coroutines = next(p / 'kotlinx-coroutines-core-jvm.jar' for p in [kotlinc.parent
 env = {k:v for k,v in os.environ.items() if not k.startswith('GIT_')}
 env.update(JAVA_OPTS='-Xmx3g -XX:ActiveProcessorCount=2 -Djava.io.tmpdir='+os.environ.get('TMPDIR',str(out)))
 commands = [[str(kotlinc), *map(str, sorted(out.glob('*.kt'))), '-cp', str(coroutines), '-include-runtime', '-d', str(out/'recovery.jar')]]
-commands += [['java','-XX:ActiveProcessorCount=2','-Xmx3g','-cp',str(out/'recovery.jar')+os.pathsep+str(coroutines),'bindings.RecoveryKt',c] for c in ['interrupted','blank','reinvalidated','failure','visibility','initial-readback','conflated-initial-readback','initial-deferred','initial-failure','readback-scope']]
+commands += [['java','-XX:ActiveProcessorCount=2','-Xmx3g','-cp',str(out/'recovery.jar')+os.pathsep+str(coroutines),'bindings.RecoveryKt',c] for c in ['interrupted','blank','reinvalidated','failure','visibility','initial-readback','conflated-initial-readback','initial-deferred','initial-failure','readback-scope','explicit-retry-readback','explicit-retry-retirement','explicit-unentered']]
 runs = []
 for i,cmd in enumerate(commands):
     run = subprocess.run(cmd,env=env,text=True,capture_output=True,timeout=45)
@@ -278,4 +318,4 @@ for i,cmd in enumerate(commands):
     print(i,run.returncode,(run.stdout+run.stderr)[-1800:])
     if i==0 and run.returncode:break
 (out/'receipt.json').write_text(json.dumps({'inputs':inputs,'runs':runs,'extracted':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in out.glob('*.kt')},'scope':__doc__,'native':'UNRUN'},indent=2)+'\n')
-raise SystemExit(0 if len(runs)==11 and all(x['exit']==0 for x in runs) else 1)
+raise SystemExit(0 if len(runs)==14 and all(x['exit']==0 for x in runs) else 1)

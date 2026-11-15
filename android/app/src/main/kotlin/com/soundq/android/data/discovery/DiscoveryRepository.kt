@@ -19,7 +19,7 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
         radarRead?.let { request ->
             // A retired GET cannot publish. An unfinished first landing may ask again
             // under a fresh owner; durable provider admission still belongs to the server.
-            if(request.automatic&&radarVisitRead===request.view&&radarMutable.value.page==null)radarVisitRead=null
+            if(radarVisitRead===request.view&&radarMutable.value.page==null)radarVisitRead=null
             abandonRadar(request)
         }
         radarRead=null;radarAction=null;radarMutable.value=radarMutable.value.copy(finding=false,phase=if(!radarAdmitted)RadarPhase.Held else if(radarMutable.value.phase==RadarPhase.Failed)RadarPhase.Failed else if(radarMutable.value.page!=null)RadarPhase.Ready else RadarPhase.Idle)

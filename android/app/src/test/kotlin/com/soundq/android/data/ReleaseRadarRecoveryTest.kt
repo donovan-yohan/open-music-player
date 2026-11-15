@@ -123,6 +123,38 @@ class ReleaseRadarRecoveryTest {
             } finally {release.countDown();pool.shutdownNow()}
         }
     }
+    @Test fun acknowledgedLibraryRowCancelsDispatchedExplicitFirstPageRetryWithoutStrandingVisit() {
+        HttpsFixture().use {f->
+            val s=session(f);lateinit var r:DiscoveryRepository
+            val api=SoundQApi(s,f.client,libraryOwnershipReadback={scope->r.libraryChanged(scope)})
+            r=DiscoveryRepository(s,api,radarAdmitted=true)
+            val v=r.open()!!;r.showRadar(v){true}
+            val entered=CountDownLatch(1);val release=CountDownLatch(1);val calls=AtomicInteger()
+            f.server.dispatcher=object:Dispatcher(){override fun dispatch(request:RecordedRequest):MockResponse {
+                if(request.url.encodedPath=="/api/v1/library")return MockResponse.Builder().body("""{"tracks":[{"id":1,"title":"Owned","artist":"Fixture","has_metadata_override":false,"mb_verified":false}],"total":1,"limit":100,"offset":0}""").build()
+                assertEquals("GET",request.method);assertEquals("/api/v1/me/discovery/releases",request.url.encodedPath)
+                val n=calls.incrementAndGet()
+                if(n==1)return MockResponse.Builder().code(503).body("{}").build()
+                if(n==2){entered.countDown();check(release.await(3,TimeUnit.SECONDS))}
+                return MockResponse.Builder().body(wire(if(n==2)"Obsolete retry" else "Replacement")).build()
+            }}
+            val pool=Executors.newSingleThreadExecutor()
+            try {
+                r.loadRadar(r.claimRadar(v,automatic=true)!!)
+                assertEquals(RadarPhase.Failed,r.radar.value.phase);assertNull(r.claimRadar(v,automatic=true))
+                val old=r.claimRadar(v,refresh=true)!!;val result=pool.submit {r.loadRadar(old)}
+                assertTrue(entered.await(2,TimeUnit.SECONDS))
+                assertNotNull(api.trackDetailsSnapshot(s.capture()!!,TrackId(1)){true})
+                assertEquals(RadarPhase.Idle,r.radar.value.phase);assertNull(r.radar.value.page)
+                val fresh=r.claimRadar(v,automatic=true)
+                assertNotNull("cancelled explicit first-page retry must release visit admission",fresh)
+                release.countDown();result.get(3,TimeUnit.SECONDS);r.abandonRadar(old)
+                assertEquals(RadarPhase.Loading,r.radar.value.phase);assertNull(r.radar.value.page)
+                r.loadRadar(fresh!!);assertEquals("Replacement",r.radar.value.page!!.songs.single().title)
+                assertEquals(3,calls.get());assertNull(r.claimRadar(v,automatic=true))
+            } finally {release.countDown();pool.shutdownNow()}
+        }
+    }
     @Test fun acknowledgedLibraryRowDoesNotTurnGenuineInitialFailureIntoAutomaticRetry() {
         HttpsFixture().use {f->
             val s=session(f);lateinit var r:DiscoveryRepository
