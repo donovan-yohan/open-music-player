@@ -10,7 +10,7 @@ import java.time.Instant
 import java.util.concurrent.TimeUnit
 
 /** Only authenticated HTTP path. Response bodies/credentials/signed URLs never enter errors or logs. */
-class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient(), val intakeReceipts:com.soundq.android.data.acquisition.IntakeReceipts = com.soundq.android.data.acquisition.IntakeReceipts()) {
+class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient(), val intakeReceipts:com.soundq.android.data.acquisition.IntakeReceipts = com.soundq.android.data.acquisition.IntakeReceipts(), private val libraryOwnershipReadback:(AccountScope)->Unit = {}) {
     private class WireGuard(val valid: () -> Boolean)
     private val http = client.newBuilder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
         .callTimeout(20, TimeUnit.SECONDS)
@@ -67,7 +67,7 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
                 // Full signed RGB/tier artifacts are larger than metadata. This bounded
                 // exception belongs ONLY to canonical analysis GETs, never arbitrary URLs,
                 // queries, overrides or writes. Auth/endpoint/retirement fences above stay shared.
-                val responseLimit = if (method == "GET" && Regex("^/tracks/[1-9][0-9]*/analysis$").matches(path)) 16L * 1024 * 1024 else 2_000_000L
+                val responseLimit = if(method=="GET"&&path=="/me/discovery/releases")262144L else if (method == "GET" && Regex("^/tracks/[1-9][0-9]*/analysis$").matches(path)) 16L * 1024 * 1024 else 2_000_000L
                 if (source.request(responseLimit + 1)) throw SafeFailure(SafeFailure.Reason.InvalidResponse)
                 val text = source.readUtf8()
                 val parsed = if (text.isBlank()) buildJsonObject {} else json.parseToJsonElement(text).jsonObject
@@ -119,6 +119,8 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         if (privateFeature && result.code !in 200..299) throw com.soundq.android.data.connect.FeatureFailure(result.code)
         if (allowMissing && result.code == 404) throw PlaylistMissing()
         if (result.code !in 200..299) {
+            if(method=="GET" && path.startsWith("/me/plays/recent?continuation=true&") && result.code==409)
+                throw com.soundq.android.data.home.RecentChanged()
             if(method=="POST" && Regex("^/catalog/recordings/[0-9a-f-]{36}/membership$").matches(path)) {
                 val code=result.body["membershipCode"]?.jsonPrimitive?.content?.let {com.soundq.android.data.catalog.CatalogMembershipRefusal.Code.valueOf(it)}
                 if(code!=null)throw com.soundq.android.data.catalog.CatalogMembershipRefusal(code)
@@ -165,7 +167,14 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
             val body=authorized(scope,"/library?limit=100&offset=$offset&sort=added_at&order=desc&fields=id,title,artist,album,duration_ms,is_liked,cover_art_url,artwork_url,mb_verified,has_metadata_override,mb_recording_id,mb_suggestions,codec,bitrate_kbps,sample_rate_hz,channels,source_url",valid=valid,expectedStatus=200)
             val (rows,total)=com.soundq.android.data.trackdetails.TrackDetailsJson.page(body,offset)
             rows.forEach {row->if(!seen.add(row.track.id))throw SafeFailure(SafeFailure.Reason.InvalidResponse);if(row.track.id==id)found=row}
-            if(found!=null)return found
+            if(found!=null) {
+                // A parsed account Library row is ownership evidence, unlike a job/POST ACK.
+                // Publish before optional playlist confirmation; never infer source/recording equivalence.
+                if(!valid())throw SafeFailure(SafeFailure.Reason.Retired)
+                session.checkRemote(scope)
+                libraryOwnershipReadback(scope)
+                return found
+            }
             offset+=rows.size
             if(offset>=total)return found
             if(rows.isEmpty())throw SafeFailure(SafeFailure.Reason.InvalidResponse)
@@ -350,6 +359,10 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         val body=authorized(scope,"/discovery/resolve-url","POST",payload("url" to source.url),readOnly=false,valid=valid,expectedStatus=200)
         return com.soundq.android.data.discovery.DiscoveryJson.resolved(body,source.url)
     }
+    fun releaseRadar(scope:AccountScope,valid:()->Boolean):com.soundq.android.data.discovery.RadarPage =
+        com.soundq.android.data.discovery.RadarJson.page(authorized(scope,"/me/discovery/releases",valid=valid,expectedStatus=200))
+    fun radarMembership(scope:AccountScope,recording:com.soundq.android.data.catalog.RecordingMbid,valid:()->Boolean):Boolean =
+        com.soundq.android.data.discovery.RadarJson.membership(authorized(scope,"/me/discovery/releases/${recording.value}/membership",valid=valid,expectedStatus=200),recording)
     fun discoverySearch(scope: AccountScope, query:String, valid:()->Boolean = {true},grouped:Boolean=false): com.soundq.android.data.discovery.SourceResults {
         require(query.isNotBlank() && query.toByteArray(Charsets.UTF_8).size<=512)
         val url=session.endpoint.base.newBuilder().addQueryParameter("q",query).addQueryParameter("limit",com.soundq.android.data.discovery.DiscoveryJson.SEARCH_SURFACE_LIMIT.toString()).addQueryParameter("providers",if(grouped)"youtube,soundcloud,musicbrainz" else "youtube,soundcloud").build()
@@ -484,6 +497,20 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
     fun recent(scope: AccountScope, valid: () -> Boolean = { true }): List<com.soundq.android.data.home.HomeEntry> {
         val body = authorized(scope, "/me/plays/recent?limit=20", valid = valid)
         return parseHomeRows(body)
+    }
+    fun recentPage(scope:AccountScope,offset:Int=0,revision:String?=null,valid:()->Boolean={true}):com.soundq.android.data.home.RecentPage {
+        require(offset>=0 && (offset==0 || revision!=null))
+        require(revision==null || Regex("[a-f0-9]{64}").matches(revision))
+        val body=authorized(scope,"/me/plays/recent?continuation=true&limit=20&offset=$offset"+(revision?.let {"&revision=$it"} ?: ""),valid=valid,expectedStatus=200)
+        return try {
+            require(homeLong(body.getValue("limit"))==20L && homeLong(body.getValue("offset"))==offset.toLong())
+            val acceptedRevision=homeString(body.getValue("revision")).also {require(Regex("[a-f0-9]{64}").matches(it))}
+            require(revision==null || revision==acceptedRevision)
+            val more=body.getValue("hasMore").jsonPrimitive.let {require(!it.isString);it.boolean}
+            val rows=parseHomeRows(body)
+            require(rows.map {it.track.id}.distinct().size==rows.size && (!more || rows.size==20))
+            com.soundq.android.data.home.RecentPage(rows,acceptedRevision,more)
+        } catch(_:Exception) {throw SafeFailure(SafeFailure.Reason.InvalidResponse)}
     }
     fun top(scope: AccountScope, valid: () -> Boolean = { true }): List<com.soundq.android.data.home.HomeEntry> =
         parseHomeRows(authorized(scope, "/me/plays/top?days=30&limit=20", valid = valid))

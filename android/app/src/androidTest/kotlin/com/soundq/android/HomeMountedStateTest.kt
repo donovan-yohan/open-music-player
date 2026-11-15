@@ -41,8 +41,8 @@ class HomeMountedStateTest {
                     "/api/v1/me/plays/recent" -> {
                         recentReads++
                         if(recentReads==2)return MockResponse.Builder().code(503).body("{}").build()
-                        if(recentReads==3) """{"tracks":[]}"""
-                        else """{"tracks":[{"id":1,"title":"Accepted mounted recent","inLibrary":true}]}"""
+                        recentFixtureBody(if(recentReads==3) """{"tracks":[]}"""
+                        else """{"tracks":[{"id":1,"title":"Accepted mounted recent","inLibrary":true}]}""")
                     }
                     "/api/v1/me/plays/top" -> """{"tracks":[]}"""
                     else -> """{"plays":[{"id":81,"track":{"id":1,"title":"Accepted mounted history","inLibrary":true},"playedAt":"2026-10-28T00:00:00Z","skipped":false}],"limit":50,"offset":0}"""
@@ -52,9 +52,7 @@ class HomeMountedStateTest {
         }
         var lifetime:HomeRouteLifetime?=null
         try {
-            compose.onNodeWithContentDescription("Email").performTextInput("mounted-home@example.test")
-            compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
-            compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+            compose.signInThroughSettings("mounted-home@example.test","test-only-password"){app.graph.session.capture()!=null}
             compose.waitUntil(10000){app.graph.library.state.value.rows.isNotEmpty()}
             val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
             val owner=HomeRouteLifetime();lifetime=owner
@@ -76,7 +74,7 @@ class HomeMountedStateTest {
             compose.waitForIdle()
             // This is the defect-driving assertion: accepted model data must invalidate mounted content.
             compose.onNodeWithText("Accepted mounted recent").assertIsDisplayed()
-            compose.onNodeWithText("Refresh recent").performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Refresh recent").performClick()
             compose.waitUntil(5000){model.home.recent.value.error!=null}
             compose.onNodeWithText("Accepted mounted recent").assertExists()
             compose.onNodeWithText("Retry Recently played").performScrollTo().performClick()

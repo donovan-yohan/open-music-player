@@ -35,8 +35,9 @@ class HomeFeedRepository(private val session: AccountSession, private val api: S
     }
     fun load(route: HomeRoute, section: HomeSection, expected: Any? = null, append: Boolean = false) {
         if (section == HomeSection.History) { loadHistory(route, expected, append); return }
+        if (section == HomeSection.Recent) { claimRecent(route,expected as? HomeReadState,append)?.let(::executeRecent); return }
         val owner: ReadOwner
-        val target = if(section == HomeSection.Recent) recentMutable else topMutable
+        val target = topMutable
         synchronized(this) {
             if (!allowed(route, section) || (expected != null && (expected !== target.value || owners[section]?.let {current(section,it)} != true))) return
             val scope = session.capture() ?: return
@@ -47,11 +48,77 @@ class HomeFeedRepository(private val session: AccountSession, private val api: S
         }
         try {
             val valid = { synchronized(this) { current(section, owner) } }
-            val loaded = if(section == HomeSection.Recent) api.recent(owner.scope,valid) else api.top(owner.scope,valid)
+            val loaded = api.top(owner.scope,valid)
             synchronized(this) { if(current(section,owner)) target.value = HomeReadState(rows=loaded) }
         } catch(error: Exception) {
             synchronized(this) { if(current(section,owner)) target.value = target.value.copy(loading=false,error=(error as? SafeFailure)?.reason ?: SafeFailure.Reason.Network) }
         }
+    }
+    class RecentRequest internal constructor(
+        internal val repository:HomeFeedRepository,internal val scope:AccountScope,internal val route:HomeRoute,
+        internal val generation:Long,internal val before:HomeReadState,internal val loading:HomeReadState,
+        internal val append:Boolean,
+    ) {internal var entered=false}
+    private var pendingRecent:RecentRequest?=null
+    /** Claim synchronously at the rendered input, before ViewModel schedules IO.
+     * Buffered reveal changes only presentation, retaining the full accepted
+     * rows object and owner used by playback/queue capability admission. */
+    @Synchronized fun claimRecent(route:HomeRoute,expected:HomeReadState?=null,append:Boolean=false):RecentRequest? {
+        val before=recentMutable.value
+        if(!allowed(route,HomeSection.Recent) || (expected!=null && (expected!==before || owners[HomeSection.Recent]?.let {current(HomeSection.Recent,it)}!=true)))return null
+        val scope=session.capture() ?: return null
+        val previous=owners[HomeSection.Recent]
+        val same=previous?.route===route && session.current(previous.scope)
+        if(append) {
+            if(!same || before.loading || !before.hasMore || before.revision==null)return null
+            if(before.visibleCount+5<=before.rows.size || !before.serverHasMore) {
+                recentMutable.value=before.copy(visibleCount=minOf(before.visibleCount+5,before.rows.size),error=null,retryAppend=false)
+                return null
+            }
+        }
+        val owner=ReadOwner(scope,route,++generation)
+        owners[HomeSection.Recent]=owner
+        val loading=if(same)before.copy(loading=true,error=null) else HomeReadState(loading=true)
+        recentMutable.value=loading
+        return RecentRequest(this,scope,route,owner.generation,before,loading,append).also {pendingRecent=it}
+    }
+    private fun ownsRecent(request:RecentRequest):Boolean = request.repository===this && pendingRecent===request &&
+        owners[HomeSection.Recent]?.let {it.generation==request.generation && current(HomeSection.Recent,it)}==true
+    fun executeRecent(request:RecentRequest) {
+        synchronized(this) {if(request.entered || !ownsRecent(request))return;request.entered=true}
+        val valid={synchronized(this){ownsRecent(request)}}
+        var append=request.append
+        try {
+            val page=try {api.recentPage(request.scope,if(append)request.before.nextOffset else 0,if(append)request.before.revision else null,valid)}
+            catch(_:RecentChanged) {
+                synchronized(this) {
+                    if(!ownsRecent(request))return
+                    // Corpus invalidation is not an append failure. Retire the
+                    // old rows/actions and replace under the same single claim.
+                    recentMutable.value=HomeReadState(loading=true)
+                }
+                append=false
+                api.recentPage(request.scope,valid=valid)
+            }
+            synchronized(this) {
+                if(!ownsRecent(request))return
+                if(append && page.rows.isEmpty())throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+                val rows=if(append)request.before.rows+page.rows else page.rows
+                // Equal revision plus a repeated ID is malformed, never a
+                // license to dedupe away an omitted successor.
+                if(rows.map {it.track.id}.distinct().size!=rows.size)throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+                recentMutable.value=HomeReadState(rows=rows,visibleCount=if(append)minOf(request.before.visibleCount+5,rows.size) else minOf(5,rows.size),
+                    nextOffset=rows.size,revision=page.revision,serverHasMore=page.hasMore)
+            }
+        } catch(error:Exception) {
+            synchronized(this) {if(ownsRecent(request))recentMutable.value=recentMutable.value.copy(
+                loading=false,error=(error as? SafeFailure)?.reason ?: SafeFailure.Reason.Network,retryAppend=append)}
+        } finally {abandonRecent(request)}
+    }
+    @Synchronized fun abandonRecent(request:RecentRequest) {
+        if(pendingRecent!==request)return
+        pendingRecent=null
+        if(recentMutable.value===request.loading)recentMutable.value=request.loading.copy(loading=false)
     }
     class HistoryRequest internal constructor(
         internal val repository:HomeFeedRepository,internal val scope:AccountScope,internal val route:HomeRoute,
@@ -122,22 +189,35 @@ class HomeFeedRepository(private val session: AccountSession, private val api: S
         if(historyMutable.value===request.loading)historyMutable.value=request.loading.copy(loading=false)
     }
     fun playAction(route: HomeRoute, section: HomeSection, expected: Any, entry: HomeEntry, eventId: Long? = null, play: (List<Track>, Int) -> Unit): () -> Unit {
+        return playActionWithSource(route,section,expected,entry,eventId) {tracks,index,_ -> play(tracks,index)}
+    }
+    /** Freeze the read owner, route, account and accepted list at binding time.
+     * Owner/route/scope identities never revive after replacement, even on ABA.
+     * The controller may check this source during staging or registry claim. */
+    fun playActionWithSource(route: HomeRoute, section: HomeSection, expected: Any, entry: HomeEntry, eventId: Long? = null, play: (List<Track>, Int, () -> Boolean) -> Unit): () -> Unit {
         val captured = synchronized(this) { owners[section] }
+        val valid = { synchronized(this) {
+            captured != null && captured.route === route && current(section,captured) && rows(section) === expected
+        } }
         return action@{
-            synchronized(this) {
-                val owner = captured ?: return@action
-                if(owner.route !== route || !current(section,owner) || rows(section) !== expected || !entry.eligible) return@action
+            val context = synchronized(this) {
+                if(!valid() || !entry.eligible) return@action
                 if(section == HomeSection.History) {
                     @Suppress("UNCHECKED_CAST") val events = expected as List<HistoryEntry>
-                    if(events.any {it.id == eventId && it.entry === entry}) play(listOf(entry.track),0)
-                    return@action
+                    if(events.none {it.id == eventId && it.entry === entry}) return@action
+                    listOf(entry.track) to 0
+                } else {
+                    @Suppress("UNCHECKED_CAST") val entries = expected as List<HomeEntry>
+                    if(entries.none {it === entry}) return@action
+                    val eligible = entries.filter {it.eligible}
+                    val index = eligible.indexOfFirst {it === entry}
+                    if(index < 0) return@action
+                    eligible.map {it.track} to index
                 }
-                @Suppress("UNCHECKED_CAST") val entries = expected as List<HomeEntry>
-                if(entries.none {it === entry}) return@action
-                val eligible = entries.filter {it.eligible}
-                val index = eligible.indexOfFirst {it === entry}
-                if(index >= 0) play(eligible.map {it.track}, index)
             }
+            // Never enter the context registry while holding the repository:
+            // registry claim can invoke valid() in the opposite direction.
+            play(context.first,context.second,valid)
         }
     }
     /** A queue capability never invokes playAction or expands the selected context. */
@@ -160,7 +240,7 @@ class HomeFeedRepository(private val session: AccountSession, private val api: S
     }
     @Synchronized fun owns(route: HomeRoute, section: HomeSection): Boolean = owners[section]?.let { it.route === route && current(section,it) } == true
     @Synchronized fun retire() {
-        generation++; owners.clear(); pendingHistory=null
+        generation++; owners.clear(); pendingHistory=null; pendingRecent=null
         recentMutable.value=HomeReadState(); topMutable.value=HomeReadState(); historyMutable.value=HistoryReadState()
     }
 }

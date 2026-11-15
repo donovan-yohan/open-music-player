@@ -15,7 +15,10 @@ class HomeMetadataTest {
     private fun response(section:HomeSection,row:JsonObject,metadata:JsonObject=event):String =
         if(section==HomeSection.History) buildJsonObject {
             put("plays",buildJsonArray {add(JsonObject(metadata+mapOf("track" to row))) });put("limit",50);put("offset",0)
-        }.toString() else buildJsonObject {put("tracks",buildJsonArray {add(row)})}.toString()
+        }.toString() else buildJsonObject {
+            put("tracks",buildJsonArray {add(row)})
+            if(section==HomeSection.Recent){put("limit",20);put("offset",0);put("revision","a".repeat(64));put("hasMore",false)}
+        }.toString()
     private fun invalid(cases:List<Pair<String,JsonObject>>,history:Boolean=false) {
         val failures=mutableListOf<String>()
         val sections=if(history)listOf(HomeSection.History) else HomeSection.entries
@@ -29,6 +32,7 @@ class HomeMetadataTest {
                 // Re-seed every case so one accepted malformed response cannot taint the next control.
                 f.reply(response(section,track));repo.load(route,section)
                 val acknowledged=rows()
+                assertTrue("fixture must acknowledge a real row before malformed $section/$name",if(section==HomeSection.History)repo.history.value.rows.isNotEmpty() else (if(section==HomeSection.Recent)repo.recent.value.rows else repo.top.value.rows).isNotEmpty())
                 val acceptedTracks=if(section==HomeSection.History)repo.history.value.rows.map {it.entry.track}
                     else (if(section==HomeSection.Recent)repo.recent.value.rows else repo.top.value.rows).map {it.track}
                 f.reply(if(history)response(section,track,bad) else response(section,bad));repo.load(route,section)

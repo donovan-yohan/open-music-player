@@ -10,7 +10,17 @@ data class HomeReadState(
     val rows: List<HomeEntry> = emptyList(),
     val loading: Boolean = false,
     val error: SafeFailure.Reason? = null,
-)
+    val visibleCount: Int = 5,
+    val nextOffset: Int = 0,
+    val revision: String? = null,
+    val serverHasMore: Boolean = false,
+    val retryAppend: Boolean = false,
+) {
+    val hasMore: Boolean get() = visibleCount < rows.size || serverHasMore
+}
+
+data class RecentPage(val rows:List<HomeEntry>,val revision:String,val hasMore:Boolean)
+class RecentChanged : Exception()
 class HomeRepository(
     private val session: AccountSession,
     private val fetch: (AccountScope) -> List<HomeEntry>,

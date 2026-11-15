@@ -38,9 +38,7 @@ class DiscoveryRootAdmissionTest {
         }}
         val pool=Executors.newSingleThreadExecutor()
         try {
-            compose.onNodeWithContentDescription("Email").performTextInput("admission@example.test")
-            compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
-            compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+            compose.signInThroughSettings("admission@example.test","test-only-password"){graph.session.capture()!=null}
             compose.waitUntil(10000){graph.library.state.value.rows.isNotEmpty()}
             compose.onAllNodesWithText("Discover").filterToOne(hasClickAction()).performClick()
             compose.onNodeWithContentDescription("Music search query").performTextInput("admission")

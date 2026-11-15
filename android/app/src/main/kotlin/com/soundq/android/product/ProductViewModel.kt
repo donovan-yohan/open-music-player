@@ -212,6 +212,16 @@ class ProductViewModel(app:Application):AndroidViewModel(app) {
         val request=graph.discovery.claimSearch(view,draft) ?: return
         viewModelScope.launch(Dispatchers.IO){graph.discovery.search(request)}
     }
+    fun loadReleaseRadar(view:com.soundq.android.data.discovery.DiscoveryView,refresh:Boolean=false,automatic:Boolean=false) {
+        val request=graph.discovery.claimRadar(view,refresh,automatic)?:return
+        viewModelScope.launch(Dispatchers.IO){
+            try {graph.discovery.loadRadar(request)}finally {graph.discovery.abandonRadar(request)}
+        }.invokeOnCompletion {graph.discovery.abandonRadar(request)}
+    }
+    fun findReleaseSources(view:com.soundq.android.data.discovery.DiscoveryView,page:com.soundq.android.data.discovery.RadarPage,song:com.soundq.android.data.discovery.RadarSong,draft:com.soundq.android.data.discovery.DiscoveryDraft) {
+        val request=graph.discovery.claimFindSources(view,page,song,draft)?:return
+        viewModelScope.launch(Dispatchers.IO){graph.discovery.findSources(request)?.let(graph.discovery::search)}
+    }
     fun submitSourceImport(view:ImportView,choice:com.soundq.android.data.discovery.SourceChoice) {
         graph.imports.prepareSource(view,choice)
     }
@@ -316,9 +326,14 @@ class ProductViewModel(app:Application):AndroidViewModel(app) {
             viewModelScope.launch(Dispatchers.IO) {
                 try {home.executeHistory(request)}finally {home.abandonHistory(request)}
             }.invokeOnCompletion {home.abandonHistory(request)}
+        } else if(section==com.soundq.android.data.home.HomeSection.Recent) {
+            val request=home.claimRecent(route,expected as? com.soundq.android.data.home.HomeReadState,append) ?: return
+            viewModelScope.launch(Dispatchers.IO) {
+                try {home.executeRecent(request)}finally {home.abandonRecent(request)}
+            }.invokeOnCompletion {home.abandonRecent(request)}
         } else viewModelScope.launch(Dispatchers.IO){home.load(route,section,expected,append)}
     }
     fun homePlay(route:com.soundq.android.data.home.HomeRoute,section:com.soundq.android.data.home.HomeSection,rows:Any,entry:com.soundq.android.data.home.HomeEntry,eventId:Long?=null):()->Unit =
-        home.playAction(route,section,rows,entry,eventId) {tracks,index -> graph.rememberTracks(tracks);controller.playContext(tracks,index)}
+        home.playActionWithSource(route,section,rows,entry,eventId) {tracks,index,valid -> graph.rememberTracks(tracks);controller.playContext(tracks,index,valid=valid)}
     override fun onCleared(){mixExchange.retire();super.onCleared()}
 }

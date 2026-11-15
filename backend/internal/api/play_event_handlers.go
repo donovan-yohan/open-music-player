@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -101,9 +103,11 @@ type PlayEventTrackResponse struct {
 }
 
 type RecentlyPlayedResponse struct {
-	Tracks []PlayEventTrackResponse `json:"tracks"`
-	Limit  int                      `json:"limit"`
-	Offset int                      `json:"offset"`
+	Tracks   []PlayEventTrackResponse `json:"tracks"`
+	Limit    int                      `json:"limit"`
+	Offset   int                      `json:"offset"`
+	Revision string                   `json:"revision,omitempty"`
+	HasMore  *bool                    `json:"hasMore,omitempty"`
 }
 
 type PlayHistoryEntryResponse struct {
@@ -285,7 +289,38 @@ func (h *PlayEventHandlers) RecentlyPlayed(w http.ResponseWriter, r *http.Reques
 	limit := parseIntParam(r, "limit", 20)
 	offset := parseIntParam(r, "offset", 0)
 
-	tracks, err := h.playEventRepo.RecentlyPlayed(r.Context(), userCtx.UserID, limit, offset)
+	var tracks []db.RecentlyPlayedTrack
+	var err error
+	var revision string
+	var more *bool
+	if r.URL.Query().Get("continuation") == "true" {
+		// Opt-in only: legacy callers retain their existing response and paging.
+		limit, err = strconv.Atoi(r.URL.Query().Get("limit"))
+		var offsetErr error
+		offset, offsetErr = strconv.Atoi(r.URL.Query().Get("offset"))
+		expected := r.URL.Query().Get("revision")
+		if err != nil || offsetErr != nil || limit < 1 || limit > 100 || offset < 0 ||
+			(expected != "" && !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(expected)) || (offset > 0 && expected == "") {
+			writePlayEventError(w, http.StatusBadRequest, "INVALID_PAGE", "invalid recent continuation")
+			return
+		}
+		pages, ok := h.playEventRepo.(interface {
+			RecentPage(context.Context, uuid.UUID, int, int, string) ([]db.RecentlyPlayedTrack, string, bool, error)
+		})
+		if !ok {
+			writePlayEventError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "recent continuation unavailable")
+			return
+		}
+		var hasMore bool
+		tracks, revision, hasMore, err = pages.RecentPage(r.Context(), userCtx.UserID, limit, offset, expected)
+		more = &hasMore
+		if errors.Is(err, db.ErrRecentChanged) {
+			writePlayEventError(w, http.StatusConflict, "RECENT_CHANGED", "recent plays changed; refresh required")
+			return
+		}
+	} else {
+		tracks, err = h.playEventRepo.RecentlyPlayed(r.Context(), userCtx.UserID, limit, offset)
+	}
 	if err != nil {
 		writePlayEventError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load recently played")
 		return
@@ -309,9 +344,11 @@ func (h *PlayEventHandlers) RecentlyPlayed(w http.ResponseWriter, r *http.Reques
 	}
 
 	writePlayEventJSON(w, http.StatusOK, RecentlyPlayedResponse{
-		Tracks: responses,
-		Limit:  limit,
-		Offset: offset,
+		Tracks:   responses,
+		Limit:    limit,
+		Offset:   offset,
+		Revision: revision,
+		HasMore:  more,
 	})
 }
 

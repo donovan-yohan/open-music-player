@@ -28,7 +28,7 @@ class OrdinaryHomeJourneyTest {
                 if(request.headers["Authorization"]!="Bearer synthetic-fixture-access")return MockResponse.Builder().code(401).body("{}").build()
                 val row="""{"id":1,"title":"Home fixture song","artist":"Synthetic ensemble","durationMs":12000,"inLibrary":true}"""
                 val body=when(path){
-                    "/api/v1/me/plays/recent"->"""{"tracks":[{"id":2,"title":"Removed Home song","inLibrary":false},$row],"limit":20,"offset":0}"""
+                    "/api/v1/me/plays/recent"->recentFixtureBody("""{"tracks":[{"id":2,"title":"Removed Home song","inLibrary":false},$row],"limit":20,"offset":0}""")
                     "/api/v1/me/plays/top"->"""{"tracks":[],"days":30,"limit":20}"""
                     else->"""{"plays":[{"id":22,"track":$row,"playedAt":"2026-10-28T00:00:00Z","contextType":"queue","skipped":false},{"id":21,"track":$row,"playedAt":"2026-10-27T00:00:00Z","skipped":true}],"limit":50,"offset":0}"""
                 }
@@ -42,11 +42,8 @@ class OrdinaryHomeJourneyTest {
         val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as FixtureApplication
         val graph=app.graph
         assertTrue(app.graphCreatedOnMain);assertTrue(ProductTransportFixture.networkingStayedOffMain);assertFalse(app.bootstrapThread.isAlive)
-        compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Email").fetchSemanticsNodes().isNotEmpty()}
-        compose.onNodeWithContentDescription("Email").performTextInput("synthetic-home@example.test")
-        compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
         val before=ProductTransportFixture.requests.size
-        compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+        compose.signInThroughSettings("synthetic-home@example.test","test-only-password"){graph.session.capture()!=null}
         compose.waitUntil(10000){ProductTransportFixture.requests.drop(before).contains("POST /api/v1/auth/login")&&graph.session.capture()!=null&&compose.onAllNodes(hasContentDescription("Library search query") and hasSetTextAction()).fetchSemanticsNodes().isNotEmpty()}
         val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
         compose.onAllNodesWithText("Home").filterToOne(hasClickAction()).performClick()

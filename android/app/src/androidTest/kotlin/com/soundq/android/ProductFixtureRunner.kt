@@ -122,6 +122,10 @@ object ProductTransportFixture {
     val certificate=HeldCertificate.Builder().addSubjectAlternativeName("localhost").build()
     val requests=CopyOnWriteArrayList<String>()
     val recordedPlays=CopyOnWriteArrayList<Long>()
+    // Actual Go RadarService + authenticated HTTP serializer output, synthetic corpus only.
+    private val radarWire:String by lazy {
+        InstrumentationRegistry.getInstrumentation().context.assets.open("ordinary-radar-wire.json").bufferedReader().use {it.readText()}
+    }
     @Volatile var liked=false
     var audioDurationMs=12000L
     private val wav:ByteArray by lazy {
@@ -147,6 +151,18 @@ object ProductTransportFixture {
             if(path in listOf("/api/v1/auth/login","/api/v1/auth/register","/api/v1/auth/refresh"))return reply("""{"accessToken":"synthetic-fixture-access","refreshToken":"synthetic-fixture-refresh","user":{"id":"fixture-account"}}""",if(path.endsWith("register"))201 else 200)
             if(request.headers["Authorization"]!="Bearer synthetic-fixture-access")return reply("{}",401)
             if(path=="/api/v1/auth/logout")return reply("{}",204)
+            if(path=="/api/v1/me/discovery/releases") {
+                if(request.method!="GET"||request.url.query!=null)return reply("{}",400)
+                return reply(radarWire)
+            }
+            if(path=="/api/v1/me/plays/recent") {
+                val offset=request.url.queryParameter("offset")?.toIntOrNull() ?: 0
+                if(offset<0)return reply("{}",400)
+                if(offset>0&&request.url.queryParameter("revision")!=ordinaryRecentRevision)return reply("{}",409)
+                return reply(ordinaryRecentFixtureBody(offset))
+            }
+            if(path=="/api/v1/me/plays/top")return reply("""{"tracks":[],"days":30,"limit":20}""")
+            if(path=="/api/v1/me/plays/history")return reply("""{"plays":[],"limit":50,"offset":0}""")
             if(path=="/api/v1/me/plays") {
                 if(request.method!="POST")return reply("{}",405)
                 val id=org.json.JSONObject(request.body!!.utf8()).getLong("trackId")

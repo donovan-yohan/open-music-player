@@ -41,6 +41,7 @@ type Router struct {
 	playbackHandlers        *PlaybackHandlers
 	queueHandlers           *queue.Handlers
 	discoveryHandlers       *discovery.Handlers
+	releaseRadarHandlers    *ReleaseRadarHandlers
 	agentToolsHandler       http.Handler
 	playlistHandlers        *PlaylistHandlers
 	playlistImportHandlers  *PlaylistImportHandlers
@@ -91,6 +92,7 @@ type RouterConfig struct {
 	PlaybackHandlers        *PlaybackHandlers
 	QueueHandlers           *queue.Handlers
 	DiscoveryHandlers       *discovery.Handlers
+	ReleaseRadarHandlers    *ReleaseRadarHandlers
 	AgentToolsHandler       http.Handler
 	PlaylistHandlers        *PlaylistHandlers
 	PlaylistImportHandlers  *PlaylistImportHandlers
@@ -161,6 +163,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		playbackHandlers:        cfg.PlaybackHandlers,
 		queueHandlers:           cfg.QueueHandlers,
 		discoveryHandlers:       cfg.DiscoveryHandlers,
+		releaseRadarHandlers:    cfg.ReleaseRadarHandlers,
 		agentToolsHandler:       cfg.AgentToolsHandler,
 		playlistHandlers:        cfg.PlaylistHandlers,
 		playlistImportHandlers:  cfg.PlaylistImportHandlers,
@@ -273,6 +276,13 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /api/v1/musicbrainz/search/albums", r.withAuth(r.musicbrainzHandlers.SearchAlbums))
 
 	// Browse/discovery routes (auth required)
+	if r.releaseRadarHandlers != nil {
+		r.mux.HandleFunc("GET /api/v1/me/discovery/releases", r.withAuth(r.releaseRadarHandlers.Releases))
+		r.mux.HandleFunc("GET /api/v1/me/discovery/releases/{recording}/membership", r.withAuth(r.releaseRadarHandlers.Membership))
+	} else {
+		r.mux.HandleFunc("GET /api/v1/me/discovery/releases", r.withAuth(unavailableHandler("Release discovery is unavailable")))
+		r.mux.HandleFunc("GET /api/v1/me/discovery/releases/{recording}/membership", r.withAuth(unavailableHandler("Release discovery is unavailable")))
+	}
 	if r.discoveryHandlers != nil {
 		r.mux.HandleFunc("GET /api/v1/discovery/search", r.withAuth(r.discoveryHandlers.Search))
 		r.mux.HandleFunc("POST /api/v1/discovery/resolve-url", r.withAuth(r.discoveryHandlers.ResolveURL))

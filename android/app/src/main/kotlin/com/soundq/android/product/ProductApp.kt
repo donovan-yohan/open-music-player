@@ -340,7 +340,7 @@ import com.soundq.android.product.preferences.*
                         val scope=remember(accountVersion){model.graph.session.capture()}
                         scope?.let {com.soundq.android.product.offline.DownloadsScreen(model,downloads,it,{if(!returnToSettings())navigate("Library")})}
                     } else if(destination=="Discover") Box(Modifier.weight(1f).fillMaxWidth()) {
-                        com.soundq.android.product.discovery.DiscoverScreen(model,discoveryView,discoveryIntake,{openImports()},{openSettings()},{navigate("Acquisition")})
+                        com.soundq.android.product.discovery.DiscoverScreen(model,discoveryView,discoveryIntake,{openImports()},{openSettings()},{navigate("Acquisition")},radarVisible={destination=="Discover"&&importView==null&&panel==null&&picker==null&&detailsRoute==null&&settingsRoutes.isEmpty()&&!gallery})
                         com.soundq.android.product.imports.SourceImportOptions(model,discoveryIntake)
                     } else if(destination in listOf("Home","History")) Box(Modifier.weight(1f).fillMaxWidth()) {
                         HomeDestinationScreen(model,route,{navigate("Library")},{openSettings()},revealOwner,onHistory={navigate("History")})

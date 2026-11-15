@@ -95,9 +95,16 @@ private fun LazyListScope.homeSection(title:String,section:HomeSection,state:Hom
         SoundQIconButton(SoundQIcon.Retry,if(section==HomeSection.Recent)"Refresh recent" else "Refresh top tracks",{model.loadHome(route,section,state)},enabled=!state.loading,outlined=false)
     }}
     if(state.loading)item {HomeStateCell {SoundQFeedback("Loading $title",FeedbackKind.Loading)}}
-    state.error?.let {error -> item {HomeStateCell {SoundQFeedback("Could not load $title",FeedbackKind.Error,error.message,"Retry $title",{model.loadHome(route,section,state)})}}}
+    if(section!=HomeSection.Recent)state.error?.let {error -> item {HomeStateCell {SoundQFeedback("Could not load $title",FeedbackKind.Error,error.message,"Retry $title",{model.loadHome(route,section,state)})}}}
     if(!state.loading&&state.error==null&&state.rows.isEmpty())item {HomeStateCell {SoundQFeedback(if(section==HomeSection.Recent)"No recent plays yet" else "No top tracks yet",FeedbackKind.Empty,action="Open Library",onAction=onLibrary)}}
-    itemsIndexed(state.rows,key={index,row -> "${section.name}:${row.track.id.value}:$index"}) {_,row -> HomeTrackRow(model,route,section,state.rows,row,model.homePlay(route,section,state.rows,row),model.homeQueue(route,section,state.rows,row),revealOwner)}
+    // Slice presentation only. Row capabilities and the eligible playback
+    // context must retain the original authoritative list, including hidden rows.
+    val visible=if(section==HomeSection.Recent)state.rows.take(state.visibleCount) else state.rows
+    itemsIndexed(visible,key={index,row -> "${section.name}:${row.track.id.value}:$index"}) {_,row -> HomeTrackRow(model,route,section,state.rows,row,model.homePlay(route,section,state.rows,row),model.homeQueue(route,section,state.rows,row),revealOwner)}
+    if(section==HomeSection.Recent) {
+        state.error?.let {error -> item {HomeStateCell {SoundQFeedback("Could not load $title",FeedbackKind.Error,error.message,"Retry $title",{model.loadHome(route,section,state,append=state.retryAppend)})}}}
+        if(state.error==null&&state.hasMore)item {HomeStateCell {SoundQButton("Load more",{model.loadHome(route,section,state,append=true)},variant=SoundQButtonVariant.Secondary,enabled=!state.loading)}}
+    }
 }
 
 @Composable private fun HomeTrackRow(model:ProductViewModel,route:HomeRoute,section:HomeSection,acceptedRows:Any,row:HomeEntry,onPlay:()->Unit,onQueue:()->Unit,revealOwner:RowRevealOwner,metadata:String?=null) {

@@ -25,7 +25,7 @@ class HistoryRefinementJourneyTest {
                 val path=request.url.encodedPath
                 if(path !in setOf("/api/v1/me/plays/recent","/api/v1/me/plays/top","/api/v1/me/plays/history"))return delegate.dispatch(request)
                 if(request.headers["Authorization"]!="Bearer synthetic-fixture-access")return MockResponse.Builder().code(401).body("{}").build()
-                if(!path.endsWith("history"))return MockResponse.Builder().body("""{"tracks":[]}""").build()
+                if(!path.endsWith("history"))return MockResponse.Builder().body(if(path.endsWith("recent"))recentFixtureBody("""{"tracks":[]}""") else """{"tracks":[]}""").build()
                 val offset=request.url.queryParameter("offset")!!.toInt();offsets+=offset
                 val events=(offset+1..minOf(offset+50,78)).map {id->
                     val match=id>=76
