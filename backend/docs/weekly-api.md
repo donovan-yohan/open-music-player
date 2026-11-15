@@ -20,7 +20,8 @@ actual synthetic authenticated-route examples. These are not personal or live
 provider results. UUIDs must be canonical lowercase, non-nil UUID strings.
 Timestamps use RFC3339 UTC. `batchId` is explicitly nullable, but the field is
 required in a feedback write. Other required fields may not be null. Duplicate
-or unknown JSON fields, ambiguous permission/artist variants, account fields,
+or unknown JSON fields (including case variants of the exact DTO field names),
+ambiguous permission/artist variants, account fields,
 and unsupported query parameters are refused. JSON requests are at most 8 KiB.
 
 ## Weekly result and ranking
@@ -91,8 +92,12 @@ Preferences use default/max `limit=50`, with separate `feedbackCursor` and
 `artistCursor` continuations. A continuation must include the returned global
 `preferenceRevision`; a changed revision refuses instead of mixing snapshots.
 Current non-neutral feedback is paginated. Exact neutral feedback tombstones
-remain readable by the feedback route. Derived affinity summaries are capped at
-50 entries, not presented as exhaustive raw listening history.
+remain readable by the feedback route. Derived affinity summaries are artist-ID-
+ordered prefixes capped at 50 entries, shortened further after assembling the
+complete canonical page to keep its actual escaped JSON within 1,800,000 bytes.
+Canonical feedback, choices, cursors and revisions are not shortened. These
+summaries are not exhaustive raw listening history and do not limit internal
+ranking or seed affinities.
 
 ## Reversible feedback and uncertain writes
 

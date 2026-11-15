@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -89,6 +91,16 @@ func weeklyDecode(w http.ResponseWriter, r *http.Request, out any, required ...s
 			return false
 		}
 	}
+	// All callers supply flat write DTOs. Check their exact JSON tags before
+	// encoding/json's case-insensitive struct matching can overwrite a value.
+	allowed := map[string]bool{}
+	typ := reflect.TypeOf(out).Elem()
+	for n := 0; n < typ.NumField(); n++ {
+		name, _, _ := strings.Cut(typ.Field(n).Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			allowed[name] = true
+		}
+	}
 	// Detect duplicate keys as well as unknown keys. Ordinary Unmarshal silently
 	// accepts duplicate mutation/epoch fields, making payload identity ambiguous.
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -102,8 +114,8 @@ func weeklyDecode(w http.ResponseWriter, r *http.Request, out any, required ...s
 			return false
 		}
 		k, ok := key.(string)
-		if !ok || seen[k] {
-			writePlayEventError(w, 400, "VALIDATION_ERROR", "duplicate JSON field")
+		if !ok || !allowed[k] || seen[k] {
+			writePlayEventError(w, 400, "VALIDATION_ERROR", "unknown or duplicate JSON field")
 			return false
 		}
 		seen[k] = true

@@ -23,8 +23,9 @@ import (
 )
 
 // A transactionally cloned collaborator, not PostgreSQL or a provider. It
-// enforces the production encoded-state ceiling; all canonical writes below
-// enter the production service. Only accepted-batch metadata is synthetic.
+// enforces the production encoded-state ceiling. Boundary fixture construction
+// below uses real domain mutations but defers transactional storage admission;
+// accepted-batch metadata and Library artist evidence are synthetic.
 type weeklyExportStore struct {
 	mu         sync.Mutex
 	state      *weekly.State
@@ -66,6 +67,23 @@ func (s *weeklyExportStore) History(context.Context, uuid.UUID, time.Time) (week
 }
 func (s *weeklyExportStore) Eligibility(context.Context, uuid.UUID, []string, time.Time) (weekly.Eligibility, error) {
 	return weekly.Eligibility{}, nil
+}
+
+// weeklyExportFixtureStore is a setup-only, single-threaded boundary builder.
+// It witnesses the actual canonical mutations/revisions/replay pruning in place,
+// without JSON-cloning the entire growing state for each setup operation. It is
+// not a transactional store and must never serve HTTP or rollback/limit tests.
+// weeklyAssertExport admits the final fixture through weeklyExportStore before
+// exercising the unchanged authenticated export path. A compact equivalence
+// test compares this setup with the original transactionally admitted sequence.
+type weeklyExportFixtureStore struct{ *weeklyExportStore }
+
+func (s weeklyExportFixtureStore) Update(_ context.Context, _ uuid.UUID, fn func(*weekly.State) error) error {
+	return fn(s.state)
+}
+
+func weeklyExportFixtureService(store *weeklyExportStore) *weekly.Service {
+	return weekly.NewService(weeklyExportFixtureStore{store}, nil)
 }
 
 func weeklyExportID(n int, role int) string {
@@ -112,6 +130,9 @@ func weeklyAssertExport(t *testing.T, store *weeklyExportStore, user uuid.UUID, 
 	before, err := json.Marshal(store.state)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err = store.Update(context.Background(), user, func(*weekly.State) error { return nil }); err != nil {
+		t.Fatalf("boundary fixture final storage admission: %v", err)
 	}
 	router, token := weeklyExportRouter(t, store, user)
 	var first []byte
@@ -204,7 +225,7 @@ func TestWeeklyExportBoundedCanonicalFeedback(t *testing.T) {
 	for _, count := range []int{1, 126, 700} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			store := &weeklyExportStore{state: weekly.NewState()}
-			service, user := weekly.NewService(store, nil), uuid.New()
+			service, user := weeklyExportFixtureService(store), uuid.New()
 			for n := 0; n < count; n++ {
 				weeklyExportVote(t, store, service, user, n, "Synthetic recording", "Synthetic artist", "up", false, 16)
 			}
@@ -227,7 +248,7 @@ func weeklyExportNearCeiling(t *testing.T, name string) {
 	if name == "artist-metadata" {
 		store.artistName = strings.Repeat("\x01<&>\"\\", 83) + "界é"
 	}
-	service, user := weekly.NewService(store, nil), uuid.New()
+	service, user := weeklyExportFixtureService(store), uuid.New()
 	// Both strings meet generate's actual 2,000-byte metadata bound. JSON HTML,
 	// control, quote and backslash escaping must count, not source string bytes.
 	metadata := strings.Repeat("\x01<&>\"\\", 332) + "é界ABC"
@@ -277,7 +298,7 @@ func weeklyExportNearCeiling(t *testing.T, name string) {
 
 func TestWeeklyExportMaximumCanonicalCounts(t *testing.T) {
 	store := &weeklyExportStore{state: weekly.NewState()}
-	service, user := weekly.NewService(store, nil), uuid.New()
+	service, user := weeklyExportFixtureService(store), uuid.New()
 	for n := 0; n < weekly.MaxFeedback; n++ {
 		vote := []string{"up", "down", "none"}[n%3]
 		weeklyExportVote(t, store, service, user, n, "T", "A", vote, false, 1)
@@ -355,6 +376,63 @@ func TestWeeklyExportCanonicalByteHeadroom(t *testing.T) {
 				t.Fatalf("canonical envelope proof failed for %d/%d: stored=%d canonical=%d err=%v", feedbackCount, artistCount, len(stored), len(canonical), err)
 			}
 		}
+	}
+}
+
+func TestWeeklyExportFixtureSetupEquivalence(t *testing.T) {
+	var originalState, originalExport []byte
+	for _, boundary := range []bool{false, true} {
+		store := &weeklyExportStore{state: weekly.NewState()}
+		service, user := weekly.NewService(store, nil), uuid.New()
+		if boundary {
+			service = weeklyExportFixtureService(store)
+		}
+		started := time.Now()
+		// All vote variants, escaped multi-credit metadata, artist tombstones
+		// and more than MaxReplays operations witness the setup equivalence.
+		for n := 0; n < weekly.MaxReplays+3; n++ {
+			weeklyExportVote(t, store, service, user, n, "<\x01é", "<&界", []string{"up", "down", "none"}[n%3], true, 2)
+		}
+		for n := 0; n < 3; n++ {
+			id, interested, blocked := weeklyExportID(n+50000, 2), n == 0, n == 1
+			if _, err := service.WritePreference(context.Background(), user, weekly.PreferenceWrite{Resource: "artist", MutationID: weeklyExportID(n+50000, 4), ArtistMbid: &id, Interested: &interested, Blocked: &blocked}, time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Logf("boundarySetup=%v mutations=%d setupSeconds=%.6f", boundary, weekly.MaxReplays+6, time.Since(started).Seconds())
+		if err := store.Update(context.Background(), user, func(*weekly.State) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		state, _ := json.Marshal(store.state)
+		out, err := weekly.NewService(store, nil).Export(context.Background(), user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exported, _ := json.Marshal(out)
+		if !boundary {
+			originalState, originalExport = state, exported
+		} else if !bytes.Equal(originalState, state) || !bytes.Equal(originalExport, exported) {
+			t.Fatal("boundary setup differs from the original admitted mutation sequence")
+		}
+	}
+}
+
+func TestWeeklyExportFixtureFinalAdmissionRefusesOversize(t *testing.T) {
+	store := &weeklyExportStore{state: weekly.NewState()}
+	user := uuid.New()
+	weeklyExportVote(t, store, weeklyExportFixtureService(store), user, 0, "T", "A", "none", true, 1)
+	before, _ := json.Marshal(store.state)
+	err := store.Update(context.Background(), user, func(st *weekly.State) error {
+		// Deliberately impossible negative control, not a reachable fixture.
+		f := st.Feedback[weeklyExportID(0, 1)]
+		f.Title = strings.Repeat("<", 300001)
+		st.Feedback[f.RecordingMbid] = f
+		return nil
+	})
+	after, _ := json.Marshal(store.state)
+	c, ok := err.(*weekly.Conflict)
+	if !ok || c.Code != "RESOURCE_LIMIT" || !bytes.Equal(before, after) {
+		t.Fatal("final transactional storage admission failed to refuse/rollback oversize")
 	}
 }
 

@@ -443,6 +443,30 @@ func (s *Service) Preferences(ctx context.Context, user uuid.UUID, q PageQuery, 
 			v := cursor("artist", st, end)
 			out.ArtistCursor = &v
 		}
+		// Preserve the complete canonical page and cursor envelope first. Only
+		// the reconstructable summary may consume the remaining HTTP JSON bytes.
+		summary := out.DerivedArtistAffinities
+		out.DerivedArtistAffinities = []Affinity{}
+		encoded, err := json.Marshal(out)
+		if err != nil {
+			return err
+		}
+		size := len(encoded)
+		for n, a := range summary {
+			encoded, err = json.Marshal(a)
+			if err != nil {
+				return err
+			}
+			cost := len(encoded)
+			if n > 0 {
+				cost++ // comma inside the already-counted array brackets
+			}
+			if size+cost > MaxResponseBytes {
+				break
+			}
+			out.DerivedArtistAffinities = append(out.DerivedArtistAffinities, a)
+			size += cost
+		}
 		return nil
 	})
 	return out, e
