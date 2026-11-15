@@ -92,6 +92,53 @@ class ReleaseRadarRecoveryTest {
             assertEquals(revision,r.radarInvalidation.value);assertEquals(2,f.server.requestCount)
         }
     }
+    @Test fun acknowledgedLibraryRowCancelsInitialGetAndOldCompletionCannotClearReplacement() {
+        HttpsFixture().use {f->
+            val s=session(f);lateinit var r:DiscoveryRepository
+            val api=SoundQApi(s,f.client,libraryOwnershipReadback={scope->r.libraryChanged(scope)})
+            r=DiscoveryRepository(s,api,radarAdmitted=true)
+            val v=r.open()!!;r.showRadar(v){true}
+            val entered=CountDownLatch(1);val release=CountDownLatch(1);val calls=AtomicInteger()
+            f.server.dispatcher=object:Dispatcher(){override fun dispatch(request:RecordedRequest):MockResponse {
+                if(request.url.encodedPath=="/api/v1/library")return MockResponse.Builder().body("""{"tracks":[{"id":1,"title":"Owned","artist":"Fixture","has_metadata_override":false,"mb_verified":false}],"total":1,"limit":100,"offset":0}""").build()
+                assertEquals("/api/v1/me/discovery/releases",request.url.encodedPath)
+                val n=calls.incrementAndGet()
+                if(n==1){entered.countDown();check(release.await(3,TimeUnit.SECONDS))}
+                return MockResponse.Builder().body(wire(if(n==1)"Obsolete" else "Fresh")).build()
+            }}
+            val pool=Executors.newSingleThreadExecutor()
+            try {
+                val old=r.claimRadar(v,automatic=true)!!;val result=pool.submit {r.loadRadar(old)}
+                assertTrue(entered.await(2,TimeUnit.SECONDS));val revision=r.radarInvalidation.value
+                assertEquals(TrackId(1),api.trackDetailsSnapshot(s.capture()!!,TrackId(1)){true}!!.track.id)
+                assertNull(r.radar.value.page);assertEquals(RadarPhase.Idle,r.radar.value.phase)
+                assertEquals(revision+1,r.radarInvalidation.value)
+                // Screen scheduling is covered separately by the exact-effect probe/mounted journey.
+                val fresh=r.claimRadar(v,automatic=true)!!
+                assertNull(r.claimRadar(v,automatic=true))
+                release.countDown();result.get(3,TimeUnit.SECONDS);r.abandonRadar(old)
+                assertNull(r.radar.value.page);assertEquals(RadarPhase.Loading,r.radar.value.phase)
+                r.loadRadar(fresh);assertEquals("Fresh",r.radar.value.page!!.songs.single().title)
+                assertEquals(2,calls.get());assertNull(r.claimRadar(v,automatic=true))
+            } finally {release.countDown();pool.shutdownNow()}
+        }
+    }
+    @Test fun acknowledgedLibraryRowDoesNotTurnGenuineInitialFailureIntoAutomaticRetry() {
+        HttpsFixture().use {f->
+            val s=session(f);lateinit var r:DiscoveryRepository
+            val api=SoundQApi(s,f.client,libraryOwnershipReadback={scope->r.libraryChanged(scope)})
+            r=DiscoveryRepository(s,api,radarAdmitted=true)
+            val v=r.open()!!;val landing=r.showRadar(v){true}!!
+            f.reply("{}",503);r.loadRadar(r.claimRadar(v,automatic=true)!!)
+            val revision=r.radarInvalidation.value
+            f.reply("""{"tracks":[{"id":1,"title":"Owned","artist":"Fixture","has_metadata_override":false,"mb_verified":false}],"total":1,"limit":100,"offset":0}""")
+            assertNotNull(api.trackDetailsSnapshot(s.capture()!!,TrackId(1)){true})
+            assertEquals(revision+1,r.radarInvalidation.value)
+            r.hideRadar(landing);r.showRadar(v){true}
+            assertEquals(RadarPhase.Failed,r.radar.value.phase);assertNull(r.radar.value.page)
+            assertNull(r.claimRadar(v,automatic=true));assertEquals(2,f.server.requestCount)
+        }
+    }
     @Test fun failedInitialAutomaticReadIsNotAnInterruptedReadAndNeedsExplicitRetry() {
         HttpsFixture().use {f->
             val s=session(f);val r=DiscoveryRepository(s,SoundQApi(s,f.client),radarAdmitted=true)

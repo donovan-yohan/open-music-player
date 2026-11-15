@@ -84,7 +84,11 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
     // Retry invalidated reads only at eligible transitions, never on playback ticks.
     // The revision also witnesses repeated invalidations if Loading is conflated away.
     LaunchedEffect(view,radarInvalidation,radar.stale,radar.phase,state.draft.text.isBlank(),radarActive,radarShown,catalogDetails) {
-        if(radarActive&&radarShown&&catalogDetails==null&&state.draft.text.isBlank()&&radar.stale&&radar.phase==RadarPhase.Ready)view?.let {model.loadReleaseRadar(it)}
+        if(radarActive&&radarShown&&catalogDetails==null&&state.draft.text.isBlank()) {
+            if(radar.stale&&radar.phase==RadarPhase.Ready)view?.let {model.loadReleaseRadar(it)}
+            // Cancellation can retire the first GET without replacing this live landing.
+            if(radar.page==null&&radar.phase==RadarPhase.Idle)view?.let {model.loadReleaseRadar(it,automatic=true)}
+        }
     }
     LaunchedEffect(view,state.draft,radar.page,radar.stale) {
         radarDetails?.let {(page,song,draft)->if(view==null||!repository.radarCurrent(view,page,song,draft))radarDetails=null}

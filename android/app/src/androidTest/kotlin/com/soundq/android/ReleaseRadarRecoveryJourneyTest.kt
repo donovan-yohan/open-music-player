@@ -53,6 +53,50 @@ class ReleaseRadarRecoveryJourneyTest {
         assertNull(app.graph.imports.state.value.acknowledgement)
         assertTrue(ProductTransportFixture.requests.none {it=="POST /api/v1/source-selections"||it=="POST /api/v1/queue/items"})
     }
+    @Test fun libraryReadbackDuringInitialGetReplacesOnceOnSameMountedLanding() {
+        val server=ProductTransportFixture.server;val prior=server.dispatcher
+        val initial=CountDownLatch(1);val releaseInitial=CountDownLatch(1)
+        val replacement=CountDownLatch(1);val releaseReplacement=CountDownLatch(1);val calls=AtomicInteger()
+        server.dispatcher=object:Dispatcher(){override fun dispatch(request:RecordedRequest):MockResponse {
+            if(request.url.encodedPath=="/api/v1/library"&&request.url.queryParameter("limit")=="100")
+                return MockResponse.Builder().body("""{"tracks":[{"id":1,"title":"Fixture 1","artist":"Synthetic ensemble","has_metadata_override":false,"mb_verified":false}],"total":1,"limit":100,"offset":0}""").build()
+            if(request.url.encodedPath!="/api/v1/me/discovery/releases")return prior.dispatch(request)
+            val response=prior.dispatch(request)
+            when(calls.incrementAndGet()) {
+                1->{initial.countDown();check(releaseInitial.await(30,TimeUnit.SECONDS))}
+                2->{replacement.countDown();check(releaseReplacement.await(30,TimeUnit.SECONDS))}
+            }
+            return response
+        }}
+        try {
+            val model=signIn();val queue=model.playback.value.queue
+            val jobsBefore=compose.runOnIdle {model.viewModelScope.coroutineContext[Job]!!.children.toSet()}
+            discover();awaitEntry(initial)
+            assertNull(app.graph.discovery.radar.value.page)
+            val initialJobs=compose.runOnIdle {model.viewModelScope.coroutineContext[Job]!!.children.toSet()-jobsBefore}
+            assertTrue(initialJobs.isNotEmpty())
+            val revision=app.graph.discovery.radarInvalidation.value
+            // The real API parses the requested Library row and invokes AppGraph's callback.
+            // No route exit, lifecycle transition, direct invalidation or replacement call.
+            ownershipReadback()
+            awaitEntry(replacement)
+            assertTrue(app.graph.discovery.radarInvalidation.value>revision)
+            assertEquals(2,calls.get());assertNull(app.graph.discovery.radar.value.page)
+            assertEquals(RadarPhase.Loading,app.graph.discovery.radar.value.phase)
+            releaseInitial.countDown()
+            compose.waitUntil(10000){initialJobs.all {it.isCompleted}}
+            assertNull(app.graph.discovery.radar.value.page)
+            assertEquals(RadarPhase.Loading,app.graph.discovery.radar.value.phase)
+            assertEquals(2,calls.get())
+            releaseReplacement.countDown()
+            compose.waitUntil(10000){app.graph.discovery.radar.value.phase==RadarPhase.Ready&&app.graph.discovery.radar.value.page!=null}
+            val fresh=app.graph.discovery.radar.value.page!!
+            compose.onNodeWithText("Radar fixture 01").assertIsDisplayed()
+            compose.waitForIdle();assertSame(fresh,app.graph.discovery.radar.value.page)
+            assertEquals(2,calls.get());noMutation(model,queue)
+            captureListeningStage("radar-initial-library-readback-same-landing")
+        } finally {releaseInitial.countDown();releaseReplacement.countDown();server.dispatcher=prior}
+    }
     @Test fun interruptedInitialGetStopResumeRecoversSameViewWithoutRevivingOldPage() {
         val server=ProductTransportFixture.server;val prior=server.dispatcher
         val entered=CountDownLatch(1);val release=CountDownLatch(1);val oldReturned=CountDownLatch(1);val calls=AtomicInteger()
@@ -162,7 +206,40 @@ class ReleaseRadarRecoveryJourneyTest {
             compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED);compose.waitForIdle()
             assertEquals(4,calls.get());assertEquals(RadarPhase.Failed,app.graph.discovery.radar.value.phase)
             compose.onNodeWithText("Try again").performScrollTo().performClick()
-            compose.waitUntil(10000){calls.get()==5&&app.graph.discovery.radar.value.phase==RadarPhase.Ready&&!app.graph.discovery.radar.value.stale}
+            val recoveryDeadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10)
+            val recoveryChrome=listOf("Finding new releases","Releases need refreshing","New releases unavailable","Try again","Refresh","Could not update new releases")
+            fun recoveredContentDisplayed()=compose.runWithoutImplicitWait {
+                recoveryChrome.all {compose.onAllNodesWithText(it).fetchSemanticsNodes().isEmpty()}&&
+                    (1..5).all {compose.onNodeWithText("Radar fixture 0"+it).isDisplayed()}
+            }
+            var readyBeforeRendered=false
+            var recoveredPage=newest
+            try {
+                // One original recovery allowance covers transport, composition and native draw.
+                // A repository-only condition can return before the v2 test clock's next frame.
+                compose.waitUntil(10000){
+                    val ready=calls.get()==5&&app.graph.discovery.radar.value.phase==RadarPhase.Ready&&!app.graph.discovery.radar.value.stale
+                    if(!ready)false else {
+                        val rendered=recoveredContentDisplayed()
+                        if(!rendered)readyBeforeRendered=true
+                        if(rendered)recoveredPage=app.graph.discovery.radar.value.page!!
+                        rendered
+                    }
+                }
+                // Pinned Compose waits for composition and the next Choreographer draw here.
+                compose.waitForIdle()
+                assertEquals(5,calls.get());assertEquals(RadarPhase.Ready,app.graph.discovery.radar.value.phase)
+                assertFalse(app.graph.discovery.radar.value.stale)
+                assertSame(recoveredPage,app.graph.discovery.radar.value.page);assertNotSame(newest,recoveredPage)
+                recoveryChrome.forEach {compose.onNodeWithText(it).assertDoesNotExist()}
+                (1..5).forEach {compose.onNodeWithText("Radar fixture 0"+it).assertIsDisplayed()}
+                assertTrue("Rendered recovery exceeded the original 10s allowance",System.nanoTime()<recoveryDeadline)
+                android.util.Log.i("RadarRenderSettlement","readyBeforeRendered="+readyBeforeRendered+" remainingNanos="+(recoveryDeadline-System.nanoTime()))
+            } catch(failure:Throwable) {
+                android.util.Log.e("RadarRenderSettlement","render admission failed calls="+calls.get()+" phase="+app.graph.discovery.radar.value.phase+" stale="+app.graph.discovery.radar.value.stale+" readyBeforeRendered="+readyBeforeRendered)
+                try {captureListeningStage("radar-explicit-recovery-render-failure")}catch(captureFailure:Throwable){failure.addSuppressed(captureFailure)}
+                throw failure
+            }
             noMutation(model,queue);captureListeningStage("radar-reinvalidated-and-explicit-recovery")
         } finally {release.countDown();server.dispatcher=prior}
     }

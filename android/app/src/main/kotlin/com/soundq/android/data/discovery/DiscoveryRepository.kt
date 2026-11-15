@@ -159,11 +159,10 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
     }
     @Synchronized fun libraryChanged() {
         cancelRadar()
-        if(radarMutable.value.page!=null) {
-            radarMutable.value=radarMutable.value.copy(stale=true)
-            // Do not lose a second invalidation when Loading/Ready are conflated.
-            radarInvalidationMutable.value++
-        }
+        if(radarMutable.value.page!=null)radarMutable.value=radarMutable.value.copy(stale=true)
+        // Also witness cancellation before the first page. Loading may be conflated
+        // back to Idle while the same landing/effect remains mounted.
+        radarInvalidationMutable.value++
     }
     /** Preview has no decision/import/player authority; even retained callbacks revalidate the choice. */
     @Synchronized fun preview(candidate:DiscoveryView,choice:SourceChoice,launch:(String)->Unit):Boolean {
