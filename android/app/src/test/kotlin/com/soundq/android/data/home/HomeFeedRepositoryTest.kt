@@ -8,7 +8,7 @@ import java.util.concurrent.*
 
 class HomeFeedRepositoryTest {
     private fun session(f: HttpsFixture) = AccountSession(f.endpoint, MemoryStore()).also { it.accept(it.beginIntent(),SecretTokens("a","r","fixture")) }
-    private val body = """{"tracks":[{"id":1,"title":"Blocked","inLibrary":false},{"id":7,"title":"Eligible","inLibrary":true},{"id":9,"title":"Legacy"}]}"""
+    private val body = """{"tracks":[{"id":1,"title":"Blocked","inLibrary":false},{"id":7,"title":"Eligible","inLibrary":true},{"id":9,"title":"Legacy"}],"limit":20,"offset":0,"revision":"${"a".repeat(64)}","hasMore":false}"""
     @Test fun failedHistoryRefreshRetainsOffsetZeroRetryIntent() {
         HttpsFixture().use { f ->
             val s=session(f);val repo=HomeFeedRepository(s,SoundQApi(s,f.client));val route=HomeRouteLifetime().enter(HomeDestination.History)

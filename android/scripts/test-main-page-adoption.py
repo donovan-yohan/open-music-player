@@ -195,6 +195,11 @@ enum class DiscoveryResultType {Song,Artist,Album}
 data class DiscoveryState(val draft:Draft=Draft(""),val phase:DiscoveryPhase=DiscoveryPhase.Idle,val resultType:DiscoveryResultType=DiscoveryResultType.Song,val results:SourceResults?=null)
 class Repository {
  val state=State(DiscoveryState());val edits=mutableListOf<String>();var current:DiscoveryView?=null
+ val radar=State(RadarState())
+ fun current(view:DiscoveryView)=view===current
+ fun showRadar(view:DiscoveryView,visible:()->Boolean):RadarLanding?=null
+ fun hideRadar(landing:RadarLanding){}
+ fun radarCurrent(view:DiscoveryView,page:RadarPage,song:RadarSong,draft:DiscoveryDraft)=false
  fun edit(route:DiscoveryView,text:String){if(route===current){edits.add(text);state.value=state.value.copy(draft=Draft(text),phase=DiscoveryPhase.Idle)}}
  fun close(route:DiscoveryView){}
 }
@@ -202,18 +207,37 @@ class Imports {fun close(route:Any){}}
 class Graph(val discovery:Repository=Repository(),val imports:Imports=Imports())
 class ProductViewModel {
  val graph=Graph();val imports=State(0);val sent=mutableListOf<String>()
+ fun loadReleaseRadar(view:DiscoveryView,refresh:Boolean=false,automatic:Boolean=false){}
  fun searchSources(route:DiscoveryView,draft:Draft){val repo=graph.discovery;if(route===repo.current&&draft===repo.state.value.draft){sent.add(draft.text);repo.state.value=repo.state.value.copy(phase=DiscoveryPhase.Loading)}}
 }
 data class PlaylistQuery(val text:String="",val sort:Int=7,val ascending:Boolean=true)
 data class PlaylistState(val query:PlaylistQuery=PlaylistQuery())
 class PlaylistCapture(val scope:Int)
+// Closed radar/lifecycle collaborators for the retained input-only extraction.
+// DisposableEffect above is inert. The separate policy host executes its actual body.
+typealias DiscoveryDraft=Draft
+class RadarPage
+class RadarSong
+class RadarLanding
+enum class RadarPhase {Idle,Ready}
+class RadarState(val page:RadarPage?=null,val stale:Boolean=false,val phase:RadarPhase=RadarPhase.Idle)
+class Lifecycle {
+ enum class State {RESUMED}
+ val currentState=this
+ fun isAtLeast(state:State)=false
+ fun addObserver(observer:LifecycleEventObserver){}
+ fun removeObserver(observer:LifecycleEventObserver){}
+}
+fun interface LifecycleEventObserver {fun changed(a:Any,b:Any)}
+object LocalLifecycleOwner {val current=Owner()}
+class Owner {val lifecycle=Lifecycle()}
 '''
 strip = function(files['components'], 'SoundQSearchStrip').replace('@Composable ', '')
 header = function(files['components'], 'SoundQMainPageHeader').replace('@Composable ', '')
 wrapper = function(files['wrapper'], 'MainPageHeader').replace('@Composable ', '')
 discover = files['discover']
 prefix = discover[discover.index('    val repository=model.graph.discovery'):discover.index('    val openedCatalog=catalogDetails')]
-discover_body = 'fun DiscoverInput(model:ProductViewModel,view:DiscoveryView?,intake:Any?) {\n' + prefix + '\n' + call(discover, 'SoundQSearchStrip') + '\n}\n'
+discover_body = 'fun DiscoverInput(model:ProductViewModel,view:DiscoveryView?,intake:Any?,radarVisible:()->Boolean={false}) {\n' + prefix + '\n' + call(discover, 'SoundQSearchStrip') + '\n}\n'
 playlist = files['playlists']
 playlist_prefix = playlist[playlist.index('    var search by remember'):playlist.index('    var sorting by remember')]
 playlist_body = 'fun PlaylistInput(state:PlaylistState,capture:PlaylistCapture?,pending:Boolean,onRefine:(PlaylistQuery)->Unit) {\nval scope=capture?.scope\nvar sorting=false\n' + playlist_prefix + call(playlist, 'SoundQSearchStrip') + '\n}\n'

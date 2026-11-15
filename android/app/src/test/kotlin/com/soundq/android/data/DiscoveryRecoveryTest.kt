@@ -15,7 +15,7 @@ class DiscoveryRecoveryTest {
         val library=LibraryRepository(session,api::library,api::like)
         val imports=ImportRepository(session,api,library)
         var clock=Instant.parse("2026-10-29T00:00:00Z")
-        val discover=DiscoveryRepository(session,api){clock}
+        val discover=DiscoveryRepository(session,api,now={clock})
         val route=discover.open()!!
         val view=imports.open()!!
         fun choice():SourceChoice {discover.edit(route,"海 & music");f.reply(DiscoveryBoundaryTest.search());discover.search(route,discover.state.value.draft);return discover.inspect(route,discover.state.value.results!!.rows.single())!!}

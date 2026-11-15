@@ -45,6 +45,13 @@ import (
 
 const version = "1.0.0"
 
+// Release radar uses the existing durable database: Redis's evicting public
+// metadata cache cannot own a daily attempt. Deploy this registered backend
+// path before the automatic native Discover consumer.
+func newReleaseRadarHandlers(seeds discovery.RadarSeedReader, membership discovery.RadarMembershipReader, catalog discovery.RadarCatalog, database *db.DB) *api.ReleaseRadarHandlers {
+	return api.NewReleaseRadarHandlers(discovery.NewDailyRadarService(seeds, membership, catalog, database), membership, true)
+}
+
 // Reuse the configured cache client: Redis-off remains a registered, private,
 // fail-closed feature, without a second destination or memory fallback.
 func newConnectHandlers(redisCache *cache.Cache) *api.ConnectHandlers {
@@ -665,6 +672,7 @@ func runServer() int {
 	expansionService := listenbrainz.NewExpansionService(listenbrainz.NewClient(), analysisRepo)
 	listenBrainzHandlers := api.NewListenBrainzHandlers(expansionService, cfg.EnableListenBrainzMix)
 	playEventHandlers := api.NewPlayEventHandlersWithMetadataOverrides(playEventRepo, trackRepo, metadataOverrideRepo)
+	releaseRadarHandlers := newReleaseRadarHandlers(playEventRepo, libraryRepo, mbClient, database)
 	// libraryRepo supplies the harmonic nearby+affinity candidate read behind
 	// ENABLE_HARMONIC_LINEUP (issue #401); with the flag off the lineup is
 	// byte-identical to the themed lineup.
@@ -972,6 +980,7 @@ func runServer() int {
 		PlaybackHandlers:        playbackHandlers,
 		QueueHandlers:           queueHandlers,
 		DiscoveryHandlers:       discoveryHandlers,
+		ReleaseRadarHandlers:    releaseRadarHandlers,
 		AgentToolsHandler:       agentToolsHandler,
 		PlaylistHandlers:        playlistHandlers,
 		PlaylistImportHandlers:  playlistImportHandlers,

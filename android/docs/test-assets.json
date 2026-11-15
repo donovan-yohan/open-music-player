@@ -76,6 +76,21 @@
       "bytes": 90633,
       "distribution": "instrumentation APK only"
     },
+    "ordinary-radar-after-import-wire.json": {
+      "sha256": "082467c2efb18b51f236a7b421de08601aec8b7ee4dd2a88ce7740e105c5d9cb",
+      "bytes": 5466,
+      "distribution": "instrumentation APK only"
+    },
+    "ordinary-radar-wire.json": {
+      "sha256": "94e2ac6da3ea7e385eb5d45ae196060c69a3b01bb340616da8516b57a457ad95",
+      "bytes": 5708,
+      "distribution": "instrumentation APK only"
+    },
+    "release-radar-wire.json": {
+      "sha256": "87941e48e33fe9dd754d61911c8e23aa350401873ba641d580d0c4b921b708ad",
+      "bytes": 1110,
+      "distribution": "instrumentation APK only"
+    },
     "streaming-codecs/flac-2048.f32": {
       "sha256": "b0ad0a3e3b97910f50ac075cb4a6e04401e68d770243fedd56ced6a14dffbfbb",
       "bytes": 8192,

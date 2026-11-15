@@ -58,6 +58,12 @@ func (c *readPathConn) QueryContext(ctx context.Context, query string, args []dr
 	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
 }
 
+// Preserve the real driver's transaction options for the recent-page MVCC
+// contract; an embedded driver.Conn alone drops ConnBeginTx in this recorder.
+func (c *readPathConn) BeginTx(ctx context.Context, options driver.TxOptions) (driver.Tx, error) {
+	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, options)
+}
+
 var readPathDriverOnce sync.Once
 var readPathQueries readPathCapture
 

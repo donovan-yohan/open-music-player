@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/openmusicplayer/backend/internal/cache"
@@ -17,13 +18,14 @@ import (
 )
 
 const (
-	baseURL         = "https://musicbrainz.org/ws/2"
-	coverArtURL     = "https://coverartarchive.org"
-	userAgent       = "OpenMusicPlayer/1.0.0 (https://github.com/openmusicplayer)"
-	searchTTL       = 24 * time.Hour
-	entityLookupTTL = 7 * 24 * time.Hour
-	defaultLimit    = 20
-	maxLimit        = 100
+	baseURL          = "https://musicbrainz.org/ws/2"
+	coverArtURL      = "https://coverartarchive.org"
+	userAgent        = "OpenMusicPlayer/1.0.0 (https://github.com/openmusicplayer)"
+	searchTTL        = 24 * time.Hour
+	entityLookupTTL  = 7 * 24 * time.Hour
+	defaultLimit     = 20
+	maxLimit         = 100
+	maxArtistCredits = 100
 )
 
 // ErrNotFound is returned when a resource is not found
@@ -32,6 +34,8 @@ var ErrNotFound = fmt.Errorf("not found")
 type Client struct {
 	httpClient *http.Client
 	cache      *cache.Cache
+	requestsMu sync.Mutex
+	requests   map[string]*inflightRequest
 }
 
 func NewClient(cache *cache.Cache) *Client {
@@ -58,6 +62,14 @@ func (c *Client) cacheSet(ctx context.Context, key string, value string, ttl tim
 }
 
 // Search result types
+// ArtistCredit retains canonical artist identity, not the credited alias.
+// MBID stays a string consistently with the other provider DTOs. Consumers
+// must validate IDs before treating them as identities in their own domain.
+type ArtistCredit struct {
+	MBID string `json:"mbid"`
+	Name string `json:"name"`
+}
+
 type TrackResult struct {
 	MBID             string `json:"mbid"`
 	Title            string `json:"title"`
@@ -71,7 +83,13 @@ type TrackResult struct {
 	Duration         int    `json:"duration,omitempty"`
 	TrackNumber      int    `json:"trackNumber,omitempty"`
 	ReleaseDate      string `json:"releaseDate,omitempty"`
-	Score            int    `json:"score"`
+	// FirstReleaseDate is recording-level evidence, not the selected edition's
+	// ReleaseDate. Preserve partial/invalid dates verbatim; eligibility is not
+	// a provider conversion concern.
+	FirstReleaseDate       string         `json:"firstReleaseDate,omitempty"`
+	ArtistCredits          []ArtistCredit `json:"artistCredits,omitempty"`
+	ArtistCreditsTruncated bool           `json:"artistCreditsTruncated,omitempty"`
+	Score                  int            `json:"score"`
 }
 
 type ArtistResult struct {
@@ -147,11 +165,12 @@ type mbRecordingResponse struct {
 	Count      int    `json:"count"`
 	Offset     int    `json:"offset"`
 	Recordings []struct {
-		ID           string `json:"id"`
-		Score        int    `json:"score"`
-		Title        string `json:"title"`
-		Length       int    `json:"length"`
-		ArtistCredit []struct {
+		ID               string `json:"id"`
+		FirstReleaseDate string `json:"first-release-date"`
+		Score            int    `json:"score"`
+		Title            string `json:"title"`
+		Length           int    `json:"length"`
+		ArtistCredit     []struct {
 			Artist struct {
 				ID   string `json:"id"`
 				Name string `json:"name"`
@@ -286,6 +305,9 @@ func (c *Client) SearchTracks(ctx context.Context, query string, limit, offset i
 
 	if !skipCache {
 		if cached, ok := c.cacheGet(ctx, cacheKey); ok {
+			if radarReadBounded(ctx) && len(cached) > 1048576 {
+				return nil, fmt.Errorf("radar cached response exceeds budget")
+			}
 			var resp SearchResponse[TrackResult]
 			if err := json.Unmarshal([]byte(cached), &resp); err == nil {
 				return &resp, nil
@@ -309,15 +331,27 @@ func (c *Client) SearchTracks(ctx context.Context, query string, limit, offset i
 	results := make([]TrackResult, 0, len(mbResp.Recordings))
 	for _, rec := range mbResp.Recordings {
 		track := TrackResult{
-			MBID:     rec.ID,
-			Title:    rec.Title,
-			Score:    rec.Score,
-			Duration: rec.Length,
+			MBID:             rec.ID,
+			FirstReleaseDate: rec.FirstReleaseDate,
+			Title:            rec.Title,
+			Score:            rec.Score,
+			Duration:         rec.Length,
 		}
 
 		if len(rec.ArtistCredit) > 0 {
 			track.Artist = rec.ArtistCredit[0].Artist.Name
 			track.ArtistMBID = rec.ArtistCredit[0].Artist.ID
+		}
+		credits := rec.ArtistCredit
+		if len(credits) > maxArtistCredits {
+			credits = credits[:maxArtistCredits]
+			track.ArtistCreditsTruncated = true
+		}
+		for _, credit := range credits {
+			track.ArtistCredits = append(track.ArtistCredits, ArtistCredit{
+				MBID: credit.Artist.ID,
+				Name: credit.Artist.Name,
+			})
 		}
 
 		if len(rec.Releases) > 0 {
@@ -635,9 +669,12 @@ func (c *Client) GetCoverArtURL(releaseID string) string {
 
 // HTTP client helpers
 
-func (c *Client) doRequest(ctx context.Context, reqURL string) ([]byte, error) {
+func (c *Client) requestWithRetry(ctx context.Context, reqURL string) ([]byte, error) {
 	log := logger.Default().WithComponent("musicbrainz")
 	cfg := apperrors.MusicBrainzRetryConfig()
+	if radarReadBounded(ctx) {
+		cfg.MaxRetries = 1
+	}
 
 	var result []byte
 	err := apperrors.Retry(ctx, cfg, func(ctx context.Context) error {
@@ -649,8 +686,11 @@ func (c *Client) doRequest(ctx context.Context, reqURL string) ([]byte, error) {
 		req.Header.Set("User-Agent", userAgent)
 		req.Header.Set("Accept", "application/json")
 
-		resp, err := c.httpClient.Do(req)
+		resp, err := c.doPacedRequest(req)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			log.Warn(ctx, "MusicBrainz request failed, may retry", map[string]interface{}{
 				"url":   reqURL,
 				"error": err.Error(),
@@ -684,9 +724,16 @@ func (c *Client) doRequest(ctx context.Context, reqURL string) ([]byte, error) {
 			return fmt.Errorf("MusicBrainz API returned status %d", resp.StatusCode)
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		var reader io.Reader = resp.Body
+		if radarReadBounded(ctx) {
+			reader = io.LimitReader(resp.Body, 1048577)
+		}
+		body, err := io.ReadAll(reader)
 		if err != nil {
 			return fmt.Errorf("failed to read response body: %w", err)
+		}
+		if radarReadBounded(ctx) && len(body) > 1048576 {
+			return fmt.Errorf("radar provider response exceeds budget")
 		}
 
 		result = body
@@ -705,6 +752,11 @@ func (c *Client) doRequest(ctx context.Context, reqURL string) ([]byte, error) {
 
 func (c *Client) buildCacheKey(entityType, query string, limit, offset int) string {
 	hash := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d", query, limit, offset)))
+	// Only recording search gained first-release and multi-credit evidence.
+	// Do not accept old DTOs as enriched results or flush unrelated metadata.
+	if entityType == "recording" {
+		entityType = "recording-v2"
+	}
 	return fmt.Sprintf("mb:%s:%s", entityType, hex.EncodeToString(hash[:8]))
 }
 

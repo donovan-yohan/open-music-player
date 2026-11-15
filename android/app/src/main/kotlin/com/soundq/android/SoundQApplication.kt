@@ -36,7 +36,8 @@ open class SoundQApplication : Application() {
     protected open fun createGraph(): AppGraph = AppGraph(this, ApiEndpoint.parse(BuildConfig.OMP_API_BASE_URL))
 }
 /** Application composition, not a visual/global playback coordinator. */
-class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpClient = OkHttpClient(), store: SessionStore? = null, val mediaClient: OkHttpClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build()) : AutoCloseable {
+class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpClient = OkHttpClient(), store: SessionStore? = null, val mediaClient: OkHttpClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build(), radarFixtureAdmission:Boolean=false) : AutoCloseable {
+    init {require(!radarFixtureAdmission||endpoint.base.host in setOf("localhost","fixture.invalid"))}
     internal val applicationContext: Context = context.applicationContext
     val directory=File(context.noBackupFilesDir.canonicalFile,"soundq").apply {mkdirs()}
     internal val contextStarts=com.soundq.android.playback.ContextStartAdmission(File(directory,"context-starts"))
@@ -51,7 +52,7 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     val crossfadePreferences=com.soundq.android.data.preferences.CrossfadePreferences(File(directory,"crossfade.v1.json"))
     val localUnlock=com.soundq.android.localunlock.LocalUnlock(File(directory,"local-unlock.v1.json"),session)
     val temporaryAudio by lazy {com.soundq.android.data.cache.TemporaryAudioCache(File(directory,"temporary-audio"),session)}
-    val api=SoundQApi(session,apiClient,com.soundq.android.data.acquisition.IntakeReceipts(File(directory,"intake-receipts.v1.json")))
+    val api:SoundQApi=SoundQApi(session,apiClient,com.soundq.android.data.acquisition.IntakeReceipts(File(directory,"intake-receipts.v1.json")),libraryOwnershipReadback={scope->discovery.libraryChanged(scope)})
     val timeline=com.soundq.android.data.timeline.TimelineRepository(session,File(directory,"timeline"),api::analysisWaveform)
     val arrangementSave=com.soundq.android.data.timeline.ArrangementSave(api,timeline)
     val library=LibraryRepository(session,api::library,api::like,LibrarySortStore(File(directory,"library-sort")))
@@ -71,7 +72,9 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     val incomingShares=com.soundq.android.data.acquisition.IncomingShares(File(directory,"incoming-share.v1"))
     val imports=com.soundq.android.data.imports.ImportRepository(session,api,library)
     val catalog=com.soundq.android.data.catalog.CatalogRepository(api,com.soundq.android.data.catalog.CatalogMembershipJournal(File(directory,"catalog-membership.v1.json")))
-    val discovery=com.soundq.android.data.discovery.DiscoveryRepository(session,api,historyDirectory=File(directory,"discover-history"))
+    // Roll out only after GET /me/discovery/releases owns account-wide daily admission/cache.
+    // The legacy fixture argument remains source-compatible; normal Discover now has the same path.
+    val discovery=com.soundq.android.data.discovery.DiscoveryRepository(session,api,historyDirectory=File(directory,"discover-history"),radarAdmitted=true)
     val io=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     internal val phoneAudio=com.soundq.android.data.device.PhoneAudioRepository(this)
     internal val phoneFiles=com.soundq.android.data.device.PhoneFileActions(this)
@@ -85,7 +88,9 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     private val jamOwner=lazy {com.soundq.android.data.jam.JamHostRepository(api,presence,controller.state,jamAdmission,{ticket->controller.sendJamAdmission(ticket){jamAdmission.refused(ticket)}},io,directory)}
     val jam by jamOwner
     private val known=java.util.concurrent.ConcurrentHashMap<TrackId,Pair<AccountScope,Track>>()
-    init {localUnlock.loadBeforeRestore()}
+    init {localUnlock.loadBeforeRestore();var revision=library.state.value.pageRevision;io.launch {
+        library.state.collect {accepted->if(accepted.pageRevision!=revision){revision=accepted.pageRevision;library.projectionScope(accepted)?.let {discovery.libraryChanged(it)}}}
+    }}
     fun start() {phoneAudio.start();presence.start();jam.start();io.launch {appearancePreferences.load();djModePreferences.load();keyNotationPreferences.load();queueSettings.load();storagePreferences.load();listeningPreferences.load();crossfadePreferences.load();swipeQueuePreferences.load();if(session.state.value !is AuthState.LocalLocked)api.restore()};io.launch {session.state.collect {if(it !is AuthState.SignedIn){presence.retire();jam.retire()}}}}
     fun rememberTracks(tracks:List<Track>) {val scope=session.capture() ?: return;tracks.forEach {known[it.id]=scope to it}}
     /** Read existing account-bound acknowledgements only. Restored queue metadata needs no new API fetch. */

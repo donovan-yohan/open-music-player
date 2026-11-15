@@ -77,7 +77,8 @@ class SharedMediaJourneyTest {
                 if(path=="/api/v1/me/plays/recent"||path=="/api/v1/me/plays/top") {
                     val rows=JSONArray()
                     if(path.endsWith("recent"))for(id in 1..2)rows.put(JSONObject().put("id",id).put("title","Tempo $id").put("artist","Synthetic ensemble").put("durationMs",120000).put("inLibrary",true).put("coverArtUrl",ProductTransportFixture.origin.resolve("/cover-$id.png").toString()))
-                    return MockResponse.Builder().body(JSONObject().put("tracks",rows).toString()).build()
+                    val body=JSONObject().put("tracks",rows).toString()
+                    return MockResponse.Builder().body(if(path.endsWith("recent"))recentFixtureBody(body) else body).build()
                 }
                 return original.dispatch(request)
             }

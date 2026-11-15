@@ -50,7 +50,7 @@ class ArtworkSurfacesJourneyTest {
                 fun reply(body:String)=MockResponse.Builder().body(body).build()
                 return when(request.url.encodedPath) {
                     "/api/v1/library" -> reply("""{"tracks":[],"total":0,"limit":20,"offset":0}""")
-                    "/api/v1/me/plays/recent" -> reply("""{"tracks":[{"id":7,"title":"$title","artist":"Artwork fixture","durationMs":12000,"coverArtUrl":"${ProductTransportFixture.origin.resolve("/shared-art.png")}","inLibrary":true}]}""")
+                    "/api/v1/me/plays/recent" -> reply(recentFixtureBody("""{"tracks":[{"id":7,"title":"$title","artist":"Artwork fixture","durationMs":12000,"coverArtUrl":"${ProductTransportFixture.origin.resolve("/shared-art.png")}","inLibrary":true}]}"""))
                     "/api/v1/me/plays/top" -> reply("""{"tracks":[]}""")
                     "/shared-art.png" -> {
                         assertNull(request.headers["Authorization"]);assertNull(request.headers["Cookie"]);images.incrementAndGet()

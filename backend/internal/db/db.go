@@ -69,6 +69,18 @@ func (db *DB) Migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 	ALTER TABLE users ADD COLUMN IF NOT EXISTS connect_auth_generation BIGINT NOT NULL DEFAULT 0;
 
+	-- Account/source-scoped rolling daily radar admission and last-good metadata.
+	-- Redis's allkeys-lru public cache cannot own a durable refresh attempt.
+	CREATE TABLE IF NOT EXISTS release_radar_daily (
+		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		source TEXT NOT NULL CHECK (octet_length(source) BETWEEN 1 AND 160),
+		attempted_at TIMESTAMPTZ NOT NULL,
+		token UUID NOT NULL,
+		phase TEXT NOT NULL CHECK (phase IN ('pending','ready','failed')),
+		candidates TEXT CHECK (candidates IS NULL OR octet_length(candidates) <= 262144),
+		PRIMARY KEY (user_id,source)
+	);
+
 	CREATE TABLE IF NOT EXISTS jams (
 		id UUID PRIMARY KEY,
 		owner_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

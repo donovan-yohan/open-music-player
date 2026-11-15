@@ -2,8 +2,12 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -58,6 +62,9 @@ type PlayHistoryEvent struct {
 // listing can never disclose another user's library membership. It mirrors the
 // shape LibraryRepository.IsTrackInLibrary enforces at the playback gate.
 const libraryMembershipProjection = `EXISTS(SELECT 1 FROM user_library ul WHERE ul.user_id = $1 AND ul.track_id = t.id)`
+
+// ErrRecentChanged means an opt-in traversal no longer names the current corpus.
+var ErrRecentChanged = errors.New("recent plays changed")
 
 // PlayEventRepository records play events and serves recently-played / top-track
 // listings. All reads and writes are scoped to a single user.
@@ -177,6 +184,66 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 	if offset < 0 {
 		offset = 0
 	}
+	return recentlyPlayedRows(ctx, r.db, userID, limit, offset)
+}
+
+type recentQueryer interface {
+	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
+}
+
+// RecentPage is an opt-in, stateless traversal. Recompute the narrow canonical
+// aggregate revision and page under ONE MVCC snapshot. New listens, deletions,
+// and timestamp edits invalidate an older traversal instead of silently omitting
+// rows after an offset shifts. Nothing persists beyond this short read-only tx.
+// The revision scan never hydrates tracks/analysis and uses constant Go memory.
+func (r *PlayEventRepository) RecentPage(ctx context.Context, userID uuid.UUID, limit, offset int, expected string) ([]RecentlyPlayedTrack, string, bool, error) {
+	if limit < 1 || limit > 100 || offset < 0 || (offset > 0 && expected == "") {
+		return nil, "", false, fmt.Errorf("invalid recent page")
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, "", false, fmt.Errorf("begin recent page: %w", err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT track_id, MAX(played_at) FROM play_events
+		WHERE user_id=$1 AND NOT skipped GROUP BY track_id ORDER BY track_id`, userID)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("read recent revision: %w", err)
+	}
+	hash := sha256.New()
+	count := 0
+	for rows.Next() {
+		var id int64
+		var at time.Time
+		if err := rows.Scan(&id, &at); err != nil {
+			rows.Close()
+			return nil, "", false, err
+		}
+		fmt.Fprintf(hash, "%d/%s\n", id, at.UTC().Format(time.RFC3339Nano))
+		count++
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, "", false, err
+	}
+	revision := hex.EncodeToString(hash.Sum(nil))
+	if expected != "" && revision != expected {
+		return nil, "", false, ErrRecentChanged
+	}
+	tracks, err := recentlyPlayedRows(ctx, tx, userID, limit, offset)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("read recent page: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, "", false, err
+	}
+	return tracks, revision, offset < count && len(tracks) < count-offset, nil
+}
+
+// Shared legacy and opt-in hydration: LIMIT/OFFSET stays inside the aggregate,
+// before the track/compact-analysis joins, with identical outer ordering.
+func recentlyPlayedRows(ctx context.Context, q recentQueryer, userID uuid.UUID, limit, offset int) ([]RecentlyPlayedTrack, error) {
 
 	query := `
 		SELECT t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
@@ -203,7 +270,7 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 			   ORDER BY pe.last_played_at DESC, t.id DESC
 			   `
 
-	rows, err := r.db.QueryContext(ctx, query, userID, limit, offset)
+	rows, err := q.QueryContext(ctx, query, userID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
