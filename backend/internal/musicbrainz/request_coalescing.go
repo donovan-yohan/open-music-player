@@ -3,6 +3,7 @@ package musicbrainz
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 type inflightRequest struct {
@@ -26,6 +27,9 @@ func (c *Client) doRequest(ctx context.Context, reqURL string) ([]byte, error) {
 	bounded := radarReadBounded(ctx)
 	if bounded {
 		flightKey += "\x00radar-1mib-1retry"
+	}
+	if budget := weeklyBudget(ctx); budget != nil {
+		flightKey += fmt.Sprintf("\x00weekly-4requests-2mib-%p", budget)
 	}
 	c.requestsMu.Lock()
 	pending := c.requests[flightKey]

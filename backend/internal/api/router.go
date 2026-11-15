@@ -41,6 +41,7 @@ type Router struct {
 	playbackHandlers        *PlaybackHandlers
 	queueHandlers           *queue.Handlers
 	discoveryHandlers       *discovery.Handlers
+	weeklyHandlers          *WeeklyHandlers
 	releaseRadarHandlers    *ReleaseRadarHandlers
 	agentToolsHandler       http.Handler
 	playlistHandlers        *PlaylistHandlers
@@ -92,6 +93,7 @@ type RouterConfig struct {
 	PlaybackHandlers        *PlaybackHandlers
 	QueueHandlers           *queue.Handlers
 	DiscoveryHandlers       *discovery.Handlers
+	WeeklyHandlers          *WeeklyHandlers
 	ReleaseRadarHandlers    *ReleaseRadarHandlers
 	AgentToolsHandler       http.Handler
 	PlaylistHandlers        *PlaylistHandlers
@@ -163,6 +165,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		playbackHandlers:        cfg.PlaybackHandlers,
 		queueHandlers:           cfg.QueueHandlers,
 		discoveryHandlers:       cfg.DiscoveryHandlers,
+		weeklyHandlers:          cfg.WeeklyHandlers,
 		releaseRadarHandlers:    cfg.ReleaseRadarHandlers,
 		agentToolsHandler:       cfg.AgentToolsHandler,
 		playlistHandlers:        cfg.PlaylistHandlers,
@@ -276,6 +279,15 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /api/v1/musicbrainz/search/albums", r.withAuth(r.musicbrainzHandlers.SearchAlbums))
 
 	// Browse/discovery routes (auth required)
+	if h := r.weeklyHandlers; h != nil {
+		r.mux.HandleFunc("GET /api/v1/me/discovery/weekly", r.withWeeklyAuth(h.Weekly))
+		r.mux.HandleFunc("GET /api/v1/me/discovery/preferences", r.withWeeklyAuth(h.Preferences))
+		r.mux.HandleFunc("PUT /api/v1/me/discovery/preferences", r.withWeeklyAuth(h.PutPreferences))
+		r.mux.HandleFunc("GET /api/v1/me/discovery/feedback/{recordingMbid}", r.withWeeklyAuth(h.GetFeedback))
+		r.mux.HandleFunc("PUT /api/v1/me/discovery/feedback/{recordingMbid}", r.withWeeklyAuth(h.PutFeedback))
+		r.mux.HandleFunc("POST /api/v1/me/discovery/preferences/reset", r.withWeeklyAuth(h.Reset))
+		r.mux.HandleFunc("GET /api/v1/me/discovery/preferences/export", r.withWeeklyAuth(h.Export))
+	}
 	if r.releaseRadarHandlers != nil {
 		r.mux.HandleFunc("GET /api/v1/me/discovery/releases", r.withAuth(r.releaseRadarHandlers.Releases))
 		r.mux.HandleFunc("GET /api/v1/me/discovery/releases/{recording}/membership", r.withAuth(r.releaseRadarHandlers.Membership))

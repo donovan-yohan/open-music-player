@@ -1,0 +1,1626 @@
+{
+  "$defs": {
+    "Artist": {
+      "additionalProperties": false,
+      "properties": {
+        "artistMbid": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "blocked": {
+          "type": "boolean"
+        },
+        "interested": {
+          "type": "boolean"
+        },
+        "name": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "revision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artistMbid",
+        "name",
+        "revision",
+        "interested",
+        "blocked"
+      ],
+      "type": "object"
+    },
+    "Conflict": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "current": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Feedback"
+            },
+            {
+              "$ref": "#/$defs/Artist"
+            },
+            {
+              "$ref": "#/$defs/PermissionResource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detail": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "filterRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "preferenceRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "profileEpoch": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "code",
+        "detail",
+        "current",
+        "profileEpoch",
+        "preferenceRevision",
+        "filterRevision"
+      ],
+      "type": "object"
+    },
+    "Error": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "Export": {
+      "additionalProperties": false,
+      "properties": {
+        "artists": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "artistMbid": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "blocked": {
+                "type": "boolean"
+              },
+              "interested": {
+                "type": "boolean"
+              },
+              "name": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "revision": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artistMbid",
+              "name",
+              "revision",
+              "interested",
+              "blocked"
+            ],
+            "type": "object"
+          },
+          "maxItems": 2000,
+          "type": "array"
+        },
+        "contractVersion": {
+          "const": "weekly-v1",
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "derivedArtistAffinities": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "affinity": {
+                "maximum": 3,
+                "minimum": -3,
+                "type": "integer"
+              },
+              "artistMbid": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "contributingCount": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "reasonCodes": {
+                "items": {
+                  "maxLength": 8192,
+                  "type": "string"
+                },
+                "maxItems": 2000,
+                "type": "array"
+              }
+            },
+            "required": [
+              "artistMbid",
+              "name",
+              "affinity",
+              "reasonCodes",
+              "contributingCount"
+            ],
+            "type": "object"
+          },
+          "maxItems": 2000,
+          "type": "array"
+        },
+        "filterRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "historyIncluded": {
+          "type": "boolean"
+        },
+        "permissions": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "permission": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "revision": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "permission",
+              "enabled",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "maxProperties": 1000,
+          "type": "object"
+        },
+        "preferenceRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "profileEpoch": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recordingFeedback": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "artist": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "artistMbids": {
+                "items": {
+                  "maxLength": 8192,
+                  "type": "string"
+                },
+                "maxItems": 2000,
+                "type": "array"
+              },
+              "lastMutationId": {
+                "anyOf": [
+                  {
+                    "maxLength": 8192,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "primaryArtistMbid": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "profileEpoch": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "recordingMbid": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "revision": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "title": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "updatedAt": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "vote": {
+                "maxLength": 8192,
+                "type": "string"
+              }
+            },
+            "required": [
+              "recordingMbid",
+              "vote",
+              "revision",
+              "profileEpoch",
+              "updatedAt",
+              "lastMutationId",
+              "title",
+              "artist",
+              "artistMbids",
+              "primaryArtistMbid"
+            ],
+            "type": "object"
+          },
+          "maxItems": 2000,
+          "type": "array"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "contractVersion",
+        "profileEpoch",
+        "preferenceRevision",
+        "filterRevision",
+        "permissions",
+        "artists",
+        "recordingFeedback",
+        "derivedArtistAffinities",
+        "truncated",
+        "historyIncluded"
+      ],
+      "type": "object"
+    },
+    "Feedback": {
+      "additionalProperties": false,
+      "properties": {
+        "lastMutationId": {
+          "anyOf": [
+            {
+              "maxLength": 8192,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "profileEpoch": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recordingMbid": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "revision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "updatedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "vote": {
+          "enum": [
+            "up",
+            "down",
+            "none"
+          ],
+          "maxLength": 8192,
+          "type": "string"
+        }
+      },
+      "required": [
+        "recordingMbid",
+        "vote",
+        "revision",
+        "profileEpoch",
+        "updatedAt",
+        "lastMutationId"
+      ],
+      "type": "object"
+    },
+    "FeedbackAck": {
+      "additionalProperties": false,
+      "properties": {
+        "contractVersion": {
+          "const": "weekly-v1",
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "feedback": {
+          "additionalProperties": false,
+          "properties": {
+            "lastMutationId": {
+              "anyOf": [
+                {
+                  "maxLength": 8192,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "profileEpoch": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "recordingMbid": {
+              "maxLength": 8192,
+              "type": "string"
+            },
+            "revision": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "updatedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "vote": {
+              "maxLength": 8192,
+              "type": "string"
+            }
+          },
+          "required": [
+            "recordingMbid",
+            "vote",
+            "revision",
+            "profileEpoch",
+            "updatedAt",
+            "lastMutationId"
+          ],
+          "type": "object"
+        },
+        "filterRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "preferenceRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "replayed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "contractVersion",
+        "feedback",
+        "preferenceRevision",
+        "filterRevision",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "FeedbackWrite": {
+      "additionalProperties": false,
+      "properties": {
+        "batchId": {
+          "anyOf": [
+            {
+              "maxLength": 8192,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expectedRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mutationId": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "profileEpoch": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vote": {
+          "enum": [
+            "up",
+            "down",
+            "none"
+          ],
+          "maxLength": 8192,
+          "type": "string"
+        }
+      },
+      "required": [
+        "vote",
+        "mutationId",
+        "expectedRevision",
+        "profileEpoch",
+        "batchId"
+      ],
+      "type": "object"
+    },
+    "PermissionResource": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "permission": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "revision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "permission",
+        "enabled",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "PreferenceAck": {
+      "additionalProperties": false,
+      "properties": {
+        "artist": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "artistMbid": {
+                  "maxLength": 8192,
+                  "type": "string"
+                },
+                "blocked": {
+                  "type": "boolean"
+                },
+                "interested": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "maxLength": 8192,
+                  "type": "string"
+                },
+                "revision": {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "artistMbid",
+                "name",
+                "revision",
+                "interested",
+                "blocked"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contractVersion": {
+          "const": "weekly-v1",
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "filterRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "permission": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "permission": {
+                  "maxLength": 8192,
+                  "type": "string"
+                },
+                "revision": {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "permission",
+                "enabled",
+                "revision"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preferenceRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "profileEpoch": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "replayed": {
+          "type": "boolean"
+        },
+        "resourceRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "contractVersion",
+        "profileEpoch",
+        "preferenceRevision",
+        "filterRevision",
+        "resourceRevision",
+        "replayed",
+        "permission",
+        "artist"
+      ],
+      "type": "object"
+    },
+    "PreferenceWrite": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "artistMbid"
+                ]
+              },
+              {
+                "required": [
+                  "interested"
+                ]
+              },
+              {
+                "required": [
+                  "blocked"
+                ]
+              }
+            ]
+          },
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "permission": {
+              "enum": [
+                "learningFromServerHistory",
+                "externalCatalogQueries",
+                "similarArtistQueries"
+              ]
+            },
+            "resource": {
+              "const": "permission"
+            }
+          },
+          "required": [
+            "permission",
+            "enabled"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "permission"
+                ]
+              },
+              {
+                "required": [
+                  "enabled"
+                ]
+              }
+            ]
+          },
+          "properties": {
+            "artistMbid": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "blocked": {
+              "type": "boolean"
+            },
+            "interested": {
+              "type": "boolean"
+            },
+            "resource": {
+              "const": "artist"
+            }
+          },
+          "required": [
+            "artistMbid",
+            "interested",
+            "blocked"
+          ]
+        }
+      ],
+      "properties": {
+        "artistMbid": {
+          "anyOf": [
+            {
+              "maxLength": 8192,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "blocked": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expectedRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "interested": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mutationId": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "permission": {
+          "anyOf": [
+            {
+              "maxLength": 8192,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "profileEpoch": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resource": {
+          "maxLength": 8192,
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource",
+        "mutationId",
+        "expectedRevision",
+        "profileEpoch"
+      ],
+      "type": "object"
+    },
+    "PreferencesPage": {
+      "additionalProperties": false,
+      "properties": {
+        "artistCursor": {
+          "anyOf": [
+            {
+              "maxLength": 8192,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "blockedArtists": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "artistMbid": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "blocked": {
+                "type": "boolean"
+              },
+              "interested": {
+                "type": "boolean"
+              },
+              "name": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "revision": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artistMbid",
+              "name",
+              "revision",
+              "interested",
+              "blocked"
+            ],
+            "type": "object"
+          },
+          "maxItems": 2000,
+          "type": "array"
+        },
+        "contractVersion": {
+          "const": "weekly-v1",
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "derivedArtistAffinities": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "affinity": {
+                "maximum": 3,
+                "minimum": -3,
+                "type": "integer"
+              },
+              "artistMbid": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "contributingCount": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "reasonCodes": {
+                "items": {
+                  "maxLength": 8192,
+                  "type": "string"
+                },
+                "maxItems": 2000,
+                "type": "array"
+              }
+            },
+            "required": [
+              "artistMbid",
+              "name",
+              "affinity",
+              "reasonCodes",
+              "contributingCount"
+            ],
+            "type": "object"
+          },
+          "maxItems": 2000,
+          "type": "array"
+        },
+        "derivedBuiltAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "externalCatalogQueries": {
+          "type": "boolean"
+        },
+        "feedbackCursor": {
+          "anyOf": [
+            {
+              "maxLength": 8192,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "filterRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "historyCoverage": {
+          "additionalProperties": false,
+          "properties": {
+            "longArtists": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "longDays": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "shortArtists": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "shortDays": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "status": {
+              "maxLength": 8192,
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "shortDays",
+            "longDays",
+            "shortArtists",
+            "longArtists"
+          ],
+          "type": "object"
+        },
+        "interestedArtists": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "artistMbid": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "blocked": {
+                "type": "boolean"
+              },
+              "interested": {
+                "type": "boolean"
+              },
+              "name": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "revision": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artistMbid",
+              "name",
+              "revision",
+              "interested",
+              "blocked"
+            ],
+            "type": "object"
+          },
+          "maxItems": 2000,
+          "type": "array"
+        },
+        "learningFromServerHistory": {
+          "type": "boolean"
+        },
+        "permissionRevisions": {
+          "additionalProperties": {
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxProperties": 1000,
+          "type": "object"
+        },
+        "permissionsVersion": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "preferenceRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "profileEpoch": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rankingVersion": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "recordingFeedback": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "artist": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "artistMbids": {
+                "items": {
+                  "maxLength": 8192,
+                  "type": "string"
+                },
+                "maxItems": 2000,
+                "type": "array"
+              },
+              "lastMutationId": {
+                "anyOf": [
+                  {
+                    "maxLength": 8192,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "primaryArtistMbid": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "profileEpoch": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "recordingMbid": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "revision": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "title": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "updatedAt": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "vote": {
+                "maxLength": 8192,
+                "type": "string"
+              }
+            },
+            "required": [
+              "recordingMbid",
+              "vote",
+              "revision",
+              "profileEpoch",
+              "updatedAt",
+              "lastMutationId",
+              "title",
+              "artist",
+              "artistMbids",
+              "primaryArtistMbid"
+            ],
+            "type": "object"
+          },
+          "maxItems": 2000,
+          "type": "array"
+        },
+        "similarArtistAvailable": {
+          "type": "boolean"
+        },
+        "similarArtistQueries": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "contractVersion",
+        "profileEpoch",
+        "preferenceRevision",
+        "filterRevision",
+        "permissionsVersion",
+        "rankingVersion",
+        "learningFromServerHistory",
+        "externalCatalogQueries",
+        "similarArtistQueries",
+        "similarArtistAvailable",
+        "permissionRevisions",
+        "interestedArtists",
+        "blockedArtists",
+        "recordingFeedback",
+        "derivedArtistAffinities",
+        "derivedBuiltAt",
+        "historyCoverage",
+        "feedbackCursor",
+        "artistCursor"
+      ],
+      "type": "object"
+    },
+    "ResetAck": {
+      "additionalProperties": false,
+      "properties": {
+        "contractVersion": {
+          "const": "weekly-v1",
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "filterRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "preferenceRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "profileEpoch": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "replayed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "contractVersion",
+        "profileEpoch",
+        "preferenceRevision",
+        "filterRevision",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "ResetWrite": {
+      "additionalProperties": false,
+      "properties": {
+        "expectedRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mutationId": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "profileEpoch": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scope": {
+          "maxLength": 8192,
+          "type": "string"
+        }
+      },
+      "required": [
+        "mutationId",
+        "expectedRevision",
+        "profileEpoch",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "WeeklyPage": {
+      "additionalProperties": false,
+      "properties": {
+        "batchId": {
+          "anyOf": [
+            {
+              "maxLength": 8192,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calendarZone": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "contractVersion": {
+          "const": "weekly-v1",
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "coverage": {
+          "additionalProperties": false,
+          "properties": {
+            "candidatesConsidered": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "excluded": {
+              "additionalProperties": false,
+              "properties": {
+                "blocked": {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "downvoted": {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "duplicate": {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "owned": {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "recent": {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "owned",
+                "recent",
+                "downvoted",
+                "blocked",
+                "duplicate"
+              ],
+              "type": "object"
+            },
+            "identityScope": {
+              "maxLength": 8192,
+              "type": "string"
+            },
+            "pagesFetched": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "providerBodyBytes": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "providerRequests": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "providerStatus": {
+              "maxLength": 8192,
+              "type": "string"
+            },
+            "reasonCodes": {
+              "items": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "maxItems": 2000,
+              "type": "array"
+            },
+            "seedsConsidered": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "providerRequests",
+            "providerBodyBytes",
+            "identityScope",
+            "providerStatus",
+            "seedsConsidered",
+            "candidatesConsidered",
+            "pagesFetched",
+            "reasonCodes",
+            "excluded"
+          ],
+          "type": "object"
+        },
+        "filterRevision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generatedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "items": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "artist": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "artistMbids": {
+                "items": {
+                  "maxLength": 8192,
+                  "type": "string"
+                },
+                "maxItems": 2000,
+                "type": "array"
+              },
+              "components": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "code": {
+                      "maxLength": 8192,
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "value",
+                    "available"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 2000,
+                "type": "array"
+              },
+              "feedback": {
+                "additionalProperties": false,
+                "properties": {
+                  "lastMutationId": {
+                    "anyOf": [
+                      {
+                        "maxLength": 8192,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "profileEpoch": {
+                    "maximum": 9223372036854775807,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "recordingMbid": {
+                    "maxLength": 8192,
+                    "type": "string"
+                  },
+                  "revision": {
+                    "maximum": 9223372036854775807,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "updatedAt": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "vote": {
+                    "maxLength": 8192,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "recordingMbid",
+                  "vote",
+                  "revision",
+                  "profileEpoch",
+                  "updatedAt",
+                  "lastMutationId"
+                ],
+                "type": "object"
+              },
+              "originalRank": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "primaryArtistMbid": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "provenance": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "algorithm": {
+                      "anyOf": [
+                        {
+                          "maxLength": 8192,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "provider": {
+                      "maxLength": 8192,
+                      "type": "string"
+                    },
+                    "retrievedAt": {
+                      "format": "date-time",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "provider",
+                    "algorithm",
+                    "retrievedAt"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 2000,
+                "type": "array"
+              },
+              "reasonCodes": {
+                "items": {
+                  "maxLength": 8192,
+                  "type": "string"
+                },
+                "maxItems": 2000,
+                "type": "array"
+              },
+              "recordingMbid": {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              "title": {
+                "maxLength": 8192,
+                "type": "string"
+              }
+            },
+            "required": [
+              "recordingMbid",
+              "title",
+              "artist",
+              "artistMbids",
+              "primaryArtistMbid",
+              "originalRank",
+              "reasonCodes",
+              "components",
+              "provenance",
+              "feedback"
+            ],
+            "type": "object"
+          },
+          "maxItems": 20,
+          "type": "array"
+        },
+        "preferenceRevisionAtGeneration": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "profileEpoch": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "providerPolicyVersion": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "rankingVersion": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "retryAfter": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "staleReason": {
+          "anyOf": [
+            {
+              "maxLength": 8192,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "ready",
+            "partial",
+            "empty",
+            "needs_preferences",
+            "consent_required",
+            "pending",
+            "unavailable",
+            "stale"
+          ],
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "weekEndExclusive": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "weekStart": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contractVersion",
+        "status",
+        "weekStart",
+        "weekEndExclusive",
+        "calendarZone",
+        "rankingVersion",
+        "providerPolicyVersion",
+        "profileEpoch",
+        "preferenceRevisionAtGeneration",
+        "filterRevision",
+        "items",
+        "coverage",
+        "batchId",
+        "generatedAt",
+        "retryAfter",
+        "staleReason"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://soundq.invalid/schemas/weekly-v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "weekly-v1 DTOs. Each $defs entry is an independently selectable schema. Enum and structural validation is in authenticated Go handlers. FeedbackWrite.batchId is required but nullable. PreferenceWrite variants are discriminated by resource."
+}

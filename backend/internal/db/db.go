@@ -69,6 +69,13 @@ func (db *DB) Migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 	ALTER TABLE users ADD COLUMN IF NOT EXISTS connect_auth_generation BIGINT NOT NULL DEFAULT 0;
 
+	-- Weekly current state has one transactional owner per account. Quota survives
+	-- profile resets within this separately retained state. No tap ledger.
+	CREATE TABLE IF NOT EXISTS weekly_profiles (
+		user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+		state JSONB NOT NULL CHECK (octet_length(state::text) <= 2097152)
+	);
+
 	-- Account/source-scoped rolling daily radar admission and last-good metadata.
 	-- Redis's allkeys-lru public cache cannot own a durable refresh attempt.
 	CREATE TABLE IF NOT EXISTS release_radar_daily (
