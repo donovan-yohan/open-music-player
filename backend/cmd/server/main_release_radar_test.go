@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"github.com/openmusicplayer/backend/internal/cache"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +15,10 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+
 	"github.com/openmusicplayer/backend/internal/api"
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/cache"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
@@ -80,6 +81,18 @@ func TestReleaseRadarNormalConstructorRegisteredDailyAndDeliberateSearchUnchange
 		t.Fatal(e)
 	}
 	defer configured.Close()
+	defer func() {
+		if fixtureTransport.radarQuery == "" {
+			return // No request ran: never derive/delete an unowned empty-query key.
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		digest := sha256.Sum256([]byte(fmt.Sprintf("%s:100:0", fixtureTransport.radarQuery)))
+		key := fmt.Sprintf("mb:recording-v2:%x", digest[:8])
+		if e := configured.Client().Del(cleanupCtx, key).Err(); e != nil {
+			t.Error(e)
+		}
+	}()
 	catalog := musicbrainz.NewClient(configured)
 	secret := "normal-daily-synthetic-secret"
 	authService := auth.NewService(nil, nil, secret)

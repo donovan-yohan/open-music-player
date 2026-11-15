@@ -2,15 +2,17 @@ package api
 
 import (
 	"context"
-	"github.com/google/uuid"
-	"github.com/openmusicplayer/backend/internal/auth"
-	"github.com/openmusicplayer/backend/internal/db"
-	"github.com/openmusicplayer/backend/internal/discovery"
-	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/discovery"
+	"github.com/openmusicplayer/backend/internal/musicbrainz"
 )
 
 type radarWireFixture struct {

@@ -2,21 +2,22 @@ package discovery
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"database/sql"
 	"github.com/google/uuid"
+
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/radartest"
-	"net/url"
-	"os"
 )
 
 type dailyClock struct{ millis atomic.Int64 }

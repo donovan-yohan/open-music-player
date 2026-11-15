@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"github.com/google/uuid"
-	"github.com/openmusicplayer/backend/internal/auth"
-	"github.com/openmusicplayer/backend/internal/discovery"
 	"net/http"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/discovery"
 )
 
 type ReleaseRadarHandlers struct {

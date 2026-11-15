@@ -210,13 +210,13 @@ func (r *PlayEventRepository) RecentPage(ctx context.Context, userID uuid.UUID, 
 	if err != nil {
 		return nil, "", false, fmt.Errorf("read recent revision: %w", err)
 	}
+	defer rows.Close()
 	hash := sha256.New()
 	count := 0
 	for rows.Next() {
 		var id int64
 		var at time.Time
 		if err := rows.Scan(&id, &at); err != nil {
-			rows.Close()
 			return nil, "", false, err
 		}
 		fmt.Fprintf(hash, "%d/%s\n", id, at.UTC().Format(time.RFC3339Nano))

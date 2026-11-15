@@ -2,15 +2,17 @@ package api
 
 import (
 	"encoding/json"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
-	"github.com/openmusicplayer/backend/internal/auth"
-	"github.com/openmusicplayer/backend/internal/db"
-	"github.com/openmusicplayer/backend/internal/discovery"
 	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+
+	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/discovery"
 )
 
 func TestReleaseRadarRealAccountProjectionToWire(t *testing.T) {

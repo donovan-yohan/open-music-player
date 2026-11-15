@@ -3,14 +3,16 @@ package discovery
 import (
 	"context"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/openmusicplayer/backend/internal/db"
-	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
+
+	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/musicbrainz"
 )
 
 const RadarPolicy = "recording-radar-v1"

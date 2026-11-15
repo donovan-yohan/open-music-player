@@ -2,10 +2,12 @@ package discovery
 
 import (
 	"context"
-	"github.com/google/uuid"
-	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/openmusicplayer/backend/internal/musicbrainz"
 )
 
 func TestRadarPartialMonthMustBePastNotMerelyEndingToday(t *testing.T) {

@@ -1,9 +1,10 @@
 package db
 
 import (
-	"github.com/google/uuid"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestRadarAccountWindowSeedsAndAnyLinkedMembership(t *testing.T) {

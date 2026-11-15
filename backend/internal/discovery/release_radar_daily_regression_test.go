@@ -2,10 +2,11 @@ package discovery
 
 import (
 	"context"
-	"github.com/openmusicplayer/backend/internal/musicbrainz"
-	"github.com/openmusicplayer/backend/internal/radartest"
 	"testing"
 	"time"
+
+	"github.com/openmusicplayer/backend/internal/musicbrainz"
+	"github.com/openmusicplayer/backend/internal/radartest"
 )
 
 // Same visit/assertion body as preserved RED; only fixture admission/account

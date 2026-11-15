@@ -9,11 +9,21 @@ import java.time.Instant
 class DiscoveryRepository(private val session:AccountSession,private val api:SoundQApi,historyDirectory:java.io.File?=null,private val now:()->Instant={Instant.now()},private val radarAdmitted:Boolean=false) {
     private val radarMutable=MutableStateFlow(RadarState(if(radarAdmitted)RadarPhase.Idle else RadarPhase.Held))
     val radar:StateFlow<RadarState> = radarMutable
+    private val radarInvalidationMutable=MutableStateFlow(0L)
+    val radarInvalidation:StateFlow<Long> = radarInvalidationMutable
     private var radarRead:RadarRead?=null
     private var radarLanding:RadarLanding?=null
     private var radarVisitRead:DiscoveryView?=null
     private var radarAction:Any?=null
-    private fun cancelRadar() {radarRead?.let(::abandonRadar);radarRead=null;radarAction=null;radarMutable.value=radarMutable.value.copy(finding=false,phase=if(!radarAdmitted)RadarPhase.Held else if(radarMutable.value.phase==RadarPhase.Failed)RadarPhase.Failed else if(radarMutable.value.page!=null)RadarPhase.Ready else RadarPhase.Idle)}
+    private fun cancelRadar() {
+        radarRead?.let { request ->
+            // A retired GET cannot publish. An unfinished first landing may ask again
+            // under a fresh owner; durable provider admission still belongs to the server.
+            if(request.automatic&&radarVisitRead===request.view&&radarMutable.value.page==null)radarVisitRead=null
+            abandonRadar(request)
+        }
+        radarRead=null;radarAction=null;radarMutable.value=radarMutable.value.copy(finding=false,phase=if(!radarAdmitted)RadarPhase.Held else if(radarMutable.value.phase==RadarPhase.Failed)RadarPhase.Failed else if(radarMutable.value.page!=null)RadarPhase.Ready else RadarPhase.Idle)
+    }
     private val mutable=MutableStateFlow(DiscoveryState())
     val state:StateFlow<DiscoveryState> = mutable
     private var view:DiscoveryView?=null
@@ -147,7 +157,14 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
         if(!session.current(scope)||owner?.let(session::current)!=true)return
         libraryChanged()
     }
-    @Synchronized fun libraryChanged() {cancelRadar();if(radarMutable.value.page!=null)radarMutable.value=radarMutable.value.copy(stale=true)}
+    @Synchronized fun libraryChanged() {
+        cancelRadar()
+        if(radarMutable.value.page!=null) {
+            radarMutable.value=radarMutable.value.copy(stale=true)
+            // Do not lose a second invalidation when Loading/Ready are conflated.
+            radarInvalidationMutable.value++
+        }
+    }
     /** Preview has no decision/import/player authority; even retained callbacks revalidate the choice. */
     @Synchronized fun preview(candidate:DiscoveryView,choice:SourceChoice,launch:(String)->Unit):Boolean {
         if(!current(candidate)||mutable.value.inspected!==choice||!choice.valid())return false

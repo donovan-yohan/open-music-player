@@ -2,11 +2,13 @@ package discovery
 
 import (
 	"context"
-	"github.com/google/uuid"
-	"github.com/openmusicplayer/backend/internal/db"
-	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/musicbrainz"
 )
 
 type radarFixture struct {

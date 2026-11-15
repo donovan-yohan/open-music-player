@@ -20,7 +20,14 @@ class RecentContinuationTest {
             val initial=repo.recent.value
             assertEquals(n,initial.rows.size);assertEquals(minOf(5,n),initial.visibleCount);assertEquals(n>5,initial.hasMore)
             assertEquals((1..n).map {it.toLong()},initial.rows.map {it.track.id.value})
-            while(repo.recent.value.hasMore)repo.load(route,HomeSection.Recent,repo.recent.value,append=true)
+            for(expected in (10..n step 5).toList()+listOf(n).filter {it>5&&it%5!=0}) {
+                assertTrue(repo.recent.value.hasMore)
+                val before=repo.recent.value.visibleCount
+                repo.load(route,HomeSection.Recent,repo.recent.value,append=true)
+                assertNull(repo.recent.value.error);assertTrue(repo.recent.value.visibleCount>before)
+                assertEquals(expected,repo.recent.value.visibleCount)
+            }
+            assertNull(repo.recent.value.error);assertFalse(repo.recent.value.hasMore)
             assertEquals(n,repo.recent.value.visibleCount);assertSame(initial.rows,repo.recent.value.rows)
             assertEquals(1,f.server.requestCount)
         }
@@ -31,7 +38,14 @@ class RecentContinuationTest {
             f.reply(page((1..20).toList(),more=true));repo.load(route,HomeSection.Recent)
             val counts=mutableListOf(repo.recent.value.visibleCount)
             f.reply(page((21..40).toList(),20,true));f.reply(page((41..43).toList(),40,false))
-            while(repo.recent.value.hasMore) {repo.load(route,HomeSection.Recent,repo.recent.value,append=true);counts+=repo.recent.value.visibleCount}
+            for(expected in listOf(10,15,20,25,30,35,40,43)) {
+                assertTrue(repo.recent.value.hasMore)
+                val before=repo.recent.value.visibleCount
+                repo.load(route,HomeSection.Recent,repo.recent.value,append=true)
+                assertNull(repo.recent.value.error);assertTrue(repo.recent.value.visibleCount>before)
+                assertEquals(expected,repo.recent.value.visibleCount);counts+=repo.recent.value.visibleCount
+            }
+            assertNull(repo.recent.value.error);assertFalse(repo.recent.value.hasMore)
             assertEquals(listOf(5,10,15,20,25,30,35,40,43),counts)
             assertEquals((1..43).map {it.toLong()},repo.recent.value.rows.map {it.track.id.value})
             assertEquals(listOf("0","20","40"),(1..3).map {f.server.takeRequest(2,TimeUnit.SECONDS)!!.url.queryParameter("offset")})

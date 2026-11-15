@@ -62,11 +62,14 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
     // The observer retires synchronously through STOP/RESUME even without recomposition.
     val radarLifecycle=LocalLifecycleOwner.current
     val radarShown=radarVisible()
+    var radarActive by remember(view,radarLifecycle) {mutableStateOf(false)}
+    val radarInvalidation by repository.radarInvalidation.collectAsStateWithLifecycle()
     DisposableEffect(view,radarLifecycle,catalogDetails,radarShown) {
         var landing:RadarLanding?=null
         var active=false
         fun sync() {
             active=radarShown&&catalogDetails==null&&radarLifecycle.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            radarActive=active
             if(active&&landing==null) {
                 landing=view?.let {repository.showRadar(it){active&&radarVisible()&&radarLifecycle.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)}}
                 if(landing!=null)view?.let {model.loadReleaseRadar(it,automatic=true)}
@@ -76,10 +79,13 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
         }
         val observer=LifecycleEventObserver {_,_->sync()}
         radarLifecycle.lifecycle.addObserver(observer);sync()
-        onDispose {active=false;landing?.let(repository::hideRadar);radarLifecycle.lifecycle.removeObserver(observer)}
+        onDispose {active=false;radarActive=false;landing?.let(repository::hideRadar);radarLifecycle.lifecycle.removeObserver(observer)}
     }
-    // Retain the canonical invalidation consumer, without tying reads to query edits.
-    LaunchedEffect(view,radar.stale) {if(radar.stale&&radar.phase==RadarPhase.Ready)view?.let {model.loadReleaseRadar(it)}}
+    // Retry invalidated reads only at eligible transitions, never on playback ticks.
+    // The revision also witnesses repeated invalidations if Loading is conflated away.
+    LaunchedEffect(view,radarInvalidation,radar.stale,radar.phase,state.draft.text.isBlank(),radarActive,radarShown,catalogDetails) {
+        if(radarActive&&radarShown&&catalogDetails==null&&state.draft.text.isBlank()&&radar.stale&&radar.phase==RadarPhase.Ready)view?.let {model.loadReleaseRadar(it)}
+    }
     LaunchedEffect(view,state.draft,radar.page,radar.stale) {
         radarDetails?.let {(page,song,draft)->if(view==null||!repository.radarCurrent(view,page,song,draft))radarDetails=null}
     }

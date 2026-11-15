@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+
 	"github.com/openmusicplayer/backend/internal/db"
 )
 
