@@ -10,7 +10,17 @@ PRODUCT = ROOT / "android/app/src/main/kotlin/com/soundq/android/product"
 class SelectedSongMarqueeCallers(unittest.TestCase):
     def test_both_row_branches_and_compact_player_use_shared_identity_text(self):
         source = (DESIGN / "ProductComponents.kt").read_text()
-        self.assertEqual(source.count("SoundQMediaIdentityText("), 5)
+        row = source.split('@Composable fun SoundQMediaRow(', 1)[1].split(
+            '@Composable fun SoundQTransport(', 1)[0]
+        compact = source.split('@Composable fun SoundQCompactPlayer(', 1)[1].split(
+            '@Composable fun SoundQBottomNavigation(', 1)[0]
+        # One title and all three subtitle branches: History, enlarged, ordinary.
+        self.assertEqual(row.count('SoundQMediaIdentityText(title,current,identity,'), 1)
+        self.assertEqual(row.count('SoundQMediaIdentityText(subtitle,current,identity,'), 3)
+        self.assertEqual(row.count('SoundQMediaIdentityText('), 4)
+        self.assertIn('SoundQMediaIdentityText(displayTitle,selected=timing.selected,identity=identity,', compact)
+        self.assertIn('SoundQMediaIdentityText(artist,selected=timing.selected,identity=identity,', compact)
+        self.assertEqual(compact.count('SoundQMediaIdentityText('), 2)
         self.assertIn('selected=timing.selected', source)
         self.assertIn('LocalMediaMarqueeIdentity.current', source)
 

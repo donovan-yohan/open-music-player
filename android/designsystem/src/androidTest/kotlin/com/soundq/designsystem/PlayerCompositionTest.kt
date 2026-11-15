@@ -8,6 +8,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -31,26 +33,82 @@ class PlayerCompositionTest {
 
     private fun rows(width:Int) {
         val title="Long title 音楽 ".repeat(12)
-        compose.setContent {SoundQTheme {
+        val artist="Artist ".repeat(16)
+        val selected=mutableStateOf(true);val reduced=mutableStateOf(false)
+        var activates=0;var more=0
+        compose.mainClock.autoAdvance=false
+        compose.setContent {SoundQTheme(reducedMotion=reduced.value) {
             density=LocalDensity.current.density
             Column(Modifier.requiredWidth(width.dp)) {
-                SoundQMediaRow(title,"Artist ".repeat(16),true,{},{},Modifier.testTag("first"),
+                SoundQMediaRow(title,artist,selected.value,{activates++},{more++},Modifier.testTag("first"),
                     artwork={Box(Modifier.fillMaxSize().testTag("decoded art"))},supporting="Like not confirmed. Reload",
                     metadata={Text("3:42 · 128 BPM · A minor",maxLines=1,softWrap=false)})
                 SoundQMediaRow("Missing","Artist",false,{},{},Modifier.testTag("second"))
             }
         }}
+        // Native placement publishes marquee visibility outside the manual Compose clock.
+        fun settle() {repeat(4){compose.mainClock.advanceTimeByFrame();compose.waitForIdle()}}
+        fun advance(ms:Long) {compose.mainClock.advanceTimeBy(ms);compose.waitForIdle()}
+        fun node(text:String)=compose.onNodeWithText(text,useUnmergedTree=true)
+        fun pixels(text:String):Triple<Int,Int,List<Int>> {
+            val bitmap=node(text).captureToImage().toPixelMap()
+            return Triple(bitmap.width,bitmap.height,List(bitmap.width*bitmap.height) {index->
+                bitmap[index%bitmap.width,index/bitmap.width].toArgb()
+            })
+        }
+        fun identityLayout(text:String,marquee:Boolean) {
+            val layouts=mutableListOf<TextLayoutResult>()
+            node(text).performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult){it(layouts)}
+            val layout=layouts.single()
+            assertEquals(text,layout.layoutInput.text.text)
+            assertEquals(1,layout.lineCount)
+            // Foundation 1.12.1 measures marquee content at infinite width; the viewport clips
+            // native drawing. Static/reduced fallback must still genuinely ellipsize.
+            assertEquals(marquee,layout.layoutInput.constraints.maxWidth==androidx.compose.ui.unit.Constraints.Infinity)
+            assertEquals(!marquee,layout.isLineEllipsized(0))
+            if(marquee)assertTrue(layout.size.width>node(text).fetchSemanticsNode().boundsInRoot.width)
+        }
+        settle()
         val first=bounds("first");val second=bounds("second");val art=bounds("decoded art")
         near(dp(72),first.height);near(dp(72),second.height);near(first.bottom,second.top)
         near(first.left,art.left);near(first.top,art.top);near(dp(72),art.width);near(art.width,art.height)
-        val titleNode=compose.onNodeWithText(title,useUnmergedTree=true)
+        val titleNode=node(title)
         near(first.left+dp(80),titleNode.fetchSemanticsNode().boundsInRoot.left)
-        val layouts=mutableListOf<TextLayoutResult>()
-        titleNode.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult){it(layouts)}
-        assertEquals(1,layouts.single().lineCount);assertTrue(layouts.single().isLineEllipsized(0))
+        identityLayout(title,true);identityLayout(artist,true)
         compose.onNodeWithText("Current",useUnmergedTree=true).assertDoesNotExist()
         compose.onNodeWithTag("first").assertIsSelected().assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Current track"))
-        compose.onNodeWithContentDescription("More for $title").assertWidthIsAtLeast(48.dp).assertHeightIsEqualTo(72.dp)
+        val moreNode=compose.onNodeWithContentDescription("More for $title")
+        moreNode.assertWidthIsAtLeast(48.dp).assertHeightIsEqualTo(72.dp)
+        val moreBounds=moreNode.fetchSemanticsNode().boundsInRoot
+        val spoken=compose.onNodeWithTag("first").fetchSemanticsNode().config
+        assertEquals(listOf("$title, $artist, Like not confirmed. Reload"),spoken[SemanticsProperties.ContentDescription])
+        assertEquals(1,spoken[SemanticsProperties.Text].count {it.text==title})
+        assertEquals(1,spoken[SemanticsProperties.Text].count {it.text==artist})
+        val titleStart=pixels(title);val artistStart=pixels(artist)
+        val fittingTitle=pixels("Missing");val fittingArtist=pixels("Artist")
+        advance(1500)
+        assertEquals(titleStart,pixels(title));assertEquals(artistStart,pixels(artist))
+        advance(1500)
+        assertNotEquals(titleStart,pixels(title));assertNotEquals(artistStart,pixels(artist))
+        assertEquals(fittingTitle,pixels("Missing"));assertEquals(fittingArtist,pixels("Artist"))
+        // Both static policies retain full identity and fixed geometry, not a smaller layout.
+        fun staticFallback() {
+            settle();identityLayout(title,false);identityLayout(artist,false)
+            val a=pixels(title);val b=pixels(artist)
+            advance(3000)
+            assertEquals(a,pixels(title));assertEquals(b,pixels(artist))
+            assertEquals(first,bounds("first"));assertEquals(art,bounds("decoded art"))
+            assertEquals(moreBounds,moreNode.fetchSemanticsNode().boundsInRoot)
+            compose.onNodeWithTag("first").assert(SemanticsMatcher.expectValue(
+                SemanticsProperties.ContentDescription,listOf("$title, $artist, Like not confirmed. Reload")))
+        }
+        compose.runOnIdle {selected.value=false}
+        staticFallback();compose.onNodeWithTag("first").assertIsNotSelected()
+        compose.runOnIdle {selected.value=true;reduced.value=true}
+        staticFallback();compose.onNodeWithTag("first").assertIsSelected()
+        compose.runOnIdle {assertEquals(0,activates);assertEquals(0,more)}
+        compose.onNodeWithTag("first").performClick();moreNode.performClick()
+        compose.runOnIdle {assertEquals(1,activates);assertEquals(1,more)}
     }
     @Test fun rowsAt393HaveFlush72SquareArtworkAndOneLineIdentity()=rows(393)
     @Test fun rowsAt280KeepTheSameGeometryAndFullSpokenIdentity()=rows(280)

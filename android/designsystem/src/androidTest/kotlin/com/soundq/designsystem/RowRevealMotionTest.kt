@@ -5,6 +5,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.input.InputModeManager
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -18,7 +22,10 @@ class RowRevealMotionTest {
     @Test fun actualCompletionOneOpenRowAndKeyboardAreManualOnly() {
         val owner=RowRevealOwner();val first=RowRevealState(owner);val second=RowRevealState(owner)
         var likes=0;var queued=0;var plays=0
+        lateinit var input:InputModeManager
+        lateinit var view:android.view.View
         compose.setContent {SoundQTheme {
+            input=LocalInputModeManager.current;view=LocalView.current
             Column(Modifier.width(320.dp)) {
                 SoundQRevealMediaRow("First","Artist",false,first,true,false,true,{likes++},{queued++},{plays++},{})
                 SoundQRevealMediaRow("Second","Artist",false,second,true,false,true,{likes++},{queued++},{plays++},{})
@@ -45,11 +52,25 @@ class RowRevealMotionTest {
         assertEquals(1,queued);assertEquals(0,likes+plays)
         compose.mainClock.autoAdvance=true
         row.performClick();assertEquals(1,plays)
-        row.performSemanticsAction(SemanticsActions.RequestFocus)
+        // Clickable's SystemDefined focus refuses touch mode in foundation 1.12.1.
+        // Key injection targets the root; it neither focuses this row nor admits keyboard mode.
+        compose.runOnIdle {
+            assertTrue(input.requestInputMode(InputMode.Keyboard))
+            assertEquals(InputMode.Keyboard,input.inputMode)
+            assertFalse(view.isInTouchMode)
+        }
+        var focused=false
+        row.performSemanticsAction(SemanticsActions.RequestFocus){focused=it()}
+        assertTrue("Actual row accepts keyboard focus",focused)
+        row.assertIsFocused()
         row.performKeyInput {pressKey(Key.DirectionLeft)}
         compose.waitForIdle();assertTrue(first.actionable)
+        row.assertIsFocused()
         row.performKeyInput {pressKey(Key.Escape)}
         compose.waitForIdle();assertFalse(first.actionable)
+        row.assertIsFocused()
+        assertEquals(RowRevealPhase.Closed,first.phase)
+        assertEquals(1,queued);assertEquals(1,plays);assertEquals(0,likes)
     }
     @Test fun reducedMotionUsesSameTerminalPathWithoutTimedTravel() {
         val state=RowRevealState(RowRevealOwner());var writes=0
