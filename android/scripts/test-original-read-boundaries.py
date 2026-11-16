@@ -4,7 +4,7 @@ API26 linkage is a separate Java runtime shape. No Android/provider/codec execut
 """
 from pathlib import Path
 import argparse, subprocess, os, json
-p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--root',type=Path);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--root',type=Path);p.add_argument('--coroutines-jar',type=Path);a=p.parse_args()
 root=a.root or Path(__file__).resolve().parents[1];out=a.output;out.mkdir(parents=True,exist_ok=True);src=root/'app/src/main/kotlin/com/soundq/android'
 def method(file,marker):
  s=(src/file).read_text();start=s.index(marker);end=s.index('{',start)+1;depth=1
@@ -63,11 +63,12 @@ class Asset(val fileDescriptor:java.io.FileDescriptor,val startOffset:Long,val d
 }
 open class ContentResolver {
  var opens=0;var slice=false;var invalid=false;var generation=1;var mismatch=false
+ var beforeQuery:(()->Unit)?=null
  val direct=Os.Entry(byteArrayOf(1,2,3,4,5,6,7,8))
  var gate:java.util.concurrent.CountDownLatch?=null;val entered=java.util.concurrent.CountDownLatch(1)
  val path="/synthetic/original";val a=Os.Entry(byteArrayOf(1,2,3,4,5,6,7,8));val b=Os.Entry(byteArrayOf(8,7,6,5,4,3,2,1))
  init {Os.paths[path]=a}
- fun query(uri:Uri,c:Array<String>,s:String?,v:Array<String>?,o:String?)=Cursor(c.map {when(it){"_data"->path;"_size"->"8";"date_modified"->(generation+9).toString();else->generation.toString()}})
+ fun query(uri:Uri,c:Array<String>,s:String?,v:Array<String>?,o:String?):Cursor {beforeQuery?.invoke();return Cursor(c.map {when(it){"_data"->path;"_size"->"8";"date_modified"->(generation+9).toString();else->generation.toString()}})}
  fun splitViews(){
   mismatch=true;a.stat.st_dev=65063;direct.stat.st_dev=84
   for(stat in listOf(a.stat,direct.stat)) {stat.st_ino=106675;stat.st_mtime=1794516375;stat.st_ctime=1794516375
@@ -88,7 +89,8 @@ import java.io.FileOutputStream
 import java.util.concurrent.CancellationException
 internal data class AudioContentProof(val bytes:Long,val sha256:String)
 internal class Platform(val resolver:ContentResolver) {
- var allowed=true;fun storageAllowed()=allowed
+ var allowed=true;var live=true;var accessChecks=0;var liveChecks=0;var accessObserved:(()->Unit)?=null
+ fun storageAllowed():Boolean {accessChecks++;accessObserved?.invoke();return allowed}
  val MAX_SOURCE_BYTES=8L*1024*1024*1024;val DISK_RESERVE_BYTES=0L
  fun openOriginal(locator:String,current:()->Boolean,changed:()->Unit,sourceKey:String=locator)=OriginalAudioReadLease.open(resolver,locator,current,changed)
 PROOF
@@ -254,11 +256,13 @@ files['Drain.kt']=files['Drain.kt'].replace('import kotlinx.coroutines.*','impor
 stamp=(src/'data/device/PhoneFileActions.kt').read_text();stamp=stamp[stamp.index('internal data class OriginalFileStamp'):stamp.index('internal data class PhoneFileTarget')]
 files['Stamp.kt']='package com.soundq.android.data.device\nimport android.os.Build\nimport android.system.StructStat\n'+stamp
 for n,s in files.items():(out/n).write_text(s)
-coroutines=next((Path.home()/'.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm/1.10.2').glob('*/*.jar'))
+access_probe=root/'scripts/streaming/AccessPredicateProbe.kt'
+coroutines=a.coroutines_jar or next((Path.home()/'.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm/1.10.2').glob('*/*.jar'))
 production=[src/'playback/nativeengine/OriginalAudioReadLease.kt',src/'playback/nativeengine/OriginalMetadataReader.kt',src/'playback/nativeengine/NativePlaybackSource.kt']+([ledger] if ledger.exists() else [])
-assert run('compile',['kotlinc','-J-Xmx512m','-J-XX:ActiveProcessorCount=1',*production,*[out/n for n in files],'-cp',str(out/'27/classes')+os.pathsep+str(coroutines),'-include-runtime','-d',out/'probe.jar'])==0
+assert run('compile',['kotlinc','-J-Xmx512m','-J-XX:ActiveProcessorCount=1',*production,*[out/n for n in files],access_probe,'-cp',str(out/'27/classes')+os.pathsep+str(coroutines),'-include-runtime','-d',out/'probe.jar'])==0
 failed=False
 for api,case in [(26,'api'),(27,'api'),(27,'route'),(27,'slice'),(27,'held-open'),(27,'validation-failed-close'),(27,'validation-closed'),(27,'admission-failed-close'),(27,'admission-closed'),(27,'media-view'),(27,'media-route'),(27,'media-replace'),(27,'provider-view'),(27,'media-revoke'),(27,'media-truncate'),(27,'media-read-fault'),(27,'media-close-failure')]:
  rc=run(str(api)+'-'+case,['java','-XX:ActiveProcessorCount=1','-Djava.io.tmpdir='+str(out),'-cp',os.pathsep.join(map(str,[out/str(api)/'classes',out/'probe.jar',coroutines])),'com.soundq.android.readprobe.MainKt',case]);failed=failed or bool(rc)
 rc=run('27-file-actions',['java','-XX:ActiveProcessorCount=1','-Djava.io.tmpdir='+str(out),'-cp',os.pathsep.join(map(str,[out/'27/classes',out/'probe.jar',coroutines])),'com.soundq.android.actionprobe.ActionsKt']);failed=failed or bool(rc)
+rc=run('27-access-predicate',['java','-Xmx512m','-XX:ActiveProcessorCount=1','-Djava.io.tmpdir='+str(out),'-cp',os.pathsep.join(map(str,[out/'27/classes',out/'probe.jar',coroutines])),'com.soundq.android.readprobe.AccessPredicateProbeKt']);failed=failed or bool(rc)
 (out/'commands.json').write_text(json.dumps(commands,indent=2));raise SystemExit(int(failed))
