@@ -279,7 +279,7 @@ if a.standalone:
     emit('DataBoundary.kt', 'package com.soundq.android.data\nclass LibraryCollection\n')
     emit('DeviceBoundary.kt', 'package com.soundq.android.data.device\nclass PhoneSourceAdmission\n')
 # Collaborator sources are copied, never linked against a running Gradle build.
-for rel in ['data/Contracts.kt', 'data/AccountSession.kt', 'data/deviceaudio/DeviceAudioTypes.kt', 'playback/PlaybackRef.kt', 'playback/QueueOrigin.kt', 'playback/PlaybackFailureEvents.kt', 'product/PlayerFailureFeedback.kt', 'playback/SelectedDevicePlaybackOwner.kt']:
+for rel in ['data/Contracts.kt', 'data/AccountSession.kt', 'data/deviceaudio/DeviceAudioTypes.kt', 'data/deviceaudio/PublishedDeviceListeningView.kt', 'playback/PlaybackRef.kt', 'playback/QueueOrigin.kt', 'playback/PlaybackFailureEvents.kt', 'product/PlayerFailureFeedback.kt', 'playback/SelectedDevicePlaybackOwner.kt']:
     src = b / rel
     if src.exists():
         if a.standalone and rel != 'product/PlayerFailureFeedback.kt':

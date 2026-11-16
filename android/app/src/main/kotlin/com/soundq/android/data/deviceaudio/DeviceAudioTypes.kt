@@ -10,8 +10,9 @@ internal data class ProviderObjectId(val provider: String, val objectId: String)
 internal data class ProviderLocator(val provider: String, val value: String) {
     init { bounded(provider); bounded(value) }
 }
+private val contentRevisionPattern = Regex("[a-f0-9]{64}")
 internal data class ContentRevision(val sha256: String, val byteLength: Long) {
-    init { require(sha256.matches(Regex("[a-f0-9]{64}"))); require(byteLength >= 0) }
+    init { require(sha256.matches(contentRevisionPattern)); require(byteLength >= 0) }
 }
 internal data class OriginalMetadata(
     val filename: String, val title: String? = null, val artist: String? = null,
@@ -42,6 +43,7 @@ internal data class DeviceAudio(
     val id: DeviceFileId, val objectId: ProviderObjectId, val revision: ContentRevision, val incarnation: Long,
     val metadata: OriginalMetadata, val durationMs: Long?, val aliases: List<LocatorAccess>,
 ) {
+    val canonicalId: String = id.value.toString()
     val available: Boolean get() = aliases.any { it.state == AccessState.AVAILABLE }
     val owner: ContentOwner get() = ContentOwner(HistoryKey.Device(id), revision, incarnation)
 }
@@ -96,13 +98,37 @@ internal data class RetiredDeviceIdentity(val from: ContentOwner, val into: Devi
 }
 internal data class DeviceListeningSnapshot(val revision: Long, val files: List<DeviceAudio>, val grants: List<ScanGrant>, val history: List<ListeningHistory>,
     val retired: List<RetiredDeviceIdentity> = emptyList()) {
+    // Raw constructors/copy retain their ordinary live-list behavior. Only sealed
+    // source collections may own a permanent index; copy never carries an old index.
+    private val lookup = if (files is PublishedDeviceRows && retired is PublishedList<*>) PublishedSourceLookup(files, retired) else null
+
+    /** Seal all exposed lists (including aliases) before eager indexing/publication. */
+    fun published(): DeviceListeningSnapshot =
+        if (lookup != null && grants is PublishedList<*> && history is PublishedList<*>) this
+        else copy(files = PublishedDeviceRows(files), grants = PublishedList(grants), history = PublishedList(history), retired = PublishedList(retired))
+
+    /** Retirement-only target for authority/drain, not proof of playable membership. */
+    fun authorityTarget(owner: ContentOwner): DeviceFileId {
+        val id = (owner.key as HistoryKey.Device).id
+        return if (lookup != null) lookup.authorityTarget(owner) ?: id
+        else retired.singleOrNull { it.from == owner }?.into ?: id
+    }
+
+    fun resolve(owner: ContentOwner): DeviceAudio? {
+        val id = (owner.key as HistoryKey.Device).id
+        return if (lookup != null) lookup.resolve(owner, true)
+        else resolveIdentity(id, owner.revision, owner.incarnation) { it.available }
+    }
+
     /** The available row a saved reference names: itself, or the row its retired identity folded into. */
     fun resolve(id: DeviceFileId, revision: ContentRevision, incarnation: Long): DeviceAudio? =
-        resolveIdentity(id, revision, incarnation) { it.available }
+        if (lookup != null) lookup.resolve(id, revision, incarnation, true)
+        else resolveIdentity(id, revision, incarnation) { it.available }
 
     /** Retained source identity, including provider-proven folds, independent of read readiness. */
     fun resolveRetained(id: DeviceFileId, revision: ContentRevision, incarnation: Long): DeviceAudio? =
-        resolveIdentity(id, revision, incarnation) { true }
+        if (lookup != null) lookup.resolve(id, revision, incarnation, false)
+        else resolveIdentity(id, revision, incarnation) { true }
 
     private fun resolveIdentity(id: DeviceFileId, revision: ContentRevision, incarnation: Long, accepts: (DeviceAudio) -> Boolean): DeviceAudio? {
         files.singleOrNull { it.id == id }?.let { return it.takeIf { it.revision == revision && it.incarnation == incarnation && accepts(it) } }
