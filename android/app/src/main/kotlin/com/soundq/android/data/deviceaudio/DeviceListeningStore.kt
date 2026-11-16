@@ -124,7 +124,7 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
         val shown = files.map { it.id }.toSet()
         return DeviceListeningSnapshot(state.revision, files, grants,
             state.journal.filter { permitted(it.key) && (it.key !is HistoryKey.Device || (it.key as HistoryKey.Device).id in shown) }.map { ListeningHistory(it.key, it.playedAt, it.bookmark) },
-            state.retired.filter { it.into in shown })
+            state.retired.filter { it.into in shown }).published()
     }
     private data class Active(val capture: TraversalCapture, val duration: Long, val admissionOrder: Long, val played: Boolean = false, val longEligible:Boolean = duration>600000)
     // Prepared occurrences coexist. Only successful advancing playback acquires the durable journal.

@@ -74,9 +74,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         next
     }
     fun sourceFileId(ref:com.soundq.android.playback.PlaybackRef.Device):DeviceFileId {
-        val id=DeviceFileId(UUID.fromString(ref.id))
-        val owner=ContentOwner(HistoryKey.Device(id),ContentRevision(ref.sha256,ref.bytes),ref.incarnation)
-        return state.value.snapshot?.retired?.singleOrNull {it.from==owner}?.into ?: id
+        return state.value.snapshot?.authorityTarget(ref.contentOwner) ?: ref.fileId
     }
     fun originalDescriptorsDrained(fileId:String?):Boolean {
         val keys=fileId?.let {id->setOf(id)+state.value.snapshot?.files.orEmpty().filter {it.id.value.toString()==id}.flatMap {row->row.aliases.map {it.locator.value}}}
@@ -206,7 +204,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     fun endFileMutation(token:UUID) {fileMutations.entries.firstOrNull {it.value==token}?.let {fileMutations.remove(it.key,token)}}
     fun sameFile(a:com.soundq.android.playback.PlaybackRef.Device,b:com.soundq.android.playback.PlaybackRef.Device):Boolean {
         val snapshot=state.value.snapshot ?: return false
-        fun resolve(ref:com.soundq.android.playback.PlaybackRef.Device)=snapshot.resolve(DeviceFileId(UUID.fromString(ref.id)),ContentRevision(ref.sha256,ref.bytes),ref.incarnation)
+        fun resolve(ref:com.soundq.android.playback.PlaybackRef.Device)=snapshot.resolve(ref.contentOwner)
         val left=resolve(a) ?: return false
         return resolve(b)?.id==left.id
     }
@@ -214,8 +212,8 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         owner.reportUnavailable(admission.source,ProviderLocator(Uri.parse(uri).authority ?: "android",uri),AccessState.MISSING,allAliases=true)!=Mutation.REFUSED
     }==true
     fun observed(ref: com.soundq.android.playback.PlaybackRef.Device): DeviceAudio? =
-        state.value.snapshot?.resolve(DeviceFileId(UUID.fromString(ref.id)), ContentRevision(ref.sha256, ref.bytes), ref.incarnation)
-            ?.takeUnless {fileMutations.containsKey(it.id.value.toString())}
+        state.value.snapshot?.resolve(ref.contentOwner)
+            ?.takeUnless {fileMutations.containsKey(it.canonicalId)}
     fun reference(row:DeviceAudio)=com.soundq.android.playback.PlaybackRef.Device(row.id.value.toString(),row.revision.sha256,row.revision.byteLength,row.incarnation)
     suspend fun <T> journal(publishState:Boolean=false,unavailable:ContentOwner?=null,block:(DeviceListeningStore,AccessCapture)->T):T?=withContext(Dispatchers.IO) {serial.withLock {
         if(!current(graph.session.version()))return@withLock null

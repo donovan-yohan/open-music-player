@@ -4,6 +4,8 @@ import com.soundq.android.data.TrackId
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import java.util.UUID
+import com.soundq.android.data.deviceaudio.*
+import kotlinx.serialization.Transient
 
 /** Source identity only: no URI, credential, grant or playback authority survives serialization. */
 @Serializable sealed interface PlaybackRef {
@@ -12,7 +14,10 @@ import java.util.UUID
         val trackId:TrackId get()=TrackId(id)
     }
     @Serializable data class Device(val id:String,val sha256:String,val bytes:Long,val incarnation:Long):PlaybackRef {
-        init {require(UUID.fromString(id).toString()==id);require(sha256.matches(Regex("[a-f0-9]{64}"))&&bytes>=0&&incarnation>0)}
+        // Derived identity is rebuilt by every construction/copy/parse, never serialized.
+        @Transient internal val fileId = DeviceFileId(UUID.fromString(id)).also { require(it.value.toString() == id) }
+        @Transient internal val contentRevision = ContentRevision(sha256, bytes)
+        @Transient internal val contentOwner = ContentOwner(HistoryKey.Device(fileId), contentRevision, incarnation)
     }
     fun json():JsonObject=buildJsonObject {when(val r=this@PlaybackRef){
         is Server->{put("kind","server");put("endpoint",r.endpoint);put("account",r.account);put("id",r.id)}
