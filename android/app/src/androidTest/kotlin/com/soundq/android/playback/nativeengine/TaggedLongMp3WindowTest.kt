@@ -44,6 +44,63 @@ class TaggedLongMp3WindowTest {
         assertTrue("frame=$first peak=$peak",peak<.02)
         assertTrue("frame=$first RMS=${sqrt(energy/(count*2))}",sqrt(energy/(count*2))<.005)
     }
+    @Test fun fresh48kGaplessXingObservedBookmarkPrimesRealWorkerWithExactSamples() {
+        assertEquals(android.app.Application::class.java,context.applicationContext.javaClass)
+        val directory=File(context.cacheDir,"tagged-cold-resume-fixture")
+        val manifest=JSONObject(File(directory,"manifest.json").readText())
+        assertEquals(48000,manifest.getInt("rate"));assertEquals(2,manifest.getInt("channels"))
+        assertEquals("Xing",manifest.getString("encodedTag"));assertEquals(2018594L,manifest.getLong("bookmarkMs"))
+        val file=File(directory,"tagged-cold-resume.mp3")
+        assertEquals(manifest.getLong("bytes"),file.length());assertEquals(manifest.getString("sha256"),sha(file))
+        var source:OriginalAudioReadLease?=null;var peer:AndroidPlatformWindowReader?=null
+        var handle=0L;var primary:Throwable?=null
+        val matched=AtomicInteger()
+        try {
+            // Fresh lease + reader: no previously traversed/persisted exact index.
+            val original=lease(file).also {source=it}
+            val reader=AndroidPlatformWindowReader(original).also {peer=it}
+            val observed=object:NativePcmReader by reader {
+                override fun open():Int=reader.open().also {
+                    assertEquals(48000,it);assertTrue(reader.longFormConfirmed())
+                    assertTrue("Genuine gapless metadata must select exact MP3 packets",original.totalMetadataCalls>0)
+                }
+                override fun read(first:Long,count:Int,destination:ByteBuffer):Int {
+                    val n=reader.read(first,count,destination)
+                    if(first==96864000L && n>=2048) {compare(file,first,2048,destination);matched.incrementAndGet()}
+                    return n
+                }
+            }
+            handle=NativeCallbackBridge.open();assertTrue(handle>0)
+            val start=System.nanoTime()
+            assertTrue(NativeCallbackBridge.loadReader(handle,0,observed,7,1,2018594,1.0))
+            val deadline=System.nanoTime()+15_000_000_000L
+            var state=JSONObject(NativeCallbackBridge.state(handle))
+            while(!state.getJSONArray("decks").getJSONObject(0).getBoolean("ready")) {
+                assertEquals(state.toString(),0,state.getJSONArray("decks").getJSONObject(0).getInt("error"))
+                assertTrue(state.toString(),System.nanoTime()<deadline)
+                Thread.sleep(10);state=JSONObject(NativeCallbackBridge.state(handle))
+            }
+            assertTrue("Deep worker page must match independent full-decode samples",matched.get()>0)
+            assertTrue(abs(state.getJSONArray("decks").getJSONObject(0).getLong("positionMs")-2018594)<10)
+            assertTrue("Cold target must count actual headers, not a TOC",original.totalMetadataCalls>50000)
+            assertTrue(original.totalMetadataBytes<1024*1024)
+            assertTrue("Payload allowance remains separate",original.totalReadBytes-original.totalMetadataBytes<32L*1024*1024)
+            assertTrue(NativeCallbackBridge.control(handle,1,0,0.0,0))
+            val callbackDeadline=System.nanoTime()+5_000_000_000L
+            while(state.optLong("nonSilentCallbacks")==0L) {
+                assertTrue(state.toString(),System.nanoTime()<callbackDeadline)
+                Thread.sleep(10);state=JSONObject(NativeCallbackBridge.state(handle))
+            }
+            assertEquals(0L,state.getJSONArray("decks").getJSONObject(0).getLong("naturalEndCount"))
+            println("REAL tagged 48k Xing observed bookmark first callback=${(System.nanoTime()-start)/1000}us totalBytes=${original.totalReadBytes} metadataBytes=${original.totalMetadataBytes} metadataCalls=${original.totalMetadataCalls}")
+        } catch(error:Throwable) {primary=error;throw error}
+        finally {
+            finishDirectCodecFixture(primary,
+                {if(handle>0)assertTrue(NativeCallbackBridge.close(handle))},
+                {assertTrue(peer?.closeReader() ?: run {source?.close();true})},
+                {assertEquals(manifest.getString("sha256"),sha(file))})
+        }
+    }
     @Test fun coldThreeHourAndActualOverlappedPagesMatchFullDecodeOracles() {
         val (file,manifest)=fixture();val source=lease(file);val peer=AndroidPlatformWindowReader(source)
         var primary:Throwable?=null

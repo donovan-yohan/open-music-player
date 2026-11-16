@@ -12,8 +12,15 @@ class OriginalAudioReadLease {
     val totalReadBytes=0L;val totalReadCalls=0L
     fun close(){closed=true}
 }
-class AndroidPlatformWindowReader(val source:OriginalAudioReadLease) {
-    fun closeReader():Boolean {
+interface NativePcmReader {
+    fun open():Int
+    fun read(first:Long,count:Int,destination:java.nio.ByteBuffer):Int
+    fun closeReader():Boolean
+}
+class AndroidPlatformWindowReader(val source:OriginalAudioReadLease):NativePcmReader {
+    override fun open():Int=error("No successful codec path in resource probe")
+    override fun read(first:Long,count:Int,destination:java.nio.ByteBuffer):Int=error("No successful codec path in resource probe")
+    override fun closeReader():Boolean {
         closes++
         if(NativeCallbackBridge.mode=="cleanup-fails")return false
         source.close();return true
@@ -25,7 +32,7 @@ object NativeCallbackBridge {
     val primary=IllegalStateException("fixture original JNI failure")
     fun open():Long {opens++;if(mode=="open-throws")throw primary;return if(mode=="open-zero")0 else 9}
     fun close(handle:Long):Boolean {check(handle==9L);closes++;return false}
-    fun loadReader(handle:Long,deck:Int,reader:AndroidPlatformWindowReader,id:Long,generation:Long,position:Long,speed:Double):Boolean=throw primary
+    fun loadReader(handle:Long,deck:Int,reader:NativePcmReader,id:Long,generation:Long,position:Long,speed:Double):Boolean=throw primary
     fun state(handle:Long):String=error("No successful JNI path in resource probe")
     fun control(handle:Long,operation:Int,deck:Int,value:Double,event:Long):Boolean=error("No output in resource probe")
 }

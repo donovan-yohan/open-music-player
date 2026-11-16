@@ -26,7 +26,7 @@ if out.is_relative_to(repo):
     p.error('Keep mutable host output outside source')
 out.mkdir(parents=True, exist_ok=False)
 inputs = [a.reader_source or native / 'AndroidPlatformWindowReader.kt',
-          native / 'Mp3OriginalFrames.kt', probes / 'KeepFacade.kt']
+          native / 'Mp3OriginalFrames.kt', native / 'OriginalMetadataReader.kt', probes / 'KeepFacade.kt']
 inputs += [probes / 'validation-fence' / n for n in ('MediaFacade.kt', 'LeaseFacade.kt', 'ValidationFenceProbe.kt')]
 sha = lambda f: hashlib.sha256(f.read_bytes()).hexdigest()
 before = {str(f): sha(f) for f in inputs}

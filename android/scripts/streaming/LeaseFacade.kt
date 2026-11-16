@@ -1,5 +1,6 @@
 package com.soundq.android.playback.nativeengine
-class OriginalAudioReadLease {
+internal class OriginalAudioReadLease:OriginalMetadataReader {
+    override fun <T> metadataScan(scan:(OriginalMetadataBatch)->T):T=error("No MP3 metadata in this facade")
     val length=0L
     fun readAt(position:Long,buffer:ByteArray,offset:Int,size:Int):Int=error("No encoded original in this facade")
     var closed=false

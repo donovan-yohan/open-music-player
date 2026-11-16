@@ -61,7 +61,7 @@ internal class AndroidPlatformWindowReader(private val source:OriginalAudioReadL
             val padding=if(format.containsKey(MediaFormat.KEY_ENCODER_PADDING))format.getInteger(MediaFormat.KEY_ENCODER_PADDING)else 0
             if(mime=="audio/mpeg")require(encodedOriginUs>=0 && delay>=0 && padding>=0 && delay.toLong()+padding<=rate*2L) {"Unbounded gapless trim is unsupported"}
             gaplessTrim=if(mime=="audio/mpeg")delay.toLong()+padding else 0
-            if(gaplessTrim>0)mp3Frames=Mp3OriginalFrames(source.length,source::readAt,rate,channels)
+            if(gaplessTrim>0)mp3Frames=Mp3OriginalFrames(source.length,source::readAt,rate,channels,source)
             format.setInteger(MediaFormat.KEY_PCM_ENCODING,AudioFormat.ENCODING_PCM_16BIT)
             val decoder=MediaCodec.createDecoderByType(mime).also {codec=it}
             decoder.configure(format,null,null,0);decoder.start();started=true

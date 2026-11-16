@@ -11,7 +11,7 @@ fun main() {
     check(pcm.getFloat(0)==.25f && pcm.getFloat(4)==.25f && pcm.getFloat(8)==.5f)
     check(reader.endFrames()==0L && !MediaCodec.tailRequested)
     check(reader.read(8000L*10800,2,pcm)==2)
-    check(MediaCodec.lastSeekUs==10800000000L && !MediaCodec.tailRequested)
+    check(MediaCodec.lastSeekUs==10799000000L && !MediaCodec.tailRequested) // unchanged one-second preroll
     check(pcm.getFloat(0)==.25f)
     reader.revoke();check(runCatching{reader.read(0,1,pcm)}.isFailure)
     check(reader.closeReader() && source.closed && MediaCodec.releases==1)

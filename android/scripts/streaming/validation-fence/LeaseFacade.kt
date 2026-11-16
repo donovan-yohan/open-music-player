@@ -1,7 +1,8 @@
 package com.soundq.android.playback.nativeengine
 import java.nio.ByteBuffer
 interface NativePcmReader {fun open():Int;fun read(first:Long,count:Int,destination:ByteBuffer):Int;fun endFrames():Long;fun longFormConfirmed():Boolean;fun revoke();fun closeReader():Boolean}
-class OriginalAudioReadLease {
+internal class OriginalAudioReadLease:OriginalMetadataReader {
+    override fun <T> metadataScan(scan:(OriginalMetadataBatch)->T):T=error("No MP3 metadata in raw-codec fence fixture")
     val length=1L
     var checks=0;var valid=true;var retired=false;var closed=false
     val active get()=!retired && !closed

@@ -31,6 +31,7 @@ out.mkdir(parents=True, exist_ok=False)
 wrapper = out / 'ExtractedMp3Fixture.kt'
 wrapper.write_text('''package com.soundq.android.playback.nativeengine
 import java.io.File
+import java.nio.ByteBuffer
 import kotlin.math.abs
 class ExtractedMp3Fixture(root:File,frame:File) {
     val context=ContextFacade(root)
@@ -51,7 +52,7 @@ def run(name, command):
     print(name, r.returncode, r.stdout+r.stderr, flush=True)
     return r.returncode
 
-failed = run('mp3-compile', ['kotlinc', wrapper, probes / 'DirectCodecCleanupProbe.kt', '-nowarn', '-include-runtime', '-d', out / 'mp3.jar']) != 0
+failed = run('mp3-compile', ['kotlinc', wrapper, probes / 'DirectCodecCleanupProbe.kt', probes / 'DirectCodecLogFacade.kt', '-nowarn', '-include-runtime', '-d', out / 'mp3.jar']) != 0
 java = [a.java_home / 'bin/java', '-Xmx512m', '-XX:ActiveProcessorCount=1', '-Djava.io.tmpdir='+os.environ['TMPDIR']]
 if not failed:
     for mode in ('open-zero', 'open-throws', 'cleanup-fails'):

@@ -15,9 +15,12 @@ class Mp3OriginalFramesTest {
             tag?.toByteArray()?.copyInto(this,4+side)
         }
     }
-    private fun packets(bytes:ByteArray,rate:Int=32000,channels:Int=1,onRead:()->Unit={}):Mp3OriginalFrames = Mp3OriginalFrames(bytes.size.toLong(),{p,b,o,n ->
-        onRead();assertTrue(p>=0 && p+n<=bytes.size);bytes.copyInto(b,o,p.toInt(),p.toInt()+n);n
-    },rate,channels)
+    private fun packets(bytes:ByteArray,rate:Int=32000,channels:Int=1,onRead:()->Unit={}):Mp3OriginalFrames {
+        val read:(Long,ByteArray,Int,Int)->Int={p,b,o,n ->
+            onRead();assertTrue(p>=0 && p+n<=bytes.size);bytes.copyInto(b,o,p.toInt(),p.toInt()+n);n
+        }
+        return Mp3OriginalFrames(bytes.size.toLong(),read,rate,channels,mp3MetadataFixture(read))
+    }
     private fun rejects(block:()->Unit) {assertTrue(runCatching(block).isFailure)}
     @Test fun metadataFrameIsNotAnAudioPacket() {
         val audio=frame().apply {this[lastIndex]=42}
@@ -53,12 +56,19 @@ class Mp3OriginalFramesTest {
     @Test fun originalReadBudgetFailureIsPropagatedWithoutReplay() {
         val failure=IllegalStateException("synthetic original budget");var calls=0
         val bytes=frame(tag="Info")+frame()
-        val p=packets(bytes,onRead={calls++;if(calls>2)throw failure})
-        assertSame(failure,runCatching {p.seek(10000)}.exceptionOrNull());assertEquals(3,calls)
+        var fail=false
+        val p=packets(bytes,onRead={calls++;if(fail)throw failure})
+        val before=calls;fail=true
+        assertSame(failure,runCatching {p.seek(10000)}.exceptionOrNull());assertEquals(before+1,calls)
     }
-    @Test fun encodedScanUsesBoundedBlocksInsteadOfOneReadPerHeader() {
+    @Test fun structuralScanReadsOnlyTinyFieldsWithoutEncodedPrefixPrefetch() {
         val bytes=frame(tag="Info")+ByteArray(0).let {frame().let {f->ByteArray(f.size*2000) {f[it%f.size]}}}
-        var calls=0;val p=packets(bytes,onRead={calls++});p.seek(1152L*1900)
-        assertEquals(1152L*1900,p.sampleFrame);assertTrue(calls<20)
+        var calls=0;var readBytes=0L;var largest=0
+        val read:(Long,ByteArray,Int,Int)->Int={pos,b,o,n ->
+            calls++;readBytes+=n;largest=maxOf(largest,n);bytes.copyInto(b,o,pos.toInt(),pos.toInt()+n);n
+        }
+        val p=Mp3OriginalFrames(bytes.size.toLong(),read,32000,1,mp3MetadataFixture(read));p.seek(1152L*1900)
+        assertEquals(1152L*1900,p.sampleFrame);assertTrue(calls>=1900)
+        assertTrue(largest<=16);assertTrue(readBytes<8000)
     }
 }

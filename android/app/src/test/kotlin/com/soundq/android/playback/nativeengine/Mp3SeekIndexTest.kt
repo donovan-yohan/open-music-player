@@ -21,16 +21,15 @@ class Mp3SeekIndexTest {
         }
         val length=216+audioBytes()
         var bytes=0L;var calls=0;var maxBytes=0L;var maxCalls=0
+        var headerBytes=0L
         var valid=true
         var faultAt=-1L
         var faultValue=0.toByte()
         var failure:Throwable?=null
         private fun audioBytes()=(frames/2L)*(a.size+b.size)+(if(frames%2==1)a.size else 0)
         fun begin() {maxBytes=maxOf(maxBytes,bytes);maxCalls=maxOf(maxCalls,calls);bytes=0;calls=0}
-        fun parser()=Mp3OriginalFrames(length,{p,d,o,n ->
+        private fun storage(p:Long,d:ByteArray,o:Int,n:Int):Int {
             check(valid) {"Original changed or revoked"};failure?.let {throw it}
-            calls++;bytes+=n
-            check(calls<=8192 && bytes<=32L*1024*1024) {"Original decoder read budget exceeded; unindexed seek refused"}
             require(p>=0 && p+n<=length)
             var position=p;var out=o;var left=n
             while(left>0) {
@@ -40,8 +39,15 @@ class Mp3SeekIndexTest {
                 position+=take;out+=take;left-=take
             }
             if(faultAt in p until p+n)d[o+(faultAt-p).toInt()]=faultValue
-            n
-        },32000,1)
+            return n
+        }
+        fun parser()=Mp3OriginalFrames(length,{p,d,o,n ->
+            calls++;bytes+=n
+            check(calls<=8192 && bytes<=32L*1024*1024) {"Original decoder read budget exceeded; unindexed seek refused"}
+            storage(p,d,o,n)
+        },32000,1,mp3MetadataFixture({p,d,o,n ->headerBytes+=n;storage(p,d,o,n)}, {
+            check(valid) {"Original changed or revoked"};failure?.let {throw it}
+        }))
     }
     @Test fun coldThreeHourInfoTargetIsExactAndBoundedWithoutPrefixReplay() {
         val source=Original();val p=source.parser();source.begin()
@@ -84,11 +90,12 @@ class Mp3SeekIndexTest {
             assertTrue(source.bytes<=1024*1024)
         }
     }
-    @Test fun coldUnindexedVariableBitrateStillRefusesRatherThanInventingAnExactClock() {
+    @Test fun coldUnindexedVariableBitrateCountsRealHeadersWithoutPayloadReplay() {
         val source=Original(variable=true);val p=source.parser();source.begin()
-        val failure=runCatching {p.seek(10800L*32000)}.exceptionOrNull()
-        assertTrue(failure is IllegalStateException)
-        assertTrue(failure!!.message!!.contains("budget"))
+        p.seek(10800L*32000)
+        assertEquals(10800L*32000/1152*1152,p.sampleFrame)
+        assertTrue(source.headerBytes>1000000)
+        assertEquals(0L,source.bytes)
     }
     @Test fun changedOrRevokedOriginalCannotUseRetainedSeekCheckpoint() {
         val source=Original(variable=true);val p=source.parser();source.begin();p.seek(320000)
@@ -104,7 +111,7 @@ class Mp3SeekIndexTest {
         for(source in listOf(Original(declared=false),Original(countDelta=1),Original(bytesDelta=1),Original(infoName="Xing"),Original(padded=true))) {
             val p=source.parser();source.begin();p.seek(600L*32000)
             assertEquals(600L*32000/1152*1152,p.sampleFrame)
-            assertTrue("unqualified index must actually count headers",source.bytes>2*65536)
+            assertTrue("unqualified index must actually count headers",source.headerBytes>60000)
         }
     }
     @Test fun exactInfoTargetValidatesRealHeaderAndFormatRatherThanReturningFalseEos() {

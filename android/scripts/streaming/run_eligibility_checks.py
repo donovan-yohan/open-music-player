@@ -21,7 +21,7 @@ out.mkdir(parents=True, exist_ok=False)
 env = dict(os.environ, JAVA_HOME=str(a.java_home), JAVA_OPTS='-Xmx512m -XX:ActiveProcessorCount=1')
 results = []
 inputs = [probes / n for n in ('KeepFacade.kt', 'MediaFacade.kt', 'LeaseFacade.kt', 'PlatformWindowProbe.kt', 'EligibilityEosProbe.kt')]
-inputs += [native / 'NativePlaybackSource.kt', native / 'Mp3OriginalFrames.kt', reader]
+inputs += [native / 'NativePlaybackSource.kt', native / 'OriginalMetadataReader.kt', native / 'Mp3OriginalFrames.kt', reader]
 (out / 'inputs.json').write_text(json.dumps({str(f): hashlib.sha256(f.read_bytes()).hexdigest() for f in inputs}, indent=2)+'\n')
 
 def run(name, command):
