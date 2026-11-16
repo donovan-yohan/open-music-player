@@ -26,7 +26,9 @@ internal class OriginalAudioReadLease private constructor(
     val offset: Long, val length: Long,
     val path: String,
     val stamp: OriginalFileStamp,
+    // Per-step account/source/operation liveness must not perform platform access IO.
     private val current: () -> Boolean,
+    private val accessAllowed: () -> Boolean,
     private val changed: () -> Unit,
     private val routeCurrent: () -> Boolean,
 ) : MediaDataSource(), OriginalMetadataReader {
@@ -51,13 +53,16 @@ internal class OriginalAudioReadLease private constructor(
     fun revoke() { retired.set(true) }
     fun checkCurrent() {
         failure.get()?.let { throw IOException("Original source read failed", it) }
-        if (closed.get() || retired.get() || !current()) throw CancellationException("Original source retired")
+        if (closed.get() || retired.get() || !current() || !accessAllowed()) throw CancellationException("Original source retired")
         val fd = facts(Os.fstat(descriptor.fileDescriptor))
         val named = facts(Os.stat(path))
         if (fd != stamp || named != stamp || !routeCurrent()) {
             val error = IOException("Original audio changed or was replaced")
             failure.compareAndSet(null,error); retired.set(true); changed(); throw error
         }
+        // Provider/stat validation may block across a permission change. Metadata's
+        // per-step guard stays cheap; full access and final lifetime are fenced here.
+        if (!accessAllowed() || closed.get() || retired.get() || !current()) throw CancellationException("Original source retired")
     }
     /** Normal extractor/payload allowance is independent of structural indexing. */
     @Synchronized fun beginOperation() {
@@ -154,7 +159,7 @@ internal class OriginalAudioReadLease private constructor(
         private fun facts(s: StructStat) = OriginalFileStamp.of(s)
         /** Duplicates a caller-owned descriptor. A negative length resolves only
          * from a regular-file extent; every positive slice is validated exactly. */
-        fun borrow(input:java.io.FileDescriptor,start:Long,declaredLength:Long,path:String,current:()->Boolean,changed:()->Unit={},sourceKey:String=path,routeCurrent:()->Boolean={true}):OriginalAudioReadLease {
+        fun borrow(input:java.io.FileDescriptor,start:Long,declaredLength:Long,path:String,current:()->Boolean,changed:()->Unit={},sourceKey:String=path,accessAllowed:()->Boolean={true},routeCurrent:()->Boolean={true}):OriginalAudioReadLease {
             val fd=ParcelFileDescriptor.dup(input)
             val custody=OriginalDescriptorCustody.own(sourceKey,fd::close)
             try {
@@ -162,10 +167,10 @@ internal class OriginalAudioReadLease private constructor(
                 require(OsConstants.S_ISREG(stat.st_mode)) {"Original audio requires a seekable regular file"}
                 val length=if(declaredLength>=0)declaredLength else stat.st_size-start
                 require(start>=0 && length>0 && length<=8L*1024*1024*1024 && start<=stat.st_size && length<=stat.st_size-start)
-                return OriginalAudioReadLease(fd,custody,start,length,File(path).absolutePath,facts(stat),current,changed,routeCurrent).also {it.checkCurrent()}
+                return OriginalAudioReadLease(fd,custody,start,length,File(path).absolutePath,facts(stat),current,accessAllowed,changed,routeCurrent).also {it.checkCurrent()}
             } catch(error:Throwable) {try {custody.close()}catch(close:Throwable){error.addSuppressed(close)};throw error}
         }
-        fun open(resolver:ContentResolver,locator:String,current:()->Boolean,changed:()->Unit={},sourceKey:String=locator):OriginalAudioReadLease {
+        fun open(resolver:ContentResolver,locator:String,current:()->Boolean,changed:()->Unit={},sourceKey:String=locator,accessAllowed:()->Boolean={true}):OriginalAudioReadLease {
             val uri=Uri.parse(locator);require(uri.scheme=="content")
             // Reserve the source drain before a provider call can block with an
             // acquired descriptor that has not returned to our registration code.
@@ -188,7 +193,7 @@ internal class OriginalAudioReadLease private constructor(
                     val custody=OriginalDescriptorCustody.own(sourceKey,direct::close)
                     var original:OriginalAudioReadLease?=null
                     try {
-                        custody.use {original=borrow(direct.fileDescriptor,0,-1,file.path,current,changed,sourceKey) {route()==captured}}
+                        custody.use {original=borrow(direct.fileDescriptor,0,-1,file.path,current,changed,sourceKey,accessAllowed) {route()==captured}}
                         return@use requireNotNull(original)
                     } catch(error:Throwable) {
                         try {original?.close()}catch(close:Throwable){error.addSuppressed(close)}
@@ -201,7 +206,7 @@ internal class OriginalAudioReadLease private constructor(
                 val custody=OriginalDescriptorCustody.own(sourceKey,asset::close)
                 var original:OriginalAudioReadLease?=null
                 try {
-                    custody.use {original=borrow(asset.fileDescriptor,asset.startOffset,asset.declaredLength,path,current,changed,sourceKey)}
+                    custody.use {original=borrow(asset.fileDescriptor,asset.startOffset,asset.declaredLength,path,current,changed,sourceKey,accessAllowed)}
                     requireNotNull(original)
                 } catch(error:Throwable) {
                     try {original?.close()}catch(close:Throwable){error.addSuppressed(close)}

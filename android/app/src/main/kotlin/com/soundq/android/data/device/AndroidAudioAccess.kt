@@ -156,7 +156,7 @@ internal class AndroidAudioAccess(private val context: Context) {
         finally { retriever.release() }
     }
     fun openOriginal(locator:String,current:()->Boolean,changed:()->Unit,sourceKey:String=locator) =
-        com.soundq.android.playback.nativeengine.OriginalAudioReadLease.open(resolver,locator,{storageAllowed()&&current()},changed,sourceKey)
+        com.soundq.android.playback.nativeengine.OriginalAudioReadLease.open(resolver,locator,current,changed,sourceKey,accessAllowed=::storageAllowed)
     /** Exact-byte proof used by the catalog to establish revision, never by filename similarity. */
     fun proof(locator: String, current: () -> Boolean): AudioContentProof {
         // A late hash may not certify bytes from a replaced/mutated original.
