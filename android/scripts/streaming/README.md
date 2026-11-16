@@ -64,6 +64,12 @@ a bounded speed cache and the process-wide four-decoder permit remain in force.
 Platform peers are included, including failed concrete closes. Positioned reads
 are limited to the asset range, 32MiB and 8192 calls per open/seek/window, with a
 15-second operation deadline and at most two seconds of discarded preroll.
+MP3 exact indexing additionally has a lexical lease/operation-bound structural
+capability: <=16 bytes/request, <=4096 steps between full fd/path/route checks,
+and full validation at successful scan return. Revocation/deadline/work are
+checked every step. Header bytes/calls/work are separately finite for the existing
+24-hour seek range and share the unchanged operation deadline; they are included
+in total read counters. Payload/extractor allowances above are unchanged.
 These are refusal bounds, not a promise that vendor framework calls are
 interruptible. Unindexed/unsupported random seeks fail visibly; there is no
 whole-prefix replay, PCM-file fallback or second audible player.
@@ -82,6 +88,7 @@ The SDK/Gradle-free focused regressions use <=512MiB/one-core JVMs:
 ```sh
 python3 android/scripts/streaming/run_eligibility_checks.py --output <new-output> --java-home <full-JDK>
 python3 android/scripts/streaming/run_direct_fixture_checks.py --output <new-output> --java-home <full-JDK>
+python3 android/scripts/streaming/run_mp3_metadata_checks.py --output <new-output> --java-home <full-JDK>
 ```
 
 The first compiles the unchanged production reader against declared Android
@@ -92,6 +99,20 @@ failing JNI collaborators to prove cleanup before handle acquisition, primary
 failure/suppression and failed-custody retention. It also checks the actual
 direct runner's Application substitution against a framework facade. Neither
 script is Android codec, service, output or acoustic acceptance.
+
+For the observed cold-resume shape, generate private synthetic input with
+`generate_tagged_long_fixture.py --observed-cold-resume --output <new-output>`.
+Explicitly stage that directory as `targetContext.cacheDir/tagged-cold-resume-fixture`
+and select `TaggedLongMp3WindowTest#fresh48kGaplessXingObservedBookmarkPrimesRealWorkerWithExactSamples`
+under `DirectCodecFixtureRunner`. This is a genuine gapless 48k stereo/320k
+encoded source: only the encoder's Info label is changed to Xing to require the
+exact-header path; all audio and trim/count fields remain intact. Independent
+oracles stream a full ffmpeg decode in bounded memory, not input-side seeking.
+The test starts a fresh production reader through native `loadReader` at
+2018594ms, compares the worker's actual deep page, and checks metadata/payload
+counters, readiness and non-silent callbacks with unchanged allowances. No
+large fixture is packaged, no old asset/inventory is changed. This registered
+instrumentation remains unexecuted until the parent owns SDK/runtime custody.
 
 ## Identity policy hold
 

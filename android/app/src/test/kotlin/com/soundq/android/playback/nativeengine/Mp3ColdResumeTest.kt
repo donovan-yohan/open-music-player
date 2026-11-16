@@ -17,10 +17,14 @@ class Mp3ColdResumeTest {
         private val metadata=frame(14).apply {"Xing".toByteArray().copyInto(this,36)}
         val length=metadata.size+(frames/2L)*cycle.size+(if(frames%2==1)a.size else 0)
         var bytes=0L;var calls=0;var maximumRequest=0
+        var headers=0L
         fun begin(){bytes=0;calls=0;maximumRequest=0}
         fun read(p:Long,d:ByteArray,o:Int,n:Int):Int {
             calls++;bytes+=n;maximumRequest=maxOf(maximumRequest,n)
             check(calls<=8192 && bytes<=32L*1024*1024) {"Original decoder read budget exceeded; unindexed seek refused"}
+            return storage(p,d,o,n)
+        }
+        fun storage(p:Long,d:ByteArray,o:Int,n:Int):Int {
             var position=p;var out=o;var left=n
             while(left>0) {
                 val input=if(position<metadata.size)metadata else cycle
@@ -30,7 +34,7 @@ class Mp3ColdResumeTest {
             }
             return n
         }
-        fun parser()=Mp3OriginalFrames(length,::read,rate,2)
+        fun parser()=Mp3OriginalFrames(length,::read,rate,2,mp3MetadataFixture({p,d,o,n ->headers++;storage(p,d,o,n)}))
     }
     @Test fun fresh48kXingReaderResumesObservedBookmarkWithoutPayloadPrefixReplay() {
         val source=Original();val p=source.parser()

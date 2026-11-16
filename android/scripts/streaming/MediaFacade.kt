@@ -55,9 +55,18 @@ class MediaCodec {
             return 0
         }
         check(step==2) {tailRequested=true;"Tail held: requested EOS before returning initial PCM"}
-        info.offset=0;info.size=4;info.flags=0;info.presentationTimeUs=lastSeekUs;return 0
+        // The production reader seeks one second before the requested sample.
+        // Supply that bounded preroll plus two oracle samples, still holding all
+        // subsequent output/tail. A two-sample facade cannot model that seek.
+        info.offset=0;info.size=if(lastSeekUs>0)8002*2 else 4
+        info.flags=0;info.presentationTimeUs=lastSeekUs;return 0
     }
-    fun getOutputBuffer(i:Int)=if(scenario=="failure-decoded-budget" && lastSeekUs>0)ByteBuffer.allocate(60000) else ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putShort(8192).putShort(16384).apply{flip()}
+    fun getOutputBuffer(i:Int)=if(scenario=="failure-decoded-budget" && lastSeekUs>0)ByteBuffer.allocate(60000) else {
+        val frames=if(scenario=="long" && lastSeekUs>0)8002 else 2
+        ByteBuffer.allocate(frames*2).order(ByteOrder.LITTLE_ENDIAN).apply {
+            repeat(frames) {putShort(if(it%2==0)8192 else 16384)};flip()
+        }
+    }
     fun releaseOutputBuffer(i:Int,render:Boolean){}
     companion object {
         const val BUFFER_FLAG_END_OF_STREAM=4;const val BUFFER_FLAG_CODEC_CONFIG=2;const val INFO_OUTPUT_FORMAT_CHANGED=-2

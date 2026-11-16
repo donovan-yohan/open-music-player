@@ -58,7 +58,7 @@ common = [probes / 'KeepFacade.kt', kotlin / 'playback/nativeengine/NativePlayba
 run('jni-kotlin', ['kotlinc', probes / 'StreamingJniProbe.kt', *common, kotlin / 'playback/nativeengine/NativeCallbackBridge.kt', '-include-runtime', '-d', build / 'jni.jar'])
 for mode in ('normal', 'close-failure'):
     run('jni-' + mode, [java, '--enable-native-access=ALL-UNNAMED', f'-Djava.io.tmpdir={tmp}', f'-Djava.library.path={build / "jni"}', '-jar', build / 'jni.jar', *([] if mode == 'normal' else ['--close-failure'])])
-run('platform-facade-compile', ['kotlinc', probes / 'MediaFacade.kt', probes / 'LeaseFacade.kt', probes / 'PlatformWindowProbe.kt', *common, kotlin / 'playback/nativeengine/AndroidPlatformWindowReader.kt', kotlin / 'playback/nativeengine/Mp3OriginalFrames.kt', '-nowarn', '-include-runtime', '-d', build / 'platform.jar'])
+run('platform-facade-compile', ['kotlinc', probes / 'MediaFacade.kt', probes / 'LeaseFacade.kt', probes / 'PlatformWindowProbe.kt', *common, kotlin / 'playback/nativeengine/AndroidPlatformWindowReader.kt', kotlin / 'playback/nativeengine/OriginalMetadataReader.kt', kotlin / 'playback/nativeengine/Mp3OriginalFrames.kt', '-nowarn', '-include-runtime', '-d', build / 'platform.jar'])
 run('platform-facade', [java, f'-Djava.io.tmpdir={tmp}', '-jar', build / 'platform.jar'])
 run('custody-compile', ['kotlinc', probes / 'CustodyProbe.kt', *common, kotlin / 'playback/nativeengine/LiveOriginalVersions.kt', '-include-runtime', '-d', build / 'custody.jar'])
 import tempfile

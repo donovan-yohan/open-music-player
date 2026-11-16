@@ -29,11 +29,12 @@ files={
 import java.io.FileDescriptor
 object OsConstants {fun S_ISREG(mode:Int)=mode==1}
 object Os {
- data class Entry(val bytes:ByteArray,val stat:StructStat=StructStat())
+ data class Entry(val bytes:ByteArray,val stat:StructStat=StructStat(),val reader:((Long,ByteArray,Int,Int)->Int)?=null)
+ var reads=0L;var stats=0L;var beforeRead:(()->Unit)?=null
  val entries=java.util.IdentityHashMap<FileDescriptor,Entry>();val paths=mutableMapOf<String,Entry>()
  fun fstat(fd:FileDescriptor)=entries.getValue(fd).stat
- fun stat(path:String)=paths.getValue(path).stat
- fun pread(fd:FileDescriptor,b:ByteArray,offset:Int,count:Int,position:Long):Int {if(android.os.ParcelFileDescriptor.readFault)throw java.io.IOException("injected read fault");val bytes=entries.getValue(fd).bytes;val n=minOf(count,bytes.size-position.toInt());if(n<=0)return 0;bytes.copyInto(b,offset,position.toInt(),position.toInt()+n);return n}
+ fun stat(path:String):StructStat {stats++;return paths.getValue(path).stat}
+ fun pread(fd:FileDescriptor,b:ByteArray,offset:Int,count:Int,position:Long):Int {reads++;beforeRead?.invoke();if(android.os.ParcelFileDescriptor.readFault)throw java.io.IOException("injected read fault");val entry=entries.getValue(fd);entry.reader?.let {return it(position,b,offset,count)};val bytes=entry.bytes;val n=minOf(count,bytes.size-position.toInt());if(n<=0)return 0;bytes.copyInto(b,offset,position.toInt(),position.toInt()+n);return n}
 }
 ''',
 'Pfd.kt':'''package android.os
@@ -254,7 +255,7 @@ stamp=(src/'data/device/PhoneFileActions.kt').read_text();stamp=stamp[stamp.inde
 files['Stamp.kt']='package com.soundq.android.data.device\nimport android.os.Build\nimport android.system.StructStat\n'+stamp
 for n,s in files.items():(out/n).write_text(s)
 coroutines=next((Path.home()/'.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm/1.10.2').glob('*/*.jar'))
-production=[src/'playback/nativeengine/OriginalAudioReadLease.kt',src/'playback/nativeengine/NativePlaybackSource.kt']+([ledger] if ledger.exists() else [])
+production=[src/'playback/nativeengine/OriginalAudioReadLease.kt',src/'playback/nativeengine/OriginalMetadataReader.kt',src/'playback/nativeengine/NativePlaybackSource.kt']+([ledger] if ledger.exists() else [])
 assert run('compile',['kotlinc','-J-Xmx512m','-J-XX:ActiveProcessorCount=1',*production,*[out/n for n in files],'-cp',str(out/'27/classes')+os.pathsep+str(coroutines),'-include-runtime','-d',out/'probe.jar'])==0
 failed=False
 for api,case in [(26,'api'),(27,'api'),(27,'route'),(27,'slice'),(27,'held-open'),(27,'validation-failed-close'),(27,'validation-closed'),(27,'admission-failed-close'),(27,'admission-closed'),(27,'media-view'),(27,'media-route'),(27,'media-replace'),(27,'provider-view'),(27,'media-revoke'),(27,'media-truncate'),(27,'media-read-fault'),(27,'media-close-failure')]:

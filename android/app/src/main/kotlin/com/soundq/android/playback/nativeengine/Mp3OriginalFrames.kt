@@ -8,12 +8,12 @@ import java.util.TreeMap
  * Retain bounded exact header checkpoints for overlap/backward reads. A declared
  * Info CBR stream with an integral, unpadded frame size and matching frame/byte
  * counts additionally has an exact arithmetic packet index (not a Xing TOC).
- * Everything else scans from a proven checkpoint within the unchanged lease
- * budget; a cold unindexed VBR seek can still intentionally refuse. No PCM
+ * Everything else counts tiny structural headers from a proven checkpoint in
+ * a separately bounded, source-validated metadata scan. No PCM
  * prefix replay, private copy or second decoder/output owner. This object is
  * worker/lease-local: the reader checks the original version before every use.
  */
-internal class Mp3OriginalFrames(private val length:Long,private val readAt:(Long,ByteArray,Int,Int)->Int,private val rate:Int,private val channels:Int) {
+internal class Mp3OriginalFrames(private val length:Long,private val readAt:(Long,ByteArray,Int,Int)->Int,private val rate:Int,private val channels:Int,private val metadata:OriginalMetadataReader) {
     private data class Frame(val bytes:Int,val samples:Int,val integralUnpadded:Boolean)
     private data class Checkpoint(val sample:Long,val offset:Long)
     private data class FixedIndex(val frame:Frame,val count:Long)
@@ -22,14 +22,18 @@ internal class Mp3OriginalFrames(private val length:Long,private val readAt:(Lon
     private val checkpoints=TreeMap<Long,Checkpoint>()
     private val checkpointSpan=rate*30L
     private var fixedIndex:FixedIndex?=null
-    private val cache=ByteArray(65536)
-    private var cacheAt=-1L
-    private var cacheSize=0
+    private val structural=ByteArray(16)
+    private val payload=ByteArray(2048)
+    private var batch:OriginalMetadataBatch?=null
+    private var failed:Throwable?=null
     private var audioStart=0L
     private var at=0L
-    var sampleFrame=0L;private set
+    var sampleFrame=0L
+        get() {check(failed==null) {"MP3 reader failed"};return field}
+        private set
     private var current:Frame?=null
     init {
+        scan {
         // ID3 size is sync-safe and excludes its ten-byte header.
         if(text(0,3)=="ID3") {
             val flags=byte(5)
@@ -62,25 +66,46 @@ internal class Mp3OriginalFrames(private val length:Long,private val readAt:(Lon
             }
         }
         checkpoints[0]=Checkpoint(0,audioStart)
+        }
         seek(0)
     }
-    private fun byte(position:Long):Int {
-        require(position in 0 until length) {"Truncated MP3 original"}
-        if(position<cacheAt || position>=cacheAt+cacheSize) {
-            cacheAt=position
-            cacheSize=readAt(position,cache,0,minOf(cache.size.toLong(),length-position).toInt())
-            check(cacheSize>0)
+    private fun <T> scan(block:()->T):T {
+        failed?.let {throw IllegalStateException("MP3 reader failed",it)}
+        try {
+            return metadata.metadataScan {capability ->
+                check(batch==null);batch=capability
+                try {block()}finally {batch=null}
+            }
+        } catch(error:Throwable) {
+            failed=error;current=null;checkpoints.clear();fixedIndex=null
+            throw error
         }
-        return cache[(position-cacheAt).toInt()].toInt() and 255
+    }
+    private fun structural(position:Long,count:Int) {
+        require(position>=0 && count<=length-position) {"Truncated MP3 original"}
+        var got=0
+        while(got<count) {
+            val n=requireNotNull(batch).readAt(position+got,structural,got,count-got)
+            check(n in 1..count-got);got+=n
+        }
+    }
+    private fun byte(position:Long):Int {
+        structural(position,1)
+        return structural[0].toInt() and 255
     }
     private fun uint32(position:Long):Long {
         var value=0L
-        repeat(4) {value=(value shl 8) or byte(position+it).toLong()}
+        structural(position,4)
+        repeat(4) {value=(value shl 8) or (structural[it].toLong() and 255)}
         return value
     }
-    private fun text(position:Long,count:Int)=buildString {repeat(count){append(byte(position+it).toChar())}}
+    private fun text(position:Long,count:Int):String {
+        structural(position,count)
+        return buildString {repeat(count){append((structural[it].toInt() and 255).toChar())}}
+    }
     private fun frame(position:Long):Frame {
-        val h=(byte(position).toLong() shl 24) or (byte(position+1).toLong() shl 16) or (byte(position+2).toLong() shl 8) or byte(position+3).toLong()
+        requireNotNull(batch).step()
+        val h=uint32(position)
         require(h and 0xffe00000L==0xffe00000L && (h shr 17) and 3==1L) {"Invalid Layer III original frame"}
         val version=((h shr 19) and 3).toInt();require(version!=1)
         val bitrateIndex=((h shr 12) and 15).toInt();require(bitrateIndex in 1..14)
@@ -112,11 +137,15 @@ internal class Mp3OriginalFrames(private val length:Long,private val readAt:(Lon
         } else if(checkpoints.size<4096)checkpoints[bucket]=Checkpoint(sampleFrame,at)
     }
     fun seek(first:Long) {
+        scan {seekWithinScan(first)}
+    }
+    private fun seekWithinScan(first:Long) {
         require(first>=0)
+        requireNotNull(batch).step()
         current=null
         // Do not let a cached target bypass the positioned lease's current-source
         // validation. No cache/index is shared across reader/original lifetimes.
-        cacheAt=-1;cacheSize=0
+
         fixedIndex?.let {index ->
             val ordinal=minOf(first/index.frame.samples,index.count)
             at=audioStart+ordinal*index.frame.bytes;sampleFrame=ordinal*index.frame.samples
@@ -135,13 +164,25 @@ internal class Mp3OriginalFrames(private val length:Long,private val readAt:(Lon
         }
     }
     fun read(destination:ByteBuffer):Int {
-        val f=current ?: return -1
-        require(destination.remaining()>=f.bytes)
-        repeat(f.bytes) {destination.put(byte(at+it).toByte())}
-        return f.bytes
+        // Even cached/EOF paths cross current full validation. Packet bytes never
+        // use the structural capability or its separate allowance.
+        val f=scan {requireNotNull(batch).step();current} ?: return -1
+        try {
+            require(destination.remaining()>=f.bytes && f.bytes<=payload.size)
+            var got=0
+            while(got<f.bytes) {
+                val n=readAt(at+got,payload,got,f.bytes-got)
+                check(n in 1..f.bytes-got);got+=n
+            }
+            destination.put(payload,0,f.bytes)
+            return f.bytes
+        } catch(error:Throwable) {failed=error;current=null;checkpoints.clear();throw error}
     }
     fun advance() {
-        val f=requireNotNull(current);at+=f.bytes;sampleFrame+=f.samples
-        current=if(ended(at))null else frame(at).also {remember()}
+        scan {
+            requireNotNull(batch).step()
+            val f=requireNotNull(current);at+=f.bytes;sampleFrame+=f.samples
+            current=if(ended(at))null else frame(at).also {remember()}
+        }
     }
 }

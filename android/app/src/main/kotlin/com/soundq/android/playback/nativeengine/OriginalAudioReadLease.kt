@@ -29,7 +29,7 @@ internal class OriginalAudioReadLease private constructor(
     private val current: () -> Boolean,
     private val changed: () -> Unit,
     private val routeCurrent: () -> Boolean,
-) : MediaDataSource() {
+) : MediaDataSource(), OriginalMetadataReader {
     private val retired = AtomicBoolean()
     private val closed = AtomicBoolean()
     private var closeFailed=false
@@ -37,6 +37,13 @@ internal class OriginalAudioReadLease private constructor(
     private var deadline = 0L
     private var operationBytes = 0L
     private var operationCalls = 0
+    private var operation = 0L
+    private var metadataOpen = false
+    private var metadataBytes = 0L
+    private var metadataCalls = 0L
+    private var metadataSteps = 0L
+    @Volatile var totalMetadataBytes = 0L; private set
+    @Volatile var totalMetadataCalls = 0L; private set
     @Volatile var totalReadBytes = 0L; private set
     @Volatile var totalReadCalls = 0L; private set
     val active: Boolean get() = !closed.get() && !retired.get() && failure.get()==null
@@ -52,8 +59,63 @@ internal class OriginalAudioReadLease private constructor(
             failure.compareAndSet(null,error); retired.set(true); changed(); throw error
         }
     }
-    /** Bounded open/seek/window IO, including extractor metadata/index reads. */
-    @Synchronized fun beginOperation() { checkCurrent(); deadline=System.nanoTime()+15_000_000_000L;operationBytes=0;operationCalls=0 }
+    /** Normal extractor/payload allowance is independent of structural indexing. */
+    @Synchronized fun beginOperation() {
+        try {
+            check(!metadataOpen) {"Cannot renew an active metadata operation"}
+            checkCurrent(); deadline=System.nanoTime()+15_000_000_000L
+            operation++;operationBytes=0;operationCalls=0
+            metadataBytes=0;metadataCalls=0;metadataSteps=0
+        } catch(error:Throwable) {failure.compareAndSet(null,error);throw error}
+    }
+    @Synchronized override fun <T> metadataScan(scan:(OriginalMetadataBatch)->T):T {
+        try {
+            check(!metadataOpen) {"Nested metadata scan"}
+            checkCurrent()
+            val captured=operation
+            val thread=Thread.currentThread()
+            var live=true
+            var batchSteps=0
+            val capability=object:OriginalMetadataBatch {
+                fun guard() {
+                    check(live && metadataOpen && captured==operation && thread===Thread.currentThread()) {"Stale metadata capability"}
+                    failure.get()?.let {throw IOException("Original source read failed",it)}
+                    if(closed.get() || retired.get() || !current())throw CancellationException("Original source retired")
+                    check(System.nanoTime()<deadline) {"Original metadata deadline exceeded"}
+                }
+                override fun step() {
+                    try {
+                        guard()
+                        check(++metadataSteps<=MAX_METADATA_STEPS) {"Original metadata work budget exceeded"}
+                        if(batchSteps==4096) {checkCurrent();guard();batchSteps=0}
+                        batchSteps++
+                    } catch(error:Throwable) {failure.compareAndSet(null,error);throw error}
+                }
+                override fun readAt(position:Long,buffer:ByteArray,bufferOffset:Int,size:Int):Int {
+                    try {
+                        step()
+                        check(++metadataCalls<=MAX_METADATA_CALLS) {"Original metadata call budget exceeded"}
+                        require(size in 1..16 && position>=0 && bufferOffset>=0 && bufferOffset<=buffer.size-size)
+                        metadataBytes=Math.addExact(metadataBytes,size.toLong())
+                        check(metadataBytes<=MAX_METADATA_BYTES) {"Original metadata byte budget exceeded"}
+                        require(position<length && size<=length-position) {"Truncated MP3 structural field"}
+                        val n=Os.pread(descriptor.fileDescriptor,buffer,bufferOffset,size,Math.addExact(offset,position))
+                        check(n>0) {"Original file truncated or made no read progress"}
+                        totalReadBytes+=n;totalReadCalls++;totalMetadataBytes+=n;totalMetadataCalls++
+                        guard();return n
+                    } catch(error:Throwable) {failure.compareAndSet(null,error);throw error}
+                }
+            }
+            metadataOpen=true
+            try {
+                // No selected offset/checkpoint may escape before this final fence.
+                val result=scan(capability)
+                capability.step();checkCurrent()
+                capability.guard()
+                return result
+            } finally {live=false;metadataOpen=false}
+        } catch(error:Throwable) {failure.compareAndSet(null,error);throw error}
+    }
     @Synchronized override fun readAt(position: Long, buffer: ByteArray, bufferOffset: Int, size: Int): Int {
         try {
             checkCurrent()
@@ -79,6 +141,14 @@ internal class OriginalAudioReadLease private constructor(
         }
     }
     companion object {
+        // All supported Layer III rates/versions have <=48000/1152 frames/sec.
+        // Cover the existing 24h address range plus admission/preroll/packet work.
+        // Each frame costs one traversal step and one tiny header read. These are
+        // operation totals, never renewed at a 4096-step validation boundary.
+        private const val MAX_MP3_FRAMES=24L*60*60*48000/1152+1
+        private const val MAX_METADATA_CALLS=MAX_MP3_FRAMES+8192
+        private const val MAX_METADATA_BYTES=MAX_METADATA_CALLS*16
+        private const val MAX_METADATA_STEPS=2*MAX_MP3_FRAMES+16384
         // API26 explicitly records absent nanoseconds. This is a weaker live-version
         // observation, never a destructive stamp or equality with a prior SHA.
         private fun facts(s: StructStat) = OriginalFileStamp.of(s)
