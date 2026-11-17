@@ -10,7 +10,6 @@ import com.soundq.android.playback.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import com.soundq.android.data.timeline.*
@@ -95,21 +94,15 @@ class ProductViewModel(app:Application):AndroidViewModel(app) {
     fun acquire(work:(() -> Unit)?) {graph.acquisition.schedule(viewModelScope,work)}
     val imports=graph.imports.state
     val importProgress=graph.imports.progress
-    private val importProgressForeground=kotlinx.coroutines.flow.MutableStateFlow(false)
     /** Immediate lifecycle retirement also fences a blocking read before coroutine cancellation. */
     internal fun importProgressForeground(value:Boolean) {
         graph.imports.progressObservation.visible(value)
-        importProgressForeground.value=value
     }
     internal fun dismissImportProgress(expected:ImportBatchProgress) {graph.imports.progressObservation.dismiss(expected)}
     internal fun ownsImportProgress(expected:ImportBatchProgress)=graph.imports.progressObservation.owns(expected)
     init {
         viewModelScope.launch(Dispatchers.IO) {
-            combine(graph.session.scopeRevision,importProgressForeground) {revision,visible->revision to visible}
-                .collectLatest {(_,visible)->
-                    if(visible)graph.imports.progressObservation.observe(merge(imports.map {Unit},graph.acquisition.state.map {Unit}))
-                    else graph.imports.progressObservation.pause()
-                }
+            graph.imports.progressObservation.observe(merge(imports.map {Unit},graph.acquisition.state.map {Unit}))
         }
     }
     val playlists=graph.playlists.state

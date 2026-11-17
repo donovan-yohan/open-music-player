@@ -7,7 +7,9 @@ import kotlinx.coroutines.flow.*
 
 /** Facts about a bounded, session-local batch, never all server imports. */
 @ConsistentCopyVisibility
-data class ImportBatchProgress internal constructor(val identity:Long,val active:Int,val complete:Int,val failed:Int,val unknown:Int,val needsChecking:Boolean=false)
+data class ImportBatchProgress internal constructor(val identity:Long,val active:Int,val complete:Int,val failed:Int,val unknown:Int,val needsChecking:Boolean=false,
+    // Structural UI state must replace an equal-count publication from a retired observation.
+    private val observation:Any?=null)
 
 /** Observation only. Its sole owner is ImportRepository, not a route or player. */
 internal class ImportProgressObservation(private val session:AccountSession,private val api:SoundQApi) {
@@ -30,16 +32,22 @@ internal class ImportProgressObservation(private val session:AccountSession,priv
     private var reads=0
     private val active=setOf(ImportStatus.Queued,ImportStatus.Downloading,ImportStatus.Processing,ImportStatus.Uploading)
 
-    private var foreground=false
-    @Synchronized fun visible(value:Boolean) {foreground=value;if(!value)pause()}
+    private data class Visibility(val foreground:Boolean,val generation:Long)
+    private val visibility=MutableStateFlow(Visibility(false,0L))
+    private val foreground get()=visibility.value.foreground
+    @Synchronized fun visible(value:Boolean) {
+        val previous=visibility.value
+        if(!value)pause() // Fence blocking work immediately, before the worker can collect a restart.
+        if(previous.foreground!=value)visibility.value=Visibility(value,previous.generation+1)
+    }
     /** Worker-only journal snapshot. Old receipts are a boundary, never lifetime totals. */
     fun open():Lease? {
-        if(!synchronized(this){foreground})return null
+        val admission=synchronized(this){visibility.value.takeIf {it.foreground}} ?: return null
         val scope=session.capture()?.takeIf(session::remoteCurrent) ?: return null
         val floor=try {api.intakeReceipts.entries(session.endpoint.identity,scope.accountId).lastOrNull()?.operation ?: 0L}
             catch(_:Exception){return null} // Existing Imports retains rejected-store recovery.
         return synchronized(this) {
-            if(!foreground||!session.remoteCurrent(scope))return null
+            if(visibility.value!=admission||!session.remoteCurrent(scope))return null
             if(owner?.let(session::remoteCurrent)!=true)clear()
             owner=scope
             Lease(scope,floor).also {next->
@@ -129,7 +137,7 @@ internal class ImportProgressObservation(private val session:AccountSession,priv
             if(terminal==null)terminal=clock()
         } else terminal=null
         mutable.value=ImportBatchProgress(identity,facts.values.count {it.status in active},completed,
-            facts.values.count {it.status==ImportStatus.Failed},facts.values.count {it.status==null},checking||uncertain.isNotEmpty())
+            facts.values.count {it.status==ImportStatus.Failed},facts.values.count {it.status==null},checking||uncertain.isNotEmpty(),candidate)
     }
     @Synchronized fun nextDelay(candidate:Lease):Long? {
         if(!current(candidate))return null
@@ -143,8 +151,14 @@ internal class ImportProgressObservation(private val session:AccountSession,priv
     @Synchronized fun owns(expected:ImportBatchProgress)=mutable.value===expected&&lease?.let(::current)==true
     @Synchronized fun dismiss(expected:ImportBatchProgress) {if(owns(expected))clear()}
 
+    /** One binding owns auth acceptance, scope changes and every foreground incarnation. */
+    suspend fun observe(events:Flow<Unit>) {
+        combine(session.scopeRevision,session.state,visibility) {revision,auth,visible->Triple(revision,auth,visible)}
+            .collectLatest {(_,_,visible)->if(visible.foreground)observeLease(events) else pause()}
+    }
+
     /** No idle timer. Events wake journal reconciliation; only active facts/dwell own a deadline. */
-    suspend fun observe(events:Flow<Unit>)=coroutineScope {
+    private suspend fun observeLease(events:Flow<Unit>)=coroutineScope {
         val captured=open() ?: return@coroutineScope
         val wake=Channel<Unit>(Channel.CONFLATED)
         val signals=launch {events.collect {wake.trySend(Unit)}}

@@ -16,7 +16,8 @@ p.add_argument('--metadata-only',action='store_true')
 p.add_argument('--mutation',choices=['no-redirects','revive-owner','stale-publication','free-running-job','unchecked-draw'])
 a=p.parse_args();out=a.output.resolve();out.mkdir(parents=True,exist_ok=False)
 r=Path(__file__).resolve().parents[1];main=r/'app/src/main/kotlin/com/soundq/android';test=r/'app/src/test/kotlin/com/soundq/android'
-cache=Path.home()/'.gradle/caches';modules=cache/'modules-2/files-2.1'
+cache=Path(os.environ.get('GRADLE_USER_HOME') or Path.home()/'.gradle')/'caches'
+modules=cache/'modules-2/files-2.1'
 def jar(g,n,v):
  paths=list((modules/g/n/v).glob('**/*.jar'));assert len(paths)==1,(n,paths);return paths[0]
 jars=[jar('org.jetbrains.kotlinx','kotlinx-serialization-json-jvm','1.12.0'),jar('org.jetbrains.kotlinx','kotlinx-serialization-core-jvm','1.12.0'),jar('org.jetbrains.kotlinx','kotlinx-coroutines-core-jvm','1.10.2'),jar('junit','junit','4.13.2'),jar('org.hamcrest','hamcrest-core','1.3')]

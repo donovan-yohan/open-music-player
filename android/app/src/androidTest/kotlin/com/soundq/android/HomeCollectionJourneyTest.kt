@@ -1,6 +1,7 @@
 package com.soundq.android
 
 import android.graphics.Bitmap
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
@@ -53,6 +54,11 @@ class HomeCollectionJourneyTest {
         finally {bitmap.recycle()}
     }
 
+    private fun collectionScrollOffset():Float {
+        compose.waitForIdle()
+        return compose.onNode(hasScrollAction()).fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+    }
+
     @Test fun previewsOpenCompleteCollectionsAndBackPreservesPlayback() {
         val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as FixtureApplication
         compose.signInThroughSettings("collections@example.test","test-only-password"){app.graph.session.capture()!=null}
@@ -71,14 +77,20 @@ class HomeCollectionJourneyTest {
         compose.onNodeWithText("Retry Recently played").performScrollTo().performClick()
         compose.waitUntil(10000){model.home.recent.value.rows.size==23&&!model.home.recent.value.loading}
         compose.onNodeWithText("Recent 23").performScrollTo().assertIsDisplayed()
+        val recentOffset=collectionScrollOffset()
+        assertTrue("Recent must actually have scrolled",recentOffset>0f)
         assertEquals(listOf(0,20,20),offsets.toList())
         compose.onNodeWithContentDescription("Back to Home").performClick()
         compose.onNodeWithText("Recent 6").assertDoesNotExist()
         compose.onNodeWithContentDescription("View all Your top tracks").performScrollTo().performClick()
+        assertEquals("Top must not inherit Recent's scroll position",0f,collectionScrollOffset(),0f)
         compose.onNodeWithText("Top 25").performScrollTo().assertIsDisplayed()
         capture("top-collection")
         compose.onNodeWithContentDescription("Back to Home").performClick()
         compose.onNodeWithText("Top 6").assertDoesNotExist()
+        compose.onNodeWithContentDescription("View all Recently played").performScrollTo().performClick()
+        assertEquals("Recent must restore its own position",recentOffset,collectionScrollOffset(),0f)
+        compose.onNodeWithContentDescription("Back to Home").performClick()
         val after=model.playback.value
         assertEquals(before.queue,after.queue)
         assertEquals(before.selectedOccurrence,after.selectedOccurrence)
