@@ -21,8 +21,8 @@ methods='\n'.join(block(native,m).replace('override fun','fun') for m in [
     '    override fun handleRemoveMediaItems(', '    override fun handleMoveMediaItems(', '    override fun handleSetMediaItems('])
 commands='\n'.join(block(controller,m) for m in ['    fun enqueue(', '    fun select(', '    fun moveTo(', '    fun remove(', '    fun clear('])
 undo=service[service.index('            val saved=undo ?:'):service.index('\n        private fun folder(')].rsplit('\n        }',1)[0]
-capture_start=service.index('                undoScope=scope',service.index('override fun onPlayerCommandRequest('))
-capture=service[capture_start:service.index('                transport.pause()',capture_start)+len('                transport.pause()')]
+admission=block(service,'        override fun onPlayerCommandRequest(')
+capture=block(admission,'            if(playerCommand==Player.COMMAND_CHANGE_MEDIA_ITEMS) {').split('{',1)[1].rsplit('}',1)[0]
 # Compile production pure confirmation plus DTOs. Compose shell is not remounted here.
 panel=(P/'product/QueuePanel.kt').read_text()
 confirmation=block(panel,'internal class QueueClearCapture(')
@@ -44,14 +44,15 @@ class MediaItem(val mediaId:String,val localConfiguration:Local?=Local(Uri(media
  object RequestMetadata {class Builder {private val delegate=Request.Builder();fun setExtras(e:Bundle)=apply{delegate.setExtras(e)};fun build()=delegate.build()}}
  class Builder {var id="";var request=Request(Bundle());fun setMediaId(v:String)=apply{id=v};fun setRequestMetadata(r:Request)=apply{request=r};fun build()=MediaItem(id,manual=request.extras.getBoolean("manual"))}
 }
-class Grant(val scope:Int=1,val track:TrackId=TrackId(7),val localOnly:Boolean=false)
+class Grant(val scope:Int=1,val track:TrackId=TrackId(7),val localOnly:Boolean=false) {val device:Any?=null} // Server-only queue fixture.
 typealias MediaGrant=Grant
 class TrackId(val value:Long)
 class Track(val id:TrackId)
 class NativeBoundary {
  var items=listOf<MediaItem>();var index=0;var position=4300L;var order=listOf<Int>();var shuffle=false;val random=Random(19)
  var selectedLoaded=true;var pending:Any?=null;var playback=3;var error:String?=null;var queueScope:Int?=1;var intent=false;var retirements=0
- var restoredShuffle:Boolean?=null;var modeRestored=false
+ var restoredShuffle:Boolean?=null;var modeRestored=false;var queueVersion=-1L;val graph=Graph()
+ fun cancelSuccessor(){} // No optional successor is installed by this queue-metadata fixture.
  val durations=mutableMapOf<String,Long>();val grants=mutableMapOf<String,Grant>()
  fun validate(rows:List<MediaItem>){check(rows.map{it.mediaId}.distinct().size==rows.size);rows.forEach{grants.putIfAbsent(it.localConfiguration!!.uri.toString(),Grant())}}
  fun selected()=items.getOrNull(index)
@@ -76,12 +77,15 @@ class NativeBoundary {
 object SessionError {const val ERROR_BAD_VALUE=-3;const val ERROR_PERMISSION_DENIED=-4}
 class SessionResult(val resultCode:Int) {companion object {const val RESULT_SUCCESS=0}}
 object Futures {fun immediateFuture(value:SessionResult)=value}
-class Session {fun current(scope:Int)=scope==1}
+class Session {fun current(scope:Int)=scope==1;fun version()=1L;fun owns(captured:Long)=captured==version()}
 class Graph {val session=Session()}
 class Transport(val player:NativeBoundary) {fun pause(){player.pause()};fun retire(){};fun rejectSelection(){};fun selectionCommitted(){}}
 class UndoBoundary(val player:NativeBoundary) {
  val graph=Graph();var account:Int?=1;val grants=player.grants;val transport=Transport(player)
- var undo:List<MediaItem>?=null;var undoScope:Int?=null;var undoIndex=0;var undoPosition=0L;var selectionEpoch=0L
+ var undo:List<MediaItem>?=null;var undoScope:Int?=null;var undoVersion=-1L;var undoIndex=0;var undoPosition=0L;var selectionEpoch=0L
+ fun localAccess()=false // This fixture contains server occurrences only.
+ // Same server branch as the service grantFor; phone acquisition is outside this fixture.
+ fun grantFor(item:MediaItem,scope:Int?)=MediaGrant(requireNotNull(scope),TrackId(item.mediaMetadata.extras.getLong("trackId")),item.mediaMetadata.extras.getBoolean("localOnly"))
  fun publishSessionExtras(){}
  fun validateSelection(saved:List<MediaItem>,index:Int,position:Long){check(saved.isEmpty()||index in saved.indices);check(position>=0)}
  fun capture(){val scope=1
@@ -135,9 +139,9 @@ with tempfile.TemporaryDirectory(prefix='ordinary-queue-',dir=os.environ['TMPDIR
  queue_call=source.split('"Queue"->QueuePanel',1)[1]
  dismiss=block(queue_call,'{')
  open_player=block(queue_call[queue_call.index(dismiss)+len(dismiss):],'{')
- root_entry=block(next(line for line in source.splitlines() if 'if(playback.title!=null)SoundQCompactPlayer' in line),'{')
+ root_entry=block(source[source.index('SoundQCompactPlayer('):],'{')
  (d/'Return.kt').write_text('package ordinaryreturn\nfun main(){var panel:String?="Queue";var transportReturn:String?=null;val openPlayer:()->Unit='+open_player+';openPlayer();check(panel=="Player");check(transportReturn=="Queue"){"Queue entry lost invoking queue return target"};val close:()->Unit='+close+';close();check(panel=="Queue"){"Closing Now playing lost invoking Queue"};check(transportReturn==null);panel="Player";val queue:()->Unit='+queue+';queue();check(panel=="Queue");check(transportReturn=="Player"){"Queue dismissal must return to invoking player"};val dismiss:()->Unit='+dismiss+';dismiss();check(panel=="Player");check(transportReturn==null);transportReturn="Queue";val root:()->Unit='+root_entry+';root();check(panel=="Player");check(transportReturn==null){"Fresh compact entry revived an old parent"};close();check(panel==null);println("PASS extracted actual mini/full/queue return callbacks without transport commands")}')
- (d/'Projection.kt').write_text('package com.soundq.android.playback\nobject Player {const val REPEAT_MODE_OFF=0}\nenum class QueueOrigin {Manual,Context}\nclass AcceptedArrangement\nclass PerformanceDeck\nclass TempoPreviewState\nclass PlaybackClockAuthority\n'+dtos)
+ (d/'Projection.kt').write_text('package com.soundq.android.playback\nobject Player {const val REPEAT_MODE_OFF=0}\nenum class QueueOrigin {Manual,Context}\nclass AcceptedArrangement\nclass PerformanceDeck\nclass TempoPreviewState\nclass PlaybackClockAuthority\nclass PlaybackRef\nclass ListeningSpeedState\nclass SelectedDevicePlaybackOwner\n'+dtos)
  (d/'Clear.kt').write_text('package com.soundq.android.product\nimport com.soundq.android.playback.*\n'+confirmation)
  # Run the same JUnit methods as the ordinary Gradle test, not a parallel assertion list.
  tests=(R/'app/src/test/kotlin/com/soundq/android/product/QueueClearCaptureTest.kt').read_text()
