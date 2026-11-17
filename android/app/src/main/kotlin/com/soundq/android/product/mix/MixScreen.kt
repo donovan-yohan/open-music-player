@@ -176,7 +176,7 @@ import kotlinx.serialization.json.*
                 }
             },enabled=!busy&&!exchangeWorking&&!exchange.pending)
         }
-        if(rows.size<total)item {SoundQButton("Load more mixes",{load(true)},enabled=!busy&&!exchangeWorking&&!exchange.pending)}
+        if(rows.size<total)item {SoundQListActionRow("Load more mixes",{load(true)},enabled=!busy&&!exchangeWorking&&!exchange.pending)}
         val plan=selected
         if(plan!=null) {
             item {Text("Saved mix",Modifier.focusRequester(selectionFocus).focusable().semantics {heading()},style=SoundQ.typography.title);SoundQTextField(title,{title=it},"Mix name",enabled=!busy&&!exchangeWorking&&!exchange.pending)}

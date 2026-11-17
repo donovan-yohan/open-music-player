@@ -95,7 +95,7 @@ class ExchangeAdmissionRefused:Exception()
     details = (base / 'data/trackdetails/TrackDetails.kt').read_text()
     (out / 'TrackDetails.kt').write_text(details[:details.index('sealed interface DetailsAction')])
     paths = ['AccountSession.kt', 'Contracts.kt', 'catalog/Catalog.kt',
-        'imports/Imports.kt', 'imports/ImportJson.kt', 'imports/ImportRepository.kt',
+        'imports/Imports.kt', 'imports/ImportJson.kt', 'imports/ImportRepository.kt', 'imports/ImportProgress.kt',
         'acquisition/IntakeReceipts.kt', 'playlists/PlaylistContracts.kt',
         'playlists/PlaylistJson.kt', 'trackdetails/TrackDetailsJson.kt', 'trackdetails/Verification.kt',
         *['discovery/' + n for n in ['Discovery.kt', 'DiscoveryJson.kt', 'DiscoveryHistory.kt',

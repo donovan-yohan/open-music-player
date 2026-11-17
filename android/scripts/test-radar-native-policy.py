@@ -47,34 +47,47 @@ vm = source('product/ProductViewModel.kt')
 emit('ProductViewModel.kt', '''package com.soundq.android.product
 import kotlinx.coroutines.*
 import com.soundq.android.data.discovery.*
-class Graph(val discovery:DiscoveryRepository)
+class Graph(val discovery:DiscoveryRepository) {val mediaClient=Any()}
 object Dispatchers {var IO:CoroutineDispatcher=object:CoroutineDispatcher(){override fun dispatch(context:kotlin.coroutines.CoroutineContext,block:Runnable)=block.run()}}
 class ProductViewModel(val graph:Graph,val viewModelScope:CoroutineScope) {
 ''' + '\n'.join(block(vm, '    fun ' + name) for name in ['loadReleaseRadar(', 'searchSources(', 'findReleaseSources(']) + '\n}\n')
 screen = source('product/discovery/DiscoverScreen.kt')
 lifecycle = block(screen, '    DisposableEffect(view,radarLifecycle,catalogDetails,radarShown)')
 presentation = block(screen, '            visibleRadarPage?.let {page->')
-invalidation = block(screen, '    LaunchedEffect(view,radar.stale)')
+invalidation = block(screen, '    LaunchedEffect(view,radarInvalidation,radar.stale,radar.phase,')
+surface = screen[screen.index('    val radarSurfaceOwner='):screen.index('    BackHandler(state.canBack')]
 emit('Bindings.kt', '''package bindings
 import androidx.lifecycle.*
 import com.soundq.android.data.discovery.*
 import com.soundq.android.product.*
+var radarActive=false
+var radarSurfaceVisit:Any?=null
+var radarCollection=false
 fun bind(model:ProductViewModel,view:DiscoveryView?,catalogDetails:Any?=null,radarVisible:()->Boolean={true}):()->Unit {
  val repository=model.graph.discovery
  var radarDetails:Any?=null
  val radarLifecycle=LocalLifecycleOwner.current
  val radarShown=radarVisible()
 ''' + lifecycle + '\n return Effect.dispose\n}\n' + '''
-fun render(model:ProductViewModel,view:DiscoveryView?):()->Triple<RadarPage,RadarSong,DiscoveryDraft>? {
+fun render(model:ProductViewModel,view:DiscoveryView?,full:Boolean=false,shown:Boolean=true,catalogDetails:Any?=null):()->Triple<RadarPage,RadarSong,DiscoveryDraft>? {
  val repository=model.graph.discovery
  val radar=repository.radar.value
  val state=repository.state.value
  val visibleRadarPage=radar.page?.takeIf {view?.let(repository::current)==true}
+ val showRadarCollection=full
+ val radarShown=shown
+ val focus=Focus()
  var radarDetails:Triple<RadarPage,RadarSong,DiscoveryDraft>?=null
- UI.rows.clear();UI.actions.clear();UI.messages.clear()
-''' + presentation + '\n return {radarDetails}\n}\n' + '''
+ UI.rows.clear();UI.actions.clear();UI.messages.clear();UI.artwork.clear()
+ if(catalogDetails!=null){UI.forget();return {null}}
+ if(!radarActive||!radarShown||state.draft.text.isNotBlank()||radarSurfaceVisit==null)UI.forget()
+''' + surface + '\n if(state.draft.text.isBlank()) {\n' + presentation + '\n}\n return {radarDetails}\n}\n' + '''
 fun invalidation(model:ProductViewModel,view:DiscoveryView?) {
  val radar=model.graph.discovery.radar.value
+ val state=model.graph.discovery.state.value
+ val radarInvalidation=model.graph.discovery.radarInvalidation.value
+ val radarShown=true
+ val catalogDetails:Any?=null
 ''' + invalidation + '\n}\n')
 # The AppGraph declaration is the real normal constructor wiring, not fixture-only.
 app = source('SoundQApplication.kt')
@@ -97,7 +110,6 @@ emit('NormalRoute.kt', '''package bindings
 import com.soundq.android.data.*
 import com.soundq.android.data.discovery.*
 import com.soundq.android.product.*
-fun <T> remember(vararg keys:Any?,block:()->T):T=block()
 fun normalRoute(model:ProductViewModel,destination:String,auth:AuthState,importView:Any?=null,accountVersion:Long=0,discoveryVisit:Long=0):DiscoveryView? {
 ''' + route_line + '\n return discoveryView\n}\n' + '''
 class Visibility {
@@ -108,7 +120,8 @@ class Visibility {
 assert 'LaunchedEffect(view,state.draft,radar.stale)' not in screen
 assert 'state.draft' not in lifecycle
 assert 'radarFixtureAdmission' not in line
-assert 'items(page.songs.take(radar.visibleCount.coerceIn(0,20))' in presentation
+assert 'items(page.songs.take(if(showRadarCollection)20 else 5)' in presentation
+assert 'RadarArtwork(model.graph.mediaClient,repository,view,page,song,draft,radarSurfaceOwner)' in presentation
 # Full normal text-change/debounce/submit owners stay in the delivered source.
 assert 'val changed=next.text!=editor.text;editor=next;if(changed)view?.let {repository.edit(it,next.text)}' in screen
 assert 'LaunchedEffect(view,state.draft) {' in screen and 'delay(350)' in screen
@@ -170,15 +183,31 @@ object Effect {var dispose:()->Unit={}}
 class Dispose {fun onDispose(block:()->Unit){Effect.dispose=block}}
 fun DisposableEffect(vararg keys:Any?,block:Dispose.()->Unit){Dispose().block()}
 fun LaunchedEffect(vararg keys:Any?,block:()->Unit)=block()
-object UI {data class Row(val title:String,val open:()->Unit,val more:()->Unit,val enabled:Boolean);val rows=mutableListOf<Row>();val actions=mutableMapOf<String,()->Unit>();val messages=mutableListOf<String>()}
+object UI {
+ data class Row(val title:String,val open:()->Unit,val more:()->Unit,val enabled:Boolean)
+ data class Art(val client:Any,val repository:DiscoveryRepository,val view:DiscoveryView,val page:RadarPage,val song:RadarSong,val draft:DiscoveryDraft,val owner:Any)
+ val rows=mutableListOf<Row>();val actions=mutableMapOf<String,()->Unit>();val messages=mutableListOf<String>();val artwork=mutableListOf<Art>()
+ var keys:List<Any?>?=null;var remembered:Any?=null
+ fun forget(){keys=null;remembered=null}
+}
+fun <T> remember(vararg keys:Any?,block:()->T):T {
+ // Normal route construction is a fresh host visit; only the extracted surface slot is retained.
+ if(keys.firstOrNull() is com.soundq.android.product.ProductViewModel)return block()
+ if(UI.keys!=keys.toList()){UI.keys=keys.toList();UI.remembered=block()}
+ @Suppress("UNCHECKED_CAST") return UI.remembered as T
+}
+class Focus {fun clearFocus(){}}
+fun RadarArtwork(client:Any,repository:DiscoveryRepository,view:DiscoveryView,page:RadarPage,song:RadarSong,draft:DiscoveryDraft,surfaceOwner:Any){UI.artwork+=UI.Art(client,repository,view,page,song,draft,surfaceOwner)}
 object SoundQ {object typography {val title=Any()}}
 enum class FeedbackKind {Notice,Empty,Error}
 enum class SoundQButtonVariant {Secondary}
 fun Text(value:String,style:Any){UI.messages+=value}
 fun SoundQFeedback(value:String,kind:FeedbackKind){UI.messages+=value}
 fun discoverHeader(block:()->Unit)=block()
+fun item(block:()->Unit)=block()
 fun <T> items(rows:List<T>,key:(T)->Any,block:(T)->Unit){rows.forEach {key(it);block(it)}}
-fun SoundQMediaRow(title:String,artist:String,current:Boolean,onActivate:()->Unit,onMore:()->Unit,supporting:String,enabled:Boolean){UI.rows+=UI.Row(title,onActivate,onMore,enabled)}
+fun SoundQMediaRow(title:String,artist:String,current:Boolean,onActivate:()->Unit,onMore:()->Unit,artwork:()->Unit,supporting:String,enabled:Boolean){UI.rows+=UI.Row(title,onActivate,onMore,enabled);artwork()}
+fun SoundQListActionRow(label:String,onClick:()->Unit,enabled:Boolean,description:String){if(enabled)UI.actions[label]=onClick}
 fun SoundQButton(label:String,onClick:()->Unit,variant:SoundQButtonVariant,enabled:Boolean){if(enabled)UI.actions[label]=onClick}
 ''')
 # These fixtures exercise production domain bodies and exact lifecycle/VM/row callbacks.
@@ -225,16 +254,16 @@ fun main(){
  for(n in listOf(0,1,5,6,20)) {
   val f=Fixture(n);val v=f.open();val r=f.repository;val p=r.radar.value.page!!;val d=r.state.value.draft
   check(f.api.reads==1);var details=render(f.model,v)
-  check(UI.rows.map {it.title}==p.songs.take(5).map {it.title});check(("Load more" in UI.actions)==(n>5))
-  var expected=5
+  check(UI.rows.map {it.title}==p.songs.take(5).map {it.title});check(("View all" in UI.actions)==(n>0))
+  check("Load more" !in UI.actions&&"Some releases may be missing" !in UI.messages)
+  radarCollection=false;UI.actions["View all"]?.invoke();check(radarCollection==(n>0))
   repeat(6) {
-   UI.actions["Load more"]?.invoke();expected=(expected+5).coerceAtMost(n)
-   details=render(f.model,v)
-   check(UI.rows.map {it.title}==p.songs.take(expected).map {it.title})
-   check(("Load more" in UI.actions)==(expected<n));check(r.radar.value.page===p);check(f.api.reads==1)
+   details=render(f.model,v,full=true)
+   check(UI.rows.map {it.title}==p.songs.map {it.title})
+   check("View all" !in UI.actions);check(r.radar.value.page===p);check(f.api.reads==1)
    UI.rows.lastOrNull()?.let {it.open();check(details()!!.first===p&&details()!!.second===p.songs[UI.rows.lastIndex]&&details()!!.third===d)}
   }
-  check("Some releases may be missing" in UI.messages);check(p.songs.size==n)
+  check("Some releases may be missing" !in UI.messages);check(p.songs.size==n)
   // Playback-like rerenders retain the budget, as do query-only changes.
   val count=r.radar.value.visibleCount;repeat(5){render(f.model,v);check(r.radar.value.visibleCount==count)}
   r.edit(v,"query");r.edit(v,"");render(f.model,v);check(f.api.reads==1&&r.radar.value.visibleCount==count)
@@ -293,20 +322,21 @@ fun main(){
  }
  run {
   val f=Fixture();val r=f.repository;val entered=CountDownLatch(1);val release=CountDownLatch(1)
-  val oldPage=page(20,"retired");f.api.feed={valid->entered.countDown();await(release);oldPage}
+  val oldPage=page(20,"retired");val renewedPage=page(6,"resumed")
+  f.api.feed={valid->if(f.api.reads==1){entered.countDown();await(release);oldPage}else renewedPage}
   val v=r.open()!!;val t=Thread {LocalLifecycleOwner.current=f.owner;f.dispose=bind(f.model,v)};t.start();await(entered)
   f.owner.lifecycle.dispatch(Lifecycle.State.STARTED);f.owner.lifecycle.dispatch(Lifecycle.State.RESUMED)
-  release.countDown();t.join(5000);check(!t.isAlive&&r.radar.value.page==null&&f.api.reads==1)
+  release.countDown();t.join(5000);check(!t.isAlive&&r.radar.value.page===renewedPage&&r.radar.value.page!==oldPage&&f.api.reads==2)
   // A genuine new route asks the authoritative backend again, without any wall clock.
-  r.close(v);f.api.feed={page(6,"new")};val successor=f.open();val p=r.radar.value.page!!;check(p!==oldPage&&f.api.reads==2)
+  r.close(v);f.api.feed={page(6,"new")};val successor=f.open();val p=r.radar.value.page!!;check(p!==oldPage&&p!==renewedPage&&f.api.reads==3)
   r.close(v);r.moreRadar(v,p,r.state.value.draft);check(r.current(successor))
   f.close();println("held IO STOP/RESUME permanent retirement/new normal visit PASS")
  }
  run {
   val f=Fixture();val v=f.open();val r=f.repository;val p=r.radar.value.page!!;val d=r.state.value.draft
-  val more=run {render(f.model,v);UI.actions.getValue("Load more")};r.moreRadar(v,p,d)
+  render(f.model,v);val oldOpen=UI.rows.first().open;r.moreRadar(v,p,d)
   f.session.accept(f.session.beginIntent(),SecretTokens("fixture-b","fixture-r","B"))
-  check(r.claimRadar(v,true)==null&&!r.radarCurrent(v,p,p.songs.first(),d));more();check(r.radar.value.visibleCount==10)
+  check(r.claimRadar(v,true)==null&&!r.radarCurrent(v,p,p.songs.first(),d));oldOpen();check(r.radar.value.visibleCount==10)
   val b=f.open();check(r.radar.value.visibleCount==5&&r.radar.value.page!==p)
   f.session.accept(f.session.beginIntent(),SecretTokens("fixture-a2","fixture-r","A"))
   check(r.claimFindSources(v,p,p.songs.first(),d)==null&&r.claimRadar(b,true)==null)
@@ -326,7 +356,7 @@ fun main(){
   // Existing wire coverage can report a failed refresh alongside fresh-membership cached rows.
   val c=prior.coverage;val failed=RadarPage(prior.songs,RadarCoverage(true,listOf("provider_unavailable"),"unavailable",c.serverEvents,c.seedsAvailable,c.seedsSelected,c.unresolvedSeedTracks,c.unlinkedLibraryTracks,c.pagesFetched,c.knownTotal,c.retrieved,c.deduped,c.dateRejected,c.identityRejected,c.ownedExcluded,c.returned),prior.generatedAt,prior.selectedArtists)
   f.api.feed={failed};f.model.loadReleaseRadar(v,true);render(f.model,v)
-  check("Could not update new releases" in UI.messages&&"Some releases may be missing" in UI.messages)
+  check("Could not update new releases" in UI.messages&&"Some releases may be missing" !in UI.messages)
   check(UI.rows.size==5&&r.radar.value.page===failed)
   f.close();println("last good cache retention/provider failure honesty with existing coverage DTO PASS")
  }
@@ -340,8 +370,9 @@ fun main(){
   val f=Fixture();val r=f.repository;val v=r.open()!!
   f.api.feed={r.edit(v,"typed");r.edit(v,"");page(6,"query retired")}
   f.dispose=bind(f.model,v);check(r.radar.value.page==null&&f.api.reads==1)
-  f.model.loadReleaseRadar(v,automatic=true);check(f.api.reads==1)
-  f.api.feed={page(6)};f.model.loadReleaseRadar(v,true);val p=r.radar.value.page!!;val draft=r.state.value.draft
+  r.edit(v,"still typing");invalidation(f.model,v);check(f.api.reads==1)
+  r.edit(v,"");f.api.feed={page(6)};invalidation(f.model,v);check(f.api.reads==2)
+  val p=r.radar.value.page!!;val draft=r.state.value.draft
   val find=r.claimFindSources(v,p,p.songs.first(),draft)!!
   f.api.membership={r.edit(v,"other");r.edit(v,"");false}
   check(r.findSources(find)==null&&f.api.searches==0&&r.claimFindSources(v,p,p.songs.first(),draft)==null)
@@ -376,6 +407,39 @@ fun main(){
   check(r.back(v));check(r.radar.value.page===p)
   f.close();println("canonical hidden-row Find/search/inspect/Preview/Artist/Album/refine/URL owners PASS")
  }
+ run {
+  val f=Fixture();val v=f.open();val r=f.repository;val p=r.radar.value.page!!;val d=r.state.value.draft
+  fun art(full:Boolean=false):Any {
+   render(f.model,v,full=full)
+   check(UI.artwork.size==if(full)20 else 5)
+   UI.artwork.forEachIndexed {i,a->check(a.client===f.model.graph.mediaClient&&a.repository===r&&a.view===v&&a.page===p&&a.song===p.songs[i]&&a.draft===r.state.value.draft)}
+   return UI.artwork.first().owner.also {owner->check(UI.artwork.all {it.owner===owner})}
+  }
+  val preview=art();repeat(5){check(art()===preview)}
+  val full=art(true);check(full!==preview);check(art(true)===full)
+  val returned=art();check(returned!==preview&&returned!==full)
+  render(f.model,v,shown=false);check(UI.artwork.isEmpty());val overlayReturn=art();check(overlayReturn!==returned)
+  render(f.model,v,catalogDetails=Any());check(UI.rows.isEmpty()&&UI.artwork.isEmpty());val catalogReturn=art();check(catalogReturn!==overlayReturn)
+  r.edit(v,"query");render(f.model,v);check(UI.artwork.isEmpty());check(!r.radarCurrent(v,p,p.songs.first(),d))
+  r.edit(v,"");val queryReturn=art();check(queryReturn!==catalogReturn)
+  val oldVisit=radarSurfaceVisit;f.owner.lifecycle.dispatch(Lifecycle.State.STARTED)
+  check(radarSurfaceVisit==null&&!r.radarCurrent(v,p,p.songs.first(),r.state.value.draft))
+  render(f.model,v);check(UI.artwork.isEmpty())
+  f.owner.lifecycle.dispatch(Lifecycle.State.RESUMED);check(radarSurfaceVisit!=null&&radarSurfaceVisit!==oldVisit)
+  check(art()!==queryReturn);check(f.api.reads==1)
+  val oldOpen=UI.rows.first().open;f.dispose();render(f.model,v);check(UI.artwork.isEmpty());oldOpen()
+  f.close();println("actual canonical preview/full artwork parameters, stable/distinct incarnation, hidden/catalog/query/foreground retirement PASS")
+ }
+ run {
+  val f=Fixture();val r=f.repository;val entered=CountDownLatch(1);val release=CountDownLatch(1)
+  val v=r.open()!!;val t=Thread {LocalLifecycleOwner.current=f.owner;f.api.feed={entered.countDown();await(release);page(6)};f.dispose=bind(f.model,v)}
+  t.start();await(entered);r.libraryChanged();release.countDown();t.join(5000)
+  check(!t.isAlive&&r.radar.value.page==null&&r.radar.value.phase==RadarPhase.Idle)
+  f.api.feed={page(6,"replacement")};invalidation(f.model,v)
+  check(f.api.reads==2&&r.radar.value.phase==RadarPhase.Ready&&r.radar.value.page!=null)
+  invalidation(f.model,v);check(f.api.reads==2)
+  f.close();println("actual invalidation effect restores canceled first read at live Idle/no-page landing without repeat PASS")
+ }
  println("ALL SOURCE-ONLY RADAR POLICY CHECKS PASS; native/SDK/transport unrun")
 }
 ''')
@@ -387,9 +451,13 @@ coroutines = next((p / 'kotlinx-coroutines-core-jvm.jar' for p in libs if (p / '
 assert coroutines is not None, 'Use the compiler-bundled coroutine jar, never Gradle caches'
 env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
 env['TMPDIR'] = str(out)
-env['JAVA_OPTS'] = '-Djava.io.tmpdir=' + str(out)
+env['JAVA_OPTS'] = '-Xmx512m -XX:ActiveProcessorCount=2 -Djava.io.tmpdir=' + str(out)
+private_coroutines=out/'kotlinx-coroutines-core-jvm.jar'
+shutil.copyfile(coroutines,private_coroutines)
+assert hashlib.sha256(coroutines.read_bytes()).digest()==hashlib.sha256(private_coroutines.read_bytes()).digest()
+coroutines=private_coroutines
 commands = [[str(kotlinc), *map(str, sorted(out.glob('*.kt'))), '-cp', str(coroutines), '-include-runtime', '-d', str(out / 'policy.jar')],
-            ['java', '-Djava.io.tmpdir=' + str(out), '-cp', str(out / 'policy.jar') + os.pathsep + str(coroutines), 'bindings.JourneyKt']]
+            ['java', '-Xmx512m', '-XX:ActiveProcessorCount=2', '-Djava.io.tmpdir=' + str(out), '-cp', str(out / 'policy.jar') + os.pathsep + str(coroutines), 'bindings.JourneyKt']]
 runs = []
 for index, cmd in enumerate(commands):
     run = subprocess.run(cmd, env=env, text=True, capture_output=True)

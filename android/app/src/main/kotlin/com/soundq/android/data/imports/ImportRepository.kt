@@ -15,6 +15,8 @@ data class ImportPlaylistConfirmation(val playlist:PlaylistId,val job:ImportJobI
 data class ImportsState(val draft:ImportDraft=ImportDraft(""),val pending:Boolean=false,val consumed:Boolean=false,val acknowledgement:ImportAcknowledgement?=null,val selected:ImportJob?=null,val recent:List<ImportJob> = emptyList(),val loading:Boolean=false,val error:SafeFailure.Reason?=null,val invalidLink:Boolean=false,val sourceReceipt:SourceImportReceipt?=null,val durableReceipt:com.soundq.android.data.acquisition.IntakeReceipt?=null,val sourcePlan:ImportSourcePlan?=null,val playlistChoices:List<PlaylistSummary> = emptyList(),val playlistTotal:Int?=null,val chosenPlaylist:PlaylistSummary?=null,val playlistConfirmation:ImportPlaylistConfirmation?=null)
 /** Account-owned evidence, separate from route/draft/read lifetimes. Never owns playback. */
 class ImportRepository(private val session:AccountSession,private val api:SoundQApi,private val library:LibraryRepository) {
+    internal val progressObservation=ImportProgressObservation(session,api)
+    val progress:StateFlow<ImportBatchProgress?> = progressObservation.state
     private val mutable=MutableStateFlow(ImportsState())
     val state:StateFlow<ImportsState> = mutable
     private var owner:AccountScope?=null
@@ -28,7 +30,7 @@ class ImportRepository(private val session:AccountSession,private val api:SoundQ
     internal var beforeIdentityReadAdmission:(()->Unit)?=null
     @Synchronized fun open():ImportView? {
         val scope=session.capture() ?: run {retire();return null}
-        if(owner?.let(session::current)!=true)retire()
+        if(owner?.let(session::current)!=true)clearImportState()
         owner=scope;read=null;mutable.value=mutable.value.copy(loading=false)
         if(!hydrated)try {
             hydrated=true
@@ -59,8 +61,9 @@ class ImportRepository(private val session:AccountSession,private val api:SoundQ
         return ImportSubmission(candidate.scope,source).also {submission=it}
     }
     /** A read-only confirmation stage. The exact source remains owned by its Discover capability. */
+    @Synchronized fun sourceSessionConsumed(choice:SourceChoice)=choice.selection.id in consumedSourceSessions
     @Synchronized fun prepareSource(candidate:ImportView,choice:SourceChoice):Boolean {
-        if(!current(candidate)||mutable.value.pending||mutable.value.consumed||!session.current(choice.scope)||!choice.valid()||choice.consumed||!choice.candidate.downloadable)return false
+        if(!current(candidate)||mutable.value.pending||mutable.value.consumed||!session.current(choice.scope)||!choice.valid()||choice.consumed||choice.selection.id in consumedSourceSessions||!choice.candidate.downloadable)return false
         read=null;mutable.value=mutable.value.copy(sourcePlan=ImportSourcePlan(candidate,choice),playlistChoices=emptyList(),playlistTotal=null,chosenPlaylist=null,loading=false,error=null)
         return true
     }
@@ -156,7 +159,9 @@ class ImportRepository(private val session:AccountSession,private val api:SoundQ
         if(!current(candidate)||mutable.value.pending||mutable.value.loading||mutable.value.playlistConfirmation!==expected||expected.phase!=ImportPlaylistPhase.Confirmed||selected.id!=expected.job||selected.track!=expected.track||selected.status!=ImportStatus.Complete)return false
         open(expected.playlist);return true
     }
-    @Synchronized fun retire() {identityVersion++;hydrated=false;consumedSourceSessions.clear();owner=null;view=null;submission=null;read=null;mutable.value=ImportsState()}
+    @Synchronized fun retire() {progressObservation.retire();clearImportState()}
+    // A late route open may still hold the old account while the observer already owns the new one.
+    private fun clearImportState() {identityVersion++;hydrated=false;consumedSourceSessions.clear();owner=null;view=null;submission=null;read=null;mutable.value=ImportsState()}
     /** The backend attaches the captured target. Completion never issues a second playlist write. */
     private fun confirmPlaylist(candidate:ImportView,job:ImportJob,valid:()->Boolean):ImportPlaylistConfirmation? {
         val target=try {api.intakeReceipts.entries(session.endpoint.identity,candidate.scope.accountId).lastOrNull {it.kind=="source"&&it.job==job.id.value}?.playlistId?.let(::PlaylistId)}catch(_:Exception){throw SafeFailure(SafeFailure.Reason.StoreRejected)} ?: return null

@@ -56,7 +56,7 @@ import com.soundq.designsystem.*
                     enabled = !state.loading && state.error == null && state.excludedTarget != row.id,
                     leading = { SoundQIcon(SoundQIcon.List, null) })
             }
-            if(!state.loading && state.total?.let {state.rows.size < it} == true) SoundQButton("Load more playlists", actions::more, variant = SoundQButtonVariant.Secondary)
+            if(!state.loading && state.total?.let {state.rows.size < it} == true) SoundQListActionRow("Load more playlists", actions::more)
             choice?.let { captured -> SoundQButton("Add track to “${captured.row.name}”", { actions.submit(captured) }, enabled = !state.loading && state.error == null) }
         }
     }
