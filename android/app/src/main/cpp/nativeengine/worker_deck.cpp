@@ -19,6 +19,9 @@ namespace soundq::nativeengine {
 #ifdef SOUNDQ_CALLBACK_TEST_BARRIERS
 namespace test { void workerJoin() noexcept; }
 #endif
+#ifdef SOUNDQ_FORWARD_REFILL_TEST_BARRIERS
+namespace test { void workerCopy() noexcept; }
+#endif
 namespace {
 constexpr uint32_t pageFrames = 48000;
 constexpr uint32_t pageSamples = pageFrames * 2;
@@ -136,7 +139,7 @@ struct WorkerDeck::Impl {
         bool open = false;
         uint64_t token = 0, extent = 0, cursor = 0;
         std::string path;
-        Batch batch{};
+        Batch batch{}, reuse{}; // immutable current-bank sources, never shared destinations
         double speed = 1;
         std::shared_ptr<const PcmReaderFactory> factory;
     };
@@ -243,6 +246,15 @@ struct WorkerDeck::Impl {
         job.speed = intended.speed;
         if (open) job.batch.count = 4;
         else job.batch = neighborhood({}, extent, cursor);
+        // Only an ordinary forward turnover of acknowledged, unprocessed PCM.
+        // A strictly newer last page requires real reader work only while the
+        // worker's endpoint still matches this job (rechecked before copying).
+        // Backward fills and speed transitions retain existing decoding behavior.
+        // No processed SpeedPages enter here.
+        if (!open && job.speed == 1 && submittedSpeed == 1 && current.count &&
+            job.batch.first[0] > current.first[0] &&
+            job.batch.first[job.batch.count - 1] > current.first[current.count - 1])
+            job.reuse = current;
         uint32_t found = 0;
         for (uint32_t i = 0; i < poolPages && found < job.batch.count; ++i)
             if (!occupied[i]) job.batch.slots[found++] = i;
@@ -329,6 +341,11 @@ struct WorkerDeck::Impl {
     void reconcile(uint64_t completed) {
         if (phase == Phase::Retiring) {
             if (completed < retirementReceipt) return;
+            // The old bank may also be a copy source for the single outstanding
+            // job. Callback ACK alone cannot retire that worker read: its actual
+            // reply must be harvested before ANY old slot becomes free. Token
+            // cancellation does not prove exit. Reopen also waits on this fence.
+            if (outstanding) return;
             // A later unassign retires both borrowed descriptor sets. A filling
             // task is different custody and cannot be recycled until its reply.
             release(current);
@@ -443,15 +460,26 @@ struct WorkerDeck::Impl {
             if (result.error == 0 && !obsolete(job.token)) {
                 if (!decoder) result.error = SQ_FILE_DECODE;
                 else {
+                    // A cancelled read can learn EOS without updating control extent.
+                    // Its newer endpoint could skip every uncopied page; fall back
+                    // to real in-range reads and their final source-validation fence.
+                    if (decoder->endFrames() != job.extent) job.reuse = {};
                     result.batch = neighborhood(job.batch, result.extent, job.cursor);
                     const auto center = (result.extent ? std::min(job.cursor, result.extent - 1) : job.cursor) / pageFrames;
                     // Decode the cursor/interpolation-neighbor pair first.
                     // Known ends add backward/forward safety; unknown ends use
                     // all remaining slots forward, including the fourth page.
                     // Publish only after every sorted descriptor has real PCM.
-                    const std::array<uint64_t, 4> priority{{center, center + 1,
+                    std::array<uint64_t, 4> priority{{center, center + 1,
                         result.extent ? (center == 0 ? std::numeric_limits<uint64_t>::max() : center - 1) : center + 2,
                         result.extent ? center + 2 : center + 3}};
+                    // Missing ordinary forward pages must extend the decoder in
+                    // source order, not rewind through unchanged overlap pages.
+                    if (job.reuse.count) {
+                        priority.fill(std::numeric_limits<uint64_t>::max());
+                        for (uint32_t i = 0; i < result.batch.count; ++i)
+                            priority[i] = result.batch.first[i] / pageFrames;
+                    }
                     if (job.speed != 1) {
                         // One continuous ascending stream; cached pages are reused verbatim.
                         const auto stale = [&] { return obsolete(job.token); };
@@ -469,6 +497,19 @@ struct WorkerDeck::Impl {
                         for (uint32_t i = 0; i < result.batch.count; ++i) {
                             if (result.batch.first[i] / pageFrames != page) continue;
                             if (obsolete(job.token)) break;
+                            bool copied = false;
+                            for (uint32_t old = 0; old < job.reuse.count; ++old) {
+                                if (job.reuse.first[old] != result.batch.first[i] ||
+                                    job.reuse.frames[old] != result.batch.frames[i]) continue;
+#ifdef SOUNDQ_FORWARD_REFILL_TEST_BARRIERS
+                                test::workerCopy();
+#endif
+                                std::copy_n(pages[job.reuse.slots[old]].get(),
+                                    size_t{result.batch.frames[i]} * 2, pages[result.batch.slots[i]].get());
+                                copied = true;
+                                break;
+                            }
+                            if (copied) continue;
                             const auto knownEnd=decoder->endFrames();
                             if(knownEnd && result.batch.first[i]>=knownEnd) {
                                 result.extent=knownEnd;result.batch.frames[i]=0;continue;
@@ -509,7 +550,7 @@ struct WorkerDeck::Impl {
             fillsInFlight.store(0, std::memory_order_release);
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                reply = result; // reply also proves an obsolete write has exited
+                reply = result; // proves obsolete writes AND old-bank copy reads have exited
             }
             changed.notify_one();
         }
