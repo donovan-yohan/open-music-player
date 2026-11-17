@@ -72,7 +72,32 @@ object SoundQ {
 enum class SoundQIcon {Info,Close}
 fun SoundQIconButton(icon:SoundQIcon,label:String,onClick:()->Unit,outlined:Boolean){UI.actions[label]=onClick}
 fun SoundQDivider(){UI.nodes.add("divider")}
-fun SoundQCompactPlayer(title:String,artist:String,playing:Boolean,canPlay:Boolean,preparing:Boolean,onOpen:()->Unit,onToggle:()->Unit,onQueue:()->Unit,timing:Any,artwork:()->Unit){UI.nodes.add("player")}
+class CompactPlayerSwipe(val owner:Any,val canNext:Boolean,val canPrevious:Boolean,val onNext:()->Unit,val onPrevious:()->Unit)
+fun SoundQCompactPlayer(title:String,artist:String,playing:Boolean,canPlay:Boolean,preparing:Boolean,onOpen:()->Unit,onToggle:()->Unit,onQueue:()->Unit,timing:Any,artwork:()->Unit,swipe:CompactPlayerSwipe?=null){UI.nodes.add("player")}
+''',
+'CompactSwipePlayback.kt': '''package com.soundq.android.playback
+// Declaration-only boundary for the extracted dock; playback is outside this fixture.
+class PlaybackProjection {enum class Connection {Connecting,Connected}}
+''',
+'CompactSwipeCompatibility.kt': '''package com.soundq.android.product
+import androidx.compose.runtime.State
+import com.soundq.android.playback.PlaybackProjection
+val Projection.accountEpoch:Long get()=-1
+val Projection.sessionIdentity:String get()="redacted"
+val Projection.sourceQueueIncarnation:String get()=""
+val Projection.selectionIncarnation:Long get()=0
+val Projection.selectedOccurrence:String? get()=null
+val Projection.source:String get()="Queue"
+val Projection.localOnly:Boolean get()=false
+val Projection.arrangementService:String get()=""
+class SwipeDeviceOwner(val version:Long,val occurrence:String)
+val Projection.selectedDeviceOwner:SwipeDeviceOwner? get()=null
+val Projection.connection:PlaybackProjection.Connection get()=PlaybackProjection.Connection.Connecting
+val Projection.canNext:Boolean get()=false
+val Projection.canPrevious:Boolean get()=false
+val ProductViewModel.playback:State<Projection> get()=State(Projection())
+fun Controller.next():Unit=error("Playback outside import-progress fixture")
+fun Controller.previous():Unit=error("Playback outside import-progress fixture")
 ''',
 'Artwork.kt': '''package com.soundq.android.product.artwork
 fun PlayerArtwork(graph:Any,playback:Any,size:Any,valid:()->Boolean){}

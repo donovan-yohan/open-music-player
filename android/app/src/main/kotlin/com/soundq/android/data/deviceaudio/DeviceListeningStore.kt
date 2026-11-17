@@ -38,7 +38,7 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
         // Changing the identity behind an existing grant is not reselection. Mint a new grant ID.
         if (old != null && (old.locator != grant.locator || old.kind != grant.kind)) return Mutation.REFUSED
         val aliases = state.files.map { f -> f.copy(aliases = f.aliases.map { a ->
-            if (a.grantId == grant.id && grant.state != AccessState.AVAILABLE) a.copy(state = grant.state) else a
+            if (a.grantId == grant.id && grant.state != AccessState.AVAILABLE && a.state != AccessState.REMOVED) a.copy(state = grant.state) else a
         }) }
         val next = state.copy(grants = state.grants.filterNot { it.id == grant.id } + grant, files = aliases)
         val result = commit(if (old == grant && aliases == state.files) state else next)
@@ -87,7 +87,7 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
         val fold = IdentityFold.before(state.files, audio)
         var files = fold.files.map { f -> f.copy(aliases = f.aliases.map { a ->
             val movedTo = audio.find { it.locator == a.locator }
-            if ((complete && a.grantId == capture.grantId && audio.none { it.objectId == f.objectId && it.locator == a.locator }) || (movedTo != null && movedTo.objectId != f.objectId)) a.copy(state = AccessState.MISSING) else a
+            if (a.state != AccessState.REMOVED && ((complete && a.grantId == capture.grantId && audio.none { it.objectId == f.objectId && it.locator == a.locator }) || (movedTo != null && movedTo.objectId != f.objectId))) a.copy(state = AccessState.MISSING) else a
         }) }.toMutableList()
         for (d in audio) {
             val at = files.indexOfFirst { it.objectId == d.objectId }
@@ -283,10 +283,11 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
         serverEvents.remove(capture.key)
         return Mutation.APPLIED // memory-only admission retirement
     }
-    /** Platform/service observed opening failure. No grant minting, source IO, or progress deletion. */
+    /** Platform/service observed opening failure, or app-confirmed original deletion (REMOVED, allAliases).
+     * REMOVED is not an external missing/revoked file. No source IO or progress deletion here. */
     @Synchronized fun reportUnavailable(source: SourceCapture, locator: ProviderLocator, reason: AccessState, allAliases: Boolean = false): Mutation {
-        if (reason !in setOf(AccessState.MISSING, AccessState.UNREADABLE, AccessState.UNSUPPORTED) || !sourceCurrent(source)) return Mutation.REFUSED
-        if (allAliases && reason != AccessState.MISSING) return Mutation.REFUSED
+        if (reason !in setOf(AccessState.MISSING, AccessState.UNREADABLE, AccessState.UNSUPPORTED, AccessState.REMOVED) || !sourceCurrent(source)) return Mutation.REFUSED
+        if ((allAliases && reason !in setOf(AccessState.MISSING, AccessState.REMOVED)) || (reason == AccessState.REMOVED && !allAliases)) return Mutation.REFUSED
         val key = source.owner.key as? HistoryKey.Device ?: return Mutation.REFUSED
         val f = state.files.find { it.id == key.id } ?: return Mutation.REFUSED
         if (f.aliases.none { it.locator == locator }) return Mutation.REFUSED

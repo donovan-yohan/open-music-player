@@ -101,6 +101,26 @@ class UnifiedLibraryProjectionTest {
         // All files access is the only route: no row asks for a file to be chosen again.
         assertEquals("Unavailable",phoneRowUnavailableLabel(missing))
     }
+    @Test fun explicitlyRemovedPhoneIsNotLibraryMembershipButOtherUnavailableFilesAndHistoryRemain() {
+        val deleted=file(1,"Deleted").let {row->row.copy(aliases=row.aliases.map {it.copy(state=AccessState.REMOVED)})}
+        val missing=file(2,"Missing").let {row->row.copy(aliases=row.aliases.map {it.copy(state=AccessState.MISSING)})}
+        val revoked=file(3,"Revoked",false)
+        val unplayable=file(4,"Unsupported").let {row->row.copy(aliases=row.aliases.map {it.copy(state=AccessState.UNSUPPORTED)})}
+        val history=listOf(ListeningHistory(HistoryKey.Device(deleted.id),1234,Bookmark(deleted.owner,42000)))
+        val snapshot=DeviceListeningSnapshot(1,listOf(deleted,missing,revoked,unplayable),emptyList(),history).published()
+        val server=Track(TrackId(1),"Server")
+        for(recent in listOf(false,true))for(source in LibrarySource.entries) {
+            val rows=unifiedLibraryRows("e","a",listOf(server),listOf(server),snapshot,LibraryQuery(),source,recent)
+            assertFalse(rows.any {it.phone?.id==deleted.id})
+            assertEquals(if(source==LibrarySource.All)4 else if(source==LibrarySource.Local)2 else 1,rows.size)
+            assertTrue(rows.any {it.server==server}) // owned download/server membership is unrelated
+            assertTrue(unifiedLibraryRows("e",null,emptyList(),emptyList(),snapshot,LibraryQuery(text="Deleted"),source,recent).isEmpty())
+        }
+        assertEquals(history,snapshot.history)
+        assertNotNull(snapshot.resolveRetained(deleted.id,deleted.revision,deleted.incarnation))
+        assertNull(snapshot.resolve(deleted.owner))
+    }
+
     @Test fun downloadsNeverDuplicateAcknowledgedServerIdentityAndPhoneCannotBecomeLiked() {
         val track=Track(TrackId(1),"Same",liked=true);val phone=file(1,"Same")
         val snapshot=DeviceListeningSnapshot(1,listOf(phone),emptyList(),emptyList())

@@ -28,7 +28,7 @@ internal fun unifiedLibraryRows(endpoint:String,account:String?,server:List<Trac
         (it.id in acknowledged||matches(it.title,it.artist,it.album))&&(!query.liked||it.liked==true)&&query.collection?.contains(it)!=false&&((query.genre.isBlank()&&query.verified==null)||it.id in acknowledged)
     }.map {track->UnifiedLibraryRow(PlaybackRef.Server(endpoint,account,track.id.value),track.title,track.artist,track.album,track.durationMs,track.id in downloaded,server=track)}
     val device=if(query.liked||query.verified!=null||query.genre.isNotBlank())emptyList() else phone?.files.orEmpty().filter {
-        matches(it.metadata.displayTitle,it.metadata.artist.orEmpty(),it.metadata.album.orEmpty(),it.metadata.filename)&&query.collection?.let {c->(c.artist==null||c.artist==it.metadata.artist)&&(c.album==null||c.album==it.metadata.album)}!=false
+        it.libraryMember&&matches(it.metadata.displayTitle,it.metadata.artist.orEmpty(),it.metadata.album.orEmpty(),it.metadata.filename)&&query.collection?.let {c->(c.artist==null||c.artist==it.metadata.artist)&&(c.album==null||c.album==it.metadata.album)}!=false
     }.map {row->UnifiedLibraryRow(PlaybackRef.Device(row.id.value.toString(),row.revision.sha256,row.revision.byteLength,row.incarnation),row.metadata.displayTitle,row.metadata.artist.orEmpty(),row.metadata.album.orEmpty(),row.durationMs ?: 0,row.available||row.unplayable,phone=row)}
     val rows=(remote+device).filter {when(source){LibrarySource.All->true;LibrarySource.Server->it.ref is PlaybackRef.Server;LibrarySource.Local->it.local}}
     val times=phone?.history.orEmpty().associate {it.key to it.playedAtEpochMs}

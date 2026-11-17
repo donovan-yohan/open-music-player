@@ -89,7 +89,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         // Ordinary scans, revisions, folds and real access changes retain global cancellation.
         if(previous!=null&&snapshot!=null&&(previous.grants!=snapshot.grants||previous.files.any {old->snapshot.files.singleOrNull {it.id==old.id}?.let {next->
             next.owner!=old.owner||(next.aliases!=old.aliases&&!(old.owner==unavailable&&next.aliases.size==old.aliases.size&&old.aliases.all {alias->
-                next.aliases.any {it==alias||(it.grantId==alias.grantId&&it.locator==alias.locator&&it.state in setOf(AccessState.MISSING,AccessState.UNREADABLE,AccessState.UNSUPPORTED))}
+                next.aliases.any {it==alias||(it.grantId==alias.grantId&&it.locator==alias.locator&&it.state in setOf(AccessState.MISSING,AccessState.UNREADABLE,AccessState.UNSUPPORTED,AccessState.REMOVED))}
             }))
         }==true}))advanceAuthority()
         if(previous!=null&&snapshot!=null&&unavailable!=null) {
@@ -208,8 +208,9 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         val left=resolve(a) ?: return false
         return resolve(b)?.id==left.id
     }
+    /** Called only after explicit Delete confirms both the provider row and original path are absent. */
     suspend fun markFileMissing(admission:PhoneSourceAdmission,uri:String):Boolean=journal(true,admission.source.owner) {owner,_->
-        owner.reportUnavailable(admission.source,ProviderLocator(Uri.parse(uri).authority ?: "android",uri),AccessState.MISSING,allAliases=true)!=Mutation.REFUSED
+        owner.reportUnavailable(admission.source,ProviderLocator(Uri.parse(uri).authority ?: "android",uri),AccessState.REMOVED,allAliases=true)!=Mutation.REFUSED
     }==true
     fun observed(ref: com.soundq.android.playback.PlaybackRef.Device): DeviceAudio? =
         state.value.snapshot?.resolve(ref.contentOwner)
