@@ -116,6 +116,10 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     private var refreshRunning:(()->Unit)?=null
     private var pendingRefresh:(()->Unit)?=null
     private data class RefreshScope(val version:Long,val storage:Boolean)
+    /** One original callback/owner across automatic resumes, never a wrapper history. */
+    private inner class RefreshValidity(val valid:()->Boolean,val version:Long):()->Boolean {
+        override fun invoke()=valid()&&current(version)
+    }
     private var refreshScope:RefreshScope?=null
     fun refresh(valid: () -> Boolean = { true }) {
         // UI callers never wait for a held catalog publication. Uncontended admission stays inline;
@@ -146,10 +150,11 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         val version = scope.version
         // Keep the admitted request as running ownership, including its original validity/owner.
         // A mutation may retain it once; an ordinary completed scan never retries itself.
-        refreshRunning={refresh {valid()&&current(version)}}
+        val request=valid as? RefreshValidity ?: RefreshValidity(valid,version)
+        refreshRunning={refresh(request)}
         val refresh=refreshEpoch.incrementAndGet()
         val proofAuthority=authoritySequence.get()
-        fun active()=valid()&&current(version)&&refreshEpoch.get()==refresh&&authoritySequence.get()==proofAuthority
+        fun active()=request()&&current(version)&&refreshEpoch.get()==refresh&&authoritySequence.get()==proofAuthority
         jobs.launch {
             try {
                 if (!active()) return@launch

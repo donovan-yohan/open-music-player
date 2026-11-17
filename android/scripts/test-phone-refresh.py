@@ -41,7 +41,9 @@ private val DeviceAudio.bytes get()=revision.byteLength
 private class Platform {
  val originals=mutableMapOf<String,File>()
  var rows=listOf(Observation("one"));var complete=true;var fail:String?=null;var gate:java.util.concurrent.CountDownLatch?=null
- val entered=java.util.concurrent.CountDownLatch(1);val holding=java.util.concurrent.CountDownLatch(1);var proofs=0;var discoveries=0;var cancelled=0
+ val entered=java.util.concurrent.CountDownLatch(1);@Volatile var holding=java.util.concurrent.CountDownLatch(1)
+ @Volatile var heldCurrent:(()->Boolean)?=null
+ var proofs=0;var discoveries=0;var cancelled=0
  @Volatile var storage=true
  @Volatile var indexing=true
  @Volatile var accessRevision=0
@@ -56,7 +58,7 @@ private class Platform {
  fun discover(current:()->Boolean):Coverage {discoveries++;order+="discover";return Coverage(complete,rows)}
  fun walksSharedStorage()=walks
  fun provenIndexKeys(ids:Collection<String>):Map<String,IndexKeyProof> {asked+=ids.toList();return proven.filterKeys {it in ids}}
- fun proof(uri:String,current:()->Boolean):AudioContentProof {proofs++;entered.countDown();val held=gate;if(held!=null){holding.countDown();held.await()};if(!current()){cancelled++;throw CancellationException()};if(uri==fail)error("Unreadable original");val file=originals[uri];return if(file==null)AudioContentProof(123,sha) else {val bytes=file.readBytes();AudioContentProof(bytes.size.toLong(),java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it)})}}
+ fun proof(uri:String,current:()->Boolean):AudioContentProof {proofs++;entered.countDown();val held=gate;if(held!=null){heldCurrent=current;holding.countDown();held.await()};if(!current()){cancelled++;throw CancellationException()};if(uri==fail)error("Unreadable original");val file=originals[uri];return if(file==null)AudioContentProof(123,sha) else {val bytes=file.readBytes();AudioContentProof(bytes.size.toLong(),java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it)})}}
 }
 private data class State(val refreshing:Boolean=false,val permission:Boolean=true,val message:String?=null)
 // Record attempted obsolete publications, not merely domain refusal or eventual trailing state.
@@ -94,7 +96,10 @@ ADVANCE
  init {store.authority={PROOF_EPOCH};graph.phoneAudio=this}
  suspend fun markFileMissing(admission:PhoneSourceAdmission,uri:String,fence:UUID):Boolean=error("Confirmed-delete ACK is outside this failure-only action facade")
  @Volatile var lastScan:PhoneScanObservation?=null
- fun current(version:Long)=version==graph.session.version()
+ val currentChecks=java.util.concurrent.atomic.AtomicInteger()
+ fun current(version:Long):Boolean {currentChecks.incrementAndGet();return version==graph.session.version()}
+ fun retainedRequest():Any?=refreshLocked {refreshRunning}
+ fun requestsReleased()=refreshLocked {refreshRunning==null&&pendingRefresh==null}
  fun publish(message:String?=null){mutable.value=State(message=message)}
  fun fail(message:String){mutable.value=State(message=message)}
  private fun grantId(v:String)=ScanGrantId(UUID.nameUUIDFromBytes(v.toByteArray()))
@@ -134,7 +139,81 @@ private object Legacy {
  fun write(file:File){file.writeBytes(encodeDomain(DomainState(5,listOf(indexed,this.file,folder),listOf(heard,picked,unproven),emptyList(),
   listOf(entry(heard,1000,700000),entry(picked,3000,650000),entry(unproven,2000,610000)))).toString().toByteArray())}
 }
+// Inspect every task-owned capture, including non-function request holders/containers.
+// Repository/platform/store and JDK primitives are boundaries, not alternate roots to search.
+private data class CaptureShape(val objects:Int,val functions:Int,val edges:Int,val depth:Int)
+private fun captureShape(root:Any,repo:Repository,original:Any):CaptureShape {
+ val seen=java.util.IdentityHashMap<Any,Boolean>();var functions=0;var edges=0
+ fun visit(value:Any?):Int {
+  if(value==null||value===repo)return 0
+  val type=value.javaClass;val container=value is Map<*,*>||value is Iterable<*>||value is Array<*>
+  if(!container&&(type.name.startsWith("java.")||type.name.startsWith("kotlin.")))return 0
+  if(seen.put(value,true)!=null)return 0
+  if(value is Map<*,*>){edges+=value.size*2;return 1+(value.entries.maxOfOrNull {maxOf(visit(it.key),visit(it.value))} ?: 0)}
+  if(value is Iterable<*>){val children=value.toList();edges+=children.size;return 1+(children.maxOfOrNull {visit(it)} ?: 0)}
+  if(value is Array<*>){edges+=value.size;return 1+(value.maxOfOrNull {visit(it)} ?: 0)}
+  if(value is Function<*>)functions++
+  var depth=0;var owner:Class<*>?=type
+  while(owner!=null&&!owner.name.startsWith("java.")&&!owner.name.startsWith("kotlin.")) {
+   for(field in owner.declaredFields)if(!java.lang.reflect.Modifier.isStatic(field.modifiers)&&!field.type.isPrimitive) {
+    field.isAccessible=true;val child=field.get(value);if(child!=null&&child!==repo)edges++
+    depth=maxOf(depth,visit(child))
+   }
+   owner=owner.superclass
+  }
+  return 1+depth
+ }
+ val depth=visit(root);assertTrue("Original callback must remain reachable through the actual request",seen.containsKey(original))
+ return CaptureShape(seen.size,functions,edges,depth)
+}
+private class CountedValidity:()->Boolean {
+ val live=java.util.concurrent.atomic.AtomicBoolean(true);var calls=0;var measure=false;var depth=0
+ override fun invoke():Boolean {calls++;if(measure)depth=Thread.currentThread().stackTrace.size;return live.get()}
+}
 class PhoneRefreshTest {
+ private fun repeatedInterruption(mode:String)=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-stable-request-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+  var gate=java.util.concurrent.CountDownLatch(1)
+  try {DeviceListeningStore(File(root,"domain.json")).use {store->
+   val repo=Repository(store,jobs);repo.refresh();repo.settled() // Completed seed; not part of the interrupted request.
+   val row=store.snapshot(repo.access)!!.files.single();val valid=CountedValidity()
+   fun holdNext(){repo.platform.holding=java.util.concurrent.CountDownLatch(1);repo.platform.gate=gate}
+   suspend fun held(){assertTrue(repo.platform.holding.await(5,java.util.concurrent.TimeUnit.SECONDS));assertTrue(repo.mutable.value.refreshing)}
+   val shapes=mutableListOf<CaptureShape>();val work=mutableListOf<Int>();val depths=mutableListOf<Int>()
+   fun observe(n:Int) {
+    shapes+=captureShape(requireNotNull(repo.retainedRequest()),repo,valid)
+    val checks=repo.currentChecks.get();val calls=valid.calls;valid.measure=true
+    try {assertTrue(requireNotNull(repo.platform.heldCurrent).invoke())}finally{valid.measure=false}
+    assertEquals("Each active check reaches the one original callback once",calls+1,valid.calls)
+    work+=repo.currentChecks.get()-checks;depths+=valid.depth
+    if(n in setOf(0,1,8,16,32))println("stable-request mode=$mode interruptions=$n graph=${shapes.last()} currentChecks=${work.last()} callbackStack=${depths.last()}")
+   }
+   holdNext();repo.refresh(valid);held();observe(0) // Sole initial explicit request in this interval.
+   repeat(32) {n->
+    val token=repo.beginFileMutation(row)!!;val old=gate
+    if(n%2==0){old.countDown();repo.settled();assertEquals(1,repo.store.publications)}
+    gate=java.util.concurrent.CountDownLatch(1);holdNext();repo.endFileMutation(token)
+    if(n%2!=0)old.countDown()
+    held();assertEquals("One resumed scan for each interruption",n+3,repo.platform.discoveries)
+    assertEquals("Interrupted proof never publishes",1,repo.store.publications);observe(n+1)
+   }
+   if(mode!="complete") {
+    val token=repo.beginFileMutation(row)!!
+    if(mode=="callback")valid.live.set(false) else repo.graph.session.version++
+    gate.countDown();repo.settled();repo.endFileMutation(token);repo.settled()
+    assertEquals("Retired original callback/owner cannot enumerate again",34,repo.platform.discoveries)
+    assertEquals("Retired request cannot publish",1,repo.store.publications)
+   } else {gate.countDown();repo.settled();assertEquals(2,repo.store.publications);assertEquals(34,repo.platform.discoveries)}
+   assertTrue("Completion must release both request roots",repo.requestsReleased());assertFalse(repo.mutable.value.refreshing)
+   // Assert after the finite schedule so predecessor RED observes all 32 interruptions and retirement.
+   assertEquals("Retained graph must not encode interruption history",List(33){shapes.first()},shapes)
+   assertEquals("Original-owner validation work must remain constant",List(33){work.first()},work)
+   assertEquals("Callback validation stack must remain constant",List(33){depths.first()},depths)
+  }}finally{gate.countDown();jobs.cancel();withContext(NonCancellable){jobs.coroutineContext[Job]!!.children.toList().joinAll()};root.deleteRecursively()}
+ }
+ @Test fun repeatedMutationResumesKeepConstantRequestGraphAndReleaseOnCompletion()=repeatedInterruption("complete")
+ @Test fun repeatedMutationResumesRetainOriginalCallbackRetirement()=repeatedInterruption("callback")
+ @Test fun repeatedMutationResumesRetainOriginalOwnerRetirement()=repeatedInterruption("owner")
  private fun failedDeleteInterruptsRefresh(oldFirst:Boolean,providerFails:Boolean)=runBlocking {
   val root=java.nio.file.Files.createTempDirectory("refresh-failed-delete-").toFile()
   val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO);val proof=java.util.concurrent.CountDownLatch(1)
