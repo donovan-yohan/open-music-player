@@ -46,6 +46,7 @@ if a.player_tests:
                     if 'classes.jar' in z.namelist():
                         target=a.build/(file.stem+'.jar');target.write_bytes(z.read('classes.jar'));cp.append(target)
     sources.extend([r/'android/scripts/NativeArrangementPlayerTest.kt',r/'android/scripts/NativeOverlapServiceApplication.kt'])
+    sources.append(r/'android/scripts/NativeQueueMutationContinuityTest.kt')
     if a.legacy_extracted:
         sources.append(a.legacy_extracted/'ArrangementServiceExtractedTest.kt')
         cp.append(r/'android/app/build/intermediates/built_in_kotlinc/debugUnitTest/compileDebugUnitTestKotlin/classes')
@@ -55,6 +56,6 @@ if a.player_tests:
     latest_asm={artifact.name:sorted(artifact.iterdir(),key=lambda x:tuple(int(n) for n in x.name.split('.') if n.isdigit()))[-1].name for artifact in (cache/'org.ow2.asm').iterdir()}
     cp=[x for x in cp if not ('/junit/junit/' in str(x) and '/4.13.2/' not in str(x)) and not ('/org.ow2.asm/' in str(x) and x.parent.parent.name!=latest_asm.get(x.parent.parent.parent.name))]
     runtime=[a.build/'classes']+cp
-    result=subprocess.run([str(java),'-Xmx1536m','-XX:ActiveProcessorCount=1','-Drobolectric.offline=true','-Drobolectric.dependency.dir='+str(Path.home()/'.m2/repository/org/robolectric/android-all-instrumented/9-robolectric-4913185-2-i7'),'-cp',os.pathsep.join(map(str,runtime)),'org.junit.runner.JUnitCore','com.soundq.android.playback.nativeengine.NativeArrangementPlayerTest'])
+    result=subprocess.run([str(java),'-Xmx1536m','-XX:ActiveProcessorCount=1','-Drobolectric.offline=true','-Drobolectric.dependency.dir='+str(Path.home()/'.m2/repository/org/robolectric/android-all-instrumented/9-robolectric-4913185-2-i7'),'-cp',os.pathsep.join(map(str,runtime)),'org.junit.runner.JUnitCore','com.soundq.android.playback.nativeengine.NativeArrangementPlayerTest','com.soundq.android.playback.nativeengine.NativeQueueMutationContinuityTest'])
     if result.returncode: raise SystemExit(result.returncode)
 print('PASS pinned Kotlin 2.4.21 owned playback and service compile against cached Media3 1.11.1 and existing app dependencies')
