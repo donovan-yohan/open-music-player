@@ -122,7 +122,7 @@ func (s *radarDailyStore) finish(ctx context.Context, user uuid.UUID, token uuid
 	return nil
 }
 
-func (s *RadarService) readDaily(ctx context.Context, user uuid.UUID, now time.Time) (RadarPage, error) {
+func (s *RadarService) readDaily(ctx context.Context, user uuid.UUID, now time.Time, policy string) (RadarPage, error) {
 	state, err := s.daily.begin(ctx, user)
 	if err != nil {
 		return RadarPage{}, err
@@ -159,7 +159,7 @@ func (s *RadarService) readDaily(ctx context.Context, user uuid.UUID, now time.T
 		if failed {
 			return RadarPage{}, errRadarDailyUnavailable
 		}
-		return s.filterMembership(ctx, user, page)
+		return s.filterMembership(ctx, user, page, policy)
 	}
 	// Bounded existing-state response, not duplicate provider work: concurrent cold
 	// readers receive 503; live warm pending readers may see the original good snapshot
@@ -170,8 +170,8 @@ func (s *RadarService) readDaily(ctx context.Context, user uuid.UUID, now time.T
 		return RadarPage{}, errRadarDailyUnavailable
 	}
 	var page RadarPage
-	if json.Unmarshal([]byte(state.data), &page) != nil || page.PolicyVersion != RadarPolicy || len(page.Items) > 200 || page.GeneratedAt.After(now.UTC()) {
+	if json.Unmarshal([]byte(state.data), &page) != nil || page.PolicyVersion != RadarPolicy || len(page.Items) > 200 || page.GeneratedAt.After(now.UTC()) || !radarLegacyOrder(page.Items) {
 		return RadarPage{}, errRadarDailyUnavailable
 	}
-	return s.filterMembership(ctx, user, page)
+	return s.filterMembership(ctx, user, page, policy)
 }

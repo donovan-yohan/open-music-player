@@ -16,6 +16,7 @@ import (
 )
 
 const RadarPolicy = "recording-radar-v1"
+const RadarVarietyPolicy = "recording-radar-v2"
 
 type RadarDate struct {
 	Raw       string `json:"raw"`
@@ -27,6 +28,8 @@ type RadarSong struct {
 	Artist                  string    `json:"artist"`
 	CreditedSeedArtistMbids []string  `json:"creditedSeedArtistMbids"`
 	FirstRelease            RadarDate `json:"firstRelease"`
+	ReleaseGroupMbid        string    `json:"releaseGroupMbid,omitempty"`
+	ReleaseMbid             string    `json:"releaseMbid,omitempty"`
 }
 type RadarWindows struct {
 	ListenSince  time.Time `json:"listenSince"`
@@ -98,19 +101,28 @@ func NewRadarService(seeds RadarSeedReader, membership RadarMembershipReader, ca
 	return &RadarService{seeds: seeds, membership: membership, catalog: catalog}
 }
 func (s *RadarService) Read(ctx context.Context, user uuid.UUID, now time.Time) (RadarPage, error) {
+	return s.ReadWithOrdering(ctx, user, now, RadarPolicy)
+}
+
+// ReadWithOrdering changes only the response projection. Daily admission and
+// stored candidates always retain the legacy policy and date/ID interpretation.
+func (s *RadarService) ReadWithOrdering(ctx context.Context, user uuid.UUID, now time.Time, policy string) (RadarPage, error) {
+	if policy != RadarPolicy && policy != RadarVarietyPolicy {
+		return RadarPage{}, fmt.Errorf("unsupported radar ordering")
+	}
 	if user == uuid.Nil {
 		return RadarPage{}, fmt.Errorf("radar requires account")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if s.daily != nil {
-		return s.readDaily(ctx, user, now)
+		return s.readDaily(ctx, user, now, policy)
 	}
 	page, err := s.candidates(ctx, user, now)
 	if err != nil {
 		return page, err
 	}
-	return s.filterMembership(ctx, user, page)
+	return s.filterMembership(ctx, user, page, policy)
 }
 
 // candidates caches metadata eligibility, never an account ownership verdict.
@@ -250,7 +262,16 @@ func (s *RadarService) candidates(ctx context.Context, user uuid.UUID, now time.
 			}
 			continue
 		}
-		eligible = append(eligible, dated{RadarSong{id, row.Title, row.Artist, credits, date}, start})
+		song := RadarSong{RecordingMbid: id, Title: row.Title, Artist: row.Artist, CreditedSeedArtistMbids: credits, FirstRelease: date}
+		// Optional search-result associations are metadata, never eligibility or
+		// audio authority. Do not enrich or substitute the edition's date.
+		if radarID(row.ReleaseGroupMBID) {
+			song.ReleaseGroupMbid = row.ReleaseGroupMBID
+		}
+		if radarID(row.ReleaseID) {
+			song.ReleaseMbid = row.ReleaseID
+		}
+		eligible = append(eligible, dated{song, start})
 	}
 	sort.Slice(eligible, func(i, j int) bool {
 		if !eligible[i].start.Equal(eligible[j].start) {
@@ -267,7 +288,8 @@ func (s *RadarService) candidates(ctx context.Context, user uuid.UUID, now time.
 // Re-run current-account membership on every serve, including a warm cache hit.
 // The candidate set retains initially owned songs and rows beyond the first 20,
 // allowing imports/removals to change the visible set without a provider read.
-func (s *RadarService) filterMembership(ctx context.Context, user uuid.UUID, page RadarPage) (RadarPage, error) {
+func (s *RadarService) filterMembership(ctx context.Context, user uuid.UUID, page RadarPage, policy string) (RadarPage, error) {
+	page.PolicyVersion = policy
 	candidates := page.Items
 	page.Items = []RadarSong{}
 	// Never append into a cached coverage slice shared with another projection.
@@ -293,22 +315,54 @@ func (s *RadarService) filterMembership(ctx context.Context, user uuid.UUID, pag
 	}
 	ownedCount := 0
 	c.OwnedExcluded = &ownedCount
+	unowned := make([]RadarSong, 0, len(candidates))
 	for i, song := range candidates {
 		if owned[ids[i]] {
 			ownedCount++
 			continue
 		}
-		if len(page.Items) == 20 {
-			c.Partial = true
-			if !containsRadar(c.Reasons, "result_limit") {
-				c.Reasons = append(c.Reasons, "result_limit")
-			}
-			continue
+		// Sanitize optional metadata on warm snapshots too. Missing or malformed
+		// associations must not remove an otherwise eligible recording.
+		if !radarID(song.ReleaseGroupMbid) {
+			song.ReleaseGroupMbid = ""
 		}
-		page.Items = append(page.Items, song)
+		if !radarID(song.ReleaseMbid) {
+			song.ReleaseMbid = ""
+		}
+		unowned = append(unowned, song)
 	}
+	if policy == RadarVarietyPolicy {
+		unowned = radarVariety(unowned)
+	}
+	if len(unowned) > 20 {
+		c.Partial = true
+		if !containsRadar(c.Reasons, "result_limit") {
+			c.Reasons = append(c.Reasons, "result_limit")
+		}
+		unowned = unowned[:20]
+	}
+	page.Items = unowned
 	c.Returned = len(page.Items)
 	return page, nil
+}
+
+// The durable candidate interpretation is always strict v1 date/recording-ID
+// order. Refuse corruption rather than emitting reordered v1 or using a corrupt
+// baseline index for v2. Legacy snapshots do not require optional associations.
+func radarLegacyOrder(songs []RadarSong) bool {
+	var prior time.Time
+	priorID := ""
+	for i, song := range songs {
+		date, start, _, ok := radarDate(song.FirstRelease.Raw)
+		if !radarID(song.RecordingMbid) || !ok || date.Precision != song.FirstRelease.Precision {
+			return false
+		}
+		if i > 0 && (start.After(prior) || (start.Equal(prior) && song.RecordingMbid <= priorID)) {
+			return false
+		}
+		prior, priorID = start, song.RecordingMbid
+	}
+	return true
 }
 
 func containsRadar(values []string, value string) bool {

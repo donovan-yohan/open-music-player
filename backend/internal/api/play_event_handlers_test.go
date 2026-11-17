@@ -68,6 +68,10 @@ func (f *fakePlayStore) TopTracks(ctx context.Context, userID uuid.UUID, days, l
 	return f.top, nil
 }
 
+func (f *fakePlayStore) OwnedTopTracks(ctx context.Context, userID uuid.UUID, days, limit int) ([]db.TopTrack, error) {
+	return f.top, nil
+}
+
 func newTrack(id int64, title string) *db.Track {
 	return &db.Track{ID: id, Title: title}
 }
