@@ -35,6 +35,7 @@ type playEventStore interface {
 	RecentlyPlayed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]db.RecentlyPlayedTrack, error)
 	PlayHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]db.PlayHistoryEvent, error)
 	TopTracks(ctx context.Context, userID uuid.UUID, days, limit int) ([]db.TopTrack, error)
+	OwnedTopTracks(ctx context.Context, userID uuid.UUID, days, limit int) ([]db.TopTrack, error)
 }
 
 type PlayEventHandlers struct {
@@ -128,9 +129,10 @@ type PlayHistoryResponse struct {
 }
 
 type TopTracksResponse struct {
-	Tracks []PlayEventTrackResponse `json:"tracks"`
-	Days   int                      `json:"days"`
-	Limit  int                      `json:"limit"`
+	Tracks    []PlayEventTrackResponse `json:"tracks"`
+	Days      int                      `json:"days"`
+	Limit     int                      `json:"limit"`
+	OwnedOnly bool                     `json:"ownedOnly,omitempty"`
 }
 
 // RecordPlay handles POST /api/v1/me/plays.
@@ -360,10 +362,35 @@ func (h *PlayEventHandlers) TopTracks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ownedOnly := false
+	if values, present := r.URL.Query()["owned"]; present {
+		if len(values) != 1 || (values[0] != "true" && values[0] != "false") {
+			writePlayEventError(w, http.StatusBadRequest, "VALIDATION_ERROR", "owned must be true or false")
+			return
+		}
+		ownedOnly = values[0] == "true"
+	}
 	days := parseIntParam(r, "days", 30)
 	limit := parseIntParam(r, "limit", 20)
 
-	tracks, err := h.playEventRepo.TopTracks(r.Context(), userCtx.UserID, days, limit)
+	var tracks []db.TopTrack
+	var err error
+	if ownedOnly {
+		// Normalize the opt-in envelope to the repository's existing bounds.
+		// Legacy parameter/response behavior stays unchanged.
+		if days <= 0 {
+			days = 30
+		}
+		if limit <= 0 {
+			limit = 20
+		}
+		if limit > 100 {
+			limit = 100
+		}
+		tracks, err = h.playEventRepo.OwnedTopTracks(r.Context(), userCtx.UserID, days, limit)
+	} else {
+		tracks, err = h.playEventRepo.TopTracks(r.Context(), userCtx.UserID, days, limit)
+	}
 	if err != nil {
 		writePlayEventError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load top tracks")
 		return
@@ -388,9 +415,10 @@ func (h *PlayEventHandlers) TopTracks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writePlayEventJSON(w, http.StatusOK, TopTracksResponse{
-		Tracks: responses,
-		Days:   days,
-		Limit:  limit,
+		Tracks:    responses,
+		Days:      days,
+		Limit:     limit,
+		OwnedOnly: ownedOnly,
 	})
 }
 
