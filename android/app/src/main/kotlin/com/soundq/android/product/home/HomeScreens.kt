@@ -36,8 +36,9 @@ import java.time.format.DateTimeFormatter
     val history = model.home.history.collectAsStateWithLifecycle().value
     var collection by rememberSaveable(route) {mutableStateOf<HomeSection?>(null)}
     val previewScroll = rememberLazyListState()
-    val collectionScroll = rememberLazyListState()
-    val listState = if(collection==null)previewScroll else collectionScroll
+    val recentScroll = rememberLazyListState()
+    val topScroll = rememberLazyListState()
+    val listState = when(collection) {HomeSection.Recent->recentScroll;HomeSection.Top->topScroll;else->previewScroll}
     BackHandler(collection!=null) {collection=null}
     LaunchedEffect(route,collection,recent.rows,recent.loading) {
         if(collection==HomeSection.Recent&&!recent.loading)model.home.revealRecent(route,recent)

@@ -16,6 +16,7 @@ root = Path(__file__).resolve().parents[2]
 product = root / 'android/app/src/main/kotlin/com/soundq/android/product'
 text = (product / 'home' / 'HomeScreens.kt').read_text()
 section = text[text.index('private fun LazyListScope.homeSection('):text.index('@Composable private fun HomeTrackRow(')]
+scroll_selection = text[text.index('    val previewScroll ='):text.index('    BackHandler(collection!=null)')]
 facade = '''
 class Modifier {
  companion object {
@@ -70,8 +71,38 @@ fun HomeTrackRow(model:ProductViewModel,route:HomeRoute,section:HomeSection,acce
 '''
 # The actual rows expose track.id to the stable lazy key; model only that shape.
 facade = facade.replace('class HomeEntry(val id:Int)', 'class Track(val id:Id);class Id(val value:Int);class HomeEntry(val id:Int) {val track=Track(Id(id))}')
+# Call-site-retaining boundary for the native rememberLazyListState allocation;
+# tests the real selection body, not mounted Compose or physical scrolling.
+scroll_probe = '''
+class ScrollPosition(var index:Int=0)
+val scrollSlots=mutableListOf<ScrollPosition>()
+var scrollSlot=0
+fun rememberLazyListState():ScrollPosition {
+ val index=scrollSlot++
+ if(index==scrollSlots.size)scrollSlots.add(ScrollPosition())
+ return scrollSlots[index]
+}
+fun selectedScroll(collection:HomeSection?):ScrollPosition {
+ scrollSlot=0
+''' + scroll_selection + '''
+ return listState
+}
+fun checkScrollOwners() {
+ val preview=selectedScroll(null);preview.index=3
+ val recent=selectedScroll(HomeSection.Recent);check(recent.index==0);recent.index=20
+ val top=selectedScroll(HomeSection.Top)
+ check(top!==recent&&top!==preview) {"Recent and Top share a remembered scroll owner"}
+ check(top.index==0) {"Top inherited Recent's scroll position"};top.index=7
+ check(selectedScroll(null)===preview&&preview.index==3)
+ check(selectedScroll(HomeSection.Recent)===recent&&recent.index==20)
+ check(selectedScroll(HomeSection.Top)===top&&top.index==7)
+ check(selectedScroll(HomeSection.History)===preview)
+ println("PASS actual scroll selection: independent preview/Recent/Top owners and retained positions")
+}
+'''
 probe = '''
 fun main() {
+ checkScrollOwners()
  val rows=(1..25).map {HomeEntry(it)}
  val state=HomeReadState(rows,hasMore=true)
  val scope=LazyListScope()
@@ -91,6 +122,6 @@ fun main() {
 }
 '''
 source = a.output / 'CollectionPreview.kt'
-source.write_text(facade + '\n' + section + '\n' + probe)
+source.write_text(facade + '\n' + scroll_probe + '\n' + section + '\n' + probe)
 subprocess.run(['kotlinc', '-nowarn', str(source), '-d', str(a.output / 'probe.jar')], check=True)
 subprocess.run(['kotlin', '-cp', str(a.output / 'probe.jar'), 'CollectionPreviewKt'], check=True)
