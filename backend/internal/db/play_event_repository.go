@@ -382,6 +382,17 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 // the window are absent, as are skipped events: skips do not count toward play
 // counts.
 func (r *PlayEventRepository) TopTracks(ctx context.Context, userID uuid.UUID, days, limit int) ([]TopTrack, error) {
+	return r.topTracks(ctx, userID, days, limit, false)
+}
+
+// OwnedTopTracks ranks only tracks currently in the caller's library. Eligibility,
+// counts and membership projection share one SQL snapshot, before the ordered
+// limit, so removed tracks cannot consume the requested quota.
+func (r *PlayEventRepository) OwnedTopTracks(ctx context.Context, userID uuid.UUID, days, limit int) ([]TopTrack, error) {
+	return r.topTracks(ctx, userID, days, limit, true)
+}
+
+func (r *PlayEventRepository) topTracks(ctx context.Context, userID uuid.UUID, days, limit int, ownedOnly bool) ([]TopTrack, error) {
 	if days <= 0 {
 		days = 30
 	}
@@ -392,6 +403,10 @@ func (r *PlayEventRepository) TopTracks(ctx context.Context, userID uuid.UUID, d
 		limit = 100
 	}
 
+	membershipFilter := ""
+	if ownedOnly {
+		membershipFilter = "WHERE " + libraryMembershipProjection
+	}
 	query := `
 		SELECT t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
 			   t.mb_recording_id, t.mb_release_id, t.mb_artist_id, t.mb_verified,
@@ -412,6 +427,7 @@ func (r *PlayEventRepository) TopTracks(ctx context.Context, userID uuid.UUID, d
 		   ) agg
 		   JOIN tracks t ON t.id = agg.track_id
 		   LEFT JOIN track_analysis ta ON ta.track_id = t.id
+		   ` + membershipFilter + `
 		   ORDER BY agg.play_count DESC, agg.last_played_at DESC, t.id DESC
 		   LIMIT $3
 	`
