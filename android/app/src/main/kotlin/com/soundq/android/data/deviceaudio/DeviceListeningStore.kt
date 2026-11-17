@@ -140,6 +140,8 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
             is HistoryKey.Server -> state.servers.any { it.owner == source.owner }
         }
     }
+    /** Validate existing custody without minting a new admission or relaxing its source epoch. */
+    @Synchronized fun ownsSource(source:SourceCapture):Boolean = sourceCurrent(source)
     @Synchronized fun captureSource(access: AccessCapture, id: DeviceFileId): SourceCapture? {
         if (!current(access)) return null
         val f = snapshot(access)?.files?.find { it.id == id && it.available } ?: return null

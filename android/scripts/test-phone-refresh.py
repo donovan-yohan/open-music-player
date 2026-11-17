@@ -68,11 +68,14 @@ private class RecordingStore(val domain:DeviceListeningStore,val platform:Platfo
 }
 private class Repository(domain:DeviceListeningStore,val jobs:CoroutineScope) {
  val graph=Graph();val platform=Platform();val store=RecordingStore(domain,platform);val access=domain.unlock();val mutable=MutableStateFlow(State())
+ // Physical-mutation occupancy is an admission input; no provider IO is faked by this fixture.
+ val fileMutations=java.util.concurrent.ConcurrentHashMap<String,UUID>()
  val serial=Mutex();private val authoritySequence=java.util.concurrent.atomic.AtomicLong()
  private val authorityEpoch=java.util.concurrent.atomic.AtomicLong();val authorityVersion get()=authorityEpoch.get()
  private val fileAuthorities=java.util.concurrent.ConcurrentHashMap<DeviceFileId,Long>()
 ADVANCE
  fun revokeAuthority()=advanceAuthority()
+ fun releaseMutationForTest(){val next=refreshLocked {fileMutations.clear();pendingRefresh.also {pendingRefresh=null}};next?.invoke()}
  fun revocationQueued(thread:Thread)=refreshLock.hasQueuedThread(thread)
  init {store.authority={PROOF_EPOCH}}
  @Volatile var lastScan:PhoneScanObservation?=null
@@ -101,6 +104,17 @@ private object Legacy {
   listOf(entry(heard,1000,700000),entry(picked,3000,650000),entry(unproven,2000,610000)))).toString().toByteArray())}
 }
 class PhoneRefreshTest {
+ @Test fun physicalMutationDefersEnumerationAndKeepsOnlyLatestRefresh()=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-delete-fence-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+  try {DeviceListeningStore(File(root,"domain.json")).use {store->
+   val repo=Repository(store,jobs);repo.fileMutations["fixture-original"]=UUID.randomUUID()
+   repeat(20){repo.refresh()};repo.settled()
+   assertEquals("No omission proof may run inside a physical mutation",0,repo.platform.discoveries)
+   assertEquals(0,repo.store.publications)
+   repo.releaseMutationForTest();repo.settled()
+   assertEquals(1,repo.platform.discoveries);assertEquals(1,repo.store.publications)
+  }}finally{jobs.cancel();root.deleteRecursively()}
+ }
  @Test fun authorityRevocationAndFinalCheckCommitHaveOneOrder()=runBlocking {
   val root=java.nio.file.Files.createTempDirectory("refresh-authority-order-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO);val gate=java.util.concurrent.CountDownLatch(1)
   try {DeviceListeningStore(File(root,"domain.json")).use {store->

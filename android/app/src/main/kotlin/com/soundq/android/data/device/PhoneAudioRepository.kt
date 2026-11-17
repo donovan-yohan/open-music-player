@@ -45,23 +45,24 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         jobs.launch { runCatching { platform.releaseUriPermissions() } }
         jobs.launch {
             graph.session.scopeRevision.combine(graph.session.state) { _, auth -> graph.session.version() to auth }.collect { (version, auth) ->
-                serial.withLock {
+                serial.withLock { refreshLocked {
+                    if(!jobs.isActive||!graph.session.owns(version))return@refreshLocked
                     try {
                         if (store == null) store = DeviceListeningStore(File(graph.directory, "phone-listening.v1.json"))
                         val owner = requireNotNull(store)
                         if (auth is AuthState.LocalLocked || auth is AuthState.Pending || auth is AuthState.Restoring || auth is AuthState.SaveRequired) {
-                            acceptedVersion = -1; owner.lock(); access = null; lastScan = null; mutable.value = PhoneAudioState(); return@withLock
+                            acceptedVersion = -1; owner.lock(); access = null; lastScan = null; mutable.value = PhoneAudioState(); return@refreshLocked
                         }
                         val account = graph.session.capture()?.let { ServerAccount(graph.endpoint.identity, it.accountId) }
                         access = owner.unlock(account); acceptedVersion = version; lastScan = null
                         publish()
-                    } catch (_: Exception) { fail("Local audio storage could not be opened. Saved state has not been replaced.") }
-                }
+                    } catch (_: Exception) { fail("Local audio storage could not be opened. Saved state has not been replaced.",version) }
+                } }
                 if (acceptedVersion == version) refresh()
             }
         }
     }
-    fun current(version: Long) = acceptedVersion == version && graph.session.owns(version) && graph.session.state.value !is AuthState.LocalLocked
+    fun current(version: Long) = jobs.isActive && acceptedVersion == version && graph.session.owns(version) && graph.session.state.value !is AuthState.LocalLocked
     // One sequence fences every proof publication. Broad transport and physical-file
     // grants expose separate epochs so a local mutation never retires unrelated audio.
     private val authoritySequence=java.util.concurrent.atomic.AtomicLong()
@@ -82,8 +83,12 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     }
     fun sourceAuthority(ref:com.soundq.android.playback.PlaybackRef.Device):Long =
         maxOf(authorityVersion,fileAuthorities[sourceFileId(ref)] ?: 0L)
-    private fun publish(message: String? = null, unavailable: ContentOwner? = null) {
+    private fun publish(message: String? = null, unavailable: ContentOwner? = null) = refreshLocked {
+        val version=graph.session.version()
+        if(!current(version))return@refreshLocked
         val snapshot = access?.let { store?.snapshot(it) }
+        val permission=platform.storageAllowed()
+        if(!current(version))return@refreshLocked
         val previous=mutable.value.snapshot
         // Only an acknowledged row-local failure may spare unrelated transport grants.
         // Ordinary scans, revisions, folds and real access changes retain global cancellation.
@@ -97,9 +102,11 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
             val next=snapshot.files.singleOrNull {it.owner==unavailable}
             if(old!=null&&next!=null&&old.aliases!=next.aliases)advanceAuthority(old.id)
         }
-        mutable.value = PhoneAudioState(snapshot != null, snapshot, false, platform.storageAllowed(), message ?: if (snapshot == null) "Local audio storage is unavailable. Saved state has not been replaced." else null, lastScan)
+        mutable.value = PhoneAudioState(snapshot != null, snapshot, false, permission, message ?: if (snapshot == null) "Local audio storage is unavailable. Saved state has not been replaced." else null, lastScan)
     }
-    private fun fail(message: String) { mutable.value = mutable.value.copy(refreshing = false, message = message) }
+    private fun fail(message: String,version:Long=graph.session.version()) {
+        refreshLocked { mutable.update { if(graph.session.owns(version)&&jobs.isActive)it.copy(refreshing=false,message=message) else it } }
+    }
     private val refreshEpoch=java.util.concurrent.atomic.AtomicLong()
     private val refreshLock=java.util.concurrent.locks.ReentrantLock()
     private inline fun <T> refreshLocked(block:()->T):T {refreshLock.lock();try {return block()} finally {refreshLock.unlock()}}
@@ -123,6 +130,13 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         // Only redundant owner/access observations may share admitted exact-byte work.
         // Observe under the same lock as publication; every observed ABA retires the old epoch.
         val scope=RefreshScope(graph.session.version(),platform.storageAllowed())
+        // A physical mutation owns the catalog interval, not a held JVM lock across provider IO.
+        // Still observe owner/access ABA; it retires that mutation before destructive dispatch.
+        if(fileMutations.isNotEmpty()) {
+            if(refreshScope!=scope)refreshEpoch.incrementAndGet()
+            refreshScope=scope
+            pendingRefresh={refresh(valid)};return
+        }
         if(refreshRunning){
             if(refreshScope!=scope)refreshEpoch.incrementAndGet()
             refreshScope=scope
@@ -138,14 +152,14 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
             try {
                 if (!active()) return@launch
                 // Publish the access this refresh was admitted with, so a grant after admission is not masked.
-                mutable.value = mutable.value.copy(refreshing = true, permission = scope.storage, message = null)
+                refreshLocked { mutable.update { if(active())it.copy(refreshing=true,permission=scope.storage,message=null) else it } }
                 val owner = requireNotNull(store); val accepted = requireNotNull(access)
                 val indexed = ScanGrant(grantId("indexed:external-audio"), GrantKind.INDEXED, "Android audio index", ProviderLocator("android", "indexed:external-audio"), false,
                     if (scope.storage) AccessState.AVAILABLE else AccessState.REVOKED)
                 refreshLocked{if(!active())throw CancellationException();check(owner.putGrant(accepted, indexed) != Mutation.REFUSED)}
                 if (!scope.storage) {
-                    refreshLocked { if (!active()) throw CancellationException(); lastScan = PhoneScanObservation(false, true, false) }
-                    publish(); return@launch
+                    refreshLocked { if (!active()) throw CancellationException(); lastScan = PhoneScanObservation(false, true, false); publish() }
+                    return@launch
                 }
                 val scan = owner.beginScan(accepted, indexed.id) ?: error("Android audio index refused")
                 // All files access: index audio MediaStore missed, then read the index.
@@ -172,8 +186,8 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) {
                     // Incomplete enumeration is not an empty scan and never permission to publish a prefix.
-                    refreshLocked { if (!active()) throw CancellationException(); lastScan = PhoneScanObservation(true, false, true) }
-                    publish("Some audio could not be refreshed. Existing files and saved progress were kept."); return@launch
+                    refreshLocked { if (!active()) throw CancellationException(); lastScan = PhoneScanObservation(true, false, true)
+                        publish("Some audio could not be refreshed. Existing files and saved progress were kept.") }; return@launch
                 }
                 val whole = complete && storageComplete
                 refreshLocked{
@@ -184,24 +198,44 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                     // the rest are dropped. Without a walk an unindexed picked file could still be proved later.
                     if (whole && platform.walksSharedStorage()) check(owner.retireLegacyAccess(accepted) != Mutation.REFUSED)
                     lastScan = PhoneScanObservation(true, whole, true)
+                    publish(if (whole) null else "Some audio could not be refreshed. Existing files and saved progress were kept.")
                 }
-                publish(if (whole) null else "Some audio could not be refreshed. Existing files and saved progress were kept.")
-            } catch (_: CancellationException) { if(refreshEpoch.get()==refresh)mutable.value = mutable.value.copy(refreshing = false) }
-            catch (_: Exception) { if(active())publish("Some audio could not be refreshed. Existing files and saved progress were kept.") }
+            } catch (_: CancellationException) { refreshLocked { mutable.update { if(current(version)&&refreshEpoch.get()==refresh)it.copy(refreshing=false) else it } } }
+            catch (_: Exception) { refreshLocked { if(active())publish("Some audio could not be refreshed. Existing files and saved progress were kept.") } }
             finally {
-                val next=refreshLocked{refreshRunning=false;pendingRefresh.also {pendingRefresh=null}}
+                val next=refreshLocked{refreshRunning=false;if(fileMutations.isEmpty())pendingRefresh.also {pendingRefresh=null}else null}
                 next?.invoke()
             }
         }
     }
     /** A saved reference to a row later folded into another (one provider object) resolves to the survivor. */
-    private val fileMutations=java.util.concurrent.ConcurrentHashMap<String,UUID>()
-    fun beginFileMutation(ref:com.soundq.android.playback.PlaybackRef.Device):UUID? {
-        val row=observed(ref) ?: return null
+    private val fileMutations=java.util.concurrent.ConcurrentHashMap<String,FileMutation>()
+    private data class FileMutation(val token:UUID,val refresh:Long)
+    fun beginFileMutation(ref:com.soundq.android.playback.PlaybackRef.Device):UUID? = refreshLocked {
+        val scope=RefreshScope(graph.session.version(),platform.storageAllowed())
+        if(!current(scope.version)||!scope.storage)return@refreshLocked null
+        val row=observed(ref) ?: return@refreshLocked null
         val token=UUID.randomUUID()
-        return if(fileMutations.putIfAbsent(row.id.value.toString(),token)==null)token else null
+        if(fileMutations.containsKey(row.canonicalId))return@refreshLocked null
+        refreshScope=scope
+        // Retire scans admitted before the mutation, including a proof already waiting to commit.
+        fileMutations[row.canonicalId]=FileMutation(token,refreshEpoch.incrementAndGet())
+        token
     }
-    fun endFileMutation(token:UUID) {fileMutations.entries.firstOrNull {it.value==token}?.let {fileMutations.remove(it.key,token)}}
+    fun endFileMutation(token:UUID) {
+        val next=refreshLocked {
+            fileMutations.entries.firstOrNull {it.value.token==token}?.let {fileMutations.remove(it.key,it.value)}
+            if(fileMutations.isEmpty()&&!refreshRunning)pendingRefresh.also {pendingRefresh=null}else null
+        }
+        next?.invoke()
+    }
+    /** Recheck real source custody after retirement/validation IO, never freshen by matching SHA. */
+    fun fileMutationCurrent(admission:PhoneSourceAdmission,token:UUID):Boolean = refreshLocked {
+        fun owns()=current(admission.sessionVersion)&&fileMutations[admission.row.canonicalId]?.let {it.token==token&&it.refresh==refreshEpoch.get()}==true
+        if(!owns()||!platform.storageAllowed())return@refreshLocked false
+        val sourceCurrent=store?.ownsSource(admission.source)==true
+        sourceCurrent&&owns()
+    }
     fun sameFile(a:com.soundq.android.playback.PlaybackRef.Device,b:com.soundq.android.playback.PlaybackRef.Device):Boolean {
         val snapshot=state.value.snapshot ?: return false
         fun resolve(ref:com.soundq.android.playback.PlaybackRef.Device)=snapshot.resolve(ref.contentOwner)
@@ -209,26 +243,26 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         return resolve(b)?.id==left.id
     }
     /** Called only after explicit Delete confirms both the provider row and original path are absent. */
-    suspend fun markFileMissing(admission:PhoneSourceAdmission,uri:String):Boolean=journal(true,admission.source.owner) {owner,_->
-        owner.reportUnavailable(admission.source,ProviderLocator(Uri.parse(uri).authority ?: "android",uri),AccessState.REMOVED,allAliases=true)!=Mutation.REFUSED
+    suspend fun markFileMissing(admission:PhoneSourceAdmission,uri:String,fence:UUID):Boolean=journal(true,admission.source.owner) {owner,_->
+        fileMutationCurrent(admission,fence)&&owner.reportUnavailable(admission.source,ProviderLocator(Uri.parse(uri).authority ?: "android",uri),AccessState.REMOVED,allAliases=true)!=Mutation.REFUSED
     }==true
     fun observed(ref: com.soundq.android.playback.PlaybackRef.Device): DeviceAudio? =
         state.value.snapshot?.resolve(ref.contentOwner)
             ?.takeUnless {fileMutations.containsKey(it.canonicalId)}
     fun reference(row:DeviceAudio)=com.soundq.android.playback.PlaybackRef.Device(row.id.value.toString(),row.revision.sha256,row.revision.byteLength,row.incarnation)
-    suspend fun <T> journal(publishState:Boolean=false,unavailable:ContentOwner?=null,block:(DeviceListeningStore,AccessCapture)->T):T?=withContext(Dispatchers.IO) {serial.withLock {
-        if(!current(graph.session.version()))return@withLock null
-        val owner=store ?: return@withLock null;val accepted=access ?: return@withLock null
+    suspend fun <T> journal(publishState:Boolean=false,unavailable:ContentOwner?=null,block:(DeviceListeningStore,AccessCapture)->T):T?=withContext(Dispatchers.IO) {serial.withLock { refreshLocked {
+        if(!current(graph.session.version()))return@refreshLocked null
+        val owner=store ?: return@refreshLocked null;val accepted=access ?: return@refreshLocked null
         block(owner,accepted).also {if(publishState)publish(unavailable=unavailable)}
-    }}
-    suspend fun admit(row: DeviceAudio): PhoneSourceAdmission? = withContext(Dispatchers.IO) { serial.withLock {
+    } }}
+    suspend fun admit(row: DeviceAudio): PhoneSourceAdmission? = withContext(Dispatchers.IO) { serial.withLock { refreshLocked {
         val version = graph.session.version()
-        if (!current(version)) return@withLock null
-        val owner = store ?: return@withLock null; val accepted = access ?: return@withLock null
-        val observed = owner.snapshot(accepted)?.files?.singleOrNull { it.id == row.id && it.owner == row.owner && it.available } ?: return@withLock null
-        val captured = owner.captureSource(accepted, row.id) ?: return@withLock null
+        if (!current(version)||fileMutations.containsKey(row.canonicalId)) return@refreshLocked null
+        val owner = store ?: return@refreshLocked null; val accepted = access ?: return@refreshLocked null
+        val observed = owner.snapshot(accepted)?.files?.singleOrNull { it.id == row.id && it.owner == row.owner && it.available } ?: return@refreshLocked null
+        val captured = owner.captureSource(accepted, row.id) ?: return@refreshLocked null
         PhoneSourceAdmission(observed, captured, version, owner.bookmark(captured)?.positionMs ?: 0)
-    } }
+    } } }
     suspend fun reportFailure(admission:PhoneSourceAdmission,failure:Exception) {
         journal(true,admission.source.owner) {owner,_->
             if(current(admission.sessionVersion)) {
@@ -285,7 +319,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
             result to accepted
         } catch(error:Throwable) {try {original.close()}catch(close:Throwable){error.addSuppressed(close)};throw error}
     }
-    override fun close() { acceptedVersion = -1; jobs.cancel(); jobs.launch(NonCancellable) { serial.withLock { store?.close(); store = null; access = null } } }
+    override fun close() { jobs.cancel();refreshLocked { acceptedVersion=-1;refreshEpoch.incrementAndGet();mutable.value=PhoneAudioState() };jobs.launch(NonCancellable) { serial.withLock { refreshLocked {store?.close();store=null;access=null} } } }
     private fun grantId(value: String) = ScanGrantId(UUID.nameUUIDFromBytes(value.toByteArray(Charsets.UTF_8)))
     private fun locator(value: String) = ProviderLocator(Uri.parse(value).authority ?: "android", value)
 }

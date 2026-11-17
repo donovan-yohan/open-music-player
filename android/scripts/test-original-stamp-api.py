@@ -40,7 +40,7 @@ private enum class FileDeleteOutcome {Deleted,Changed,Missing,Refused,Unconfirme
 private data class AudioContentProof(val bytes:Long,val sha256:String)
 private object MediaStore {object MediaColumns {const val _ID="_id"}}
 private class Platform {fun storageAllowed()=true;fun proof(uri:String,valid:()->Boolean):AudioContentProof {check(valid());return AudioContentProof(3,"synthetic")}}
-private class Phone {val platform=Platform();var fenced=0;fun beginFileMutation(ref:Ref)=UUID.randomUUID().also {fenced++};fun endFileMutation(token:UUID){fenced--};suspend fun markFileMissing(admission:Unit,uri:String)=true}
+private class Phone {val platform=Platform();var fenced=0;fun beginFileMutation(ref:Ref)=UUID.randomUUID().also {fenced++};fun endFileMutation(token:UUID){fenced--};fun fileMutationCurrent(admission:Unit,fence:UUID)=fenced==1;suspend fun markFileMissing(admission:Unit,uri:String,fence:UUID?=null)=fenced==1}
 private class Graph {val phoneAudio=Phone()}
 private class Cursor:java.io.Closeable {fun moveToFirst()=false;override fun close(){}}
 private class Resolver {var deletes=0;fun delete(uri:String,where:String,values:Array<String>):Int {deletes++;return if(File(uri).delete())1 else 0};fun query(uri:String,columns:Array<String>,a:Any?,b:Any?,c:Any?)=Cursor()}
