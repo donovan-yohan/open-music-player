@@ -23,9 +23,10 @@ class ImportProgressUncertaintyTest {
             journal.finish(endpoint,account,row,phase,job,if(row.kind=="source"&&phase=="accepted")decisionId else null)
         }
         fun uncertain(lease:ImportProgressObservation.Lease,kind:String="download"):IntakeReceipt {
+            val requests=wire.server.requestCount
             val row=begin(kind);finish(row,"uncertain");progress.receipts(lease)
             assertTrue(progress.state.value!!.needsChecking)
-            assertEquals(0,wire.server.requestCount)
+            assertEquals(requests,wire.server.requestCount)
             assertEquals(0,progress.state.value!!.unknown)
             assertNull(progress.nextDelay(lease))
             return row
@@ -34,13 +35,13 @@ class ImportProgressUncertaintyTest {
             progress.visible(false);assertNull(progress.state.value)
             progress.visible(true);return progress.open()!!
         }
-        fun read(lease:ImportProgressObservation.Lease,status:String="queued") {
-            wire.reply("""{"job_id":"$jobId","status":"$status","progress":100,"track_id":null,"source_type":"youtube","created_at":"2026-11-14T12:00:00Z"}""")
+        fun read(lease:ImportProgressObservation.Lease,status:String="queued",id:String=jobId) {
+            wire.reply("""{"job_id":"$id","status":"$status","progress":100,"track_id":null,"source_type":"youtube","created_at":"2026-11-14T12:00:00Z"}""")
             progress.refresh(lease)
             val request=wire.server.takeRequest(3,java.util.concurrent.TimeUnit.SECONDS)
             assertNotNull("exact job GET must actually dispatch",request)
             assertEquals("GET",request!!.method)
-            assertEquals("/api/v1/downloads/$jobId",request.url.encodedPath)
+            assertEquals("/api/v1/downloads/$id",request.url.encodedPath)
         }
         override fun close(){progress.retire();wire.close()}
     }
@@ -102,6 +103,104 @@ class ImportProgressUncertaintyTest {
                 assertNull(h.progress.nextDelay(lease));assertEquals(0,h.wire.server.requestCount)
                 assertEquals(phase,h.journal.entries(h.endpoint,"A").single().phase)
             }
+        }
+    }
+
+    private fun freshJobAfterNoJobSettlement(phase:String,coalesced:Boolean) {
+        for(kind in listOf("source","download","queue"))Harness().use {h ->
+            val lease=h.progress.open()!!
+            // A completed earlier job leaves real handled/seen boundaries on this same lease.
+            val previous=h.begin();h.finish(previous,"accepted",jobId)
+            h.progress.receipts(lease);h.read(lease,"complete")
+            h.now+=ImportProgressObservation.DWELL_MS;h.progress.advance(lease)
+            assertNull(h.progress.state.value)
+            val row=h.uncertain(lease,kind)
+            val old=h.progress.state.value!!
+            if(coalesced)h.now+=ImportProgressObservation.EXPIRY_MS+1
+            h.finish(row,phase)
+            if(!coalesced) {
+                h.progress.receipts(lease);h.progress.refresh(lease)
+                assertNull(h.progress.state.value);assertNull(h.progress.nextDelay(lease))
+                repeat(3){h.progress.receipts(lease);h.progress.refresh(lease)}
+                assertNull("settled receipts cannot reopen an empty episode",h.progress.state.value)
+                h.now+=ImportProgressObservation.EXPIRY_MS+1
+            }
+            val freshId="123e4567-e89b-12d3-a456-000000004003"
+            val fresh=h.begin();h.finish(fresh,"accepted",freshId)
+            val settled=h.journal.entries(h.endpoint,"A")
+            // In the coalesced schedule this one pass both settles the old row and admits the new job.
+            h.progress.receipts(lease)
+            assertEquals(1,h.progress.state.value!!.unknown)
+            assertFalse(h.progress.state.value!!.needsChecking)
+            h.read(lease,id=freshId)
+            val active=h.progress.state.value!!
+            assertTrue("$kind/$phase/coalesced=$coalesced needs a new bounded episode",active.identity>old.identity)
+            assertEquals(listOf(1,0,0,0),listOf(active.active,active.complete,active.failed,active.unknown))
+            assertFalse(active.needsChecking);assertFalse(h.progress.owns(old))
+            assertEquals(ImportProgressObservation.POLL_MS,h.progress.nextDelay(lease))
+            assertEquals(2,h.wire.server.requestCount)
+            assertEquals(setOf(previous.operation,row.operation,fresh.operation),lease.handled)
+            assertEquals(setOf(jobId,freshId).map {java.util.UUID.fromString(it)}.toSet(),lease.seenJobs)
+            assertEquals(settled,h.journal.entries(h.endpoint,"A"))
+            // Repeated handled receipts and a new receipt for a seen job are both no-ops.
+            val duplicate=h.begin("queue");h.finish(duplicate,"accepted",jobId)
+            val unchanged=h.journal.entries(h.endpoint,"A")
+            repeat(3){h.progress.receipts(lease);h.progress.refresh(lease)}
+            assertEquals(active,h.progress.state.value);assertEquals(2,h.wire.server.requestCount)
+            assertEquals(unchanged,h.journal.entries(h.endpoint,"A"))
+            h.now+=ImportProgressObservation.POLL_MS;h.read(lease,"complete",freshId)
+            assertEquals(1,h.progress.state.value!!.complete)
+            h.now+=ImportProgressObservation.DWELL_MS;h.progress.advance(lease)
+            repeat(3){h.progress.receipts(lease);h.progress.refresh(lease)}
+            assertNull(h.progress.state.value);assertNull(h.progress.nextDelay(lease))
+            assertEquals(3,h.wire.server.requestCount)
+            assertEquals(unchanged,h.journal.entries(h.endpoint,"A"))
+        }
+    }
+    @Test fun acceptedNoJobRetiresEmptyEpisodeBeforeFreshJobAfterOldExpiry()=freshJobAfterNoJobSettlement("accepted",false)
+    @Test fun refusedNoJobRetiresEmptyEpisodeBeforeFreshJobAfterOldExpiry()=freshJobAfterNoJobSettlement("refused",false)
+    @Test fun acceptedNoJobAndFreshJobCoalescedAfterOldExpiryStartNewEpisode()=freshJobAfterNoJobSettlement("accepted",true)
+    @Test fun refusedNoJobAndFreshJobCoalescedAfterOldExpiryStartNewEpisode()=freshJobAfterNoJobSettlement("refused",true)
+
+    @Test fun noJobSettlementCannotRenewOtherObservedUncertaintyOrLiveFacts() {
+        for(phase in listOf("accepted","refused"))for(liveFact in listOf(false,true))Harness().use {h ->
+            val lease=h.progress.open()!!;val row=h.uncertain(lease,"source")
+            val old=h.progress.state.value!!
+            val other=h.begin()
+            h.finish(other,if(liveFact)"accepted" else "uncertain",if(liveFact)jobId else null)
+            h.progress.receipts(lease)
+            if(liveFact)h.read(lease)
+            h.now+=ImportProgressObservation.EXPIRY_MS+1
+            h.finish(row,phase);h.progress.receipts(lease)
+            if(!liveFact) {
+                val fresh=h.begin();h.finish(fresh,"accepted",jobId);h.progress.receipts(lease)
+            }
+            h.progress.refresh(lease)
+            val retained=h.progress.state.value!!
+            assertEquals(old.identity,retained.identity)
+            assertTrue(retained.needsChecking)
+            assertEquals(listOf(0,0,0,1),listOf(retained.active,retained.complete,retained.failed,retained.unknown))
+            assertEquals(if(liveFact)1 else 0,h.wire.server.requestCount)
+            assertNull(h.progress.nextDelay(lease))
+        }
+    }
+
+    @Test fun noJobSettlementCannotClearCapacityChecking() {
+        for(phase in listOf("accepted","refused"))Harness().use {h ->
+            val lease=h.progress.open()!!
+            val rows=List(ImportProgressObservation.MAX_JOBS+1){h.begin("source").also {h.finish(it,"uncertain")}}
+            h.progress.receipts(lease);val old=h.progress.state.value!!
+            rows.forEach {h.finish(it,phase)};h.progress.receipts(lease)
+            assertEquals(old.identity,h.progress.state.value!!.identity)
+            assertTrue(h.progress.state.value!!.needsChecking)
+            assertEquals(0,h.progress.state.value!!.unknown)
+            h.now+=ImportProgressObservation.EXPIRY_MS+1
+            val fresh=h.begin();h.finish(fresh,"accepted",jobId)
+            h.progress.receipts(lease);h.progress.refresh(lease)
+            assertEquals(old.identity,h.progress.state.value!!.identity)
+            assertTrue(h.progress.state.value!!.needsChecking)
+            assertEquals(1,h.progress.state.value!!.unknown)
+            assertNull(h.progress.nextDelay(lease));assertEquals(0,h.wire.server.requestCount)
         }
     }
 

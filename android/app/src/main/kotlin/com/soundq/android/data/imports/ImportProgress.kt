@@ -69,7 +69,11 @@ internal class ImportProgressObservation(private val session:AccountSession,priv
                 if(row.phase !in setOf("accepted","refused"))continue
                 candidate.handled.add(row.operation);uncertain.remove(row.operation)
                 // Receipt settlement is not a job observation; decision-only/refused rows add no counts.
-                if(row.phase!="accepted"||row.job==null)continue
+                if(row.phase!="accepted"||row.job==null) {
+                    // Retire an empty settled episode before a later row can begin another one.
+                    if(facts.isEmpty()&&uncertain.isEmpty()&&!checking)clear()
+                    continue
+                }
                 val id=ImportJobId(row.job)
                 val key=java.util.UUID.fromString(id.value)
                 if(key in candidate.seenJobs)continue
