@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,7 +47,20 @@ func (h *ReleaseRadarHandlers) Releases(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	page, err := h.service.Read(r.Context(), user, h.now())
+	policy, count := discovery.RadarPolicy, 0
+	// Iterate keys as well as values so differently cased duplicate fields in
+	// raw requests cannot bypass negotiation through Header.Get normalization.
+	for name, values := range r.Header {
+		if strings.EqualFold(name, "X-SoundQ-Radar-Policy") {
+			count++
+			if count != 1 || len(values) != 1 || values[0] != discovery.RadarVarietyPolicy {
+				writePlayEventError(w, 400, "VALIDATION_ERROR", "unsupported radar policy")
+				return
+			}
+			policy = discovery.RadarVarietyPolicy
+		}
+	}
+	page, err := h.service.ReadWithOrdering(r.Context(), user, h.now(), policy)
 	if err != nil {
 		writePlayEventError(w, 503, "RADAR_UNAVAILABLE", "release discovery is unavailable")
 		return

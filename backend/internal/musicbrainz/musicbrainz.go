@@ -509,6 +509,11 @@ func (c *Client) GetArtist(ctx context.Context, mbID string) (*Artist, error) {
 	if cached, ok := c.cacheGet(ctx, cacheKey); ok {
 		var artist Artist
 		if err := json.Unmarshal([]byte(cached), &artist); err == nil {
+			// This cache contains release groups too. Repair legacy URL projection
+			// without expiring metadata, rewriting the cache or fetching again.
+			for i := range artist.Releases {
+				artist.Releases[i].CoverArtURL = c.releaseGroupCoverArtURL(releaseGroupID(artist.Releases[i].ID))
+			}
 			return &artist, nil
 		}
 	}
@@ -542,7 +547,7 @@ func (c *Client) GetArtist(ctx context.Context, mbID string) (*Artist, error) {
 			ID:          rg.ID,
 			Title:       rg.Title,
 			Date:        rg.FirstReleaseDate,
-			CoverArtURL: c.GetCoverArtURL(rg.ID),
+			CoverArtURL: c.releaseGroupCoverArtURL(releaseGroupID(rg.ID)),
 		}
 		artist.Releases = append(artist.Releases, release)
 	}
@@ -665,6 +670,14 @@ func (c *Client) GetRecording(ctx context.Context, mbID string) (*Track, error) 
 // GetCoverArtURL returns the Cover Art Archive URL for a release
 func (c *Client) GetCoverArtURL(releaseID string) string {
 	return fmt.Sprintf("%s/release/%s/front-250", coverArtURL, releaseID)
+}
+
+// releaseGroupID is deliberately distinct from an edition ID. GetArtist's
+// discography contains groups, not concrete releases.
+type releaseGroupID string
+
+func (c *Client) releaseGroupCoverArtURL(groupID releaseGroupID) string {
+	return fmt.Sprintf("%s/release-group/%s/front-250", coverArtURL, groupID)
 }
 
 // HTTP client helpers
