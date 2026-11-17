@@ -907,15 +907,15 @@ class SoundQLibraryService : MediaLibraryService() {
                 undoScope=scope;undoVersion=graph.session.version()
                 undo=(0 until player.mediaItemCount).map(player::getMediaItemAt).takeIf {items->items.none {it.localConfiguration?.uri?.scheme in setOf("soundqmix","soundqarrangement")}};undoIndex=player.currentMediaItemIndex;undoPosition=player.currentPosition
                 publishSessionExtras()
-                // Mutation is always paused; explicit Play remains the only resume admission.
-                transport.pause()
+                // Retained-source edits preserve transport intent. Replacement callbacks
+                // pause at onSetMediaItems; stale pending reads were retired above.
             }
             return SessionResult.RESULT_SUCCESS
         }
         override fun onAddMediaItems(mediaSession:MediaSession,controller:MediaSession.ControllerInfo,mediaItems:List<MediaItem>):ListenableFuture<List<MediaItem>> =
             try {Futures.immediateFuture(resolve(browserRequests(controller,mediaItems),compose={next->validateInsertion(next);next}))}catch(_:Exception){transport.rejectSelection();Futures.immediateFailedFuture(SafeFailure(SafeFailure.Reason.AudioUnavailable))}
         override fun onSetMediaItems(mediaSession:MediaSession,controller:MediaSession.ControllerInfo,mediaItems:List<MediaItem>,startIndex:Int,startPositionMs:Long):ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-            transport.retire()
+            transport.pause()
             return try {
                 if(mediaItems.size==1 && mediaItems[0].requestMetadata.searchQuery!=null) {
                     require(admitted(controller) && mediaItems[0].localConfiguration==null && mediaItems[0].requestMetadata.mediaUri==null)
