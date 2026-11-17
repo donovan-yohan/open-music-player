@@ -45,7 +45,7 @@ class CaaArtworkReadTest {
   }
  }
  @Test fun unsafeRedirectsAndLoopsAreRefusedWithoutDispatch() {
-  for(location in listOf("http://archive.org/x","https://evilarchive.org/x","https://archive.org.evil.test/x","https://user:pass@archive.org/x","https://archive.org:444/x","https://127.0.0.1/x","https://archive.org/x#fragment","https://coverartarchive.org/release-group/48140466-cff6-3222-bd55-63c27e43190d/front-250")) {
+  for(location in listOf("http://archive.org/x","https://evilarchive.org/x","https://archive.org.evil.test/x",URI("https","user:pass","archive.org",-1,"/x",null,null).toASCIIString(),"https://archive.org:444/x","https://127.0.0.1/x","https://archive.org/x#fragment","https://coverartarchive.org/release-group/48140466-cff6-3222-bd55-63c27e43190d/front-250")) {
    CaaTlsFixture().use {f->f.reply("redirect",302,location);f.read().use {assertNull(location,it.load(f.ref){true})};assertEquals(1,f.server.requestCount)}
   }
  }
