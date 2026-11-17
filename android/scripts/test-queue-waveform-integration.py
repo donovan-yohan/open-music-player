@@ -33,6 +33,8 @@ internal class QueueResumeModel(val graph:AppGraph,val controller:ControllerProj
 internal class QueueResumeEntrypoint(val model:QueueResumeModel) {
  val playback get()=model.controller.state.value
  var showTimeline=true
+ // Same phone-membership gate as QueuePanel; keep the primaryAction body exact.
+ val timelineVisible get()=showTimeline&&!playback.queue.any {it.ref is PlaybackRef.Device}
  val scope=model.graph.session.capture()
  var live=true
  val valid:()->Boolean={live}
