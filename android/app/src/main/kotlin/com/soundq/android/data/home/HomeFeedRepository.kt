@@ -59,6 +59,12 @@ class HomeFeedRepository(private val session: AccountSession, private val api: S
         internal val generation:Long,internal val before:HomeReadState,internal val loading:HomeReadState,
         internal val append:Boolean,
     ) {internal var entered=false}
+    /** Presentation only: expose the accepted page without replacing its row owner. */
+    @Synchronized fun revealRecent(route:HomeRoute,expected:HomeReadState):Boolean {
+        if(recentMutable.value!==expected||expected.loading||owners[HomeSection.Recent]?.let {it.route===route&&current(HomeSection.Recent,it)}!=true)return false
+        if(expected.visibleCount!=expected.rows.size)recentMutable.value=expected.copy(visibleCount=expected.rows.size)
+        return true
+    }
     private var pendingRecent:RecentRequest?=null
     /** Claim synchronously at the rendered input, before ViewModel schedules IO.
      * Buffered reveal changes only presentation, retaining the full accepted

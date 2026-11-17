@@ -1,5 +1,7 @@
 package com.soundq.android.product.home
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 
 import androidx.compose.ui.Alignment
@@ -11,6 +13,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.heading
 
@@ -31,7 +34,14 @@ import java.time.format.DateTimeFormatter
     val recent = model.home.recent.collectAsStateWithLifecycle().value
     val top = model.home.top.collectAsStateWithLifecycle().value
     val history = model.home.history.collectAsStateWithLifecycle().value
-    val listState = rememberLazyListState()
+    var collection by rememberSaveable(route) {mutableStateOf<HomeSection?>(null)}
+    val previewScroll = rememberLazyListState()
+    val collectionScroll = rememberLazyListState()
+    val listState = if(collection==null)previewScroll else collectionScroll
+    BackHandler(collection!=null) {collection=null}
+    LaunchedEffect(route,collection,recent.rows,recent.loading) {
+        if(collection==HomeSection.Recent&&!recent.loading)model.home.revealRecent(route,recent)
+    }
     LaunchedEffect(route) {
         if(route.destination == HomeDestination.History) model.loadHome(route,HomeSection.History)
         else {model.loadHome(route,HomeSection.Recent);model.loadHome(route,HomeSection.Top)}
@@ -46,8 +56,13 @@ import java.time.format.DateTimeFormatter
                 SoundQIconButton(SoundQIcon.Settings,"Settings",onAccount,outlined=false)
             }
             SoundQDivider()
-        } else MainPageHeader("Home") {
-            onHistory?.let {SoundQIconButton(SoundQIcon.List,"Listening history",it,Modifier.heightIn(min=56.dp),outlined=false)}
+        } else MainPageHeader(when(collection) {HomeSection.Recent->"Recently played";HomeSection.Top->"Your top tracks";else->"Home"},
+            navigation=if(collection!=null) ({SoundQIconButton(SoundQIcon.Back,"Back to Home",{collection=null},outlined=false)}) else null) {
+            if(collection==null)onHistory?.let {SoundQIconButton(SoundQIcon.List,"Listening history",it,Modifier.heightIn(min=56.dp),outlined=false)}
+            collection?.let {section->
+                val state=if(section==HomeSection.Recent)recent else top
+                SoundQIconButton(SoundQIcon.Retry,"Refresh collection",{model.loadHome(route,section,state)},enabled=!state.loading,outlined=false)
+            }
             SoundQIconButton(SoundQIcon.Settings,"Settings",onAccount,Modifier.heightIn(min=56.dp),outlined=false)
         }
         if(route.destination==HomeDestination.History) {
@@ -70,10 +85,12 @@ import java.time.format.DateTimeFormatter
                 HomeTrackRow(model,route,HomeSection.History,state.rows,event.entry,model.homePlay(route,HomeSection.History,state.rows,event.entry,event.id),model.homeQueue(route,HomeSection.History,state.rows,event.entry,event.id),revealOwner,metadata)
             }
             state.error?.let {error -> item {HomeStateCell {SoundQFeedback("Could not load listening history",FeedbackKind.Error,error.message,"Retry history",{model.loadHome(route,HomeSection.History,state,append=state.retryAppend)})}}}
-            if(!state.loading&&state.error==null&&state.hasMore)item {HomeStateCell {SoundQButton("Load more history",{model.loadHome(route,HomeSection.History,state,append=true)},variant=SoundQButtonVariant.Secondary)}}
+            if(!state.loading&&state.error==null&&state.hasMore)item {SoundQListActionRow("Load more history",{model.loadHome(route,HomeSection.History,state,append=true)})}
         } else {
-            homeSection("Recently played",HomeSection.Recent,if(model.home.owns(route,HomeSection.Recent)) recent else HomeReadState(loading=true),model,route,onLibrary,revealOwner)
-            homeSection("Your top tracks",HomeSection.Top,if(model.home.owns(route,HomeSection.Top)) top else HomeReadState(loading=true),model,route,onLibrary,revealOwner)
+            if(collection==null||collection==HomeSection.Recent)homeSection("Recently played",HomeSection.Recent,if(model.home.owns(route,HomeSection.Recent)) recent else HomeReadState(loading=true),model,route,onLibrary,revealOwner,
+                full=collection==HomeSection.Recent,onOpenCollection={if(model.home.revealRecent(route,recent))collection=HomeSection.Recent})
+            if(collection==null||collection==HomeSection.Top)homeSection("Your top tracks",HomeSection.Top,if(model.home.owns(route,HomeSection.Top)) top else HomeReadState(loading=true),model,route,onLibrary,revealOwner,
+                full=collection==HomeSection.Top,onOpenCollection={if(model.home.owns(route,HomeSection.Top))collection=HomeSection.Top})
         }
         }
     }
@@ -89,9 +106,10 @@ import java.time.format.DateTimeFormatter
         onSubmit={val text=draft.text;onSearch(text)},onClear={draft=TextFieldValue("");onSearch("")},enabled=enabled)
 }
 
-private fun LazyListScope.homeSection(title:String,section:HomeSection,state:HomeReadState,model:ProductViewModel,route:HomeRoute,onLibrary:()->Unit,revealOwner:RowRevealOwner) {
-    item {Row(Modifier.fillMaxWidth().heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically) {
-        Text(title,style=SoundQ.typography.title,modifier=Modifier.weight(1f).padding(horizontal=SoundQ.spacing.gutter,vertical=SoundQ.spacing.medium).semantics {heading()})
+private fun LazyListScope.homeSection(title:String,section:HomeSection,state:HomeReadState,model:ProductViewModel,route:HomeRoute,onLibrary:()->Unit,revealOwner:RowRevealOwner,full:Boolean=false,onOpenCollection:()->Unit={}) {
+    if(!full)item {Row(Modifier.fillMaxWidth().heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically) {
+        Text(title,style=SoundQ.typography.title,modifier=Modifier.weight(1f).clickable(enabled=!state.loading,onClick=onOpenCollection)
+            .padding(horizontal=SoundQ.spacing.gutter,vertical=SoundQ.spacing.medium).semantics {heading()})
         SoundQIconButton(SoundQIcon.Retry,if(section==HomeSection.Recent)"Refresh recent" else "Refresh top tracks",{model.loadHome(route,section,state)},enabled=!state.loading,outlined=false)
     }}
     if(state.loading)item {HomeStateCell {SoundQFeedback("Loading $title",FeedbackKind.Loading)}}
@@ -99,12 +117,15 @@ private fun LazyListScope.homeSection(title:String,section:HomeSection,state:Hom
     if(!state.loading&&state.error==null&&state.rows.isEmpty())item {HomeStateCell {SoundQFeedback(if(section==HomeSection.Recent)"No recent plays yet" else "No top tracks yet",FeedbackKind.Empty,action="Open Library",onAction=onLibrary)}}
     // Slice presentation only. Row capabilities and the eligible playback
     // context must retain the original authoritative list, including hidden rows.
-    val visible=if(section==HomeSection.Recent)state.rows.take(state.visibleCount) else state.rows
+    val visible=if(full)state.rows else state.rows.take(5)
     itemsIndexed(visible,key={index,row -> "${section.name}:${row.track.id.value}:$index"}) {_,row -> HomeTrackRow(model,route,section,state.rows,row,model.homePlay(route,section,state.rows,row),model.homeQueue(route,section,state.rows,row),revealOwner)}
     if(section==HomeSection.Recent) {
         state.error?.let {error -> item {HomeStateCell {SoundQFeedback("Could not load $title",FeedbackKind.Error,error.message,"Retry $title",{model.loadHome(route,section,state,append=state.retryAppend)})}}}
-        if(state.error==null&&state.hasMore)item {HomeStateCell {SoundQButton("Load more",{model.loadHome(route,section,state,append=true)},variant=SoundQButtonVariant.Secondary,enabled=!state.loading)}}
+        if(full&&state.error==null&&state.serverHasMore)item {SoundQListActionRow("Load more",{
+            if(model.home.revealRecent(route,state))model.loadHome(route,section,model.home.recent.value,append=true)
+        },enabled=!state.loading)}
     }
+    if(!full&&state.rows.isNotEmpty())item {SoundQListActionRow("View all",onOpenCollection,enabled=!state.loading,description="View all $title")}
 }
 
 @Composable private fun HomeTrackRow(model:ProductViewModel,route:HomeRoute,section:HomeSection,acceptedRows:Any,row:HomeEntry,onPlay:()->Unit,onQueue:()->Unit,revealOwner:RowRevealOwner,metadata:String?=null) {

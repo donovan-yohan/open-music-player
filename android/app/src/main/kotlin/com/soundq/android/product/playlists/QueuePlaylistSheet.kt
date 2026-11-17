@@ -33,7 +33,7 @@ import com.soundq.designsystem.*
         if(state.snapshot!=null && (state.outcome==null || state.outcome==MutationOutcome.Refused)) {
             state.rows.filter {!it.draft.isPublic}.forEach {row->SoundQRow(row.name,"${row.trackCount} tracks",choice?.playlist===row,{choice=actions.select(row)},enabled=!state.loading,leading={SoundQIcon(SoundQIcon.List,null)})}
             if(state.total==0)SoundQFeedback("No playlists yet",FeedbackKind.Empty,"Create a private playlist below.")
-            if(!state.loading&&state.total?.let {state.rows.size<it}==true)SoundQButton("Load more playlists",actions::more,variant=SoundQButtonVariant.Secondary)
+            if(!state.loading&&state.total?.let {state.rows.size<it}==true)SoundQListActionRow("Load more playlists",actions::more)
             choice?.let {target->SoundQButton("Save to “${target.playlist!!.name}”",{actions.save(target)},enabled=!state.loading)}
             SoundQDivider()
             SoundQEntryField(name,{name=it;choice=null},"Playlist name",enabled=!state.loading)

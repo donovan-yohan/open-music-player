@@ -38,7 +38,10 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         val url = (session.endpoint.identity + path).toHttpUrlOrNull() ?: throw SafeFailure(SafeFailure.Reason.Endpoint)
         val request = Request.Builder().url(url).tag(WireGuard::class.java,WireGuard { valid() && (dispatchValid?.invoke() ?: true) }).header("Accept","application/json")
         if (access != null) request.header("Authorization","Bearer $access")
-        headers.forEach {(name,value)->require(name=="Idempotency-Key");request.header(name,value)}
+        headers.forEach {(name,value)->
+            require(name=="Idempotency-Key" || name=="X-SoundQ-Radar-Policy"&&value=="recording-radar-v2"&&path=="/me/discovery/releases"&&method=="GET")
+            request.header(name,value)
+        }
         require(rawJson==null || path=="/mix-plans/import" && method=="POST" && body==null && !emptyBody)
         request.method(method, if (method in listOf("GET","HEAD")) null else (rawJson ?: if(emptyBody)"" else body?.toString() ?: "{}").toRequestBody("application/json".toMediaType()))
         try {
@@ -360,7 +363,7 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         return com.soundq.android.data.discovery.DiscoveryJson.resolved(body,source.url)
     }
     fun releaseRadar(scope:AccountScope,valid:()->Boolean):com.soundq.android.data.discovery.RadarPage =
-        com.soundq.android.data.discovery.RadarJson.page(authorized(scope,"/me/discovery/releases",valid=valid,expectedStatus=200))
+        com.soundq.android.data.discovery.RadarJson.page(authorized(scope,"/me/discovery/releases",valid=valid,expectedStatus=200,headers=mapOf("X-SoundQ-Radar-Policy" to "recording-radar-v2")))
     fun radarMembership(scope:AccountScope,recording:com.soundq.android.data.catalog.RecordingMbid,valid:()->Boolean):Boolean =
         com.soundq.android.data.discovery.RadarJson.membership(authorized(scope,"/me/discovery/releases/${recording.value}/membership",valid=valid,expectedStatus=200),recording)
     fun discoverySearch(scope: AccountScope, query:String, valid:()->Boolean = {true},grouped:Boolean=false): com.soundq.android.data.discovery.SourceResults {
@@ -512,8 +515,17 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
             com.soundq.android.data.home.RecentPage(rows,acceptedRevision,more)
         } catch(_:Exception) {throw SafeFailure(SafeFailure.Reason.InvalidResponse)}
     }
-    fun top(scope: AccountScope, valid: () -> Boolean = { true }): List<com.soundq.android.data.home.HomeEntry> =
-        parseHomeRows(authorized(scope, "/me/plays/top?days=30&limit=20", valid = valid))
+    fun top(scope: AccountScope, valid: () -> Boolean = { true }): List<com.soundq.android.data.home.HomeEntry> {
+        val body=authorized(scope,"/me/plays/top?days=30&limit=25&owned=true",valid=valid)
+        return try {
+            val rows=parseHomeRows(body,25)
+            require(rows.map {it.track.id}.distinct().size==rows.size)
+            body["ownedOnly"]?.let {value->
+                require(!value.jsonPrimitive.isString&&value.jsonPrimitive.boolean&&rows.all {it.eligible})
+            }
+            rows
+        } catch(_:Exception) {throw SafeFailure(SafeFailure.Reason.InvalidResponse)}
+    }
     fun history(scope: AccountScope, offset: Int, valid: () -> Boolean = { true }): List<com.soundq.android.data.home.HistoryEntry> {
         require(offset >= 0)
         val body = authorized(scope, "/me/plays/history?limit=50&offset=$offset", valid = valid)
@@ -531,8 +543,8 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
             rows
         } catch (_: Exception) { throw SafeFailure(SafeFailure.Reason.InvalidResponse) }
     }
-    private fun parseHomeRows(body: JsonObject): List<com.soundq.android.data.home.HomeEntry> = try {
-        body.getValue("tracks").jsonArray.map { parseHomeEntry(it.jsonObject) }.also { require(it.size <= 20) }
+    private fun parseHomeRows(body: JsonObject,maxRows:Int=20): List<com.soundq.android.data.home.HomeEntry> = try {
+        body.getValue("tracks").jsonArray.map { parseHomeEntry(it.jsonObject) }.also { require(it.size <= maxRows) }
     } catch (_: Exception) { throw SafeFailure(SafeFailure.Reason.InvalidResponse) }
     // Home/history Go scalars: omitted optionals default, present malformed values never coerce.
     private fun homeString(value: JsonElement): String = value.jsonPrimitive.let { require(it.isString); it.content }

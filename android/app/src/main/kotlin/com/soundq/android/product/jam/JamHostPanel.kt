@@ -84,7 +84,7 @@ private fun jamRequestStatus(status:String)=when(status) {
                     }
                 }}
             }
-            if(library.total?.let {library.rows.size<it}==true)SoundQButton("Load more Library songs",model::loadMore,variant=SoundQButtonVariant.Secondary)
+            if(library.total?.let {library.rows.size<it}==true)SoundQListActionRow("Load more Library songs",model::loadMore)
             Row {Checkbox(outside,{outside=it},enabled=!state.busy&&!state.uncertain);Text("Let guests find songs",Modifier.weight(1f))}
             SoundQButton("Create Jam",{val tracks=library.rows.filter {it.id in selected};action {host.create(it,tracks,outside)}},enabled=selected.isNotEmpty()&&!state.busy&&!state.uncertain)
         }else {

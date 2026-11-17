@@ -14,7 +14,8 @@ class HomeRepositoryTest {
             assertEquals("Top", SoundQApi(s,f.client).top(s.capture()!!).singleOrNull()?.track?.title)
             val request=f.server.takeRequest(2,TimeUnit.SECONDS)!!
             assertEquals("/api/v1/me/plays/top",request.url.encodedPath)
-            assertEquals("30",request.url.queryParameter("days")); assertEquals("20",request.url.queryParameter("limit"))
+            assertEquals("30",request.url.queryParameter("days")); assertEquals("25",request.url.queryParameter("limit"))
+            assertEquals("true",request.url.queryParameter("owned"))
         }
     }
     @Test fun historyKeepsRepeatedTrackEventsAndMetadataWithoutTotal() {

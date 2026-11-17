@@ -31,10 +31,13 @@ import com.soundq.android.data.home.*
 import com.soundq.android.product.home.*
 import com.soundq.android.data.imports.ImportView
 import com.soundq.android.product.imports.ImportsScreen
+import com.soundq.android.product.imports.ImportProgressLifecycle
+import com.soundq.android.product.imports.ImportProgressStrip
 import com.soundq.android.product.preferences.*
 
 @Composable fun ProductApp(model:ProductViewModel=viewModel()) {
     PlayerFailureToasts(model)
+    ImportProgressLifecycle(model)
     val auth by model.auth.collectAsStateWithLifecycle()
     val onlineRestore by model.onlineRestore.collectAsStateWithLifecycle()
     val library by model.library.collectAsStateWithLifecycle()
@@ -440,6 +443,7 @@ import com.soundq.android.product.preferences.*
                         })}}}
                         }
                     }
+                    ImportProgressStrip(model,::openImports)
                     SoundQCompactPlayer(playback.title ?: "Nothing playing",playback.artist,playback.isPlaying,playback.canPlay,playback.preparing,{transportReturn=null;panel="Player"},model.controller::toggle,{transportReturn=null;panel="Queue"},
                         timing=compactSongTiming(playback),artwork={com.soundq.android.product.artwork.PlayerArtwork(model.graph,playback,72.dp,{compactEntry.get()})})
                     SoundQBottomNavigation(when(destination){"History"->"Home";"Catalog","Downloads","Acquisition"->"Library";else->destination},{settingsReturn=null;navigate(it)})

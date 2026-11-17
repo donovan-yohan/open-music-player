@@ -19,7 +19,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 
-private val artworkWorkers=Semaphore(3)
+internal val discoveryArtworkWorkers=Semaphore(3)
 
 /** Only the accepted DTO's URL, fenced by its row/view and foreground lifetime. */
 @Composable internal fun DiscoveryArtwork(client:OkHttpClient,url:String?,owner:Any,valid:()->Boolean) {
@@ -34,7 +34,7 @@ private val artworkWorkers=Semaphore(3)
     DisposableEffect(reader) {onDispose {reader?.close()}}
     LaunchedEffect(reader) {
         if(reader!=null&&url!=null) {
-            val image=artworkWorkers.withPermit {withContext(Dispatchers.IO) {reader.load(url,valid)?.let {decodeArtwork(it,192)}}}
+            val image=discoveryArtworkWorkers.withPermit {withContext(Dispatchers.IO) {reader.load(url,valid)?.let {decodeArtwork(it,192)}}}
             if(valid()&&foreground)bitmap=image
         }
     }

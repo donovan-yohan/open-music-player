@@ -3,11 +3,27 @@ package com.soundq.android.data.discovery
 import com.soundq.android.data.SafeFailure
 import com.soundq.android.data.catalog.ArtistMbid
 import com.soundq.android.data.catalog.RecordingMbid
+import com.soundq.android.data.catalog.ReleaseGroupMbid
+import com.soundq.android.data.catalog.ReleaseMbid
 import kotlinx.serialization.json.*
 import java.time.*
 
 class RadarDate internal constructor(val raw:String,val precision:String,internal val start:LocalDate,internal val end:LocalDate)
-class RadarSong internal constructor(val recording:RecordingMbid,val title:String,val artist:String,val creditedSeeds:List<ArtistMbid>,val firstRelease:RadarDate)
+/** Metadata only: a group can never be used in the edition endpoint. */
+sealed class CaaArtworkRef {
+ abstract val entryUrl:String
+ data class Group(val id:ReleaseGroupMbid):CaaArtworkRef() {
+  init {require(id.value!="00000000-0000-0000-0000-000000000000")}
+  override val entryUrl get()="https://coverartarchive.org/release-group/${id.value}/front-250"
+ }
+ data class Edition(val id:ReleaseMbid):CaaArtworkRef() {
+  init {require(id.value!="00000000-0000-0000-0000-000000000000")}
+  override val entryUrl get()="https://coverartarchive.org/release/${id.value}/front-250"
+ }
+}
+class RadarSong internal constructor(val recording:RecordingMbid,val title:String,val artist:String,val creditedSeeds:List<ArtistMbid>,val firstRelease:RadarDate,val releaseGroupMbid:ReleaseGroupMbid?=null,val releaseMbid:ReleaseMbid?=null) {
+ val artwork:CaaArtworkRef? get()=releaseGroupMbid?.let {CaaArtworkRef.Group(it)} ?: releaseMbid?.let {CaaArtworkRef.Edition(it)}
+}
 class RadarCoverage internal constructor(val partial:Boolean,val reasons:List<String>,val providerStatus:String,val serverEvents:Int?,val seedsAvailable:Int?,val seedsSelected:Int,val unresolvedSeedTracks:Int?,val unlinkedLibraryTracks:Int?,val pagesFetched:Int,val knownTotal:Int?,val retrieved:Int,val deduped:Int,val dateRejected:Int,val identityRejected:Int,val ownedExcluded:Int?,val returned:Int)
 class RadarPage internal constructor(val songs:List<RadarSong>,val coverage:RadarCoverage,val generatedAt:Instant,val selectedArtists:List<ArtistMbid>)
 enum class RadarPhase { Held,Idle,Loading,Ready,Failed }
@@ -36,7 +52,7 @@ object RadarJson {
  private inline fun <T> parse(block:()->T):T=try{block()}catch(_:Exception){throw SafeFailure(SafeFailure.Reason.InvalidResponse)}
  fun page(o:JsonObject):RadarPage=parse {
   require(o.toString().toByteArray(Charsets.UTF_8).size<=262144)
-  require(text(o,"policyVersion")=="recording-radar-v1"&&text(o,"calendarZone")=="UTC")
+  val version=text(o,"policyVersion");require(version in setOf("recording-radar-v1","recording-radar-v2")&&text(o,"calendarZone")=="UTC")
   val generated=Instant.parse(text(o,"generatedAt"));val today=generated.atZone(ZoneOffset.UTC).toLocalDate()
   val w=o.getValue("effectiveWindows").jsonObject
   require(number(w,"listenDays")==90&&number(w,"releaseDays")==90)
@@ -60,10 +76,12 @@ object RadarJson {
     else->error("precision")
    }
    require(start.year>=1&&!start.isBefore(since)&&!end.isAfter(today)&&(precision=="day"||end.isBefore(today)))
-   RadarSong(recording,display(text(row,"title")),display(text(row,"artist")),seeds,RadarDate(raw,precision,start,end))
+   RadarSong(recording,display(text(row,"title")),display(text(row,"artist")),seeds,RadarDate(raw,precision,start,end),
+    runCatching {row["releaseGroupMbid"]?.let {ReleaseGroupMbid(id(string(it)))}}.getOrNull(),
+    runCatching {row["releaseMbid"]?.let {ReleaseMbid(id(string(it)))}}.getOrNull())
   }
   require(songs.size<=20&&songs.map {it.recording}.distinct().size==songs.size)
-  require(songs.zipWithNext().all {(a,b)->a.firstRelease.start>b.firstRelease.start||a.firstRelease.start==b.firstRelease.start&&a.recording.value<b.recording.value})
+  if(version=="recording-radar-v1")require(songs.zipWithNext().all {(a,b)->a.firstRelease.start>b.firstRelease.start||a.firstRelease.start==b.firstRelease.start&&a.recording.value<b.recording.value})
   val c=o.getValue("coverage").jsonObject
   require(text(c,"identityScope")=="identified_server_library"&&text(c,"deviceLocalCoverage")=="unresolved")
   val reasons=c.getValue("reasons").jsonArray.map(::string)
