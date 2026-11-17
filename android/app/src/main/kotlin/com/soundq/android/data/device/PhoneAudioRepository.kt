@@ -113,7 +113,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     private val admissionOrder=Any()
     private var deferredAdmissions=0
     private val admissions=Dispatchers.IO.limitedParallelism(1)
-    private var refreshRunning=false
+    private var refreshRunning:(()->Unit)?=null
     private var pendingRefresh:(()->Unit)?=null
     private data class RefreshScope(val version:Long,val storage:Boolean)
     private var refreshScope:RefreshScope?=null
@@ -137,15 +137,17 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
             refreshScope=scope
             pendingRefresh={refresh(valid)};return
         }
-        if(refreshRunning){
+        if(refreshRunning!=null){
             if(refreshScope!=scope)refreshEpoch.incrementAndGet()
             refreshScope=scope
             pendingRefresh={refresh(valid)};return
         }
         refreshScope=scope
-        refreshRunning=true
-        val refresh=refreshEpoch.incrementAndGet()
         val version = scope.version
+        // Keep the admitted request as running ownership, including its original validity/owner.
+        // A mutation may retain it once; an ordinary completed scan never retries itself.
+        refreshRunning={refresh {valid()&&current(version)}}
+        val refresh=refreshEpoch.incrementAndGet()
         val proofAuthority=authoritySequence.get()
         fun active()=valid()&&current(version)&&refreshEpoch.get()==refresh&&authoritySequence.get()==proofAuthority
         jobs.launch {
@@ -200,10 +202,15 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                     lastScan = PhoneScanObservation(true, whole, true)
                     publish(if (whole) null else "Some audio could not be refreshed. Existing files and saved progress were kept.")
                 }
-            } catch (_: CancellationException) { refreshLocked { mutable.update { if(current(version)&&refreshEpoch.get()==refresh)it.copy(refreshing=false) else it } } }
+            } catch (_: CancellationException) { /* Matching request cleanup is unconditional in finally. */ }
             catch (_: Exception) { refreshLocked { if(active())publish("Some audio could not be refreshed. Existing files and saved progress were kept.") } }
             finally {
-                val next=refreshLocked{refreshRunning=false;if(fileMutations.isEmpty())pendingRefresh.also {pendingRefresh=null}else null}
+                val next=refreshLocked {
+                    // Even a now-invalid trailing callback owns retirement of its loading marker.
+                    mutable.update {if(current(version)&&refreshEpoch.get()==refresh)it.copy(refreshing=false) else it}
+                    refreshRunning=null
+                    if(fileMutations.isEmpty())pendingRefresh.also {pendingRefresh=null}else null
+                }
                 next?.invoke()
             }
         }
@@ -219,13 +226,16 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         if(fileMutations.containsKey(row.canonicalId))return@refreshLocked null
         refreshScope=scope
         // Retire scans admitted before the mutation, including a proof already waiting to commit.
+        // A cancelled admitted scan still owes its observation after a failed/refused delete.
+        // Keep a newer explicit request in preference to that interrupted request.
+        if(pendingRefresh==null)pendingRefresh=refreshRunning
         fileMutations[row.canonicalId]=FileMutation(token,refreshEpoch.incrementAndGet())
         token
     }
     fun endFileMutation(token:UUID) {
         val next=refreshLocked {
             fileMutations.entries.firstOrNull {it.value.token==token}?.let {fileMutations.remove(it.key,it.value)}
-            if(fileMutations.isEmpty()&&!refreshRunning)pendingRefresh.also {pendingRefresh=null}else null
+            if(fileMutations.isEmpty()&&refreshRunning==null)pendingRefresh.also {pendingRefresh=null}else null
         }
         next?.invoke()
     }

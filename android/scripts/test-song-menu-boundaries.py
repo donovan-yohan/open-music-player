@@ -65,7 +65,7 @@ private class Repository(val graph:AppGraph,val store:DeviceListeningStore?,val 
  private val refreshEpoch=java.util.concurrent.atomic.AtomicLong()
  private data class RefreshScope(val version:Long,val storage:Boolean)
  private var refreshScope:RefreshScope?=null
- private var refreshRunning=false
+ private var refreshRunning:(()->Unit)?=null
  private var pendingRefresh:(()->Unit)?=null
  fun refresh(valid:()->Boolean={true})=Unit
  private val refreshLock=java.util.concurrent.locks.ReentrantLock()

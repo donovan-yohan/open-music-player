@@ -6,6 +6,13 @@ p=argparse.ArgumentParser();p.add_argument('--generate',type=Path,required=True)
 root=a.root or Path(__file__).resolve().parents[1]
 s=(root/'app/src/main/kotlin/com/soundq/android/data/device/PhoneAudioRepository.kt').read_text()
 refresh=s[s.index('    private val refreshEpoch='):s.index('    /** A saved reference')]
+# Execute the real mutation interval and delete ordering with the real refresh owner.
+# Only the mutation row-reference type is rebound to DeviceAudio; provider/stat APIs are facades.
+mutation=s[s.index('    private val fileMutations='):s.index('    fun sameFile(')]
+mutation=mutation.replace('com.soundq.android.playback.PlaybackRef.Device','DeviceAudio')
+actions=(root/'app/src/main/kotlin/com/soundq/android/data/device/PhoneFileActions.kt').read_text()
+delete=actions[actions.index('    suspend fun delete('):actions.rindex('\n}')]
+outcome=next(line for line in actions.splitlines() if 'enum class FileDeleteOutcome' in line)
 start=s.index('    private fun advanceAuthority(');end=s.index('{',start)+1;depth=1
 while depth:depth+=(s[end]=='{')-(s[end]=='}');end+=1
 advance=s[start:end]
@@ -23,14 +30,18 @@ import java.io.File
 import org.junit.Assert.*
 import org.junit.Test
 private class Uri(val value:String) {companion object {fun parse(v:String)=Uri(v)};override fun toString()=value;val authority:String? get()=null}
-private class Session {@Volatile var version=1L;fun version()=version}
-private class Graph {val session=Session()}
+private class Session {@Volatile var version=1L;fun version()=version;fun owns(v:Long)=v==version}
+private class Graph {val session=Session();lateinit var phoneAudio:Repository}
 private data class Observation(val locator:String,val providerObject:String=locator,val filename:String=locator,val title:String=locator,val artist:String?=null,val album:String?=null,val durationMs:Long?=601000,val aliases:Set<String> = setOf(providerObject))
 private data class Coverage(val complete:Boolean,val observations:List<Observation>,val truncated:Boolean=false)
-private data class Proof(val sha256:String,val bytes:Long=123)
+private data class AudioContentProof(val bytes:Long,val sha256:String)
+private data class PhoneSourceAdmission(val row:DeviceAudio,val source:SourceCapture,val sessionVersion:Long,val resumeMs:Long=0)
+private val DeviceAudio.sha256 get()=revision.sha256
+private val DeviceAudio.bytes get()=revision.byteLength
 private class Platform {
+ val originals=mutableMapOf<String,File>()
  var rows=listOf(Observation("one"));var complete=true;var fail:String?=null;var gate:java.util.concurrent.CountDownLatch?=null
- val entered=java.util.concurrent.CountDownLatch(1);var proofs=0;var discoveries=0;var cancelled=0
+ val entered=java.util.concurrent.CountDownLatch(1);val holding=java.util.concurrent.CountDownLatch(1);var proofs=0;var discoveries=0;var cancelled=0
  @Volatile var storage=true
  @Volatile var indexing=true
  @Volatile var accessRevision=0
@@ -45,7 +56,7 @@ private class Platform {
  fun discover(current:()->Boolean):Coverage {discoveries++;order+="discover";return Coverage(complete,rows)}
  fun walksSharedStorage()=walks
  fun provenIndexKeys(ids:Collection<String>):Map<String,IndexKeyProof> {asked+=ids.toList();return proven.filterKeys {it in ids}}
- fun proof(uri:String,current:()->Boolean):Proof {proofs++;entered.countDown();gate?.await();if(!current()){cancelled++;throw CancellationException()};if(uri==fail)error("Unreadable original");return Proof(sha)}
+ fun proof(uri:String,current:()->Boolean):AudioContentProof {proofs++;entered.countDown();val held=gate;if(held!=null){holding.countDown();held.await()};if(!current()){cancelled++;throw CancellationException()};if(uri==fail)error("Unreadable original");val file=originals[uri];return if(file==null)AudioContentProof(123,sha) else {val bytes=file.readBytes();AudioContentProof(bytes.size.toLong(),java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it)})}}
 }
 private data class State(val refreshing:Boolean=false,val permission:Boolean=true,val message:String?=null)
 // Record attempted obsolete publications, not merely domain refusal or eventual trailing state.
@@ -54,6 +65,7 @@ private class RecordingStore(val domain:DeviceListeningStore,val platform:Platfo
  val scans=mutableMapOf<ScanCapture,Int>();var obsoletePublications=0;var publications=0;var retirements=0
  @Volatile var publishGate:java.util.concurrent.CountDownLatch?=null;val publishing=java.util.concurrent.CountDownLatch(1)
  fun snapshot(a:AccessCapture)=domain.snapshot(a)
+ fun ownsSource(s:SourceCapture)=domain.ownsSource(s)
  @Volatile var grantGate:java.util.concurrent.CountDownLatch?=null;val granting=java.util.concurrent.CountDownLatch(1)
  fun putGrant(a:AccessCapture,g:ScanGrant):Mutation {granting.countDown();grantGate?.await();return domain.putGrant(a,g)}
  fun beginScan(a:AccessCapture,g:ScanGrantId)=domain.beginScan(a,g)?.also {scans[it]=platform.accessRevision;proofAuthorities[it]=authority()}
@@ -68,16 +80,19 @@ private class RecordingStore(val domain:DeviceListeningStore,val platform:Platfo
 }
 private class Repository(domain:DeviceListeningStore,val jobs:CoroutineScope) {
  val graph=Graph();val platform=Platform();val store=RecordingStore(domain,platform);val access=domain.unlock();val mutable=MutableStateFlow(State())
- // Physical-mutation occupancy is an admission input; no provider IO is faked by this fixture.
- val fileMutations=java.util.concurrent.ConcurrentHashMap<String,UUID>()
+ // Mutation bodies below are extracted verbatim apart from the declared row-reference type binding.
+MUTATION
+ fun observed(ref:DeviceAudio)=store.domain.snapshot(access)?.resolve(ref.owner)?.takeUnless {fileMutations.containsKey(it.canonicalId)}
+ fun occupyMutationForTest(){fileMutations["fixture-original"]=FileMutation(UUID.randomUUID(),refreshEpoch.get())}
  val serial=Mutex();private val authoritySequence=java.util.concurrent.atomic.AtomicLong()
  private val authorityEpoch=java.util.concurrent.atomic.AtomicLong();val authorityVersion get()=authorityEpoch.get()
  private val fileAuthorities=java.util.concurrent.ConcurrentHashMap<DeviceFileId,Long>()
 ADVANCE
  fun revokeAuthority()=advanceAuthority()
- fun releaseMutationForTest(){val next=refreshLocked {fileMutations.clear();pendingRefresh.also {pendingRefresh=null}};next?.invoke()}
+ fun releaseMutationForTest(){fileMutations.values.map {it.token}.forEach {endFileMutation(it)}}
  fun revocationQueued(thread:Thread)=refreshLock.hasQueuedThread(thread)
- init {store.authority={PROOF_EPOCH}}
+ init {store.authority={PROOF_EPOCH};graph.phoneAudio=this}
+ suspend fun markFileMissing(admission:PhoneSourceAdmission,uri:String,fence:UUID):Boolean=error("Confirmed-delete ACK is outside this failure-only action facade")
  @Volatile var lastScan:PhoneScanObservation?=null
  fun current(version:Long)=version==graph.session.version()
  fun publish(message:String?=null){mutable.value=State(message=message)}
@@ -86,6 +101,22 @@ ADVANCE
  private fun locator(v:String)=ProviderLocator("fixture",v)
 REFRESH
  suspend fun settled(){withTimeout(10000){while(jobs.coroutineContext[Job]!!.children.any {it.isActive})delay(1)}}
+}
+/** Provider/path/stat facades only. The delete body, source check, mutation and finally
+ * ordering below are production; refusal/failure never enter the deliberately unavailable ACK. */
+private data class DeleteStamp(val key:String,val size:Long,val modified:Long,val deletionSafe:Boolean=true) {
+ companion object {fun of(file:File):DeleteStamp {val a=java.nio.file.Files.readAttributes(file.toPath(),java.nio.file.attribute.BasicFileAttributes::class.java);return DeleteStamp(a.fileKey().toString(),a.size(),a.lastModifiedTime().to(java.util.concurrent.TimeUnit.NANOSECONDS))}}
+}
+private data class PhoneFileTarget(val ref:DeviceAudio,val version:Long,val admission:PhoneSourceAdmission,val uri:Uri,val path:String,val stamp:DeleteStamp,val providerValues:List<Pair<String,String>> = emptyList())
+private object MediaStore {object MediaColumns {const val _ID="id"}}
+private class Cursor:AutoCloseable {fun moveToFirst()=false;override fun close(){}}
+private class DeleteResolver {var calls=0;fun delete(uri:Uri,where:String,args:Array<String>):Int {calls++;error("declared provider-delete failure")};fun query(uri:Uri,columns:Array<String>,a:Any?,b:Any?,c:Any?)=Cursor()}
+OUTCOME
+private class DeleteAction(val graph:Graph,val resolver:DeleteResolver) {
+ val mutation=Mutex();val deleteUnavailableReason:String?=null
+ fun current(t:PhoneFileTarget)=graph.phoneAudio.current(t.version)&&graph.session.owns(t.version)
+ fun matches(t:PhoneFileTarget)=current(t)&&graph.phoneAudio.platform.storageAllowed()&&runCatching {DeleteStamp.of(File(t.path))==t.stamp}.getOrDefault(false)
+DELETE_BODY
 }
 /** An upgraded phone's store as an older build wrote it: an indexed row, a file-picker row of the same MediaStore
  * object under its picker key, and a folder-picker row nothing proves. Each has listening history. */
@@ -104,10 +135,87 @@ private object Legacy {
   listOf(entry(heard,1000,700000),entry(picked,3000,650000),entry(unproven,2000,610000)))).toString().toByteArray())}
 }
 class PhoneRefreshTest {
+ private fun failedDeleteInterruptsRefresh(oldFirst:Boolean,providerFails:Boolean)=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-failed-delete-").toFile()
+  val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO);val proof=java.util.concurrent.CountDownLatch(1)
+  val retired=CompletableDeferred<Unit>();val release=CompletableDeferred<Unit>()
+  try {DeviceListeningStore(File(root,"domain.json")).use {store->
+   val repo=Repository(store,jobs);val original=File(root,"original.wav");val bytes=ByteArray(123){97};original.writeBytes(bytes)
+   repo.platform.originals["one"]=original;repo.refresh();repo.settled()
+   val row=store.snapshot(repo.access)!!.files.single();val source=store.captureSource(repo.access,row.id)!!
+   val target=PhoneFileTarget(row,1,PhoneSourceAdmission(row,source,1),Uri.parse("one"),original.path,DeleteStamp.of(original))
+   val resolver=DeleteResolver();val action=DeleteAction(repo.graph,resolver)
+   repo.platform.gate=proof;repo.refresh();assertTrue(repo.platform.holding.await(5,java.util.concurrent.TimeUnit.SECONDS))
+   assertTrue(repo.mutable.value.refreshing);repo.platform.gate=null
+   val deletion=async {action.delete(target,{true},{retired.complete(Unit);release.await();providerFails})}
+   withTimeout(5000){retired.await()}
+   if(oldFirst){proof.countDown();repo.settled();assertEquals(2,repo.platform.discoveries)}
+   release.complete(Unit);assertEquals(FileDeleteOutcome.Refused,withTimeout(5000){deletion.await()})
+   proof.countDown();repo.settled()
+   assertEquals("Provider dispatch is reached only after accepted retirement",if(providerFails)1 else 0,resolver.calls)
+   assertEquals("Exactly one trailing scan",3,repo.platform.discoveries)
+   assertEquals("Old proof never publishes",2,repo.store.publications)
+   assertFalse(repo.mutable.value.refreshing);assertTrue(original.exists());assertArrayEquals(bytes,original.readBytes())
+   assertTrue(store.snapshot(repo.access)!!.files.single().available)
+  }}finally{proof.countDown();release.complete(Unit);jobs.cancel();withContext(NonCancellable){jobs.coroutineContext[Job]!!.children.toList().joinAll()};root.deleteRecursively()}
+ }
+ @Test fun retirementRefusalOldScanFinishesBeforeMutationRelease()=failedDeleteInterruptsRefresh(true,false)
+ @Test fun retirementRefusalMutationReleasesBeforeOldScanFinally()=failedDeleteInterruptsRefresh(false,false)
+ @Test fun providerFailureOldScanFinishesBeforeMutationRelease()=failedDeleteInterruptsRefresh(true,true)
+ @Test fun providerFailureMutationReleasesBeforeOldScanFinally()=failedDeleteInterruptsRefresh(false,true)
+ // These tests execute extracted production begin/end and refresh/finally bodies. Failure/refusal
+ // release the same interval without a removal ACK; real delete/retirement IO belongs to the
+ // separately retained full-repository action cohort, not to these declared provider facades.
+ private fun interruptedMutation(oldFirst:Boolean,mode:String="refused")=runBlocking {
+  val root=java.nio.file.Files.createTempDirectory("refresh-interrupted-mutation-").toFile()
+  val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO);val gate=java.util.concurrent.CountDownLatch(1)
+  try {DeviceListeningStore(File(root,"domain.json")).use {store->
+   val repo=Repository(store,jobs);repo.platform.rows=listOf(Observation("one"),Observation("two"));repo.refresh();repo.settled()
+   val row=store.snapshot(repo.access)!!.files.single {it.metadata.filename=="one"}
+   val valid=java.util.concurrent.atomic.AtomicBoolean(true)
+   repo.platform.gate=gate;repo.refresh {valid.get()}
+   assertTrue(repo.platform.holding.await(5,java.util.concurrent.TimeUnit.SECONDS))
+   assertTrue(repo.mutable.value.refreshing)
+   if(mode=="newer-before")repo.refresh {false}
+   val fence=repo.beginFileMutation(row)!!
+   when(mode) {
+    "invalid"->valid.set(false)
+    "owner"->repo.graph.session.version++
+    "access"->repo.platform.storage=false
+    "newer-after"->repeat(20){repo.refresh {false}}
+    "newer-valid"->{valid.set(false);repeat(20){repo.refresh {true}}}
+    "deleted"->{
+     val source=store.captureSource(repo.access,row.id)!!
+     assertEquals(Mutation.APPLIED,store.reportUnavailable(source,row.aliases.single().locator,AccessState.REMOVED,allAliases=true))
+     repo.platform.rows=listOf(Observation("two"));repo.publish()
+    }
+   }
+   if(oldFirst){gate.countDown();repo.settled();assertEquals("No scan may run inside the mutation",2,repo.platform.discoveries)}
+   repo.endFileMutation(fence);gate.countDown();repo.settled()
+   val rejected=mode in setOf("invalid","owner","newer-before","newer-after")
+   assertEquals("The old proof never publishes; exactly the permitted trailing request does",if(rejected)1 else if(mode=="access")1 else 2,repo.store.publications)
+   assertEquals("At most one trailing enumeration",if(rejected||mode=="access")2 else 3,repo.platform.discoveries)
+   assertFalse("Interrupted request loading must settle",repo.mutable.value.refreshing)
+   assertEquals(0,repo.store.obsoletePublications)
+   val snapshot=store.snapshot(repo.access)!!
+   if(mode=="deleted")assertFalse(snapshot.files.single {it.id==row.id}.available)
+   else if(mode!="access")assertTrue("Refusal cannot hide the legitimate original",snapshot.files.single {it.id==row.id}.available)
+   if(mode=="access")assertEquals(AccessState.REVOKED,snapshot.grants.single().state)
+  }}finally{gate.countDown();jobs.cancel();withContext(NonCancellable){jobs.coroutineContext[Job]!!.children.toList().joinAll()};root.deleteRecursively()}
+ }
+ @Test fun interruptedRefreshSurvivesRefusalWhenOldScanFinishesFirst()=interruptedMutation(true)
+ @Test fun interruptedRefreshSurvivesRefusalWhenMutationReleasesFirst()=interruptedMutation(false)
+ @Test fun interruptedRefreshDoesNotReviveInvalidCallback()=interruptedMutation(true,"invalid")
+ @Test fun interruptedRefreshDoesNotRebindRetiredOwner()=interruptedMutation(false,"owner")
+ @Test fun interruptedRefreshObservesRetiredAccess()=interruptedMutation(false,"access")
+ @Test fun pendingExplicitIntentBeforeMutationWinsOverInterruptedRequest()=interruptedMutation(true,"newer-before")
+ @Test fun pendingExplicitIntentDuringMutationWinsOverInterruptedRequest()=interruptedMutation(false,"newer-after")
+ @Test fun newerValidRequestWinsOverInvalidInterruptedCallback()=interruptedMutation(true,"newer-valid")
+ @Test fun trailingRefreshKeepsConfirmedDeletionHidden()=interruptedMutation(false,"deleted")
  @Test fun physicalMutationDefersEnumerationAndKeepsOnlyLatestRefresh()=runBlocking {
   val root=java.nio.file.Files.createTempDirectory("refresh-delete-fence-").toFile();val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
   try {DeviceListeningStore(File(root,"domain.json")).use {store->
-   val repo=Repository(store,jobs);repo.fileMutations["fixture-original"]=UUID.randomUUID()
+   val repo=Repository(store,jobs);repo.occupyMutationForTest()
    repeat(20){repo.refresh()};repo.settled()
    assertEquals("No omission proof may run inside a physical mutation",0,repo.platform.discoveries)
    assertEquals(0,repo.store.publications)
@@ -357,4 +465,4 @@ class PhoneRefreshTest {
 }
 '''
 a.generate.mkdir(parents=True,exist_ok=True)
-(a.generate/'PhoneRefreshTest.kt').write_text(header.replace('REFRESH',refresh).replace('ADVANCE',advance).replace('PROOF_EPOCH',proof_epoch))
+(a.generate/'PhoneRefreshTest.kt').write_text(header.replace('REFRESH',refresh).replace('MUTATION',mutation).replace('ADVANCE',advance).replace('PROOF_EPOCH',proof_epoch).replace('OUTCOME',outcome).replace('DELETE_BODY',delete))
