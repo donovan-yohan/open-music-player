@@ -33,6 +33,10 @@ def masked(text):
                   lambda m: ' ' * len(m[0]), text, flags=re.S)
 
 
+def call_count(text, name):
+    return len(re.findall(r'\b' + re.escape(name) + r'\s*\(', masked(text)))
+
+
 def closing(text, opening):
     code = masked(text)
     left, right = code[opening], {'(': ')', '{': '}', '[': ']'}[code[opening]]
@@ -56,11 +60,34 @@ def call(text, name):
     return text[start:closing(text, text.index('(', start))]
 
 
+def without_history_only_bodies(text):
+    code = masked(text)
+    branches = list(re.finditer(r'\bif\s*\(\s*route\.destination\s*==\s*HomeDestination\.History\s*\)\s*', code))
+    # The destination Column has History-only header, search and list bodies.
+    # Fail closed on source drift; retain each else (the list's Home content).
+    assert len(branches) == 3, 'Expected three History-only source regions'
+    for branch in reversed(branches):
+        opening = branch.end()
+        assert code[opening:opening + 1] == '{', 'Expected braced History-only source region'
+        end = closing(text, opening)
+        text = text[:opening + 1] + text[end - 1:]
+    return text
+
+
 class Adoption(unittest.TestCase):
     def test_four_real_headers_and_no_local_root_title_drawing(self):
+        # Home/Discover now keep the same header owner for their full collections.
+        # Require its exact current title projection, not the retired literal call.
+        titles = {
+            'library': '"Library"',
+            'home': 'when(collection) {HomeSection.Recent->"Recently played";HomeSection.Top->"Your top tracks";else->"Home"}',
+            'discover': 'if(showRadarCollection)"New releases" else "Discover"',
+            'playlists': '"Playlists"',
+        }
         for key, title in [('library', 'Library'), ('home', 'Home'), ('discover', 'Discover'), ('playlists', 'Playlists')]:
             with self.subTest(page=key):
-                self.assertEqual(files[key].count('MainPageHeader("' + title + '"'), 1)
+                self.assertEqual(call_count(files[key], 'MainPageHeader'), 1)
+                self.assertEqual(files[key].count('MainPageHeader(' + titles[key]), 1)
                 self.assertNotRegex(files[key], r'Text\("' + title + r'"\s*[,)]')
         wrapper = function(files['wrapper'], 'MainPageHeader')
         self.assertIn('SoundQMainPageHeader(title,brand=', wrapper)
@@ -72,13 +99,13 @@ class Adoption(unittest.TestCase):
     def test_three_search_consumers_and_adjacent_history_use_actual_owner(self):
         for key in ['library', 'discover', 'playlists', 'home']:
             with self.subTest(page=key):
-                self.assertEqual(files[key].count('SoundQSearchStrip('), 1)
+                self.assertEqual(call_count(files[key], 'SoundQSearchStrip'), 1)
         for key, name in [('library', 'LibrarySearch'), ('home', 'HistorySearch')]:
             self.assertNotIn('BasicTextField(', function(files[key], name))
         self.assertNotIn('SoundQEntryField(', files['discover'])
         self.assertNotIn('SoundQTextField(search', files['playlists'])
         strip = function(files['components'], 'SoundQSearchStrip')
-        self.assertEqual(strip.count('BasicTextField('), 1)
+        self.assertEqual(call_count(strip, 'BasicTextField'), 1)
         self.assertIn('editorModifier.weight(1f)', strip)
         self.assertIn('if(value.text.isEmpty())Text(placeholder', strip)
         self.assertIn('contentAlignment=Alignment.CenterStart', strip)
@@ -88,15 +115,18 @@ class Adoption(unittest.TestCase):
     def test_fixed_chrome_precedes_one_bounded_discover_playlist_body(self):
         for key in ['discover', 'playlists']:
             source = files[key]
-            self.assertEqual(source.count('LazyColumn('), 1)
+            self.assertEqual(call_count(source, 'LazyColumn'), 1)
             lazy = source.index('LazyColumn(')
             self.assertLess(source.index('MainPageHeader('), lazy)
             self.assertLess(source.index('SoundQSearchStrip('), lazy)
             self.assertIn('weight(1f)', call(source, 'LazyColumn'))
         self.assertLess(files['discover'].index('SoundQTabs('), files['discover'].index('LazyColumn('))
         self.assertNotIn('SoundQTabs(', files['playlists'])
-        home = files['home'].split('} else MainPageHeader("Home")', 1)[1].split('if(route.destination==HomeDestination.History)', 1)[0]
+        home = function(files['home'], 'HomeDestinationScreen')
+        home = home[home.index(call(home, 'Column')):]
+        home = without_history_only_bodies(home)
         self.assertNotIn('SearchStrip', home)
+        self.assertEqual(call_count(home, 'HistorySearch'), 0)
 
     def test_opt_in_tabs_media_and_parent_chrome_owners_retained(self):
         self.assertIn('SoundQTabsTreatment.MainPageCells', function(files['library'], 'LibraryFilters'))
@@ -181,6 +211,12 @@ class FocusState(val hasFocus:Boolean)
 fun Modifier.onFocusChanged(callback:(FocusState)->Unit)=apply{UIExtra.focusChanged=callback}
 object UIExtra {var editorEnabled=true;var focus:FocusRequester?=null;var focusChanged:((FocusState)->Unit)?=null}
 object LocalContext {val current=Any()}
+// The input-only host has no saved-state restoration or visible platform IME.
+// Keep the current caller prefix intact; these are closed declarations only.
+fun <T> rememberSaveable(vararg keys:Any?,block:()->T):T=remember(*keys,block=block)
+object LocalDensity {val current=Unit}
+class Insets {fun getBottom(density:Unit)=0}
+object WindowInsets {val ime=Insets()}
 fun DisposableEffect(vararg keys:Any?,body:DisposeScope.()->Unit){}
 class DisposeScope {fun onDispose(block:()->Unit){}}
 fun <T> State<T>.collectAsStateWithLifecycle()=this
@@ -196,6 +232,7 @@ data class DiscoveryState(val draft:Draft=Draft(""),val phase:DiscoveryPhase=Dis
 class Repository {
  val state=State(DiscoveryState());val edits=mutableListOf<String>();var current:DiscoveryView?=null
  val radar=State(RadarState())
+ val radarInvalidation=State(0L)
  fun current(view:DiscoveryView)=view===current
  fun showRadar(view:DiscoveryView,visible:()->Boolean):RadarLanding?=null
  fun hideRadar(landing:RadarLanding){}
