@@ -78,7 +78,7 @@ class SharedMediaRowCallersContract(unittest.TestCase):
         text = source('playlists/PlaylistMemberOrderList.kt')
         self.shared(text)
         self.assertIn('artwork:(@Composable (String)->Unit)?=null', text)
-        self.assertIn('artwork?.let {slot->{slot(row.occurrence)}}', text)
+        self.assertIn('artwork?.let {slot->{SoundQThumbnailItem(list,row.occurrence) {slot(row.occurrence)}}}', text)
         for token in ['detectDragGestures(', 'userScrollEnabled=active==null',
                       'g.scrolled(list.scrollBy(delta))', 'val intent=g.complete()',
                       'if(intent!=null)dispatch(intent)', 'active==null&&admit()',

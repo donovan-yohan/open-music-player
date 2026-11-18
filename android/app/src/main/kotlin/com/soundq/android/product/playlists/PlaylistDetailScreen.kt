@@ -150,6 +150,7 @@ private fun transitionLabel(t:kotlinx.serialization.json.JsonObject):String {
         }}
         val detail=state.detail
         val mixed=blend.enabled && blend.status==BlendStatus.Ready && plan!=null
+        val thumbnailList=rememberSoundQThumbnailListState()
         // Exactly one vertical scroll owner in the bounded space above the parent player.
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if(detail!=null && !mixed && orderActions!=null && !detail.playlist.draft.isPublic) {
@@ -166,7 +167,7 @@ private fun transitionLabel(t:kotlinx.serialization.json.JsonObject):String {
                         val rowLifetime=com.soundq.android.product.rememberTrackRowLifetime(track)
                         key(lifetime,rowLifetime){artwork(track,{lifetime.current()&&rowLifetime.current()})}
                     }})
-            } else LazyColumn(Modifier.fillMaxSize()) {
+            } else LazyColumn(Modifier.fillMaxSize(),state=thumbnailList) {
                 item {feedback()}
                 detail?.let {detail->
                     if(blend.enabled && blend.status==BlendStatus.Ready && plan!=null) {
@@ -181,7 +182,7 @@ private fun transitionLabel(t:kotlinx.serialization.json.JsonObject):String {
                                     SoundQMediaRow(track.title,track.artist,selectedTrack==track.id.value,{if(admit())capture?.let {onPlayAt(it,track.id,index)}},
                                         onMore={reveal.close();memberTarget=target;member=index},modifier=front,
                                         metadata={com.soundq.android.product.LibraryMetadataContent(com.soundq.android.product.memberDurationMetadata(track.durationMs))},
-                                        artwork={key(lifetime,rowLifetime){artwork(track,rowCurrent)}},enabled=capture!=null||target!=null,supporting="${(index+1).toString().padStart(2,'0')} · Starts ${mixTime(plan.clips[index].start)}")
+                                        artwork={SoundQThumbnailItem(thumbnailList,"mixed-${plan.clips[index].occurrence}") {key(lifetime,rowLifetime){artwork(track,rowCurrent)}}},enabled=capture!=null||target!=null,supporting="${(index+1).toString().padStart(2,'0')} · Starts ${mixTime(plan.clips[index].start)}")
                                 }
                             }
                             if(index<blend.transitions.size)playlistHeader(key="seam-$index") {PlaylistBlendSeam(transitionLabel(blend.transitions[index])){seam=index}}
@@ -195,7 +196,7 @@ private fun transitionLabel(t:kotlinx.serialization.json.JsonObject):String {
                             SoundQMediaRow(track.title,track.artist,selectedTrack==track.id.value,{if(admit())capture?.let {onPlayAt(it,track.id,index)}},
                                 onMore={reveal.close();memberTarget=target;member=index},modifier=front,
                                         metadata={com.soundq.android.product.LibraryMetadataContent(com.soundq.android.product.memberDurationMetadata(track.durationMs))},
-                                artwork={key(lifetime,rowLifetime){artwork(track,rowCurrent)}},enabled=capture!=null||target!=null)
+                                artwork={SoundQThumbnailItem(thumbnailList,"${track.id.value}:$index") {key(lifetime,rowLifetime){artwork(track,rowCurrent)}}},enabled=capture!=null||target!=null)
                         }
                     }
                 }

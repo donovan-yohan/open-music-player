@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import tempfile
+import re
 
 p = argparse.ArgumentParser()
 p.add_argument('--output', type=Path, required=True)
@@ -19,6 +20,9 @@ p.add_argument('--designsystem-root',type=Path)
 p.add_argument('--graph-source',type=Path)
 p.add_argument('--library-loader-source',type=Path)
 p.add_argument('--shared-only',action='store_true')
+p.add_argument('--library-binding-source',type=Path)
+p.add_argument('--phone-source',type=Path)
+p.add_argument('--lookahead-only',action='store_true')
 a = p.parse_args()
 a.output.mkdir(parents=True, exist_ok=True)
 r = Path(__file__).resolve().parents[1]
@@ -38,11 +42,16 @@ jars = [http[0], jar('com.squareup.okio', 'okio-jvm', '3.18.1'),
         jar('com.squareup.okhttp3', 'okhttp-tls', '5.5.1'),
         jar('com.squareup.okhttp3', 'mockwebserver3', '5.5.1'),
         jar('org.jetbrains.kotlinx', 'kotlinx-coroutines-core-jvm', '1.10.2'),
-        jar('junit', 'junit', '4.13.2'), jar('org.hamcrest', 'hamcrest-core', '1.3')]
+        jar('junit', 'junit', '4.13.2'), jar('org.hamcrest', 'hamcrest-core', '1.3'),
+        jar('org.jetbrains.kotlinx','kotlinx-serialization-json-jvm','1.12.0'),
+        jar('org.jetbrains.kotlinx','kotlinx-serialization-core-jvm','1.12.0')]
 cp = os.pathsep.join(map(str, jars))
 inputs = [source, main / 'product/artwork/LibraryArtwork.kt', main / 'data/Contracts.kt', main / 'data/AccountSession.kt',
           r / 'scripts/player-artwork-tests/SelectedPlayerArtworkTest.kt',
-          r / 'scripts/player-artwork-tests/SharedArtworkTest.kt']
+          r / 'scripts/player-artwork-tests/SharedArtworkTest.kt',
+          main/'data/LibraryCollection.kt',main/'data/BoundedLibraryCorpus.kt',main/'data/LibrarySortStore.kt',main/'playback/QueuePolicy.kt']
+if not a.shared_only:
+    inputs += [main/'product/artwork/ThumbnailReadGate.kt',r/'scripts/player-artwork-tests/ThumbnailLookaheadTest.kt']
 for f in inputs:
     (a.output / f.name).write_text(f.read_text())
 if not a.shared_only:
@@ -60,6 +69,14 @@ arrangement=(main/'playback/Arrangement.kt').read_text()
 identities=arrangement[arrangement.index('@Serializable data class ArrangementIdentity'):arrangement.index('/** No gain')].replace('@Serializable ','')
 performance=(main/'playback/TransientPerformance.kt').read_text()
 performance=performance[performance.index('@Serializable data class PerformanceTarget'):performance.index('/** Explicit bounded')].replace('@Serializable ','')
+(a.output/'AnnotatedStringBoundary.kt').write_text('package androidx.compose.ui.text\ndata class AnnotatedString(val text:String)\n')
+(a.output/'UnrelatedPlaybackTypes.kt').write_text('''package com.soundq.android.playback
+// Declaration-only: the artwork tests never construct these unrelated playback capabilities.
+interface PlaybackRef {class Device(val id:String):PlaybackRef}
+class PlaybackClockAuthority
+class ListeningSpeedState
+class SelectedDevicePlaybackOwner
+''')
 (a.output / 'ProjectionBoundary.kt').write_text('package com.soundq.android.playback\nimport com.soundq.android.data.*\nimport com.soundq.android.data.timeline.*\nenum class QueueOrigin {Manual, Context, Continuation}\n'+identities+performance+declarations)
 for name in ['Timeline.kt','TempoTransition.kt']:
     text=(main/'data/timeline'/name).read_text().replace('import kotlinx.serialization.Serializable\n','').replace('@kotlinx.serialization.Transient ','').replace('@Serializable ','')
@@ -97,6 +114,15 @@ object BitmapFactory {
 ''')
 presentation = a.presentation_source or main / 'product/artwork/TrackArtwork.kt'
 inputs.append(presentation)
+if not a.shared_only:
+    import runpy
+    generate=runpy.run_path(str(r/'scripts/player-artwork-tests/native_binding.py'))['generate']
+    binding=a.library_binding_source or main/'product/artwork/LibraryRowArtwork.kt'
+    inputs.append(binding)
+    generate(a.output,presentation,binding)
+    phone=a.phone_source or main/'product/artwork/PhoneArtwork.kt'
+    inputs.append(phone)
+    runpy.run_path(str(r/'scripts/player-artwork-tests/phone_binding.py'))['generate'](a.output,phone)
 ui = presentation.read_text()
 opening = ui.index('{', ui.index('Canvas(Modifier.fillMaxSize())'))
 end = opening + 1
@@ -144,6 +170,9 @@ library_output=a.output/'library-existing'
 library_command=['python3',str(r/'scripts/test-library-artwork.py'),'--generate',str(library_output)]
 if a.designsystem_root:library_command+=['--designsystem-root',str(a.designsystem_root)]
 subprocess.run(library_command,check=True)
+if a.library_loader_source:
+    extracted=a.library_loader_source.read_text().replace('package com.soundq.android.product.artwork','package com.soundq.android.artworkfixture').replace('import android.graphics.Bitmap\n','').replace('import android.graphics.BitmapFactory\n','')
+    (library_output/'LibraryArtworkExtracted.kt').write_text(extracted)
 (a.output/'LibraryRepository.kt').write_text((main/'data/LibraryRepository.kt').read_text())
 (a.output/'MemoryStore.kt').write_text('''package com.soundq.android.data
 class MemoryStore:SessionStore {
@@ -172,12 +201,33 @@ env = dict(os.environ, TMPDIR=str(a.output.resolve()))
 commands = [ ['kotlinc', '-J-XX:ActiveProcessorCount=1', *files, '-cp', cp, '-include-runtime', '-d', str(a.output / 'test.jar')],
              ['java', '-XX:ActiveProcessorCount=1', '-Djava.io.tmpdir=' + str(a.output.resolve()), '-cp', str(a.output / 'test.jar') + os.pathsep + cp, 'org.junit.runner.JUnitCore', 'com.soundq.android.product.artwork.SelectedPlayerArtworkTest', 'com.soundq.android.product.artwork.SharedArtworkTest', 'com.soundq.android.artworkfixture.LibraryArtworkTlsTest', 'com.soundq.android.artworkvisualfixture.LibraryArtworkVisualSlotTest'] ]
 if a.shared_only:commands[1]=commands[1][:commands[1].index('org.junit.runner.JUnitCore')+1]+['com.soundq.android.product.artwork.SharedArtworkTest']
-else:commands[1].append('com.soundq.android.product.artwork.ThumbnailSafetyTest')
+else:commands[1]+= ['com.soundq.android.product.artwork.ThumbnailSafetyTest','com.soundq.android.product.artwork.ThumbnailLookaheadTest']
+if a.lookahead_only:commands[1]=commands[1][:commands[1].index('org.junit.runner.JUnitCore')+1]+['com.soundq.android.product.artwork.ThumbnailLookaheadTest']
+# Preserve exact fixtures/commands even for an intentionally failing predecessor/control.
+(a.output / 'sources.json').write_text(json.dumps({str(f.resolve()):hashlib.sha256(f.read_bytes()).hexdigest() for f in inputs}, indent=2))
+(a.output / 'compiled-inputs.json').write_text(json.dumps({str(Path(f).resolve()):hashlib.sha256(Path(f).read_bytes()).hexdigest() for f in files},indent=2))
+classes=commands[1][commands[1].index('org.junit.runner.JUnitCore')+1:]
+inventory=[]
+for f in files:
+    text=Path(f).read_text()
+    package=re.search(r'^package\s+(\S+)',text,re.M)
+    if not package:continue
+    for cls in classes:
+        if cls.rsplit('.',1)[0]==package[1] and re.search(r'\bclass\s+'+re.escape(cls.rsplit('.',1)[1])+r'\b',text):
+            inventory += [cls+'.'+name for name in re.findall(r'@Test\s+fun\s+(\w+)',text)]
+assert len(inventory)==len(set(inventory))
+(a.output/'test-inventory.json').write_text(json.dumps(inventory,indent=2))
+(a.output/'commands.json').write_text(json.dumps({'cwd':os.getcwd(),'TMPDIR':env['TMPDIR'],'commands':commands},indent=2))
+exits=[]
 for index, command in enumerate(commands):
     result = subprocess.run(command, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     (a.output / ('compile.log' if index == 0 else 'test.log')).write_text(result.stdout)
+    exits.append(result.returncode)
+    (a.output/'exits.json').write_text(json.dumps(exits))
     print(result.stdout, end='')
+    if index==1:
+        match=re.search(r'(?:OK \((\d+) tests\)|Tests run: (\d+))',result.stdout)
+        assert match and int(match[1] or match[2])==len(inventory), 'JUnit/inventory count mismatch'
     if result.returncode:
         raise SystemExit(result.returncode)
-(a.output / 'sources.json').write_text(json.dumps({str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in inputs}, indent=2))
 print('Executed selected-player artwork JVM boundary tests. Native draw/decode not claimed.')
