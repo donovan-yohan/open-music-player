@@ -102,13 +102,14 @@ internal class PhoneFileActions(private val graph:AppGraph) {
             try {
                 if(!retire()||!valid()||!matches(target))return@withContext FileDeleteOutcome.Refused
                 withContext(NonCancellable) {
+                    if(!valid()||!graph.phoneAudio.fileMutationCurrent(target.admission,fence))return@withContext FileDeleteOutcome.Refused
                     val where=target.providerValues.joinToString(" AND ") {"${it.first}=?"}
                     val count=runCatching {resolver.delete(target.uri,where,target.providerValues.map {it.second}.toTypedArray())}.getOrNull()
                         ?: return@withContext FileDeleteOutcome.Refused
                     if(count!=1)return@withContext FileDeleteOutcome.Changed
                     val absent=runCatching {resolver.query(target.uri,arrayOf(MediaStore.MediaColumns._ID),null,null,null)?.use {!it.moveToFirst()} ?: true}.getOrDefault(false)
                     if(!absent||File(target.path).exists())return@withContext FileDeleteOutcome.Unconfirmed
-                    if(graph.phoneAudio.markFileMissing(target.admission,target.uri.toString()))FileDeleteOutcome.Deleted else FileDeleteOutcome.Unconfirmed
+                    if(graph.phoneAudio.markFileMissing(target.admission,target.uri.toString(),fence))FileDeleteOutcome.Deleted else FileDeleteOutcome.Unconfirmed
                 }
             } finally {graph.phoneAudio.endFileMutation(fence)}
         }

@@ -445,7 +445,24 @@ import com.soundq.android.product.preferences.*
                     }
                     ImportProgressStrip(model,::openImports)
                     SoundQCompactPlayer(playback.title ?: "Nothing playing",playback.artist,playback.isPlaying,playback.canPlay,playback.preparing,{transportReturn=null;panel="Player"},model.controller::toggle,{transportReturn=null;panel="Queue"},
-                        timing=compactSongTiming(playback),artwork={com.soundq.android.product.artwork.PlayerArtwork(model.graph,playback,72.dp,{compactEntry.get()})})
+                        timing=compactSongTiming(playback),artwork={com.soundq.android.product.artwork.PlayerArtwork(model.graph,playback,72.dp,{compactEntry.get()})},
+                        swipe=run {
+                            val version=model.graph.session.version()
+                            val captured=playback
+                            val owner=listOf(version,captured.accountEpoch,captured.sessionIdentity,captured.sourceQueueIncarnation,
+                                captured.selectionIncarnation,captured.selectedOccurrence,captured.source,captured.localOnly,captured.arrangementService,captured.selectedDeviceOwner,captured.connection)
+                            val sourceCurrent=captured.accountEpoch==version||captured.localOnly&&captured.selectedDeviceOwner?.let {it.version==version&&it.occurrence==captured.selectedOccurrence}==true
+                            val connected=captured.connection==com.soundq.android.playback.PlaybackProjection.Connection.Connected&&captured.selectedOccurrence!=null&&sourceCurrent
+                            val current={model.playback.value.let {now->
+                                connected&&compactEntry.get()&&model.graph.session.version()==version&&now.connection==captured.connection&&
+                                    now.accountEpoch==captured.accountEpoch&&now.sessionIdentity==captured.sessionIdentity&&now.sourceQueueIncarnation==captured.sourceQueueIncarnation&&
+                                    now.selectionIncarnation==captured.selectionIncarnation&&now.selectedOccurrence==captured.selectedOccurrence&&
+                                    now.source==captured.source&&now.localOnly==captured.localOnly&&now.arrangementService==captured.arrangementService&&now.selectedDeviceOwner==captured.selectedDeviceOwner
+                            }}
+                            CompactPlayerSwipe(owner,connected&&captured.canNext,connected&&captured.canPrevious,
+                                {if(current()&&model.playback.value.canNext)model.controller.next()},
+                                {if(current()&&model.playback.value.canPrevious)model.controller.previous()})
+                        })
                     SoundQBottomNavigation(when(destination){"History"->"Home";"Catalog","Downloads","Acquisition"->"Library";else->destination},{settingsReturn=null;navigate(it)})
                 }
                 if(auth is AuthState.SignedIn || auth is AuthState.DeviceOnly || auth is AuthState.SignedOut)when(panel) {

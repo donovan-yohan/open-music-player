@@ -45,6 +45,8 @@ internal data class DeviceAudio(
 ) {
     val canonicalId: String = id.value.toString()
     val available: Boolean get() = aliases.any { it.state == AccessState.AVAILABLE }
+    /** Explicitly deleted originals retain identity/history, but are not active Library members. */
+    val libraryMember: Boolean get() = aliases.any { it.state != AccessState.REMOVED }
     val owner: ContentOwner get() = ContentOwner(HistoryKey.Device(id), revision, incarnation)
 }
 internal data class ServerAccount(val endpoint: String, val account: String) {

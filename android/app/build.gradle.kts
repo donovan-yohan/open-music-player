@@ -313,7 +313,7 @@ tasks.matching {it.name in setOf("generateDebugUnitTestLintModel","lintAnalyzeDe
 // Canonical phone/service/native preparation bodies with declared hardware facades.
 val phoneRefreshProbe=layout.buildDirectory.dir("generated/phone-refresh-test")
 val generatePhoneRefreshProbe=tasks.register<Exec>("generatePhoneRefreshProbe") {
-    inputs.files(rootProject.file("scripts/test-phone-refresh.py"),file("src/main/kotlin/com/soundq/android/data/device/PhoneAudioRepository.kt"))
+    inputs.files(rootProject.file("scripts/test-phone-refresh.py"),file("src/main/kotlin/com/soundq/android/data/device/PhoneAudioRepository.kt"),file("src/main/kotlin/com/soundq/android/data/device/PhoneFileActions.kt"))
     outputs.dir(phoneRefreshProbe)
     commandLine(providers.environmentVariable("SOUNDQ_PYTHON").orElse("python3").get(),rootProject.file("scripts/test-phone-refresh.py"),"--generate",phoneRefreshProbe.get().asFile)
 }

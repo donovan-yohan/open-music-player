@@ -263,7 +263,54 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
         }
     }
 }
-@Composable fun SoundQCompactPlayer(title:String,artist:String,playing:Boolean,available:Boolean,preparing:Boolean,onExpand:()->Unit,onPrimary:()->Unit,onQueue:()->Unit,artwork:(@Composable ()->Unit)?=null,timing:CompactSongTiming=CompactSongTiming()) {
+/** Optional caller-owned transport admission; owner excludes progress and includes selection incarnation. */
+class CompactPlayerSwipe(val owner:Any,val canNext:Boolean,val canPrevious:Boolean,val onNext:()->Unit,val onPrevious:()->Unit)
+
+/** Observe before child clickables; claim only after slop, never turn a drag into a button tap. */
+@Composable private fun Modifier.compactPlayerSwipes(swipe:CompactPlayerSwipe?):Modifier {
+    val actions by rememberUpdatedState(swipe)
+    // A renewed lease permanently retires a held contact, even if capability/owner returns (ABA).
+    // Keep the recognizer mounted so retirement also consumes the old contact's eventual UP.
+    val lease=remember(swipe?.owner,swipe?.canNext,swipe?.canPrevious){Any()}
+    val currentLease by rememberUpdatedState(lease)
+    return pointerInput(Unit) {
+        val threshold=maxOf(48.dp.toPx(),viewConfiguration.touchSlop*2)
+        awaitEachGesture {
+            val down=awaitFirstDown(requireUnconsumed=false,pass=PointerEventPass.Initial)
+            if(actions==null)return@awaitEachGesture
+            val captured=currentLease
+            var rejected=down.isConsumed
+            var dragging=false
+            var displacement=Offset.Zero
+            do {
+                val event=awaitPointerEvent(PointerEventPass.Initial)
+                val change=event.changes.firstOrNull {it.id==down.id}
+                // Android CANCEL may arrive as a consumed synthetic UP, not coroutine cancellation.
+                if(currentLease!==captured||actions==null||event.changes.size!=1||change==null||event.changes.any {it.isConsumed})rejected=true
+                if(change!=null) {
+                    displacement=change.position-down.position
+                    val x=kotlin.math.abs(displacement.x)
+                    val y=kotlin.math.abs(displacement.y)
+                    if(y>viewConfiguration.touchSlop&&y>=x)rejected=true
+                    if(x>viewConfiguration.touchSlop&&x>y)dragging=true
+                }
+                if(rejected||dragging)event.changes.forEach {it.consume()}
+                if(event.changes.none {it.pressed}) {
+                    if(!rejected&&dragging&&kotlin.math.abs(displacement.x)>=threshold&&
+                        kotlin.math.abs(displacement.x)>kotlin.math.abs(displacement.y)) {
+                        actions?.let {current->
+                            if(displacement.x<0&&current.canNext)current.onNext()
+                            else if(displacement.x>0&&current.canPrevious)current.onPrevious()
+                        }
+                    }
+                    break
+                }
+            } while(true)
+        }
+    }
+}
+
+@Composable fun SoundQCompactPlayer(title:String,artist:String,playing:Boolean,available:Boolean,preparing:Boolean,onExpand:()->Unit,onPrimary:()->Unit,onQueue:()->Unit,artwork:(@Composable ()->Unit)?=null,timing:CompactSongTiming=CompactSongTiming(),swipe:CompactPlayerSwipe?=null) {
     val density=LocalDensity.current
     val measurer=androidx.compose.ui.text.rememberTextMeasurer()
     val titleHeight=with(density){measurer.measure("Ag",SoundQ.typography.title,maxLines=1).size.height.toDp()}
@@ -273,7 +320,7 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
     val displayTitle=title
     val identity=listOf(timing.identity ?: LocalMediaMarqueeIdentity.current,displayTitle,artist)
     val colors=SoundQ.colors
-    BoxWithConstraints(Modifier.fillMaxWidth().background(colors.player)) {
+    BoxWithConstraints(Modifier.fillMaxWidth().background(colors.player).compactPlayerSwipes(swipe)) {
         val footer=hasClock&&(density.fontScale>=1.3f||clockWidth>maxWidth-72.dp-96.dp-16.dp)
         val rowHeight=if(footer)(titleHeight+artistHeight+8.dp).coerceAtLeast(72.dp) else 72.dp
         val stackClock=clockWidth>maxWidth-16.dp

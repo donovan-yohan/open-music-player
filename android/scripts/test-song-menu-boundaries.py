@@ -16,9 +16,17 @@ root=a.root or Path(__file__).resolve().parents[1];src=root/'app/src/main/kotlin
 def section(path,start,end):
     text=(src/path).read_text();return text[text.index(start):text.index(end,text.index(start))]
 publish=section('data/device/PhoneAudioRepository.kt','    private fun publish(','    private fun fail(')
+failure=section('data/device/PhoneAudioRepository.kt','    private fun fail(','    private val refreshEpoch=')
 repository=(src/'data/device/PhoneAudioRepository.kt').read_text()
 authority=section('data/device/PhoneAudioRepository.kt','    private val authoritySequence=','    private fun publish(') if '    private val authoritySequence=' in repository else 'fun sourceAuthority(ref:PlaybackRef.Device)=authorityVersion'
 mutations=section('data/device/PhoneAudioRepository.kt','    private val fileMutations=','    suspend fun admit(')
+if 'uri:String,fence:UUID)' in mutations:
+    # Old unit callers acknowledge an already-confirmed deletion; adopt the required fence API,
+    # without replacing their original source capture or changing their behavioral assertions.
+    mutations+='''\n    suspend fun markFileMissing(admission:PhoneSourceAdmission,uri:String):Boolean {
+        val fence=beginFileMutation(reference(admission.row)) ?: return false
+        return try {markFileMissing(admission,uri,fence)} finally {endFileMutation(fence)}
+    }\n'''
 report=section('data/device/PhoneAudioRepository.kt','    suspend fun reportFailure(','    suspend fun prepare(')
 grant=next(l.strip() for l in (src/'playback/SignedAudioDataSource.kt').read_text().splitlines() if 'fun current(graph:AppGraph)' in l)
 poll=next(l.strip() for l in (src/'playback/nativeengine/NativeCallbackPlayer.kt').read_text().splitlines() if 'if (!assignmentCurrent()) { intent = false;' in l)
@@ -39,20 +47,38 @@ import org.junit.Test
 private class Uri(val value:String) {val authority:String? get()=value.substringAfter("://").substringBefore('/');companion object {fun parse(v:String)=Uri(v)}}
 private data class PhoneSourceAdmission(val row:DeviceAudio,val source:SourceCapture,val sessionVersion:Long,val resumeMs:Long=0)
 private data class PhoneAudioState(val ready:Boolean=false,val snapshot:DeviceListeningSnapshot?=null,val refreshing:Boolean=false,val permission:Boolean=true,val message:String?=null,val scan:Any?=null)
-private class Platform {var allowed=true;fun storageAllowed()=allowed}
+private class Platform {var allowed=true;var publicationGate:java.util.concurrent.CountDownLatch?=null;val publishing=java.util.concurrent.CountDownLatch(1)
+ fun storageAllowed():Boolean {if(Thread.currentThread().name=="held-publish"){publishing.countDown();check(publicationGate?.await(5,java.util.concurrent.TimeUnit.SECONDS)!=false)};return allowed}}
 private class Session {var version=1L;var accountId="a";fun version()=version;fun owns(v:Long)=version==v;fun capture()=this;fun current(s:Session)=s===this}
 private class Endpoint {var identity="endpoint"}
 private class AppGraph {val session=Session();val endpoint=Endpoint();lateinit var phoneAudio:Repository}
+private class GatedState<T>(private val backing:MutableStateFlow<T>):MutableStateFlow<T> by backing {
+ var gate:java.util.concurrent.CountDownLatch?=null;val entered=java.util.concurrent.CountDownLatch(1)
+ override var value:T
+  get(){val value=backing.value;if(Thread.currentThread().name=="held-status"){entered.countDown();check(gate?.await(5,java.util.concurrent.TimeUnit.SECONDS)!=false)};return value}
+  set(value){backing.value=value}
+}
 private class Repository(val graph:AppGraph,val store:DeviceListeningStore?,val access:AccessCapture?) {
- val platform=Platform();val serial=Mutex();val mutable=MutableStateFlow(PhoneAudioState());val state=mutable.asStateFlow();val lastScan:Any?=null
+ val platform=Platform();val serial=Mutex();val mutable=GatedState(MutableStateFlow(PhoneAudioState()));val state=mutable.asStateFlow();val lastScan:Any?=null
+ val jobs=CoroutineScope(SupervisorJob()+Dispatchers.Unconfined)
+ // Declaration boundary for the existing refresh owner; this cohort does not enumerate the platform.
+ private val refreshEpoch=java.util.concurrent.atomic.AtomicLong()
+ private data class RefreshScope(val version:Long,val storage:Boolean)
+ private var refreshScope:RefreshScope?=null
+ private var refreshRunning:(()->Unit)?=null
+ private var pendingRefresh:(()->Unit)?=null
+ fun refresh(valid:()->Boolean={true})=Unit
  private val refreshLock=java.util.concurrent.locks.ReentrantLock()
  private inline fun <T> refreshLocked(block:()->T):T {refreshLock.lock();try {return block()} finally {refreshLock.unlock()}}
  fun proofEpoch()=authoritySequence.get()
  fun revokeOriginal(ref:PlaybackRef.Device)=advanceAuthority(sourceFileId(ref))
  fun current(version:Long)=graph.session.owns(version)
  fun publishNow()=publish()
+ fun publicationQueued()=refreshLock.hasQueuedThreads()
+ fun failNow()=fail("fixture failure")
 AUTHORITY
 PUBLISH
+FAILURE
 MUTATIONS
 REPORT
 }
@@ -112,9 +138,35 @@ private class Fixture:AutoCloseable {
   repo=Repository(graph,store,access);graph.phoneAudio=repo;repo.publishNow()
  }
  fun ref(r:DeviceAudio)=repo.reference(r)
- override fun close(){store.close();root.deleteRecursively()}
+ override fun close(){repo.jobs.cancel();store.close();root.deleteRecursively()}
 }
 class SongMenuBoundaryTest {
+ @Test fun heldFailureStatusCannotRestoreExplicitlyRemovedSnapshot()=runBlocking {Fixture().use {f->
+  val gate=java.util.concurrent.CountDownLatch(1);f.repo.mutable.gate=gate
+  val failure=java.util.concurrent.atomic.AtomicReference<Throwable?>();val done=java.util.concurrent.CountDownLatch(1)
+  val admission=PhoneSourceAdmission(f.a,f.store.captureSource(f.access,f.a.id)!!,1)
+  val status=Thread({try{f.repo.failNow()}catch(t:Throwable){failure.set(t)}},"held-status")
+  status.start();assertTrue(f.repo.mutable.entered.await(5,java.util.concurrent.TimeUnit.SECONDS))
+  val deletion=Thread {try {runBlocking {assertTrue(f.repo.markFileMissing(admission,f.a.aliases.single().locator.value))}}catch(t:Throwable){failure.set(t)}finally{done.countDown()}}
+  deletion.start()
+  try {withTimeout(5000){while(done.count!=0L&&!f.repo.publicationQueued())delay(1)}}finally{gate.countDown()}
+  status.join(5000);deletion.join(5000);assertFalse(status.isAlive);assertFalse(deletion.isAlive);failure.get()?.let {throw it}
+  assertFalse("A status copy must not restore an older snapshot",f.repo.state.value.snapshot!!.files.single {it.id==f.a.id}.aliases.any {it.state!=AccessState.REMOVED})
+ }}
+ @Test fun heldSnapshotPublicationCannotRestoreExplicitlyRemovedMembership()=runBlocking {Fixture().use {f->
+  val gate=java.util.concurrent.CountDownLatch(1);f.repo.platform.publicationGate=gate
+  val failure=java.util.concurrent.atomic.AtomicReference<Throwable?>();val done=java.util.concurrent.CountDownLatch(1)
+  val b=Grant(f.ref(f.b),1,f.repo.sourceAuthority(f.ref(f.b)),f.graph.session)
+  val admission=PhoneSourceAdmission(f.a,f.store.captureSource(f.access,f.a.id)!!,1)
+  val old=Thread({try{f.repo.publishNow()}catch(t:Throwable){failure.set(t)}},"held-publish")
+  old.start();assertTrue(f.repo.platform.publishing.await(5,java.util.concurrent.TimeUnit.SECONDS))
+  val deletion=Thread {try {runBlocking {assertTrue(f.repo.markFileMissing(admission,f.a.aliases.single().locator.value))}}catch(t:Throwable){failure.set(t)}finally{done.countDown()}}
+  deletion.start()
+  try {withTimeout(5000){while(done.count!=0L&&!f.repo.publicationQueued())delay(1)}}finally{gate.countDown()}
+  old.join(5000);deletion.join(5000);assertFalse(old.isAlive);assertFalse(deletion.isAlive);failure.get()?.let {throw it}
+  assertFalse("An old snapshot must not restore active Library membership",f.repo.state.value.snapshot!!.files.single {it.id==f.a.id}.aliases.any {it.state!=AccessState.REMOVED})
+  assertTrue(b.current(f.graph))
+ }}
  @Test fun missingPublicationPreservesUnrelatedGrantAndPoll()=runBlocking {Fixture().use {f->
   val grant=Grant(f.ref(f.b),1,f.repo.sourceAuthority(f.ref(f.b)),f.graph.session);val a=PhoneSourceAdmission(f.a,f.store.captureSource(f.access,f.a.id)!!,1)
   assertTrue(grant.current(f.graph))
@@ -271,9 +323,9 @@ drain=ownerText[ownerText.index('    suspend fun sourcesDrained('):ownerText.ind
 retirement=retirement.replace('DRAIN',drain)
 retirement=retirement.replace('RETIRE',method('    internal suspend fun retirePhoneFile(')).replace('CANCEL',method('    private fun cancelSuccessor(')).replace('MUTATE',method('    private fun mutate('))
 text=header+retirement
-for name,value in [('AUTHORITY',authority),('PUBLISH',publish),('MUTATIONS',mutations),('REPORT',report),('GRANT',grant),('POLL',poll),('SPEED_CHANGED',speedChanged),('COMMAND',command)]:text=text.replace(name,value)
+for name,value in [('AUTHORITY',authority),('PUBLISH',publish),('FAILURE',failure),('MUTATIONS',mutations),('REPORT',report),('GRANT',grant),('POLL',poll),('SPEED_CHANGED',speedChanged),('COMMAND',command)]:text=text.replace(name,value)
 (out/'SongMenuBoundaryTest.kt').write_text(text)
-(out/'extraction.json').write_text(json.dumps({'source':str(src),'native_type_mapping':'NativeCallbackPlayer -> facade','reply_serializer':'Json.encodeToString(value) -> encodeReply(value)','sections':['publish','file mutations + journal','reportFailure','grant.current','ordinary poll rejection','speedPreferenceChanged','complete songSpeed']},indent=2))
+(out/'extraction.json').write_text(json.dumps({'source':str(src),'native_type_mapping':'NativeCallbackPlayer -> facade','reply_serializer':'Json.encodeToString(value) -> encodeReply(value)','sections':['publish','failure status','file mutations + journal','reportFailure','grant.current','ordinary poll rejection','speedPreferenceChanged','complete songSpeed']},indent=2))
 if a.run:
  cache=Path.home()/'.gradle/caches/modules-2/files-2.1'
  def jar(g,n,v):return next((cache/g/n/v).glob('*/*.jar'))
