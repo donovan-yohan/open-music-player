@@ -12,12 +12,74 @@ class PlaylistSyncLifecycleTest {
  private fun id()=PlaylistId(Json.parseToJsonElement(vector("detail-before")).jsonObject.getValue("id").jsonPrimitive.long)
  private fun key()=Json.parseToJsonElement(vector("ack")).jsonObject.getValue("id").jsonPrimitive.content
  private fun listPage(created:Boolean=false)="""{"data":[{"id":${id().value},"name":"Source","isPublic":false,"trackCount":0,"durationMs":0},{"id":99,"name":"Other","isPublic":false,"trackCount":0,"durationMs":0}${if(created)",{\"id\":88,\"name\":\"Created\",\"isPublic\":false,\"trackCount\":0,\"durationMs\":0}"else ""}],"total":${if(created)3 else 2},"limit":20,"offset":0}"""
- private fun graph(f:HttpsFixture,dir:java.io.File):SourceSyncAppGraphProbe {
+ private fun graph(f:HttpsFixture,dir:java.io.File,client:okhttp3.OkHttpClient=f.client):SourceSyncAppGraphProbe {
   val s=AccountSession(f.endpoint,MemoryStore());check(s.accept(s.beginIntent(),SecretTokens("fixture-access","fixture-refresh","fixture-owner")))
-  val graph=SourceSyncAppGraphProbe(SoundQApi(s,f.client),dir)
+  val graph=SourceSyncAppGraphProbe(SoundQApi(s,client),dir)
   f.reply(vector("detail-before"));graph.playlistDetail.open(id())
   f.reply(listPage());graph.playlists.requestRead(graph.playlists.captureList()!!,PlaylistQuery("source",PlaylistSort.Name,true))!!()
   return graph
+ }
+ @Test fun changedQuery404AutomaticallyReplacesHeldAndQueuedReads(){for(queued in listOf(false,true))changedQueryReadback(queued,false,false)}
+ @Test fun changedQueryAutomaticReplacementFailureIsTruthful(){changedQueryReadback(true,true,false)}
+ @Test fun changedQueryReplacementCannotOverwriteNewerQuery(){changedQueryReadback(false,false,true)}
+ private fun changedQueryReadback(queued:Boolean,fail:Boolean,replace:Boolean){
+  val dir=java.nio.file.Files.createTempDirectory("sync-changed-query").toFile()
+  try{HttpsFixture().use{f->
+   val owner=java.util.concurrent.atomic.AtomicReference<SourceSyncAppGraphProbe>()
+   val locked=java.util.concurrent.atomic.AtomicBoolean(false)
+   val client=f.client.newBuilder().addNetworkInterceptor{chain->
+    owner.get()?.let {g->if(Thread.holdsLock(g.playlists)||Thread.holdsLock(g.playlistSync))locked.set(true)}
+    chain.proceed(chain.request())
+   }.build()
+   val g=graph(f,dir,client);owner.set(g)
+   val query=PlaylistQuery("Other",PlaylistSort.Tracks,false)
+   val jobs=mutableListOf<()->Unit>();val actions=PlaylistActions(g.playlists){jobs.add(it)}
+   val entered=CountDownLatch(1);val release=CountDownLatch(1);val autoEntered=CountDownLatch(1);val autoRelease=CountDownLatch(1)
+   val reads=java.util.concurrent.atomic.AtomicInteger()
+   val oldPage=Json.parseToJsonElement(listPage()).jsonObject
+   val remaining=oldPage.getValue("data").jsonArray.filter{it.jsonObject.getValue("id").jsonPrimitive.long!=id().value}
+   val page=JsonObject(oldPage+("data" to JsonArray(remaining))+("total" to JsonPrimitive(1))).toString()
+   val freshRow=JsonObject(remaining.single().jsonObject+("id" to JsonPrimitive(100))+("name" to JsonPrimitive("New")))
+   val freshPage=JsonObject(oldPage+("data" to JsonArray(listOf(freshRow)))+("total" to JsonPrimitive(1))).toString()
+   f.server.dispatcher=object:mockwebserver3.Dispatcher(){override fun dispatch(request:mockwebserver3.RecordedRequest):mockwebserver3.MockResponse {
+    if(request.url.encodedPath=="/api/v1/playlists"){
+     if(request.url.queryParameter("q")=="New")return mockwebserver3.MockResponse.Builder().body(freshPage).build()
+     if(reads.incrementAndGet()==1&&!queued){entered.countDown();check(release.await(5,TimeUnit.SECONDS));return mockwebserver3.MockResponse.Builder().body(listPage()).build()}
+     autoEntered.countDown()
+     if(replace)check(autoRelease.await(5,TimeUnit.SECONDS))
+     return mockwebserver3.MockResponse.Builder().code(if(fail)503 else 200).body(if(fail)"{}"else page).build()
+    }
+    return if(request.url.encodedPath.endsWith("source-sync"))mockwebserver3.MockResponse.Builder().body(vector("pending")).build()else mockwebserver3.MockResponse.Builder().code(404).body("{}").build()
+   }}
+   val pool=Executors.newFixedThreadPool(2)
+   try{
+    actions.refine(query);assertTrue(g.playlists.state.value.rows.isEmpty());assertTrue(g.playlists.state.value.loading)
+    val old=jobs.removeAt(0);val held=if(queued)null else pool.submit{old()}
+    if(!queued)assertTrue(entered.await(3,TimeUnit.SECONDS))
+    val work=g.playlistSync.enter(id())!!
+    var replacement:PlaylistState?=null
+    if(replace){
+     val syncing=pool.submit{work()};assertTrue("No automatic query replacement was dispatched",autoEntered.await(3,TimeUnit.SECONDS))
+     actions.refine(PlaylistQuery("New",PlaylistSort.Name,true));jobs.removeAt(0)();replacement=g.playlists.state.value
+     autoRelease.countDown();syncing.get(5,TimeUnit.SECONDS)
+     assertSame(replacement,g.playlists.state.value)
+    }else{
+     work()
+     assertTrue("Confirmed absence left changed query empty/idle without replacement",autoEntered.count==0L)
+     assertEquals(query,g.playlists.state.value.query);assertFalse(g.playlists.state.value.loading)
+     if(fail){assertNotNull(g.playlists.state.value.error);assertTrue(g.playlists.state.value.rows.isEmpty())}
+     else{assertEquals(listOf(99L),g.playlists.state.value.rows.map{it.id.value});assertEquals(1,g.playlists.state.value.total);assertNull(g.playlists.state.value.error)}
+    }
+    val accepted=g.playlists.state.value
+    release.countDown();if(queued)old()else held!!.get(5,TimeUnit.SECONDS)
+    assertSame(accepted,g.playlists.state.value);if(replace)assertEquals(listOf(100L),g.playlists.state.value.rows.map{it.id.value})
+    assertFalse("Automatic query network IO ran under publication lock",locked.get())
+    val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+    val requested=requests.filter{it.url.encodedPath=="/api/v1/playlists"&&it.url.queryParameter("q")==query.text}
+    assertEquals(if(queued)1 else 2,requested.size)
+    assertTrue(requested.all{it.method=="GET"&&it.url.queryParameter("sort")=="track_count"&&it.url.queryParameter("order")=="desc"})
+   }finally{release.countDown();autoRelease.countDown();pool.shutdownNow();assertTrue(pool.awaitTermination(5,TimeUnit.SECONDS))}
+  }}finally{dir.deleteRecursively()}
  }
  @Test fun actualAppGraphMissingReadbackRemovesRowAndFencesDelayedListAndCreateReads(){
   for(create in listOf(false,true)){

@@ -91,7 +91,10 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
         if(readStatus)try {
             val latest=api.playlistSourceSync(s,id,pending?.job,valid)
             if(pending?.job!=null&&latest.operation!=null)require(latest.operation.id==pending.job)
-            if(known?.operation?.accepted==true)require(latest.operation?.accepted==true)
+            if(known?.operation?.accepted==true) {
+                val operation=requireNotNull(latest.operation)
+                if(operation.id==known.operation.id)require(operation.accepted)
+            }
             observed=latest;statusComplete=true
         }catch(_:Exception){/* Retain known acceptance; membership is independent. */}
         val op=observed?.operation
@@ -101,14 +104,27 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
         if(op?.accepted==true&&before!=null&&valid())try {
             after=api.playlistManagementSnapshot(s,id,valid);snapshotRead=true
         }catch(_:Exception){/* Keep the original durable intent for GET recovery. */}
-        synchronized(this){if(valid()) {
-            val published=snapshotRead&&before!=null&&detail.publishManagement(before,if(after==before)before else after)
-            if(published&&after==null&&list!=null)playlists?.confirmedMissing(list,id)
-            val reconciled=statusComplete&&(op?.accepted!=true||published)
-            mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&(op==null||!reconciled),readbackFailed=op?.accepted==true&&!reconciled,error=!reconciled)
-            if(op!=null&&pending!=null&&reconciled)receipts.finish(api.session.endpoint.identity,s.accountId,pending,"accepted",op.id)
-            if(op!=null&&!op.active&&reconciled)receipt=null
-        }}
+        var listRead:(()->Unit)?=null
+        try {
+            synchronized(this){if(valid()) {
+                val published=snapshotRead&&before!=null&&detail.publishManagement(before,if(after==before)before else after)
+                val missing=published&&after==null
+                if(missing&&list!=null)listRead=playlists?.confirmedMissing(list,id)
+                val reconciled=statusComplete&&(op?.accepted!=true||published)
+                mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&(op==null||!reconciled),readbackFailed=op?.accepted==true&&!reconciled,error=!reconciled)
+                if(op!=null&&pending!=null&&reconciled)try {
+                    receipts.finish(api.session.endpoint.identity,s.accountId,pending,"accepted",op.id)
+                }catch(failure:Exception){
+                    // A confirmed absence retired detail, so the outer handler no longer owns error publication.
+                    if(missing)mutable.value=mutable.value.copy(error=true)
+                    throw failure
+                }
+                if(op!=null&&!op.active&&reconciled)receipt=null
+            }}
+        }finally{
+            // The list owns this read even if receipt settlement fails. Never run its IO under the sync lock.
+            listRead?.invoke()
+        }
     }
     @Synchronized fun canStart():Boolean {
         val id=mutable.value.playlist ?: return false;val s=scope ?: return false

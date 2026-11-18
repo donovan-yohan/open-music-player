@@ -174,6 +174,66 @@ class PlaylistSourceSyncTest {
             }
         }}finally{dir.deleteRecursively()}
     }
+    @Test fun writableReceiptDrainsListReadAfterConfirmedAbsence() = receiptDuringConfirmedAbsence(false)
+
+    @Test fun failedReceiptSaveStillDrainsListReadAfterConfirmedAbsence() = receiptDuringConfirmedAbsence(true)
+
+    private fun receiptDuringConfirmedAbsence(failSave: Boolean) {
+        val dir = Files.createTempDirectory("sync-list-drain").toFile()
+        try {
+            HttpsFixture().use { f ->
+                val (api, detail, session) = ready(f)
+                val playlists = PlaylistRepository(api)
+                val file = File(dir, "journal.json")
+                val receipts = IntakeReceipts(file)
+                val account = session.capture()!!.accountId
+                receipts.begin(session.endpoint.identity, account, "playlist-sync", job = key(), candidateId = "1", playlistId = id().value)
+                val before = file.readBytes()
+                if (failSave) {
+                    val blocked = File(dir, "journal.json.pending")
+                    check(blocked.mkdir())
+                    File(blocked, "blocker").writeText("owned fixture")
+                }
+                val page = """{"data":[{"id":99,"name":"Other","isPublic":false,"trackCount":0,"durationMs":0}],"total":1,"limit":20,"offset":0}"""
+                f.reply(page)
+                playlists.reload()
+                val queued = mutableListOf<() -> Unit>()
+                val actions = PlaylistActions(playlists) { queued.add(it) }
+                val query = PlaylistQuery("other", PlaylistSort.Name, true)
+                actions.refine(query)
+                val obsolete = queued.removeAt(0)
+                assertTrue(playlists.state.value.loading)
+                assertNull(playlists.state.value.total)
+
+                f.reply(terminalObservation()); f.reply("{}", 404); f.reply(page)
+                val sync = PlaylistSourceSyncRepository(api, detail, receipts, playlists = playlists)
+                sync.enter(id())!!()
+
+                assertNull(detail.state.value.id)
+                assertEquals(query, playlists.state.value.query)
+                if (failSave) assertArrayEquals(before, file.readBytes())
+                val durable = IntakeReceipts(file).entries(session.endpoint.identity, account).single()
+                assertEquals(key(), durable.job)
+                assertEquals(if (failSave) "pending" else "accepted", durable.phase)
+                assertFalse("Receipt settlement abandoned the admitted list read", playlists.state.value.loading)
+                assertEquals(1, playlists.state.value.total)
+                assertEquals(listOf(99L), playlists.state.value.rows.map { it.id.value })
+                assertTrue(sync.state.value.observation!!.operation!!.accepted)
+                assertEquals(failSave, sync.state.value.error)
+                assertFalse(sync.state.value.readbackFailed)
+                assertFalse(sync.state.value.busy)
+                obsolete()
+                assertEquals(5, f.server.requestCount)
+                val requests = (1..5).map { f.server.takeRequest(2, TimeUnit.SECONDS)!! }
+                assertTrue(requests.all { it.method == "GET" })
+                assertEquals(key(), requests[2].url.queryParameter("operationId"))
+                assertEquals("/api/v1/playlists", requests.last().url.encodedPath)
+            }
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
     @Test fun acceptedStatusWithoutSnapshotRequestCannotRetireLoadingDetail() {
         HttpsFixture().use {f->
             val (api,detail,_)=ready(f);detail.select(id())
@@ -309,6 +369,54 @@ class PlaylistSourceSyncTest {
     private fun terminalObservation():String {
         val body=Json.parseToJsonElement(vector("complete")).jsonObject
         return JsonObject(body+("operation" to JsonObject(body.getValue("operation").jsonObject+("id" to JsonPrimitive(key()))))).toString()
+    }
+    private fun withOperation(body:String,operation:String):String {
+        val value=Json.parseToJsonElement(body).jsonObject
+        return JsonObject(value+("operation" to JsonObject(value.getValue("operation").jsonObject+("id" to JsonPrimitive(operation))))).toString()
+    }
+    @Test fun latestNewUnacceptedOperationPublishesAndProgressesWithoutPost(){
+        HttpsFixture().use {f->
+            val (api,detail,_)=ready(f);val repo=PlaylistSourceSyncRepository(api,detail,newOperation=::key)
+            f.reply(terminalObservation());f.reply(vector("detail-after"));repo.enter(id())!!()
+            val newer=UUID.randomUUID().toString()
+            val resolving=JsonObject(Json.parseToJsonElement(vector("eligible")).jsonObject+("operation" to JsonObject(Json.parseToJsonElement(vector("ack")).jsonObject+("id" to JsonPrimitive(newer))))).toString()
+            val response=java.util.concurrent.atomic.AtomicReference(resolving)
+            f.server.dispatcher=object:mockwebserver3.Dispatcher(){override fun dispatch(request:mockwebserver3.RecordedRequest)=mockwebserver3.MockResponse.Builder().body(if(request.url.encodedPath.endsWith("source-sync"))response.get()else vector("detail-after")).build()}
+            repo.refresh()!!()
+            assertEquals("Latest read rejected another client's newer operation",newer,repo.state.value.observation!!.operation!!.id)
+            assertFalse(repo.state.value.observation!!.operation!!.accepted);assertTrue(repo.state.value.observation!!.operation!!.active)
+            assertFalse(repo.state.value.error);assertFalse(repo.state.value.readbackFailed);assertFalse(repo.canStart());assertNull(repo.start())
+            response.set(withOperation(vector("pending"),newer));repo.refresh()!!()
+            assertEquals(newer,repo.state.value.observation!!.operation!!.id);assertTrue(repo.state.value.observation!!.operation!!.accepted);assertFalse(repo.state.value.readbackFailed)
+            response.set(withOperation(terminalObservation(),newer));repo.refresh()!!()
+            assertEquals("complete",repo.state.value.observation!!.operation!!.status);assertTrue(repo.canStart())
+            val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+            val statuses=requests.filter{it.url.encodedPath.endsWith("source-sync")}
+            assertEquals(4,statuses.size);assertTrue(statuses.all{it.method=="GET"&&it.url.queryParameter("operationId")==null});assertTrue(requests.none{it.method=="POST"})
+        }
+    }
+    @Test fun sameAcceptedOperationCannotRegressOrDisappearOnLatestRead(){
+        for(missing in listOf(false,true))HttpsFixture().use {f->
+            val (api,detail,_)=ready(f);val repo=PlaylistSourceSyncRepository(api,detail,newOperation=::key)
+            f.reply(terminalObservation());f.reply(vector("detail-after"));repo.enter(id())!!()
+            val invalid=if(missing)vector("eligible")else JsonObject(Json.parseToJsonElement(vector("eligible")).jsonObject+("operation" to Json.parseToJsonElement(vector("ack")))).toString()
+            f.reply(invalid);f.reply(vector("detail-after"));repo.refresh()!!()
+            assertEquals(key(),repo.state.value.observation!!.operation!!.id);assertTrue(repo.state.value.observation!!.operation!!.accepted)
+            assertTrue(repo.state.value.readbackFailed);assertTrue(repo.state.value.error);assertNull(repo.start())
+        }
+    }
+    @Test fun exactPendingOperationCannotAdoptForeignAcceptedOperation(){
+        HttpsFixture().use {f->
+            val (api,detail,s)=ready(f);val receipts=IntakeReceipts()
+            receipts.begin(s.endpoint.identity,s.capture()!!.accountId,"playlist-sync",job=key(),playlistId=id().value,candidateId="1")
+            val repo=PlaylistSourceSyncRepository(api,detail,receipts,newOperation=::key)
+            f.reply(vector("pending"));f.reply(vector("detail-pending"));repo.enter(id())!!()
+            f.reply(withOperation(vector("pending"),UUID.randomUUID().toString()));f.reply(vector("detail-pending"));repo.refresh()!!()
+            assertEquals(key(),repo.state.value.observation!!.operation!!.id);assertTrue(repo.state.value.readbackFailed);assertNull(repo.start())
+            val saved=receipts.entries(s.endpoint.identity,s.capture()!!.accountId).single();assertEquals(key(),saved.job);assertEquals("1",saved.candidateId)
+            val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+            assertTrue(requests.filter{it.url.encodedPath.endsWith("source-sync")}.all{it.url.queryParameter("operationId")==key()});assertTrue(requests.none{it.method=="POST"})
+        }
     }
     @Test fun acceptedLegacyAckSurvivesFailedStatusRecoveryWithoutPost() { legacyReadbackFailure(false,false) }
     @Test fun legacyBindingFailureStillPublishesIndependentManagement() { legacyReadbackFailure(false,true) }

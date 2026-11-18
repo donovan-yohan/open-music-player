@@ -20,13 +20,15 @@ class PlaylistRepository(private val api: SoundQApi) {
     @Synchronized fun retire(capture: PlaylistListCapture) { if (owns(capture)) retire() }
 
     /** Confirmed absence from a matching management read, never a UI row guess. */
-    @Synchronized internal fun confirmedMissing(capture: PlaylistListCapture, id: PlaylistId): Boolean {
-        if (!owns(capture) || readScope?.let { !api.session.current(it) } == true) return false
+    @Synchronized internal fun confirmedMissing(capture: PlaylistListCapture, id: PlaylistId): (() -> Unit)? {
+        if (!owns(capture) || readScope?.let { !api.session.current(it) } == true) return null
         readVersion++ // Older full-query and create readbacks cannot resurrect this row.
         val before = mutable.value
         val rows = before.rows.filterNot { it.id == id }
         mutable.value = before.copy(rows = rows, total = before.total?.minus(before.rows.size - rows.size), loading = false)
-        return true
+        // A changed/unloaded query has no accepted corpus to keep. Admit one
+        // replacement here; the caller runs it after releasing publication locks.
+        return if (before.loading && before.total == null) requestRead(capture) else null
     }
 
     fun reload() { captureList()?.let { reload(it) } ?: retire() }
