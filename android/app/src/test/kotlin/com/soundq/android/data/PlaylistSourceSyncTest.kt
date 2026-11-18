@@ -150,13 +150,163 @@ class PlaylistSourceSyncTest {
             }finally{releaseRename.countDown();releaseSync.countDown();pool.shutdown();assertTrue(pool.awaitTermination(5,TimeUnit.SECONDS))}
         }
     }
+    /** Only the filesystem boundary fails once; the real journal and atomic move still run. */
+    private class JournalFile(path:String):File(path) {
+        var failNextSave=false
+        private var parentReads=0
+        override fun getParentFile():File? {
+            parentReads++
+            if(parentReads%2==0) {
+                if(failNextSave){failNextSave=false;return File(path)}
+            }
+            return super.getParentFile()
+        }
+    }
+    private fun terminalObservation():String {
+        val body=Json.parseToJsonElement(vector("complete")).jsonObject
+        return JsonObject(body+("operation" to JsonObject(body.getValue("operation").jsonObject+("id" to JsonPrimitive(key()))))).toString()
+    }
+    @Test fun freshBeginFailureCannotRewritePreviousReceiptOrOfferUnsentExactRetry() {
+        val dir=Files.createTempDirectory("sync-begin-failure").toFile()
+        try {HttpsFixture().use {f->
+            val (api,detail,s)=ready(f);val file=JournalFile(File(dir,"journal.json").path);val journal=IntakeReceipts(file)
+            var operation=key();val repo=PlaylistSourceSyncRepository(api,detail,journal,{operation})
+            f.reply(vector("eligible"));repo.enter(id())!!();f.reply(vector("ack"),202);repo.start()!!()
+            f.reply(vector("pending"));f.reply(vector("detail-pending"));repo.refresh()!!()
+            val before=file.readBytes();val original=journal.entries(s.endpoint.identity,s.capture()!!.accountId).single()
+            operation=UUID.randomUUID().toString();file.failNextSave=true
+            val requests=f.server.requestCount;repo.start()!!()
+            assertArrayEquals("Fresh begin failure rewrote A with the unsent B identity",before,file.readBytes())
+            assertEquals(original,IntakeReceipts(File(file.path)).entries(s.endpoint.identity,s.capture()!!.accountId).single())
+            assertEquals(requests,f.server.requestCount);assertTrue(repo.state.value.error)
+            assertFalse("No durable B exists to retry",repo.state.value.uncertain)
+            assertEquals(key(),repo.state.value.observation!!.operation!!.id)
+            f.reply(vector("ack").replace(key(),operation),202);repo.start()!!()
+            val saved=IntakeReceipts(File(file.path)).entries(s.endpoint.identity,s.capture()!!.accountId)
+            assertEquals(original,saved.first());assertEquals(operation,saved.last().job);assertEquals("1",saved.last().candidateId)
+            assertEquals(requests+1,f.server.requestCount)
+        }}finally{dir.deleteRecursively()}
+    }
+    @Test fun retirementAfterDurableBeginBeforeDispatchKeepsExactPendingRecovery() {
+        val dir=Files.createTempDirectory("sync-before-dispatch").toFile()
+        try {HttpsFixture().use {f->
+            val (_,detail,s)=ready(f);val file=File(dir,"journal.json");val journal=IntakeReceipts(file)
+            lateinit var repo:PlaylistSourceSyncRepository
+            val intercepted=java.util.concurrent.atomic.AtomicBoolean(false)
+            val client=f.client.newBuilder().addNetworkInterceptor {chain->
+                if(chain.request().method=="POST") {
+                    // Actual begin has returned and its atomic file is readable;
+                    // the canonical API WireGuard has not dispatched the POST.
+                    val saved=IntakeReceipts(file).entries(s.endpoint.identity,s.capture()!!.accountId).single()
+                    assertEquals("pending",saved.phase);assertEquals(key(),saved.job)
+                    intercepted.set(true)
+                    repo.retire()
+                }
+                chain.proceed(chain.request())
+            }.build()
+            repo=PlaylistSourceSyncRepository(SoundQApi(s,client),detail,journal,::key)
+            f.reply(vector("eligible"));repo.enter(id())!!()
+            repo.start()!!()
+            assertTrue("Post-begin/pre-dispatch boundary was not reached",intercepted.get())
+            assertEquals(2,f.server.requestCount)
+            val receipt=IntakeReceipts(File(file.path)).entries(s.endpoint.identity,s.capture()!!.accountId).single()
+            assertEquals(key(),receipt.job);assertEquals("pending",receipt.phase);assertEquals("1",receipt.candidateId)
+            f.reply(vector("pending"));f.reply(vector("detail-pending"));repo.enter(id())!!()
+            val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+            assertEquals(0,requests.count{it.method=="POST"});assertEquals(key(),requests[2].url.queryParameter("operationId"))
+        }}finally{dir.deleteRecursively()}
+    }
+    @Test fun terminalExactRetryMustPublishAuthoritativeMembershipBeforeCompletion() {
+        HttpsFixture().use {f->
+            val (api,detail,_)=ready(f);val repo=PlaylistSourceSyncRepository(api,detail,newOperation=::key)
+            f.reply(vector("eligible"));repo.enter(id())!!();f.reply("{}",503);repo.start()!!()
+            assertTrue(repo.state.value.uncertain)
+            val terminal=Json.parseToJsonElement(terminalObservation()).jsonObject.getValue("operation").toString()
+            f.reply(terminal,202);f.reply(vector("detail-after"));repo.start()!!()
+            assertEquals("Terminal retry ACK did not read the playlist",PlaylistJson.detail(Json.parseToJsonElement(vector("detail-after")).jsonObject,id()),detail.state.value.detail)
+            assertFalse(repo.state.value.uncertain);assertFalse(repo.state.value.readbackFailed);assertFalse(repo.state.value.busy)
+            val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+            assertEquals(2,requests.count{it.method=="POST"})
+            assertTrue(requests.filter{it.method=="POST"}.all{Json.parseToJsonElement(it.body!!.utf8()).jsonObject.getValue("operationId").jsonPrimitive.content==key()})
+        }
+    }
+    @Test fun terminalRetryReadbackFailureRetainsDurableGetRecovery() {
+        val dir=Files.createTempDirectory("sync-terminal-recovery").toFile()
+        try {HttpsFixture().use {f->
+            val (api,detail,s)=ready(f);val file=File(dir,"journal.json");val journal=IntakeReceipts(file)
+            val repo=PlaylistSourceSyncRepository(api,detail,journal,::key)
+            f.reply(vector("eligible"));repo.enter(id())!!();f.reply("{}",503);repo.start()!!()
+            val before=detail.state.value.detail
+            f.reply(Json.parseToJsonElement(terminalObservation()).jsonObject.getValue("operation").toString(),202);f.reply("{}",503);repo.start()!!()
+            assertTrue("Terminal ACK without membership is not reconciled",repo.state.value.readbackFailed)
+            assertTrue(repo.state.value.uncertain);assertSame(before,detail.state.value.detail);assertFalse(repo.state.value.busy)
+            assertTrue(journal.entries(s.endpoint.identity,s.capture()!!.accountId).single().phase in setOf("pending","uncertain"))
+            val recovered=PlaylistSourceSyncRepository(api,detail,IntakeReceipts(file),::key)
+            f.reply(terminalObservation());f.reply(vector("detail-after"));recovered.enter(id())!!()
+            assertFalse(recovered.state.value.readbackFailed);assertFalse(recovered.state.value.uncertain)
+            val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+            assertEquals(2,requests.count{it.method=="POST"});assertEquals(key(),requests[requests.lastIndex-1].url.queryParameter("operationId"))
+        }}finally{dir.deleteRecursively()}
+    }
+    @Test fun retiredPostCannotDowngradeNewVisitAcceptedOrPendingJournal() {retiredPostJournal(true)}
+    @Test fun retiredPostKeepsUnreconciledPendingIntentAvailable() {retiredPostJournal(false)}
+    private fun retiredPostJournal(reconciled:Boolean) {
+            val dir=Files.createTempDirectory("sync-old-post").toFile()
+            try {HttpsFixture().use {f->
+                val (api,detail,s)=ready(f);val file=File(dir,"journal.json");val journal=IntakeReceipts(file)
+                val repo=PlaylistSourceSyncRepository(api,detail,journal,::key)
+                f.reply(vector("eligible"));repo.enter(id())!!()
+                val entered=java.util.concurrent.CountDownLatch(1);val release=java.util.concurrent.CountDownLatch(1)
+                f.server.dispatcher=object:mockwebserver3.Dispatcher(){override fun dispatch(request:mockwebserver3.RecordedRequest):mockwebserver3.MockResponse {
+                    if(request.method=="POST"){entered.countDown();check(release.await(5,TimeUnit.SECONDS));return mockwebserver3.MockResponse.Builder().code(202).body(vector("ack")).build()}
+                    val body=if(request.url.encodedPath.endsWith("source-sync"))if(reconciled)terminalObservation()else vector("eligible") else vector("detail-after")
+                    return mockwebserver3.MockResponse.Builder().body(body).build()
+                }}
+                val pool=java.util.concurrent.Executors.newSingleThreadExecutor()
+                try {
+                    val work=repo.start()!!;val old=pool.submit{work()};assertTrue(entered.await(3,TimeUnit.SECONDS))
+                    repo.retire();repo.enter(id())!!()
+                    val fresh=repo.state.value;val before=file.readBytes();val owner=s.capture()!!.accountId
+                    assertEquals(if(reconciled)"accepted"else "pending",IntakeReceipts(file).entries(s.endpoint.identity,owner).single().phase)
+                    release.countDown();old.get(5,TimeUnit.SECONDS)
+                    assertArrayEquals("Retired POST rewrote the newer visit's journal",before,file.readBytes())
+                    assertSame(fresh,repo.state.value)
+                    val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+                    assertEquals(1,requests.count{it.method=="POST"});assertEquals(key(),requests[3].url.queryParameter("operationId"))
+                }finally{release.countDown();pool.shutdown();assertTrue(pool.awaitTermination(5,TimeUnit.SECONDS))}
+            }}finally{dir.deleteRecursively()}
+    }
+    @Test fun sourceSyncJournalFailureIsAtomicIdentityQualifiedAndLeavesSiblingFinishUnchanged() {
+        val dir=Files.createTempDirectory("sync-journal-cas").toFile()
+        try {
+            val file=File(dir,"journal.json");val journal=IntakeReceipts(file);val endpoint="https://fixture.invalid/api/v1";val account="fixture-owner"
+            val pending=journal.begin(endpoint,account,"playlist-sync",job=key(),candidateId="1",playlistId=id().value)
+            journal.failSourceSync(endpoint,account,pending,false)
+            assertEquals("uncertain",IntakeReceipts(file).entries(endpoint,account).single().phase)
+            journal.finish(endpoint,account,pending,"accepted",key());val accepted=file.readBytes()
+            journal.failSourceSync(endpoint,account,pending,true);assertArrayEquals(accepted,file.readBytes())
+            val next=journal.begin(endpoint,account,"playlist-sync",job=key(),candidateId="2",playlistId=id().value);val before=file.readBytes()
+            journal.failSourceSync(endpoint,account,next.copy(candidateId="wrong"),true);assertArrayEquals(before,file.readBytes())
+            journal.failSourceSync(endpoint,account,next,true);assertEquals("refused",IntakeReceipts(file).entries(endpoint,account).last().phase)
+            val sibling=journal.begin(endpoint,account,"download",job=key());journal.finish(endpoint,account,sibling,"accepted",key());journal.finish(endpoint,account,sibling,"uncertain",key())
+            assertEquals("uncertain",IntakeReceipts(file).entries(endpoint,account).last().phase)
+        }finally{dir.deleteRecursively()}
+    }
+    @Test fun libraryRefinementRetiresItsOwnBrowseCaptureIndependentlyOfPlaylistSync() {
+        HttpsFixture().use {f->
+            val (api,_,s)=ready(f)
+            val library=LibraryRepository(s,api::library,{_,_,_->error("No Library mutation authorized")})
+            f.reply(vector("library-before"));library.refine(LibraryQuery())
+            val capture=library.capturePlayback(library.state.value.rows,0)!!
+            assertTrue(library.ownsPlayback(capture))
+            f.reply(vector("library-pending"));library.refine(LibraryQuery())
+            assertFalse("Library refinement retires its own query lifetime",library.ownsPlayback(capture))
+        }
+    }
     @Test fun browseReadbackRevokesBrowseCaptureButPreservesListeningSourceGenerationCheckpointAndNaturalEnd() {
         val dir=Files.createTempDirectory("source-sync-listening").toFile()
         try {HttpsFixture().use {f->
             val (api,detail,s)=ready(f);val browse=detail.capturePlayback()!!;val scope=s.capture()!!
-            val library=LibraryRepository(s,api::library,{_,_,_->error("No Library mutation authorized")})
-            f.reply(vector("library-before"));library.refine(LibraryQuery())
-            val libraryBrowse=library.capturePlayback(library.state.value.rows,0)!!
             DeviceListeningStore(File(dir,"domain.json")).use {store->
                 val account=ServerAccount(s.endpoint.identity,scope.accountId);val access=store.unlock(account)
                 val source=store.bindServerContent(access,HistoryKey.Server(account,ServerAudioId(browse.detail.tracks.first().id.value)),ContentRevision("a".repeat(64),1000),700000)!!
@@ -169,8 +319,6 @@ class PlaylistSourceSyncTest {
                 val repo=PlaylistSourceSyncRepository(api,detail,newOperation=::key)
                 f.reply(vector("eligible"));repo.enter(id())!!();f.reply(vector("ack"),202);repo.start()!!()
                 f.reply(vector("pending"));f.reply(vector("detail-pending"));repo.refresh()!!()
-                f.reply(vector("library-pending"));library.refine(LibraryQuery())
-                assertFalse("Old Library browse authority must retire",library.ownsPlayback(libraryBrowse))
                 assertFalse("Old detail browse captures must retire",detail.ownsPlayback(browse))
                 assertTrue(s.current(scope));assertEquals(owner,source.owner);assertEquals(stamp,binding.stamp());assertEquals(intent,binding.intentStamp())
                 binding.observe(deck(14000),3000);assertEquals(14000L,store.bookmark(source)!!.positionMs)

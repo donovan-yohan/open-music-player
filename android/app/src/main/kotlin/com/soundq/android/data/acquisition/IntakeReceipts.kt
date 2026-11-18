@@ -54,4 +54,14 @@ class IntakeReceipts(private val file:File?=null) {
         val k=key(endpoint,account);val previous=records[k].orEmpty();require(previous.any {it.operation==receipt.operation})
         save(records+(k to previous.map {if(it.operation==receipt.operation)it.copy(phase=phase,job=job,decisionId=decisionId) else it}))
     }
+    /** Source-sync failure may settle only the same unresolved durable intent.
+     * Sibling acquisition journals intentionally retain their existing finish contract. */
+    @Synchronized fun failSourceSync(endpoint:String,account:String,receipt:IntakeReceipt,refused:Boolean) {
+        require(receipt.kind=="playlist-sync")
+        load();check(!rejected)
+        val k=key(endpoint,account);val previous=records[k].orEmpty()
+        val current=previous.singleOrNull {it.operation==receipt.operation} ?: return
+        if(current.copy(phase=receipt.phase)!=receipt||current.phase !in setOf("pending","uncertain"))return
+        save(records+(k to previous.map {if(it===current)it.copy(phase=if(refused)"refused"else "uncertain")else it}))
+    }
 }

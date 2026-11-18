@@ -89,7 +89,9 @@ import com.soundq.android.product.preferences.*
     }
     var acquisitionReturn by rememberSaveable {mutableStateOf(emptyList<String>())}
     val acquisitionPlaylistJob=acquisitionOwner?.restoreJob(acquisitionReturn)
-    val blendVisible=destination=="Playlists" && importView==null && playlistDetail.id!=null && auth is AuthState.SignedIn
+    // Settings replaces the detail rather than covering its mounted route.
+    var settingsRoutes by rememberSaveable {mutableStateOf(emptyList<String>())}
+    val blendVisible=destination=="Playlists" && importView==null && playlistDetail.id!=null && auth is AuthState.SignedIn && settingsRoutes.isEmpty()
     DisposableEffect(model,blendLifecycle,blendVisible) {
         var syncDisposed=false
         fun sync() {
@@ -113,7 +115,7 @@ import com.soundq.android.product.preferences.*
             while(true){
                 kotlinx.coroutines.delay(1500)
                 if(model.graph.playlistSync.state.value.observation?.operation?.active==true)
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){model.graph.playlistSync.refresh()?.invoke()}
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){model.graph.playlistSync.refresh(syncOwner)?.invoke()}
             }
         }finally{model.graph.playlistSync.leave(syncOwner)}
     }
@@ -160,7 +162,6 @@ import com.soundq.android.product.preferences.*
     LaunchedEffect(picker) {picker?.let {if(membership.outcome==null)it.reload()}}
     var panel by remember {mutableStateOf<String?>(null)}
     // Settings is a full-screen route family, not a panel. Names are saveable; decode drops unknown entries.
-    var settingsRoutes by rememberSaveable {mutableStateOf(emptyList<String>())}
     var settingsReturn by rememberSaveable {mutableStateOf<List<String>?>(null)}
     var settingsOrigin by rememberSaveable {mutableStateOf("Library")}
     var pendingTool by rememberSaveable {mutableStateOf<String?>(null)}
@@ -374,7 +375,7 @@ import com.soundq.android.product.preferences.*
                             model.graph.playlistBlend.acceptedPlan(),model.graph.playlistBlend.capture()?.let(model.graph.playlistBlend::canGenerate)==true,
                             model.graph.playlistBlend.capture()?.let(model.graph.playlistBlend::canRecover)==true,model::playPlaylist,
                             {p,index,track,valid->model.quickQueuePlaylist(p,index,track,valid)},revealOwner,harmonicEntry,
-                            sourceSync={com.soundq.android.product.playlists.PlaylistSourceSyncControls(playlistSourceSync,{model.harmonicWork(model.graph.playlistSync.start())},{model.harmonicWork(model.graph.playlistSync.refresh())})},
+                            sourceSync={com.soundq.android.product.playlists.PlaylistSourceSyncControls(playlistSourceSync,{model.harmonicWork(model.graph.playlistSync.start())},{model.harmonicWork(model.graph.playlistSync.refresh())},writeReady=model.graph.playlistSync.canStart())},
                             playback=playback,harmonicFeedback=harmonicFeedback,artwork={track,rowCurrent->com.soundq.android.product.artwork.TrackArtwork(model.graph,artworkCapture?.scope,track.takeIf {it.artwork!=null} ?: model.graph.track(track.id) ?: track,
                                 {rowCurrent()&&artworkCapture?.let {captured->model.graph.playlistDetail.ownsPlayback(captured)&&captured.detail.tracks.any {it===track}}==true},sourceOwner=artworkCapture)})}
                         else playlistActions?.let { actions -> com.soundq.android.product.playlists.PlaylistsScreen(playlists,actions.capture,actions::create,actions::reload,actions::startNew,model::openPlaylist,

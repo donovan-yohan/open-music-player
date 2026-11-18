@@ -11,7 +11,7 @@ data class SourceSyncOperation(val id:String,val playlist:PlaylistId,val status:
     val active get()=status in setOf("resolving","importing")
 }
 data class SourceSyncObservation(val eligible:Boolean,val binding:Long,val reason:String?,val operation:SourceSyncOperation?)
-data class PlaylistSourceSyncState(val playlist:PlaylistId?=null,val observation:SourceSyncObservation?=null,val busy:Boolean=false,val uncertain:Boolean=false,val error:Boolean=false,val readbackFailed:Boolean=false)
+data class PlaylistSourceSyncState(val playlist:PlaylistId?=null,val observation:SourceSyncObservation?=null,val busy:Boolean=false,val uncertain:Boolean=false,val error:Boolean=false,val readbackFailed:Boolean=false,val saveFailed:Boolean=false)
 internal object SourceSyncJson {
     private fun p(o:JsonObject,k:String)=o.getValue(k).jsonPrimitive.also {require(it!=JsonNull)}
     private fun str(o:JsonObject,k:String)=p(o,k).also {require(it.isString)}.content
@@ -64,9 +64,9 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
         }
     }
     @Synchronized private fun current(v:Long,s:AccountScope,id:PlaylistId)=visit==v&&scope===s&&api.session.current(s)&&mutable.value.playlist==id&&detail.state.value.id==id
-    @Synchronized fun refresh():(() -> Unit)? {
+    @Synchronized fun refresh(owner:Long=visit):(() -> Unit)? {
         val id=mutable.value.playlist ?: return null;val s=scope ?: return null
-        if(mutable.value.busy||!current(visit,s,id))return null
+        if(owner!=visit||mutable.value.busy||!current(visit,s,id))return null
         val v=visit;val t=++ticket;val pending=receipt
         mutable.value=mutable.value.copy(busy=true,error=false)
         val ran=java.util.concurrent.atomic.AtomicBoolean(false)
@@ -77,47 +77,65 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
                 val observed=api.playlistSourceSync(s,id,pending?.job,::valid)
                 val op=observed.operation
                 if(pending?.job!=null&&op!=null)require(op.id==pending.job)
-                synchronized(this){if(valid())mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&op==null)}
-                val before=synchronized(this){if(valid())detail.managementDetail()else null}
-                val after=if(op?.accepted==true&&before!=null)api.playlistManagementSnapshot(s,id,::valid) else null
-                synchronized(this){if(valid()) {
-                    val published=after!=null&&before!=null&&detail.publishManagement(before,if(after==before)before else after)
-                    val reconciled=op?.accepted!=true||published
-                    mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&op==null,readbackFailed=!reconciled)
-                    if(op!=null&&pending!=null&&reconciled)receipts.finish(api.session.endpoint.identity,s.accountId,pending,"accepted",op.id)
-                    if(op!=null&&!op.active&&reconciled)receipt=null
-                }}
+                reconcile(s,id,observed,pending,::valid)
             }catch(_:Exception){synchronized(this){if(valid())mutable.value=mutable.value.copy(error=true,readbackFailed=mutable.value.observation?.operation?.accepted==true)}}
             finally{synchronized(this){if(visit==v&&ticket==t&&scope===s)mutable.value=mutable.value.copy(busy=false)}}
         }
     }
+    private fun reconcile(s:AccountScope,id:PlaylistId,observed:SourceSyncObservation,pending:IntakeReceipt?,valid:()->Boolean) {
+        val op=observed.operation
+        synchronized(this){if(valid())mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&(op==null||op.accepted&&!op.active),readbackFailed=op?.accepted==true)}
+        val before=synchronized(this){if(valid())detail.managementDetail()else null}
+        val after=if(op?.accepted==true&&before!=null)api.playlistManagementSnapshot(s,id,valid)else null
+        synchronized(this){if(valid()) {
+            val published=after!=null&&before!=null&&detail.publishManagement(before,if(after==before)before else after)
+            val reconciled=op?.accepted!=true||published
+            mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&(op==null||!reconciled),readbackFailed=!reconciled)
+            if(op!=null&&pending!=null&&reconciled)receipts.finish(api.session.endpoint.identity,s.accountId,pending,"accepted",op.id)
+            if(op!=null&&!op.active&&reconciled)receipt=null
+        }}
+    }
+    @Synchronized fun canStart():Boolean {
+        val id=mutable.value.playlist ?: return false;val s=scope ?: return false
+        val observation=mutable.value.observation ?: return false;val captured=detail.managementDetail() ?: return false
+        return current(visit,s,id)&&captured.playlist.id==id&&captured.canManage&&!mutable.value.busy&&!mutable.value.readbackFailed&&observation.eligible&&observation.operation?.let {it.active&&!it.accepted}!=true
+    }
     @Synchronized fun start():(() -> Unit)? {
+        if(!canStart())return null
         val id=mutable.value.playlist ?: return null;val s=scope ?: return null;val observation=mutable.value.observation ?: return null
         val captured=detail.managementDetail() ?: return null
-        if(!current(visit,s,id)||captured.playlist.id!=id||!captured.canManage||mutable.value.busy||!observation.eligible||observation.operation?.let {it.active&&!it.accepted}==true)return null
         val old=receipt
         val retry=mutable.value.uncertain&&old!=null
         val key=if(retry)old.job!! else newOperation()
         val binding=if(retry)old.candidateId!!.toLong() else observation.binding
         val v=visit;val t=++ticket
         // An older operation's completion is not acknowledgement of this new intent.
-        mutable.value=mutable.value.copy(busy=true,error=false,readbackFailed=false,observation=observation.copy(operation=if(retry)observation.operation else null))
+        mutable.value=mutable.value.copy(busy=true,error=false,readbackFailed=false,saveFailed=false,observation=observation.copy(operation=if(retry)observation.operation else null))
         val ran=java.util.concurrent.atomic.AtomicBoolean(false)
         return work@{
             if(!ran.compareAndSet(false,true))return@work
             fun valid()=synchronized(this){current(v,s,id)&&ticket==t}
-            var durable=old
+            var durable=if(retry)old else null
+            var terminalReadback=false
             try {
                 if(!valid()||!detail.ownsManagement(captured))return@work
                 if(!retry){durable=receipts.begin(api.session.endpoint.identity,s.accountId,"playlist-sync",job=key,playlistId=id.value,candidateId=binding.toString());synchronized(this){if(valid())receipt=durable}}
                 val ack=api.startPlaylistSourceSync(s,id,key,binding,{valid()&&detail.ownsManagement(captured)},::valid)
                 require(ack.id==key)
-                receipts.finish(api.session.endpoint.identity,s.accountId,requireNotNull(durable),"accepted",key)
-                synchronized(this){if(valid())mutable.value=mutable.value.copy(observation=observation.copy(operation=ack),uncertain=false)}
+                terminalReadback=ack.accepted&&!ack.active
+                if(terminalReadback)reconcile(s,id,observation.copy(operation=ack),requireNotNull(durable),::valid)
+                else {
+                    receipts.finish(api.session.endpoint.identity,s.accountId,requireNotNull(durable),"accepted",key)
+                    synchronized(this){if(valid())mutable.value=mutable.value.copy(observation=observation.copy(operation=ack),uncertain=false)}
+                }
             }catch(error:Exception){
                 val refused=(error as? SafeFailure)?.reason==SafeFailure.Reason.Refused
-                durable?.let {runCatching {receipts.finish(api.session.endpoint.identity,s.accountId,it,if(refused)"refused"else "uncertain",key)}}
-                synchronized(this){if(valid()){if(refused)receipt=null;mutable.value=mutable.value.copy(uncertain=!refused,error=true)}}
+                val retired=(error as? SafeFailure)?.reason==SafeFailure.Reason.Retired
+                if(!retired&&!terminalReadback)durable?.let {runCatching {receipts.failSourceSync(api.session.endpoint.identity,s.accountId,it,refused)}}
+                synchronized(this){if(valid()){
+                    if(refused&&!terminalReadback)receipt=null
+                    mutable.value=mutable.value.copy(uncertain=durable!=null&&(!refused||terminalReadback),error=true,readbackFailed=terminalReadback,saveFailed=durable==null,observation=if(durable==null)observation else mutable.value.observation)
+                }}
             }finally{synchronized(this){if(visit==v&&ticket==t&&scope===s)mutable.value=mutable.value.copy(busy=false)}}
         }
     }
