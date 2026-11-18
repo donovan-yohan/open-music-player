@@ -123,6 +123,20 @@ fun main() {
         self.assertIn('mediaRowBottomRule()', menu)
         self.assertIn('presentation:SoundQSheetPresentation=SoundQSheetPresentation.Form', sheets)
 
+    def test_scaled_native_host_preserves_activity_window_service(self):
+        surface = (args.root / 'app/src/androidTest/kotlin/com/soundq/android/PlaylistDetailSurfaceTest.kt').read_text()
+        host = surface.split('        compose.setContent {', 1)[1].split('    private fun list()', 1)[0]
+        self.assertIn('val context=androidx.compose.ui.platform.LocalContext.current', host)
+        self.assertIn('val configuration=androidx.compose.ui.platform.LocalConfiguration.current', host)
+        self.assertIn('android.view.ContextThemeWrapper(context,context.theme).apply {', host)
+        self.assertIn('applyOverrideConfiguration(android.content.res.Configuration(configuration).apply {', host)
+        self.assertIn('this.fontScale=fontScale', host)
+        self.assertNotIn('createConfigurationContext(', host)
+        self.assertNotIn('CompositionLocalProvider(', host)
+        self.assertIn('androidx.compose.ui.viewinterop.AndroidView(', host)
+        self.assertIn('androidx.compose.ui.platform.ComposeView(scaledContext).apply {', host)
+        self.assertIn('setContent {SoundQTheme {', host)
+
 
 if __name__ == '__main__':
     unittest.main(argv=[__file__, *remaining])

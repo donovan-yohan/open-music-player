@@ -88,9 +88,15 @@ class PlaylistDetailSurfaceTest {
             val context=androidx.compose.ui.platform.LocalContext.current
             val configuration=androidx.compose.ui.platform.LocalConfiguration.current
             // Material3 creates the dialog from LocalView.current.context, not LocalContext.
-            // Attach a real scaled-context host so the dialog's own density is scaled too.
-            val scaledContext=remember(context,configuration,fontScale) {context.createConfigurationContext(
-                android.content.res.Configuration(configuration).apply {this.fontScale=fontScale})}
+            // Override resources on a wrapper that still delegates WINDOW_SERVICE to the Activity.
+            // A bare configuration context loses that window manager's parent/token association.
+            val scaledContext=remember(context,configuration,fontScale) {
+                android.view.ContextThemeWrapper(context,context.theme).apply {
+                    applyOverrideConfiguration(android.content.res.Configuration(configuration).apply {
+                        this.fontScale=fontScale
+                    })
+                }
+            }
             androidx.compose.ui.viewinterop.AndroidView(
                 modifier=Modifier.width(360.dp).height(780.dp),
                 factory={androidx.compose.ui.platform.ComposeView(scaledContext).apply {
