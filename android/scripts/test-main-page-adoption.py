@@ -108,6 +108,7 @@ class Adoption(unittest.TestCase):
         header = call(home, 'MainPageHeader')
         home = home[home.index(header) + len(header):].split('if(route.destination==HomeDestination.History)', 1)[0]
         self.assertNotIn('SearchStrip', home)
+        self.assertNotIn('HistorySearch(', home)
 
     def test_opt_in_tabs_media_and_parent_chrome_owners_retained(self):
         self.assertIn('SoundQTabsTreatment.MainPageCells', function(files['library'], 'LibraryFilters'))
