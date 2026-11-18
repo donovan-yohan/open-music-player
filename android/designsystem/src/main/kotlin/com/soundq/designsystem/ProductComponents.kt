@@ -481,8 +481,10 @@ private fun formatTime(ms:Long):String = formatSongTime(ms)
         Box(Modifier.width(40.dp).height(4.dp).background(SoundQ.colors.muted))
     }
 }
+/** Actions opt into a flush list; existing editors retain their form spacing and palette. */
+enum class SoundQSheetPresentation { Form, Actions }
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable fun SoundQSheet(title:String,onDismiss:()->Unit,queueGesture:QueueGestureState?=null,dismissAdmission:()->Boolean={true},scrollState:ScrollState=rememberScrollState(),onEscape:(()->Unit)?=null,content:@Composable ColumnScope.()->Unit) {
+@Composable fun SoundQSheet(title:String,onDismiss:()->Unit,queueGesture:QueueGestureState?=null,dismissAdmission:()->Boolean={true},scrollState:ScrollState=rememberScrollState(),onEscape:(()->Unit)?=null,presentation:SoundQSheetPresentation=SoundQSheetPresentation.Form,content:@Composable ColumnScope.()->Unit) {
     val admit by rememberUpdatedState(dismissAdmission)
     val dismiss by rememberUpdatedState(onDismiss)
     val requestDismiss:()->Unit={if(queueGesture?.cancel()!=true&&admit())dismiss()}
@@ -494,11 +496,12 @@ private fun formatTime(ms:Long):String = formatSongTime(ms)
             if(queueGesture?.onKey(it)==true)true
             else if(it.key==Key.Escape&&it.type==KeyEventType.KeyUp){(onEscape?:requestDismiss)();true}
             else false
-        },shape=RectangleShape,containerColor=SoundQ.colors.sheet,scrimColor=SoundQ.colors.scrim.copy(alpha=soundq.design.generated.SoundQComposeTokens.MOTION_SCRIM_OPACITY),
+        },shape=RectangleShape,containerColor=if(presentation==SoundQSheetPresentation.Actions)SoundQ.colors.background else SoundQ.colors.sheet,scrimColor=SoundQ.colors.scrim.copy(alpha=soundq.design.generated.SoundQComposeTokens.MOTION_SCRIM_OPACITY),
         sheetState=sheetState,sheetGesturesEnabled=false,dragHandle=null) {
         SoundQSheetDragHandle(title,handleDismiss)
-        Column(Modifier.fillMaxWidth().imePadding().verticalScroll(scrollState).padding(SoundQ.spacing.gutter),verticalArrangement=Arrangement.spacedBy(SoundQ.spacing.medium)) {
-            Row(verticalAlignment=Alignment.CenterVertically) {Text(title,Modifier.weight(1f).semantics {heading()},style=SoundQ.typography.heading);SoundQIconButton(SoundQIcon.Close,"Close $title",requestDismiss)}
+        val actions=presentation==SoundQSheetPresentation.Actions
+        Column(Modifier.fillMaxWidth().imePadding().verticalScroll(scrollState).padding(if(actions)0.dp else SoundQ.spacing.gutter),verticalArrangement=Arrangement.spacedBy(if(actions)0.dp else SoundQ.spacing.medium)) {
+            Row(Modifier.padding(if(actions)SoundQ.spacing.gutter else 0.dp),verticalAlignment=Alignment.CenterVertically) {Text(title,Modifier.weight(1f).semantics {heading()},style=SoundQ.typography.heading);SoundQIconButton(SoundQIcon.Close,"Close $title",requestDismiss)}
             content()
         }
     }

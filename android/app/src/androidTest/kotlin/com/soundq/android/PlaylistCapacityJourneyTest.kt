@@ -94,7 +94,7 @@ class PlaylistCapacityJourneyTest {
             assertTrue(body().toByteArray().size < 2_000_000)
             val capture = app.graph.playlistDetail.capturePlayback()!!
             compose.onNodeWithText(QueuePolicy.CONTEXT_LIMIT_MESSAGE).performScrollTo().assertIsDisplayed()
-            compose.onNodeWithContentDescription("Play playlist").performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Play playlist").assertIsDisplayed().performClick()
             compose.waitForIdle()
             assertEquals(old, snapshot())
             stage("501-play-all-visible-refusal")
@@ -114,7 +114,7 @@ class PlaylistCapacityJourneyTest {
             compose.onNode(hasText("Capacity route") and hasClickAction()).performScrollTo().performClick()
             compose.waitUntil(10000) { app.graph.playlistDetail.state.value.detail?.tracks?.size == 500 }
             compose.onNodeWithText(QueuePolicy.CONTEXT_LIMIT_MESSAGE).assertDoesNotExist()
-            compose.onNodeWithContentDescription("Play playlist").performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Play playlist").assertIsDisplayed().performClick()
             compose.waitUntil(15000) { model.playback.value.queue.size == 500 && model.playback.value.isPlaying && model.playback.value.positionMs > 0 }
             val positive = snapshot()
             assertEquals((1L..500L).toList(), positive.tracks); assertEquals(0, positive.selected); assertTrue(positive.intent)
