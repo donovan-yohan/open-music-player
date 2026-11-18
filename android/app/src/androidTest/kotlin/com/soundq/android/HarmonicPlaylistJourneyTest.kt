@@ -55,7 +55,7 @@ class HarmonicPlaylistJourneyTest {
             compose.waitUntil(10000){model.playback.value.connection==com.soundq.android.playback.PlaybackProjection.Connection.Connected}
             compose.runOnIdle {assertActualPausedUnchanged(settled)}
             val before=model.playback.value
-            compose.onNodeWithContentDescription("Find harmonic matches").performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Find harmonic matches").assertIsDisplayed().performClick()
             compose.waitUntil(10000){app.graph.harmonic.state.value.result!=null}
             assertEquals(1,reads.get());assertEquals("124",app.graph.harmonic.state.value.draft.bpm)
             compose.onNodeWithText("Ordered by your listening history").performScrollTo().assertIsDisplayed()
@@ -70,7 +70,7 @@ class HarmonicPlaylistJourneyTest {
             assertFalse(model.playback.value.isPlaying);assertEquals(before.selectedOccurrence,model.playback.value.selectedOccurrence)
             compose.runOnIdle {assertEquals(settled.servicePositionMs,model.playback.value.positionMs)}
             assertEquals(1L,model.playback.value.queue.single {it.manual}.trackId)
-            compose.onNodeWithContentDescription("Find harmonic matches").performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Find harmonic matches").assertIsDisplayed().performClick()
             assertEquals(1,reads.get())
             compose.onNode(hasText("Unknown length neighbour")and hasClickAction()).performScrollTo().performClick()
             compose.onNodeWithText("Could not add this track to queue: its length is unknown.").performScrollTo().assertIsDisplayed()

@@ -6,14 +6,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createComposeRule
-import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.soundq.android.data.*
 import com.soundq.android.data.mix.*
@@ -86,32 +84,34 @@ class PlaylistDetailSurfaceTest {
                 put("sourceStartMs",0);put("sourceEndMs",12000);put("timelineStartMs",index*12000)
             })
         }) else null
-        compose.setContent {SoundQTheme {
-            val density=LocalDensity.current.density
+        compose.setContent {
             val context=androidx.compose.ui.platform.LocalContext.current
             val configuration=androidx.compose.ui.platform.LocalConfiguration.current
-            // Dialogs create an Android composition root with density from Context resources.
-            // A LocalDensity override alone enlarges the page but leaves dialog text unchanged.
+            // Material3 creates the dialog from LocalView.current.context, not LocalContext.
+            // Attach a real scaled-context host so the dialog's own density is scaled too.
             val scaledContext=remember(context,configuration,fontScale) {context.createConfigurationContext(
                 android.content.res.Configuration(configuration).apply {this.fontScale=fontScale})}
-            CompositionLocalProvider(LocalDensity provides Density(density,fontScale),
-                androidx.compose.ui.platform.LocalContext provides scaledContext) {
-                val management by f.management.state.collectAsState()
-                val order by f.order.state.collectAsState()
-                Column(Modifier.width(360.dp).height(780.dp).background(SoundQ.colors.background).testTag("phone-host")) {
-                    Box(Modifier.weight(1f).fillMaxWidth()) {
-                        PlaylistDetailScreen(accepted,capture,{}, {},
-                            onPlay={owner,id->f.detail.play(owner,id) {_,_->onPlayed(id)}},
-                            management=management,actions=if(branch==Branch.ReadOnly)null else f.actions,
-                            order=order,orderActions=if(branch==Branch.ReadOnly)null else f.orderActions,
-                            blend=PlaylistBlendState(status=if(plan!=null)BlendStatus.Ready else BlendStatus.Plain,enabled=plan!=null),plan=plan,
-                            onQueue={owner,index,track,valid->if(valid())f.detail.queue(owner,index,track) {onQueued(it.id)}})
-                    }
-                    // Parent-owned transport boundary, not another list implementation.
-                    Box(Modifier.fillMaxWidth().height(72.dp).testTag("parent-player")) {Text("Persistent player")}
-                }
-            }
-        }}
+            androidx.compose.ui.viewinterop.AndroidView(
+                modifier=Modifier.width(360.dp).height(780.dp),
+                factory={androidx.compose.ui.platform.ComposeView(scaledContext).apply {
+                    setContent {SoundQTheme {
+                        val management by f.management.state.collectAsState()
+                        val order by f.order.state.collectAsState()
+                        Column(Modifier.width(360.dp).height(780.dp).background(SoundQ.colors.background).testTag("phone-host")) {
+                            Box(Modifier.weight(1f).fillMaxWidth()) {
+                                PlaylistDetailScreen(accepted,capture,{}, {},
+                                    onPlay={owner,id->f.detail.play(owner,id) {_,_->onPlayed(id)}},
+                                    management=management,actions=if(branch==Branch.ReadOnly)null else f.actions,
+                                    order=order,orderActions=if(branch==Branch.ReadOnly)null else f.orderActions,
+                                    blend=PlaylistBlendState(status=if(plan!=null)BlendStatus.Ready else BlendStatus.Plain,enabled=plan!=null),plan=plan,
+                                    onQueue={owner,index,track,valid->if(valid())f.detail.queue(owner,index,track) {onQueued(it.id)}})
+                            }
+                            // Parent-owned transport boundary, not another list implementation.
+                            Box(Modifier.fillMaxWidth().height(72.dp).testTag("parent-player")) {Text("Persistent player")}
+                        }
+                    }}
+                }})
+        }
     }
 
     private fun list()=compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsProperties.VerticalScrollAxisRange) and !hasAnyAncestor(isDialog()))

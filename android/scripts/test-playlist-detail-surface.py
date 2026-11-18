@@ -104,6 +104,15 @@ fun main() {
                      '"Move earlier"', '"Move later"', '"Remove from playlist"']:
             self.assertIn(text, members)
 
+    def test_harmonic_journey_clicks_fixed_header_without_scrolling(self):
+        journey = (args.root / 'app/src/androidTest/kotlin/com/soundq/android/HarmonicPlaylistJourneyTest.kt').read_text()
+        interactions = [line for line in journey.splitlines()
+                        if 'onNodeWithContentDescription("Find harmonic matches")' in line]
+        self.assertEqual(2, len(interactions))
+        for interaction in interactions:
+            self.assertNotIn('.performScrollTo()', interaction)
+            self.assertIn('.assertIsDisplayed().performClick()', interaction)
+
     def test_playlist_menu_uses_real_song_action_owner_and_opt_in_sheet(self):
         menu = menus.split('@Composable fun PlaylistManagementMenu', 1)[1].split('@Composable fun PlaylistMemberMenu', 1)[0]
         self.assertIn('presentation=SoundQSheetPresentation.Actions', menu)
