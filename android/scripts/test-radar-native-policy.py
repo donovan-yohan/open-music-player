@@ -43,6 +43,8 @@ for p in ['data/AccountSession.kt', 'data/Contracts.kt', 'data/catalog/Catalog.k
     emit(Path(p).name, source(p).replace('import kotlinx.serialization.json.*\n', ''))
 radar = source('data/discovery/ReleaseRadar.kt')
 emit('ReleaseRadar.kt', radar[:radar.index('/** Strict Go wire projection.')].replace('import kotlinx.serialization.json.*\n', ''))
+emit('RadarArtworkRoute.kt', 'package com.soundq.android.product.discovery\nimport java.util.concurrent.atomic.AtomicBoolean\n' +
+     block(source('product/discovery/RadarArtwork.kt'), 'internal class RadarArtworkRoute('))
 vm = source('product/ProductViewModel.kt')
 emit('ProductViewModel.kt', '''package com.soundq.android.product
 import kotlinx.coroutines.*
@@ -56,32 +58,39 @@ lifecycle = block(screen, '    DisposableEffect(view,radarLifecycle,catalogDetai
 presentation = block(screen, '            visibleRadarPage?.let {page->')
 invalidation = block(screen, '    LaunchedEffect(view,radarInvalidation,radar.stale,radar.phase,')
 surface = screen[screen.index('    val radarSurfaceOwner='):screen.index('    BackHandler(state.canBack')]
+collection = block(screen, '    fun changeRadarCollection(')
+renew = block(screen, '    fun renewRadarArtwork(')
+change_details = block(screen, '    fun changeRadarDetails(')
 emit('Bindings.kt', '''package bindings
 import androidx.lifecycle.*
 import com.soundq.android.data.discovery.*
 import com.soundq.android.product.*
+import com.soundq.android.product.discovery.RadarArtworkRoute
 var radarActive=false
-var radarSurfaceVisit:Any?=null
+internal var radarSurfaceVisit:RadarArtworkRoute?=null
 var radarCollection=false
+'''+renew+'\n'+collection+'''
+private val defaultArtworkRoot=RadarArtworkRoute()
 fun bind(model:ProductViewModel,view:DiscoveryView?,catalogDetails:Any?=null,radarVisible:()->Boolean={true}):()->Unit {
  val repository=model.graph.discovery
- var radarDetails:Any?=null
+ var radarDetails:Triple<RadarPage,RadarSong,DiscoveryDraft>?=null
  val radarLifecycle=LocalLifecycleOwner.current
  val radarShown=radarVisible()
-''' + lifecycle + '\n return Effect.dispose\n}\n' + '''
-fun render(model:ProductViewModel,view:DiscoveryView?,full:Boolean=false,shown:Boolean=true,catalogDetails:Any?=null):()->Triple<RadarPage,RadarSong,DiscoveryDraft>? {
+''' + change_details + '\n' + lifecycle + '\n return Effect.dispose\n}\n' + '''
+internal fun render(model:ProductViewModel,view:DiscoveryView?,full:Boolean=false,shown:Boolean=true,catalogDetails:Any?=null,radarArtworkRoot:RadarArtworkRoute=defaultArtworkRoot):()->Triple<RadarPage,RadarSong,DiscoveryDraft>? {
  val repository=model.graph.discovery
  val radar=repository.radar.value
  val state=repository.state.value
  val visibleRadarPage=radar.page?.takeIf {view?.let(repository::current)==true}
  val showRadarCollection=full
+ val fullRadarScroll=Any() // Host declaration only; real priority/layout is tested by the artwork runner.
  val radarShown=shown
  val focus=Focus()
  var radarDetails:Triple<RadarPage,RadarSong,DiscoveryDraft>?=null
  UI.rows.clear();UI.actions.clear();UI.messages.clear();UI.artwork.clear()
  if(catalogDetails!=null){UI.forget();return {null}}
  if(!radarActive||!radarShown||state.draft.text.isNotBlank()||radarSurfaceVisit==null)UI.forget()
-''' + surface + '\n if(state.draft.text.isBlank()) {\n' + presentation + '\n}\n return {radarDetails}\n}\n' + '''
+''' + change_details + '\n' + surface + '\n if(state.draft.text.isBlank()) {\n' + presentation + '\n}\n return {radarDetails}\n}\n' + '''
 fun invalidation(model:ProductViewModel,view:DiscoveryView?) {
  val radar=model.graph.discovery.radar.value
  val state=model.graph.discovery.state.value
@@ -103,6 +112,12 @@ assert 'destination=="Discover" && importView==null && auth is AuthState.SignedI
 assert 'remember(model,accountVersion,discoveryVisit){model.graph.discovery.open()}' in route
 assert 'com.soundq.android.product.discovery.DiscoverScreen(model,discoveryView,discoveryIntake,' in route
 assert 'radarVisible={destination=="Discover"&&importView==null&&panel==null&&picker==null&&detailsRoute==null&&settingsRoutes.isEmpty()&&!gallery}' in route
+assert 'radarArtworkRoot=radarArtworkRoot,radarVisible=' in route
+assert 'retireRadarArtwork()' in block(route, '    fun leaveDiscovery()')
+assert 'retireRadarArtwork()' in block(route, '    fun openSettings(')
+for panel in ('Player', 'Queue'):
+    assert '{retireRadarArtwork();transportReturn=null;panel="'+panel+'"}' in route
+assert '{retireRadarArtwork();panel="SharedLink"}' in route
 assert 'discoveryView?.let(model.graph.discovery::close)' in block(route, '    fun leaveDiscovery()')
 route_line = next(x for x in route.splitlines() if x.strip().startswith('val discoveryView='))
 visibility = block(route, 'radarVisible={').split('=', 1)[1]
@@ -121,7 +136,7 @@ assert 'LaunchedEffect(view,state.draft,radar.stale)' not in screen
 assert 'state.draft' not in lifecycle
 assert 'radarFixtureAdmission' not in line
 assert 'items(page.songs.take(if(showRadarCollection)20 else 5)' in presentation
-assert 'RadarArtwork(model.graph.mediaClient,repository,view,page,song,draft,radarSurfaceOwner)' in presentation
+assert 'RadarArtwork(model.graph.mediaClient,repository,view,page,song,draft,radarSurfaceOwner,fullList=fullRadarScroll.takeIf {showRadarCollection})' in presentation
 # Full normal text-change/debounce/submit owners stay in the delivered source.
 assert 'val changed=next.text!=editor.text;editor=next;if(changed)view?.let {repository.edit(it,next.text)}' in screen
 assert 'LaunchedEffect(view,state.draft) {' in screen and 'delay(350)' in screen
@@ -197,7 +212,7 @@ fun <T> remember(vararg keys:Any?,block:()->T):T {
  @Suppress("UNCHECKED_CAST") return UI.remembered as T
 }
 class Focus {fun clearFocus(){}}
-fun RadarArtwork(client:Any,repository:DiscoveryRepository,view:DiscoveryView,page:RadarPage,song:RadarSong,draft:DiscoveryDraft,surfaceOwner:Any){UI.artwork+=UI.Art(client,repository,view,page,song,draft,surfaceOwner)}
+internal fun RadarArtwork(client:Any,repository:DiscoveryRepository,view:DiscoveryView,page:RadarPage,song:RadarSong,draft:DiscoveryDraft,surfaceOwner:com.soundq.android.product.discovery.RadarArtworkRoute,fullList:Any?=null){UI.artwork+=UI.Art(client,repository,view,page,song,draft,surfaceOwner)}
 object SoundQ {object typography {val title=Any()}}
 enum class FeedbackKind {Notice,Empty,Error}
 enum class SoundQButtonVariant {Secondary}

@@ -225,6 +225,7 @@ class DiscoveryEntity
 class DiscoveryDetails
 class SourceResults
 class LazyListState
+fun radarFullListState()=LazyListState() // Artwork window behavior is covered by test-radar-artwork.py.
 class Draft(val text:String)
 enum class DiscoveryPhase {Idle,Loading,Ready}
 enum class DiscoveryResultType {Song,Artist,Album}
@@ -274,7 +275,7 @@ header = function(files['components'], 'SoundQMainPageHeader').replace('@Composa
 wrapper = function(files['wrapper'], 'MainPageHeader').replace('@Composable ', '')
 discover = files['discover']
 prefix = discover[discover.index('    val repository=model.graph.discovery'):discover.index('    val openedCatalog=catalogDetails')]
-discover_body = 'fun DiscoverInput(model:ProductViewModel,view:DiscoveryView?,intake:Any?,radarVisible:()->Boolean={false}) {\n' + prefix + '\n' + call(discover, 'SoundQSearchStrip') + '\n}\n'
+discover_body = 'class RadarArtworkRoute {fun retire(){}}\nfun DiscoverInput(model:ProductViewModel,view:DiscoveryView?,intake:Any?,radarVisible:()->Boolean={false}) {\n' + prefix + '\n' + call(discover, 'SoundQSearchStrip') + '\n}\n'
 playlist = files['playlists']
 playlist_prefix = playlist[playlist.index('    var search by remember'):playlist.index('    var sorting by remember')]
 playlist_body = 'fun PlaylistInput(state:PlaylistState,capture:PlaylistCapture?,pending:Boolean,onRefine:(PlaylistQuery)->Unit) {\nval scope=capture?.scope\nvar sorting=false\n' + playlist_prefix + call(playlist, 'SoundQSearchStrip') + '\n}\n'

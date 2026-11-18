@@ -38,7 +38,7 @@ private fun LazyListScope.discoverHeader(content:@Composable ()->Unit) {
     item {Column(Modifier.fillMaxWidth().padding(horizontal=SoundQ.spacing.gutter,vertical=SoundQ.spacing.small)) {content()}}
 }
 private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else formatSongTime(ms)
-@Composable fun DiscoverScreen(model:ProductViewModel,view:DiscoveryView?,intake:com.soundq.android.data.imports.ImportView?,onImports:()->Unit,onAccount:()->Unit,onAcquisition:()->Unit,radarVisible:()->Boolean={true}) {
+@Composable internal fun DiscoverScreen(model:ProductViewModel,view:DiscoveryView?,intake:com.soundq.android.data.imports.ImportView?,onImports:()->Unit,onAccount:()->Unit,onAcquisition:()->Unit,radarArtworkRoot:RadarArtworkRoute,radarVisible:()->Boolean) {
     val repository=model.graph.discovery
     DisposableEffect(view,intake){onDispose {view?.let(repository::close);intake?.let(model.graph.imports::close)}}
     val state by repository.state.collectAsStateWithLifecycle()
@@ -60,7 +60,6 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
         if(queryFocused&&keyboardWasVisible&&!keyboardVisible)focus.clearFocus()
         keyboardWasVisible=keyboardVisible
     }
-    LaunchedEffect(view,state.draft.text) {if(state.draft.text.isNotBlank())radarCollection=false}
     val showRadarCollection=radarCollection&&state.draft.text.isBlank()
     var entityDetails by remember(view) {mutableStateOf<DiscoveryEntity?>(null)}
     var catalogDetails by remember(view) {mutableStateOf<DiscoveryDetails?>(null)}
@@ -69,14 +68,30 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
     val scrolls=remember(view) {mutableMapOf<Pair<SourceResults?,DiscoveryResultType>,LazyListState>()}
     val searchScroll=remember(view,state.results,state.resultType) {scrolls.getOrPut(state.results to state.resultType){LazyListState()}}
     val radarScroll=remember(view,radar.page) {LazyListState()}
-    val fullRadarScroll=remember(view,radar.page) {LazyListState()}
+    val fullRadarScroll=remember(view,radar.page) {radarFullListState()}
     val scroll=if(showRadarCollection)fullRadarScroll else if(state.draft.text.isBlank())radarScroll else searchScroll
     // A normal route visit, not query edits or playback ticks, asks the server's daily policy.
     // The observer retires synchronously through STOP/RESUME even without recomposition.
     val radarLifecycle=LocalLifecycleOwner.current
     val radarShown=radarVisible()
     var radarActive by remember(view,radarLifecycle) {mutableStateOf(false)}
-    var radarSurfaceVisit by remember(view,radarLifecycle) {mutableStateOf<Any?>(null)}
+    var radarSurfaceVisit by remember(view,radarLifecycle) {mutableStateOf<RadarArtworkRoute?>(null)}
+    fun renewRadarArtwork() {
+        // Retire before layout/coverage changes, not when the retained lazy slots are disposed.
+        radarSurfaceVisit?.let {old->old.retire();radarSurfaceVisit=RadarArtworkRoute()}
+    }
+    fun changeRadarDetails(next:Triple<RadarPage,RadarSong,DiscoveryDraft>?) {
+        if(radarDetails===next)return
+        // Only artwork loses admission. Find sources still needs the accepted Radar landing.
+        renewRadarArtwork()
+        radarDetails=next
+    }
+    fun changeRadarCollection(full:Boolean) {
+        if(radarCollection==full)return
+        renewRadarArtwork()
+        radarCollection=full
+    }
+    LaunchedEffect(view,state.draft.text) {if(state.draft.text.isNotBlank())changeRadarCollection(false)}
     val radarInvalidation by repository.radarInvalidation.collectAsStateWithLifecycle()
     DisposableEffect(view,radarLifecycle,catalogDetails,radarShown) {
         var landing:RadarLanding?=null
@@ -85,17 +100,17 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
             active=radarShown&&catalogDetails==null&&radarLifecycle.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
             if(active&&landing==null) {
                 landing=view?.let {repository.showRadar(it){active&&radarVisible()&&radarLifecycle.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)}}
-                radarSurfaceVisit=if(landing!=null)Any()else null
+                radarSurfaceVisit=if(landing!=null)RadarArtworkRoute()else null
                 if(landing!=null)view?.let {model.loadReleaseRadar(it,automatic=true)}
             } else if(!active) {
-                landing?.let(repository::hideRadar);landing=null;radarDetails=null
-                radarSurfaceVisit=null
+                radarSurfaceVisit?.retire();radarSurfaceVisit=null
+                landing?.let(repository::hideRadar);landing=null;changeRadarDetails(null)
             }
             radarActive=active
         }
         val observer=LifecycleEventObserver {_,_->sync()}
         radarLifecycle.lifecycle.addObserver(observer);sync()
-        onDispose {active=false;landing?.let(repository::hideRadar);radarSurfaceVisit=null;radarActive=false;radarLifecycle.lifecycle.removeObserver(observer)}
+        onDispose {radarSurfaceVisit?.retire();radarSurfaceVisit=null;active=false;landing?.let(repository::hideRadar);changeRadarDetails(null);radarActive=false;radarLifecycle.lifecycle.removeObserver(observer)}
     }
     // Retry invalidated reads only at eligible transitions, never on playback ticks.
     // The revision also witnesses repeated invalidations if Loading is conflated away.
@@ -106,8 +121,8 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
             if(radar.page==null&&radar.phase==RadarPhase.Idle)view?.let {model.loadReleaseRadar(it,automatic=true)}
         }
     }
-    LaunchedEffect(view,state.draft,radar.page,radar.stale) {
-        radarDetails?.let {(page,song,draft)->if(view==null||!repository.radarCurrent(view,page,song,draft))radarDetails=null}
+    LaunchedEffect(view,state.draft,radar.page,radar.stale,radar.phase) {
+        radarDetails?.let {(page,song,draft)->if(view==null||!repository.radarCurrent(view,page,song,draft))changeRadarDetails(null)}
     }
     fun search() {
         val route=view ?: return
@@ -138,17 +153,20 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
         com.soundq.android.product.catalog.CatalogScreen(catalog,actions,{catalogDetails=null})
         return
     }
-    // Only the visible layout owns row leases. Returning from full/search/catalog/overlay
-    // creates a new identity; the accepted page/song/draft objects remain untouched.
-    val radarSurfaceOwner=if(radarActive&&radarShown&&state.draft.text.isBlank()&&radarSurfaceVisit!=null) {
-        remember(view,visibleRadarPage,state.draft,showRadarCollection,radarSurfaceVisit) {Any()}
+    // The slot binds the exact root and layout captures, not a predicate that looks up their successors.
+    val radarSurfaceOwner=if(radarActive&&radarShown&&state.draft.text.isBlank()&&radarDetails==null) {
+        radarSurfaceVisit?.let {visit->
+            remember(view,visibleRadarPage,state.draft,showRadarCollection,visit,radarArtworkRoot) {
+                RadarArtworkRoute(visit,radarArtworkRoot)
+            }
+        }
     } else null
     BackHandler(state.canBack&&state.inspected==null&&entityDetails==null&&radarDetails==null) {view?.let(repository::back)}
-    BackHandler(showRadarCollection&&radarDetails==null) {radarCollection=false}
+    BackHandler(showRadarCollection&&radarDetails==null) {changeRadarCollection(false)}
     BackHandler(queryFocused&&state.inspected==null&&entityDetails==null&&radarDetails==null) {focus.clearFocus()}
     Column(Modifier.fillMaxSize()) {
         MainPageHeader(if(showRadarCollection)"New releases" else "Discover",navigation=if(showRadarCollection) ({
-            SoundQIconButton(SoundQIcon.Back,"Back to Discover",{radarCollection=false},Modifier.heightIn(min=56.dp),outlined=false)
+            SoundQIconButton(SoundQIcon.Back,"Back to Discover",{changeRadarCollection(false)},Modifier.heightIn(min=56.dp),outlined=false)
         }) else if(state.canBack) ({
             SoundQIconButton(SoundQIcon.Back,"Back to previous search",{view?.let(repository::back)},Modifier.heightIn(min=56.dp),outlined=false)
         }) else null) {
@@ -185,7 +203,7 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
         if(state.draft.text.isBlank()) {
             if(!showRadarCollection)discoverHeader {Text("New releases",style=SoundQ.typography.title,modifier=Modifier
                 .fillMaxWidth().heightIn(min=48.dp).clickable(enabled=visibleRadarPage!=null&&!radar.stale&&radar.phase==RadarPhase.Ready) {
-                    focus.clearFocus();radarCollection=true
+                    changeRadarCollection(true);focus.clearFocus()
                 }.semantics {heading()})}
             when(radar.phase) {
                 RadarPhase.Held->discoverHeader {Text("Search music",style=SoundQ.typography.body)}
@@ -199,13 +217,13 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
                 if(page.coverage.providerStatus in setOf("unavailable","timeout"))discoverHeader {SoundQFeedback("Could not update new releases",FeedbackKind.Error)}
                 if(page.songs.isEmpty()&&radar.phase==RadarPhase.Ready)discoverHeader {SoundQFeedback(radarEmptyMessage(page.coverage),FeedbackKind.Empty)}
                 items(page.songs.take(if(showRadarCollection)20 else 5),key={"radar:${it.recording.value}"}) {song->
-                    val open:()->Unit={view?.let {route->if(repository.radarCurrent(route,page,song,draft))radarDetails=Triple(page,song,draft)}}
+                    val open:()->Unit={view?.let {route->if(radarDetails==null&&repository.radarCurrent(route,page,song,draft)&&radarSurfaceOwner?.current()==true)changeRadarDetails(Triple(page,song,draft))}}
                     SoundQMediaRow(song.title,song.artist,false,open,open,
-                        artwork={if(view!=null&&radarSurfaceOwner!=null)RadarArtwork(model.graph.mediaClient,repository,view,page,song,draft,radarSurfaceOwner)},
+                        artwork={if(view!=null&&radarSurfaceOwner!=null)RadarArtwork(model.graph.mediaClient,repository,view,page,song,draft,radarSurfaceOwner,fullList=fullRadarScroll.takeIf {showRadarCollection})},
                         supporting="First released · ${song.firstRelease.raw}",enabled=view!=null&&!radar.stale&&radar.phase==RadarPhase.Ready)
                 }
                 if(!showRadarCollection&&page.songs.isNotEmpty())item {
-                    SoundQListActionRow("View all",{focus.clearFocus();radarCollection=true},enabled=view!=null&&!radar.stale&&radar.phase==RadarPhase.Ready,description="View all New releases")
+                    SoundQListActionRow("View all",{changeRadarCollection(true);focus.clearFocus()},enabled=view!=null&&!radar.stale&&radar.phase==RadarPhase.Ready,description="View all New releases")
                 }
             }
         }
@@ -279,15 +297,21 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
             if(!row.downloadable)SoundQFeedback("Source unavailable for import",FeedbackKind.Notice)
         }
     }
-    radarDetails?.takeIf {(page,song,draft)->view?.let {repository.radarCurrent(it,page,song,draft)}==true}?.let {(page,song,draft)->SoundQSheet("Song evidence",{radarDetails=null}) {
-        Text(song.title,style=SoundQ.typography.title)
-        Text(song.artist)
-        Text("First released · ${song.firstRelease.raw} (${song.firstRelease.precision})")
-        Text("Recording MusicBrainz ID: ${song.recording.value}",style=SoundQ.typography.mono)
-        Text("Credited listened-to artist IDs: ${song.creditedSeeds.joinToString {it.value}}",style=SoundQ.typography.mono)
-        Text("Source search is not proof of a recording match. Inspect the source before importing.",style=SoundQ.typography.caption)
-        SoundQButton("Find sources",{view?.let {model.findReleaseSources(it,page,song,draft)}},enabled=!radar.finding&&view?.let {repository.radarCurrent(it,page,song,draft)}==true)
-        if(radar.finding)SoundQFeedback("Checking library",FeedbackKind.Loading)
-        radar.error?.let {SoundQFeedback("Could not check library",FeedbackKind.Error)}
-    }}
+    radarDetails?.takeIf {(page,song,draft)->view?.let {repository.radarCurrent(it,page,song,draft)}==true}?.let {evidence->
+        val (page,song,draft)=evidence
+        // An equal-song reopen must not reuse a modal's asynchronous hide coroutine.
+        key(radarSurfaceVisit) {
+            SoundQSheet("Song evidence",{if(radarDetails===evidence)changeRadarDetails(null)}) {
+                Text(song.title,style=SoundQ.typography.title)
+                Text(song.artist)
+                Text("First released · ${song.firstRelease.raw} (${song.firstRelease.precision})")
+                Text("Recording MusicBrainz ID: ${song.recording.value}",style=SoundQ.typography.mono)
+                Text("Credited listened-to artist IDs: ${song.creditedSeeds.joinToString {it.value}}",style=SoundQ.typography.mono)
+                Text("Source search is not proof of a recording match. Inspect the source before importing.",style=SoundQ.typography.caption)
+                SoundQButton("Find sources",{if(radarDetails===evidence)view?.let {model.findReleaseSources(it,page,song,draft)}},enabled=!radar.finding&&view?.let {repository.radarCurrent(it,page,song,draft)}==true)
+                if(radar.finding)SoundQFeedback("Checking library",FeedbackKind.Loading)
+                radar.error?.let {SoundQFeedback("Could not check library",FeedbackKind.Error)}
+            }
+        }
+    }
 }

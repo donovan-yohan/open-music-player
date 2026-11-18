@@ -7,12 +7,13 @@ import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.awt.image.BufferedImage
 import javax.imageio.ImageIO
 
 /** Host-only ImageIO/Bitmap facade test. Native BitmapFactory/paint is a separate instrumentation source. */
 class RadarArtworkPoolTest {
- private fun png():ByteArray=ByteArrayOutputStream().also {ImageIO.write(BufferedImage(247,250,BufferedImage.TYPE_INT_RGB),"png",it)}.toByteArray()
+ private fun png(width:Int=247,height:Int=250):ByteArray=ByteArrayOutputStream().also {ImageIO.write(BufferedImage(width,height,BufferedImage.TYPE_INT_RGB),"png",it)}.toByteArray()
  private fun settle(pool:RadarArtworkPool) {val end=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);while(pool.resources()[1]!=0&&System.nanoTime()<end)Thread.sleep(2);assertEquals(0,pool.resources()[1])}
  @Test fun identicalRefsCoalesceAndRetiredSubscriberDoesNotCancelPeer() {
   CaaTlsFixture().use {f->
@@ -94,11 +95,42 @@ class RadarArtworkPoolTest {
    assertEquals(22,f.server.requestCount)
   }
   CaaTlsFixture().use {f->
-   val entered=CountDownLatch(3);val release=CountDownLatch(1)
-   f.server.dispatcher=object:mockwebserver3.Dispatcher(){override fun dispatch(request:mockwebserver3.RecordedRequest):mockwebserver3.MockResponse{return mockwebserver3.MockResponse.Builder().body(okio.Buffer().write(png())).build()}}
-   val pool=RadarArtworkPool(decode={data->entered.countDown();check(release.await(5,TimeUnit.SECONDS));decodeArtwork(data,192)},reader={f.read(it)})
-   val leases=(1..4).map {n->pool.open(f.client,com.soundq.android.data.discovery.CaaArtworkRef.Group(com.soundq.android.data.catalog.ReleaseGroupMbid("%08x-1111-4111-8111-111111111111".format(n)))){true}}
-   try {leases.forEach {it.start()};assertTrue(entered.await(3,TimeUnit.SECONDS));assertEquals(3,f.server.requestCount);assertEquals(4,pool.resources()[1]);leases.take(3).forEach {it.close()};assertEquals(4,pool.resources()[1]);release.countDown();settle(pool);assertNotNull(leases.last().bitmap());assertEquals(4,f.server.requestCount)}finally {release.countDown();leases.forEach {it.close()};settle(pool)}
+   val refs=(1..4).associateWith {n->"%08x-1111-4111-8111-111111111111".format(n)}
+   val releases=refs.mapValues {CountDownLatch(1)}
+   val entrants=LinkedBlockingQueue<Int>()
+   val transfers=CopyOnWriteArrayList<Int>()
+   val inDecode=AtomicInteger();val peak=AtomicInteger()
+   f.server.dispatcher=object:mockwebserver3.Dispatcher() {
+    override fun dispatch(request:mockwebserver3.RecordedRequest):mockwebserver3.MockResponse {
+     val n=refs.entries.single {request.url.encodedPath=="/release-group/${it.value}/front-250"}.key
+     transfers+=n
+     return mockwebserver3.MockResponse.Builder().body(okio.Buffer().write(png(32+n,32))).build()
+    }
+   }
+   val pool=RadarArtworkPool(decode={data->
+    val pixels=checkNotNull(decodeArtwork(data,192));val n=pixels.width-32
+    val active=inDecode.incrementAndGet();peak.updateAndGet {maxOf(it,active)}
+    try {entrants.add(n);check(releases.getValue(n).await(5,TimeUnit.SECONDS));pixels}finally {inDecode.decrementAndGet()}
+   },reader={f.read(it)})
+   val leases=refs.mapValues {(_,id)->pool.open(f.client,com.soundq.android.data.discovery.CaaArtworkRef.Group(com.soundq.android.data.catalog.ReleaseGroupMbid(id))){true}}
+   try {
+    leases.values.forEach {it.start()}
+    val holders=List(3){checkNotNull(entrants.poll(3,TimeUnit.SECONDS))}.toSet()
+    assertEquals(3,holders.size);assertEquals(3,inDecode.get());assertEquals(0,discoveryArtworkWorkers.availablePermits)
+    assertEquals(3,f.server.requestCount);assertEquals(holders,transfers.toSet());assertEquals(4,pool.resources()[1])
+    holders.forEach {leases.getValue(it).close()}
+    assertEquals("canceled decode holders remain charged until exit",4,pool.resources()[1]);assertEquals(0,discoveryArtworkWorkers.availablePermits)
+    val survivor=(refs.keys-holders).single()
+    // Let precisely one actual holder exit. The admitted fourth job can acquire its permit.
+    releases.getValue(holders.first()).countDown()
+    assertEquals(survivor,entrants.poll(3,TimeUnit.SECONDS))
+    assertEquals(3,inDecode.get());assertEquals(0,discoveryArtworkWorkers.availablePermits)
+    releases.values.forEach {it.countDown()};settle(pool)
+    assertEquals("actual client decode peak",3,peak.get())
+    assertEquals("four cumulative distinct transfers",refs.keys.sorted(),transfers.sorted());assertEquals(4,f.server.requestCount)
+    assertEquals(32+survivor,leases.getValue(survivor).bitmap()?.width)
+    holders.forEach {assertNull(leases.getValue(it).bitmap())};assertEquals(1,pool.resources()[2])
+   }finally {releases.values.forEach {it.countDown()};leases.values.forEach {it.close()};settle(pool)}
   }
  }
  @Test fun boundsPrecedePixelAllocationAndOddDimensionsStayWithin192() {

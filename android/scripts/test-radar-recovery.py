@@ -74,17 +74,19 @@ app = source('SoundQApplication.kt')
 callback = block(app, 'libraryOwnershipReadback=').split('=', 1)[1]
 screen = source('product/discovery/DiscoverScreen.kt')
 start = screen.index('    // A normal route visit,')
-end = screen.index('    LaunchedEffect(view,state.draft,radar.page,radar.stale)')
+end = screen.index('    LaunchedEffect(view,state.draft,radar.page,radar.stale,radar.phase)')
 # This span includes the actual observer, acknowledgement and effect key expressions.
 emit('Bindings.kt', '''package bindings
 import androidx.lifecycle.*
 import com.soundq.android.data.discovery.*
 import com.soundq.android.product.*
+private class RadarArtworkRoute {fun retire(){}}
 fun bind(model:ProductViewModel,view:DiscoveryView?,catalogDetails:Any?=null,radarVisible:()->Boolean={true}) {
  val repository=model.graph.discovery
  val state=repository.state.value
  val radar=repository.radar.value
- var radarDetails:Any?=null
+ var radarDetails:Triple<RadarPage,RadarSong,DiscoveryDraft>?=null
+ var radarCollection=false
 ''' + screen[start:end] + '\n}\n')
 emit('Effects.kt', '''package bindings
 import kotlin.reflect.KProperty
@@ -97,9 +99,9 @@ object Slots {
  val effects=mutableMapOf<Int,Pair<List<Any?>,()->Unit>>()
  fun reset(){effects.values.toList().forEach {it.second()};effects.clear();memory.clear();index=0}
 }
-fun remember(vararg keys:Any?,block:()->Box<Boolean>):Box<Boolean> {
+fun <T> remember(vararg keys:Any?,block:()->Box<T>):Box<T> {
  val i=Slots.index++;val old=Slots.memory[i]
- if(old!=null&&old.first==keys.toList()){@Suppress("UNCHECKED_CAST") return old.second as Box<Boolean>}
+ if(old!=null&&old.first==keys.toList()){@Suppress("UNCHECKED_CAST") return old.second as Box<T>}
  return block().also {Slots.memory[i]=keys.toList() to it}
 }
 class Dispose {var cleanup:()->Unit={};fun onDispose(block:()->Unit){cleanup=block}}

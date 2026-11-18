@@ -30,6 +30,7 @@ import com.soundq.designsystem.*
 import com.soundq.android.data.home.*
 import com.soundq.android.product.home.*
 import com.soundq.android.data.imports.ImportView
+import com.soundq.android.product.discovery.RadarArtworkRoute
 import com.soundq.android.product.imports.ImportsScreen
 import com.soundq.android.product.imports.ImportProgressLifecycle
 import com.soundq.android.product.imports.ImportProgressStrip
@@ -123,9 +124,18 @@ import com.soundq.android.product.preferences.*
     val catalogActions=if(destination=="Catalog" && importView==null && auth is AuthState.SignedIn) remember(model,accountVersion){model.catalogActions()} else null
     DisposableEffect(catalogActions){onDispose {catalogActions?.close()}}
     var discoveryVisit by remember {mutableStateOf(0L)}
+    // A panel can open and close before the Discover composition observes it.
+    var radarArtworkRoot by remember {mutableStateOf(RadarArtworkRoute())}
+    fun retireRadarArtwork() {
+        if(destination!="Discover")return
+        radarArtworkRoot.retire()
+        radarArtworkRoot=RadarArtworkRoute()
+    }
+    DisposableEffect(Unit) {onDispose {radarArtworkRoot.retire()}}
     val discoveryView=if(destination=="Discover" && importView==null && auth is AuthState.SignedIn) remember(model,accountVersion,discoveryVisit){model.graph.discovery.open()} else null
     val discoveryIntake=if(discoveryView!=null) remember(model,accountVersion,discoveryVisit){model.graph.imports.open()} else null
     fun leaveDiscovery() {
+        retireRadarArtwork()
         discoveryView?.let(model.graph.discovery::close)
         discoveryIntake?.let(model.graph.imports::close)
         discoveryVisit++
@@ -208,6 +218,7 @@ import com.soundq.android.product.preferences.*
         onDispose {currentRowLifetime.close();revealOwner.close();rowLifecycle.removeObserver(observer)}
     }
     fun openSettings(routes:List<SettingsRoute> = listOf(SettingsRoute.Root)) {
+        retireRadarArtwork()
         if(settingsRoutes.isEmpty()){settingsOrigin=destination;SettingsRoute.entries.forEach {settingsPages.removeState(it.name)};settingsMemory.reset()}
         settingsReturn=null;panel=null;settingsRoutes=routes.encode()
     }
@@ -328,7 +339,7 @@ import com.soundq.android.product.preferences.*
                     incomingShare?.takeIf {it.account==null||it.account==(auth as? AuthState.SignedIn)?.accountId}?.let {
                         Row(Modifier.fillMaxWidth().heightIn(min=48.dp).padding(start=SoundQ.spacing.gutter),verticalAlignment=Alignment.CenterVertically) {
                             Text(if(auth is AuthState.SignedIn)"Shared link ready" else "Shared music link retained. Sign in, then confirm the import.",Modifier.weight(1f),style=SoundQ.typography.caption)
-                            LibraryIconCell(SoundQIcon.Info,"Review shared link",{if(auth is AuthState.SignedIn)panel="SharedLink" else openAccount()})
+                            LibraryIconCell(SoundQIcon.Info,"Review shared link",{if(auth is AuthState.SignedIn){retireRadarArtwork();panel="SharedLink"}else openAccount()})
                         }
                         SoundQDivider()
                     }
@@ -362,7 +373,7 @@ import com.soundq.android.product.preferences.*
                         val scope=remember(accountVersion){model.graph.session.capture()}
                         scope?.let {com.soundq.android.product.offline.DownloadsScreen(model,downloads,it,{if(!returnToSettings())navigate("Library")})}
                     } else if(destination=="Discover") Box(Modifier.weight(1f).fillMaxWidth()) {
-                        com.soundq.android.product.discovery.DiscoverScreen(model,discoveryView,discoveryIntake,{openImports()},{openSettings()},{navigate("Acquisition")},radarVisible={destination=="Discover"&&importView==null&&panel==null&&picker==null&&detailsRoute==null&&settingsRoutes.isEmpty()&&!gallery})
+                        com.soundq.android.product.discovery.DiscoverScreen(model,discoveryView,discoveryIntake,{openImports()},{openSettings()},{navigate("Acquisition")},radarArtworkRoot=radarArtworkRoot,radarVisible={destination=="Discover"&&importView==null&&panel==null&&picker==null&&detailsRoute==null&&settingsRoutes.isEmpty()&&!gallery})
                         com.soundq.android.product.imports.SourceImportOptions(model,discoveryIntake)
                     } else if(destination in listOf("Home","History")) Box(Modifier.weight(1f).fillMaxWidth()) {
                         HomeDestinationScreen(model,route,{navigate("Library")},{openSettings()},revealOwner,onHistory={navigate("History")})
@@ -464,7 +475,7 @@ import com.soundq.android.product.preferences.*
                         }
                     }
                     ImportProgressStrip(model,::openImports)
-                    SoundQCompactPlayer(playback.title ?: "Nothing playing",playback.artist,playback.isPlaying,playback.canPlay,playback.preparing,{transportReturn=null;panel="Player"},model.controller::toggle,{transportReturn=null;panel="Queue"},
+                    SoundQCompactPlayer(playback.title ?: "Nothing playing",playback.artist,playback.isPlaying,playback.canPlay,playback.preparing,{retireRadarArtwork();transportReturn=null;panel="Player"},model.controller::toggle,{retireRadarArtwork();transportReturn=null;panel="Queue"},
                         timing=compactSongTiming(playback),artwork={com.soundq.android.product.artwork.PlayerArtwork(model.graph,playback,72.dp,{compactEntry.get()})},
                         swipe=run {
                             val version=model.graph.session.version()

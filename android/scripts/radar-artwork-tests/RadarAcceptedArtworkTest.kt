@@ -49,7 +49,7 @@ class RadarAcceptedArtworkTest {
    val session=AccountSession(metadata.endpoint,store).apply {accept(beginIntent(),SecretTokens("a","r","A"))}
    val repo=DiscoveryRepository(session,SoundQApi(session,metadata.client),radarAdmitted=true);val view=repo.open()!!;repo.showRadar(view){true}
    metadata.reply(wire());repo.loadRadar(repo.claimRadar(view)!!);val page=repo.radar.value.page!!;val song=page.songs.single();val draft=repo.state.value.draft
-   val pool=RadarArtworkPool(reader={art.read(it)});var surface:Any=Any()
+   val pool=RadarArtworkPool(reader={art.read(it)});var surface=RadarArtworkRoute()
    val host=androidx.compose.runtime.HostComposition
    androidx.lifecycle.compose.LocalLifecycleOwner.current=androidx.lifecycle.LifecycleOwner()
    val lifecycle=androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
@@ -58,7 +58,7 @@ class RadarAcceptedArtworkTest {
    try {
     render();settle(pool);val old=com.soundq.android.product.artwork.PaintBinding.bitmap;assertNotNull(old())
     render();assertNotNull(old());assertEquals(1,art.server.requestCount)
-    surface=Any();render();val replacement=com.soundq.android.product.artwork.PaintBinding.bitmap;assertNull(old());assertNotNull(replacement())
+    surface=RadarArtworkRoute();render();val replacement=com.soundq.android.product.artwork.PaintBinding.bitmap;assertNull(old());assertNotNull(replacement())
     lifecycle.dispatch(androidx.lifecycle.Lifecycle.State.STARTED);assertNull(replacement())
     lifecycle.dispatch(androidx.lifecycle.Lifecycle.State.RESUMED);assertNull(replacement());render();settle(pool)
     val resumed=com.soundq.android.product.artwork.PaintBinding.bitmap;assertNotNull(resumed());assertNull(old());assertNull(replacement())
