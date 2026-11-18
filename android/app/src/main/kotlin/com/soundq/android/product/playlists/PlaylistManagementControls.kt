@@ -10,6 +10,7 @@ import com.soundq.android.data.MutationOutcome
 import com.soundq.android.data.TrackId
 import com.soundq.android.data.playlists.*
 import com.soundq.designsystem.*
+import com.soundq.android.product.SongActionRow
 
 /** Feature composition of canonical typed visual primitives; callbacks carry captured authority. */
 @Composable fun PlaylistManagementFeedback(state: PlaylistManagementState, actions: PlaylistManagementActions) {
@@ -42,10 +43,12 @@ import com.soundq.designsystem.*
 }
 
 @Composable fun PlaylistManagementMenu(target: PlaylistManagementTarget, actions: PlaylistManagementActions, onDismiss: () -> Unit, onRename: () -> Unit, onDelete: (PlaylistDeleteConfirmation) -> Unit, onSelect: () -> Unit = {}) {
-    SoundQSheet("Playlist actions",onDismiss) {
-        SoundQRow("Rename playlist",target.playlist.name,false,onRename,leading={SoundQIcon(SoundQIcon.Info,null)})
-        SoundQRow("Select tracks","Remove multiple playlist members",false,onSelect,leading={SoundQIcon(SoundQIcon.List,null)})
-        SoundQRow("Delete playlist","Music stays in your Library",false,{actions.askDelete(target)?.let(onDelete)},leading={SoundQIcon(SoundQIcon.Trash,null)})
+    val enabled=actions.capture()?.detail===target.detail
+    SoundQSheet("Playlist actions",onDismiss,presentation=SoundQSheetPresentation.Actions) {
+        val row=Modifier.mediaRowBottomRule()
+        SongActionRow("Rename playlist",onRename,SoundQIcon.Info,value=target.playlist.name,opensDestination=true,enabled=enabled,modifier=row,horizontalPadding=SoundQ.spacing.gutter)
+        SongActionRow("Select tracks",onSelect,SoundQIcon.List,value="Remove multiple playlist members",opensDestination=true,enabled=enabled,modifier=row,horizontalPadding=SoundQ.spacing.gutter)
+        SongActionRow("Delete playlist",{actions.askDelete(target)?.let(onDelete)},SoundQIcon.Trash,value="Music stays in your Library",enabled=enabled,destructive=true,modifier=row,horizontalPadding=SoundQ.spacing.gutter)
     }
 }
 @Composable fun PlaylistMemberMenu(target: PlaylistManagementTarget, track: TrackId, title: String, actions: PlaylistManagementActions, onDismiss: () -> Unit) {
