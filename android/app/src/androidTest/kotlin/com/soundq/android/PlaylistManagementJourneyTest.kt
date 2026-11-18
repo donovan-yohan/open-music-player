@@ -87,7 +87,7 @@ class PlaylistManagementJourneyTest {
             compose.waitUntil(10000){app.graph.playlists.state.value.rows.size==1}
             compose.onNode(hasText("Night route") and hasClickAction()).performScrollTo().performClick()
             compose.waitUntil(10000){app.graph.playlistDetail.state.value.detail!=null}
-            compose.onNodeWithContentDescription("Playlist actions").performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Playlist actions").assertIsDisplayed().performClick()
             compose.onNode(hasText("Rename playlist") and hasClickAction()).performClick()
             compose.onNodeWithContentDescription("Playlist name").performTextReplacement("海辺 — renamed")
             compose.onNodeWithText("Save changes").performScrollTo().performClick()
@@ -107,11 +107,11 @@ class PlaylistManagementJourneyTest {
                 compose.onNodeWithText("Undo removal").performScrollTo().performClick()
                 compose.waitUntil(10000){app.graph.playlistManagement.state.value.undo==null&&app.graph.playlistManagement.state.value.outcome==MutationOutcome.Confirmed}
                 assertEquals(listOf(2L,1L),app.graph.playlistDetail.state.value.detail!!.tracks.map {it.id.value})
-                compose.onNodeWithContentDescription("Playlist actions").performScrollTo().performClick()
+                compose.onNodeWithContentDescription("Playlist actions").assertIsDisplayed().performClick()
                 compose.onNode(hasText("Delete playlist") and hasClickAction()).performClick()
                 compose.onNodeWithText("Cancel").performScrollTo().performClick()
                 assertEquals(0,calls.count {it.startsWith("DELETE")})
-                compose.onNodeWithContentDescription("Playlist actions").performScrollTo().performClick()
+                compose.onNodeWithContentDescription("Playlist actions").assertIsDisplayed().performClick()
                 compose.onNode(hasText("Delete playlist") and hasClickAction()).performClick()
                 compose.onNode(hasText("Delete playlist") and hasClickAction()).performScrollTo().performClick()
                 compose.waitUntil(10000){app.graph.playlistDetail.state.value.id==null&&app.graph.playlistManagement.state.value.missing}

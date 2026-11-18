@@ -11,6 +11,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import com.soundq.android.playback.PlaybackRef
 import com.soundq.android.playback.SongSpeedState
 import com.soundq.designsystem.*
@@ -20,12 +21,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 @Composable internal fun SongActionRow(
     label: String, onClick: () -> Unit, icon: SoundQIcon? = null, value: String? = null,
     opensDestination: Boolean = false, enabled: Boolean = true, destructive: Boolean = false,
+    modifier: Modifier = Modifier,
+    horizontalPadding: Dp = 0.dp,
 ) {
     val ink = if (!enabled) SoundQ.colors.disabled else if (destructive) SoundQ.colors.error else SoundQ.colors.text
-    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
+    Row(modifier.fillMaxWidth().heightIn(min = 56.dp)
         .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
         .semantics(mergeDescendants = true) { value?.let { stateDescription = it } }
-        .padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically,
+        .padding(horizontal = horizontalPadding, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) { icon?.let { SoundQIcon(it, null, tint = ink) } }
         Column(Modifier.weight(1f)) {

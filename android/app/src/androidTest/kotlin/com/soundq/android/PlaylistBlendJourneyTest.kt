@@ -59,7 +59,7 @@ class PlaylistBlendJourneyTest {
             compose.onNode(hasText("Night route") and hasClickAction()).performScrollTo().performClick()
             compose.waitUntil(10000){app.graph.playlistBlend.capture()!=null}
             val before=model.playback.value
-            compose.onNodeWithContentDescription("Mixed listening").performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Mixed listening").assertIsDisplayed().performClick()
             compose.waitUntil(10000){app.graph.playlistBlend.state.value.status==com.soundq.android.data.playlists.BlendStatus.Ready}
             assertEquals(before.source,model.playback.value.source);assertEquals(before.queue,model.playback.value.queue)
             assertEquals(listOf("POST /api/v1/playlists/41/auto-mix","GET /api/v1/mix-plans/$id"),requests.toList())
@@ -70,7 +70,7 @@ class PlaylistBlendJourneyTest {
             compose.runOnIdle {model.controller.pause();model.controller.seek(11000)}
             compose.waitUntil(10000){!model.playback.value.isPlaying && model.playback.value.positionMs in 10950..11050}
             val accepted=model.playback.value
-            compose.onNodeWithContentDescription("Plain listening").performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Plain listening").assertIsDisplayed().performClick()
             compose.waitUntil(5000){!app.graph.playlistBlend.state.value.enabled}
             assertEquals(accepted.source,model.playback.value.source);assertEquals(accepted.selectedOccurrence,model.playback.value.selectedOccurrence)
             assertEquals(1,requests.count {it.startsWith("POST")})
