@@ -164,6 +164,13 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 			return nil, err
 		}
 		targetPlaylistID = req.PlaylistID
+		if repo, ok := s.store.(*ImportRepository); ok {
+			release, e := repo.guardSourceImport(ctx, *targetPlaylistID)
+			if e != nil {
+				return nil, e
+			}
+			defer release()
+		}
 	}
 
 	var metadata PlaylistMetadata
@@ -201,10 +208,20 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 		targetPlaylistID = &playlistID
 	}
 	playlistID := *targetPlaylistID
+	if created {
+		if repo, ok := s.store.(*ImportRepository); ok {
+			release, e := repo.guardSourceImport(ctx, playlistID)
+			if e != nil {
+				return nil, e
+			}
+			defer release()
+		}
+	}
 
 	var binding *db.PlaylistSourceBinding
 	if snapshot != nil {
 		binding = resolvedBinding(userID, playlistID, *snapshot)
+		binding.SnapshotFingerprint = sql.NullString{}
 		if err := s.bindings.UpsertBinding(ctx, binding); err != nil {
 			if created {
 				s.discardPlaylist(ctx, playlistID)
@@ -318,78 +335,11 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 		return nil, ErrNoImportableItem
 	}
 
-	for i := range items {
-		item := &items[i]
-		if item.Status == ItemStatusFailed || item.Status == ItemStatusSkippedDuplicate {
-			continue
-		}
-		candidate := playlistCandidate(*item, s.sourceType)
-		if s.selections == nil || s.ingestion == nil {
-			msg := "trusted source selection processing is disabled"
-			_ = s.store.MarkItemFailed(ctx, item.ID, msg)
-			item.Status = ItemStatusFailed
-			item.Error = sql.NullString{String: msg, Valid: true}
-			continue
-		}
-		decision, err := s.selections.CreateTrustedSourceSelectionDecision(ctx, userID, db.SourceSelectionOriginPlaylistExplicit, trustedPlaylistCandidate(candidate), "server-enumerated explicit playlist entry")
-		if err != nil {
-			_ = s.store.MarkItemFailed(ctx, item.ID, err.Error())
-			item.Status = ItemStatusFailed
-			item.Error = sql.NullString{String: err.Error(), Valid: true}
-			continue
-		}
-		track, err := s.tracks.FindTrackBySource(ctx, s.sourceType, item.SourceID, item.SourceURL)
-		if err == nil && track != nil {
-			if s.library != nil {
-				if _, libErr := s.library.AddTrackToLibrary(ctx, userID, track.ID); libErr != nil && !errors.Is(libErr, db.ErrTrackAlreadyInLibrary) {
-					_ = s.store.MarkItemFailed(ctx, item.ID, libErr.Error())
-					item.Status = ItemStatusFailed
-					item.Error = sql.NullString{String: libErr.Error(), Valid: true}
-					continue
-				}
-			}
-			if err := s.selections.AttachTrackForUser(ctx, userID, decision.ID, track.ID); err != nil {
-				_ = s.store.MarkItemFailed(ctx, item.ID, err.Error())
-				item.Status = ItemStatusFailed
-				item.Error = sql.NullString{String: err.Error(), Valid: true}
-				continue
-			}
-			if err := s.playlists.AddTrackAtPosition(ctx, playlistID, track.ID, item.PlaylistPosition); err != nil && !errors.Is(err, db.ErrTrackAlreadyInPlaylist) {
-				_ = s.store.MarkItemFailed(ctx, item.ID, err.Error())
-				item.Status = ItemStatusFailed
-				item.Error = sql.NullString{String: err.Error(), Valid: true}
-				continue
-			}
-			_ = s.store.MarkItemImported(ctx, item.ID, track.ID)
-			item.Status = ItemStatusImported
-			item.TrackID = sql.NullInt64{Int64: track.ID, Valid: true}
-			continue
-		}
-		if s.downloader == nil {
-			msg := "download processing is disabled"
-			_ = s.store.MarkItemFailed(ctx, item.ID, msg)
-			item.Status = ItemStatusFailed
-			item.Error = sql.NullString{String: msg, Valid: true}
-			continue
-		}
-		persisted, err := s.ingestion.CreateDownloadForDecision(ctx, userID, decision, candidate)
-		var queued *download.DownloadJob
-		if err == nil {
-			queued, err = s.ingestion.EnqueueTrustedPlaylistDownload(ctx, persisted, s.downloader, job.ID.String(), item.ID, playlistID, item.PlaylistPosition)
-		}
-		if err != nil {
-			_ = s.store.MarkItemFailed(ctx, item.ID, err.Error())
-			item.Status = ItemStatusFailed
-			item.Error = sql.NullString{String: err.Error(), Valid: true}
-			continue
-		}
-		if err := s.markItemQueued(ctx, item.ID, queued.ID); err != nil {
-			return nil, fmt.Errorf("mark playlist import item queued: %w", err)
-		}
-		item.Status = ItemStatusQueued
-		item.DownloadJobID = sql.NullString{String: queued.ID, Valid: true}
+	if err := s.acquireItems(ctx, userID, playlistID, job, items); err != nil {
+		return nil, err
 	}
 	if snapshot != nil {
+		binding.SnapshotFingerprint = sql.NullString{String: snapshotFingerprint(*snapshot), Valid: true}
 		if err := s.bindings.ApplyResolvedMapping(ctx, binding, resolvedMappings(*snapshot, items)); err != nil {
 			return nil, fmt.Errorf("apply playlist source mapping: %w", err)
 		}
@@ -509,6 +459,7 @@ func snapshotFingerprint(snapshot playlistsync.Snapshot) string {
 	for _, entry := range snapshot.Entries {
 		writeFingerprintPart(digest, entry.StableID)
 		writeFingerprintPart(digest, entry.SourceURL)
+		writeFingerprintPart(digest, fmt.Sprint(entry.Metadata.Unavailable))
 	}
 	return hex.EncodeToString(digest.Sum(nil))
 }

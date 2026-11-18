@@ -331,6 +331,15 @@ func (r *PlaylistRepository) Delete(ctx context.Context, id int64) error {
 // position. Existing playlist membership is left intact so duplicate playlist
 // imports do not reshuffle user-curated tracks.
 func (r *PlaylistRepository) AddTrackAtPosition(ctx context.Context, playlistID, trackID int64, position int) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = lockPlaylistMutation(ctx, tx, playlistID); err != nil {
+		return err
+	}
+
 	if position < 0 {
 		position = 0
 	}
@@ -339,7 +348,7 @@ func (r *PlaylistRepository) AddTrackAtPosition(ctx context.Context, playlistID,
 		VALUES ($1, $2, $3)
 		ON CONFLICT (playlist_id, track_id) DO NOTHING
 	`
-	result, err := r.db.ExecContext(ctx, query, playlistID, trackID, position)
+	result, err := tx.ExecContext(ctx, query, playlistID, trackID, position)
 	if err != nil {
 		// The only referenced rows here are the playlist and the track the caller
 		// just resolved, so a violated reference means the playlist was deleted
@@ -356,8 +365,11 @@ func (r *PlaylistRepository) AddTrackAtPosition(ctx context.Context, playlistID,
 	if rows == 0 {
 		return ErrTrackAlreadyInPlaylist
 	}
-	_, err = r.db.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID)
-	return err
+	_, err = tx.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // AddTracksResult reports which track IDs were newly appended to the playlist
@@ -384,6 +396,9 @@ func (r *PlaylistRepository) AddTracks(ctx context.Context, playlistID int64, tr
 		return result, err
 	}
 	defer tx.Rollback()
+	if err = lockPlaylistMutation(ctx, tx, playlistID); err != nil {
+		return result, err
+	}
 
 	// Get the next position
 	var maxPosition sql.NullInt32
@@ -462,6 +477,9 @@ func (r *PlaylistRepository) RemoveTracks(ctx context.Context, playlistID int64,
 		return err
 	}
 	defer tx.Rollback()
+	if err = lockPlaylistMutation(ctx, tx, playlistID); err != nil {
+		return err
+	}
 
 	deleteQuery := `DELETE FROM playlist_tracks WHERE playlist_id = $1 AND track_id = ANY($2)`
 	if _, err := tx.ExecContext(ctx, deleteQuery, playlistID, pq.Array(trackIDs)); err != nil {
@@ -496,10 +514,19 @@ func (r *PlaylistRepository) RemoveTracks(ctx context.Context, playlistID int64,
 
 // RemoveTrack removes a track from a playlist and reorders remaining tracks.
 func (r *PlaylistRepository) RemoveTrack(ctx context.Context, playlistID, trackID int64) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = lockPlaylistMutation(ctx, tx, playlistID); err != nil {
+		return err
+	}
+
 	// Get the position of the track being removed
 	var position int
 	posQuery := `SELECT position FROM playlist_tracks WHERE playlist_id = $1 AND track_id = $2`
-	err := r.db.QueryRowContext(ctx, posQuery, playlistID, trackID).Scan(&position)
+	err = tx.QueryRowContext(ctx, posQuery, playlistID, trackID).Scan(&position)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrTrackNotInPlaylist
@@ -509,7 +536,7 @@ func (r *PlaylistRepository) RemoveTrack(ctx context.Context, playlistID, trackI
 
 	// Delete the track
 	deleteQuery := `DELETE FROM playlist_tracks WHERE playlist_id = $1 AND track_id = $2`
-	_, err = r.db.ExecContext(ctx, deleteQuery, playlistID, trackID)
+	_, err = tx.ExecContext(ctx, deleteQuery, playlistID, trackID)
 	if err != nil {
 		return err
 	}
@@ -520,22 +547,34 @@ func (r *PlaylistRepository) RemoveTrack(ctx context.Context, playlistID, trackI
 		SET position = position - 1
 		WHERE playlist_id = $1 AND position > $2
 	`
-	_, err = r.db.ExecContext(ctx, reorderQuery, playlistID, position)
+	_, err = tx.ExecContext(ctx, reorderQuery, playlistID, position)
 	if err != nil {
 		return err
 	}
 
 	// Update playlist's updated_at
-	_, err = r.db.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID)
-	return err
+	_, err = tx.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ReorderTrack moves a track to a new position within the playlist.
 func (r *PlaylistRepository) ReorderTrack(ctx context.Context, playlistID, trackID int64, newPosition int) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = lockPlaylistMutation(ctx, tx, playlistID); err != nil {
+		return err
+	}
+
 	// Get the current position
 	var currentPosition int
 	posQuery := `SELECT position FROM playlist_tracks WHERE playlist_id = $1 AND track_id = $2`
-	err := r.db.QueryRowContext(ctx, posQuery, playlistID, trackID).Scan(&currentPosition)
+	err = tx.QueryRowContext(ctx, posQuery, playlistID, trackID).Scan(&currentPosition)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrTrackNotInPlaylist
@@ -550,7 +589,7 @@ func (r *PlaylistRepository) ReorderTrack(ctx context.Context, playlistID, track
 	// Get the max position to validate newPosition
 	var maxPosition int
 	maxQuery := `SELECT COALESCE(MAX(position), 0) FROM playlist_tracks WHERE playlist_id = $1`
-	if err := r.db.QueryRowContext(ctx, maxQuery, playlistID).Scan(&maxPosition); err != nil {
+	if err := tx.QueryRowContext(ctx, maxQuery, playlistID).Scan(&maxPosition); err != nil {
 		return err
 	}
 
@@ -569,7 +608,7 @@ func (r *PlaylistRepository) ReorderTrack(ctx context.Context, playlistID, track
 			SET position = position + 1
 			WHERE playlist_id = $1 AND position >= $2 AND position < $3
 		`
-		_, err = r.db.ExecContext(ctx, shiftQuery, playlistID, newPosition, currentPosition)
+		_, err = tx.ExecContext(ctx, shiftQuery, playlistID, newPosition, currentPosition)
 	} else {
 		// Moving down: shift tracks between currentPosition and newPosition up
 		shiftQuery := `
@@ -577,7 +616,7 @@ func (r *PlaylistRepository) ReorderTrack(ctx context.Context, playlistID, track
 			SET position = position - 1
 			WHERE playlist_id = $1 AND position > $2 AND position <= $3
 		`
-		_, err = r.db.ExecContext(ctx, shiftQuery, playlistID, currentPosition, newPosition)
+		_, err = tx.ExecContext(ctx, shiftQuery, playlistID, currentPosition, newPosition)
 	}
 	if err != nil {
 		return err
@@ -585,14 +624,17 @@ func (r *PlaylistRepository) ReorderTrack(ctx context.Context, playlistID, track
 
 	// Update the track's position
 	updateQuery := `UPDATE playlist_tracks SET position = $1 WHERE playlist_id = $2 AND track_id = $3`
-	_, err = r.db.ExecContext(ctx, updateQuery, newPosition, playlistID, trackID)
+	_, err = tx.ExecContext(ctx, updateQuery, newPosition, playlistID, trackID)
 	if err != nil {
 		return err
 	}
 
 	// Update playlist's updated_at
-	_, err = r.db.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID)
-	return err
+	_, err = tx.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ErrPlaylistOrderMismatch reports that a requested full ordering does not
@@ -602,7 +644,7 @@ var ErrPlaylistOrderMismatch = errors.New("playlist order does not match the pla
 // SetTrackOrder rewrites the playlist's positions to match orderedTrackIDs
 // exactly, in one transaction.
 //
-// ReorderTrack moves a single track and is not transactional, so replaying it
+// ReorderTrack moves a single track in one transaction; replaying it
 // once per track would leave a partially reordered playlist behind any failure
 // — exactly the displayed-order/played-order desync this endpoint exists to
 // prevent. The ordering must be a permutation of the playlist's current track
@@ -617,6 +659,9 @@ func (r *PlaylistRepository) SetTrackOrder(ctx context.Context, playlistID int64
 		return err
 	}
 	defer tx.Rollback()
+	if err = lockPlaylistMutation(ctx, tx, playlistID); err != nil {
+		return err
+	}
 
 	// Lock the playlist's rows for the duration so a concurrent add/remove
 	// cannot slip between the validation and the rewrite.

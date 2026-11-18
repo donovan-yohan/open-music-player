@@ -804,6 +804,47 @@ paths:
   # ============================================================================
   # Playlist Import Endpoints
   # ============================================================================
+  /playlists/{id}/source-sync:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: integer, format: int64, minimum: 1}
+    get:
+      summary: Read owned source-sync eligibility and durable operation status
+      description: Does not enumerate a provider. Without operationId returns the latest explicit operation. Missing or ambiguous legacy evidence requires relinking; this API does not guess a source.
+      parameters:
+        - name: operationId
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Eligibility and optional exact operation receipt
+        '401': {description: Authentication required}
+        '403': {description: Playlist is not owned}
+    post:
+      summary: Admit one recoverable manual source synchronization
+      description: Returns a durable import-job receipt before enumeration. Repeating the same operationId and bindingId returns the same operation. Never enables periodic sync, deletes Library/files, or changes playback. Only complete validated snapshots may change source membership.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [operationId, bindingId]
+              properties:
+                operationId: {type: string, format: uuid}
+                bindingId: {type: integer, format: int64, minimum: 0, description: Zero only for an admitted historical import with no existing binding}
+      responses:
+        '202':
+          description: Same durable operation identity with status, accepted, generation, source-entry added/removed/reordered counts, pending/failed acquisition counts and optional allowlisted errorCode
+        '400': {description: Invalid explicit intent}
+        '401': {description: Authentication required}
+        '403': {description: Playlist is not owned}
+        '409': {description: Conflicting intent, changed source, or relink required}
+
   /playlist-imports:
     post:
       tags:

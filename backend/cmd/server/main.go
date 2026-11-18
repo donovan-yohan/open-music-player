@@ -931,6 +931,7 @@ func runServer() int {
 			SourceBindings: playlistSourceRepo,
 		})
 		playlistImportHandlers = api.NewPlaylistImportHandlers(playlistImportService)
+		go playlistImportService.RunManualSync(ctx)
 
 		queueHandlers = queue.NewHandlersWithPlaylistTargets(queueService, downloadService, analysisRepo, sourceSelectionRepo, database, playlistRepo)
 	}

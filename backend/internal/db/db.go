@@ -481,6 +481,22 @@ func (db *DB) Migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_playlist_import_items_source_entry
 		ON playlist_import_items(playlist_source_entry_id) WHERE playlist_source_entry_id IS NOT NULL;
 
+	-- Source-bound tombstone survives source entry retirement; NULL alone means legacy.
+	ALTER TABLE playlist_import_items ADD COLUMN IF NOT EXISTS source_bound BOOLEAN NOT NULL DEFAULT FALSE;
+	UPDATE playlist_import_items SET source_bound = TRUE WHERE playlist_source_entry_id IS NOT NULL AND NOT source_bound;
+	ALTER TABLE playlist_import_items ADD COLUMN IF NOT EXISTS selection_decision_id UUID REFERENCES source_selection_decisions(id) ON DELETE SET NULL;
+	ALTER TABLE playlist_import_jobs ADD COLUMN IF NOT EXISTS sync_binding_id BIGINT REFERENCES playlist_source_bindings(id) ON DELETE SET NULL;
+	ALTER TABLE playlist_import_jobs ADD COLUMN IF NOT EXISTS is_source_sync BOOLEAN NOT NULL DEFAULT FALSE;
+	ALTER TABLE playlist_import_jobs ADD COLUMN IF NOT EXISTS sync_generation BIGINT NOT NULL DEFAULT 0;
+	ALTER TABLE playlist_import_jobs ADD COLUMN IF NOT EXISTS sync_request_binding_id BIGINT NOT NULL DEFAULT 0;
+	ALTER TABLE playlist_import_jobs ADD COLUMN IF NOT EXISTS sync_accepted BOOLEAN NOT NULL DEFAULT FALSE;
+	ALTER TABLE playlist_import_jobs ADD COLUMN IF NOT EXISTS sync_added INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE playlist_import_jobs ADD COLUMN IF NOT EXISTS sync_removed INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE playlist_import_jobs ADD COLUMN IF NOT EXISTS sync_reordered BOOLEAN NOT NULL DEFAULT FALSE;
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_one_active_source_sync ON playlist_import_jobs(playlist_id)
+		WHERE is_source_sync AND status IN ('resolving', 'importing');
+
+
 	CREATE INDEX IF NOT EXISTS idx_tracks_fulltext ON tracks USING GIN (to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(artist, '') || ' ' || COALESCE(album, '')));
 
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS source_url TEXT;
