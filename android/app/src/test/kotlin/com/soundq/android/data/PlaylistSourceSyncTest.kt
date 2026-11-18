@@ -395,6 +395,83 @@ class PlaylistSourceSyncTest {
             assertEquals(4,statuses.size);assertTrue(statuses.all{it.method=="GET"&&it.url.queryParameter("operationId")==null});assertTrue(requests.none{it.method=="POST"})
         }
     }
+    @Test fun newerFailedOperationDoesNotForgiveOutstandingMembershipRead() {
+        HttpsFixture().use { f ->
+            val (api, detail, _) = ready(f)
+            val original = detail.state.value.detail
+            val repo = PlaylistSourceSyncRepository(api, detail)
+            f.reply(terminalObservation()); f.reply("{}", 503)
+            repo.enter(id())!!()
+            assertTrue(repo.state.value.observation!!.operation!!.accepted)
+            assertTrue(repo.state.value.readbackFailed)
+
+            val newer = UUID.randomUUID().toString()
+            val eligible = Json.parseToJsonElement(vector("eligible")).jsonObject
+            val operation = Json.parseToJsonElement(vector("ack")).jsonObject
+            val failed = JsonObject(eligible + ("operation" to JsonObject(operation + mapOf(
+                "id" to JsonPrimitive(newer), "status" to JsonPrimitive("failed"), "accepted" to JsonPrimitive(false),
+            )))).toString()
+            f.reply(failed); f.reply("{}", 503)
+            repo.refresh()!!()
+            assertEquals(newer, repo.state.value.observation!!.operation!!.id)
+            assertFalse(repo.state.value.observation!!.operation!!.accepted)
+            assertTrue("Newer unaccepted status abandoned earlier membership readback", repo.state.value.readbackFailed)
+            assertSame(original, detail.state.value.detail)
+            assertNull(repo.start())
+
+            f.reply(failed); f.reply(vector("detail-after"))
+            repo.refresh()!!()
+            assertEquals(newer, repo.state.value.observation!!.operation!!.id)
+            assertEquals(PlaylistJson.detail(Json.parseToJsonElement(vector("detail-after")).jsonObject,id()), detail.state.value.detail)
+            assertFalse(repo.state.value.readbackFailed)
+            assertFalse(repo.state.value.error)
+            assertTrue(repo.canStart())
+            assertEquals(7, f.server.requestCount)
+            assertTrue((1..7).map { f.server.takeRequest(2, TimeUnit.SECONDS)!! }.all { it.method == "GET" })
+        }
+    }
+
+    @Test fun failedAcceptedReceiptSettlementKeepsRecoveryReadOnly() {
+        val dir = Files.createTempDirectory("sync-settle").toFile()
+        try {
+            HttpsFixture().use { f ->
+                val (api, detail, session) = ready(f)
+                val file = File(dir, "journal.json")
+                val receipts = IntakeReceipts(file)
+                val account = session.capture()!!.accountId
+                receipts.begin(session.endpoint.identity, account, "playlist-sync", job = key(), candidateId = "1", playlistId = id().value)
+                val before = file.readBytes()
+                val blocked = File(dir, "journal.json.pending")
+                check(blocked.mkdir()); File(blocked, "blocker").writeText("owned fixture")
+
+                val repo = PlaylistSourceSyncRepository(api, detail, receipts)
+                f.reply(terminalObservation()); f.reply(vector("detail-after"))
+                repo.enter(id())!!()
+                assertArrayEquals(before, file.readBytes())
+                assertTrue(repo.state.value.observation!!.operation!!.accepted)
+                assertFalse(repo.state.value.readbackFailed)
+                assertFalse(repo.state.value.uncertain)
+                assertTrue(repo.state.value.error)
+                assertEquals(SourceSyncSaveFailure.Receipt, repo.state.value.saveFailure)
+                assertNull("Unsettled accepted receipt admitted a write", repo.start())
+
+                check(blocked.deleteRecursively())
+                f.reply(terminalObservation()); f.reply(vector("detail-after"))
+                repo.refresh()!!()
+                assertEquals("accepted", IntakeReceipts(file).entries(session.endpoint.identity, account).single().phase)
+                assertFalse(repo.state.value.error)
+                assertNull(repo.state.value.saveFailure)
+                assertTrue(repo.canStart())
+                assertEquals(5, f.server.requestCount)
+                val requests = (1..5).map { f.server.takeRequest(2, TimeUnit.SECONDS)!! }
+                assertTrue(requests.all { it.method == "GET" })
+                assertEquals(listOf(key(), key()), requests.filter { it.url.encodedPath.endsWith("source-sync") }.map { it.url.queryParameter("operationId") })
+            }
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
     @Test fun sameAcceptedOperationCannotRegressOrDisappearOnLatestRead(){
         for(missing in listOf(false,true))HttpsFixture().use {f->
             val (api,detail,_)=ready(f);val repo=PlaylistSourceSyncRepository(api,detail,newOperation=::key)

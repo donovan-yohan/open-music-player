@@ -281,6 +281,17 @@ class PlaylistSyncLifecycleTest {
   ready.buttons.getValue("Read sync status")();assertEquals(2,read);assertEquals(0,sync)
   ready.buttons.getValue("Retry sync request")();assertEquals(2,read);assertEquals(1,sync)
  }
+ @Test fun latestFailureKeepsItsOwnStatusWhileAnEarlierReadIsOwed(){
+  val failed=SourceSyncOperation(key(),id(),"failed",false,2,0,0,false,0,0,null)
+  val state=PlaylistSourceSyncState(playlist=id(),observation=SourceSyncObservation(true,1,null,failed),error=true,readbackFailed=true)
+  var reads=0
+  val controls=SourceSyncControlProbe();controls.render(state,{error("Unexpected write")},{reads++},writeReady=false)
+  assertTrue(controls.labels.any {it.startsWith("Source could not be synchronized.")})
+  assertTrue(controls.labels.any {it.startsWith("Could not refresh the playlist.")})
+  assertFalse(controls.labels.any {it.contains("accepted",ignoreCase=true)})
+  assertEquals(setOf("Read sync status"),controls.buttons.keys)
+  controls.buttons.getValue("Read sync status")();assertEquals(1,reads)
+ }
  @Test fun actualDetailReadinessGatesWriteButNotStatusRecovery(){
   HttpsFixture().use{f->
    val (detail,repo)=ready(f);f.reply(vector("eligible"));repo.enter(id())!!()

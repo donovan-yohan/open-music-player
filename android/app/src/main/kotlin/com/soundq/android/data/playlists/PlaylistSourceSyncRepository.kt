@@ -11,7 +11,8 @@ data class SourceSyncOperation(val id:String,val playlist:PlaylistId,val status:
     val active get()=status in setOf("resolving","importing")
 }
 data class SourceSyncObservation(val eligible:Boolean,val binding:Long,val reason:String?,val operation:SourceSyncOperation?)
-data class PlaylistSourceSyncState(val playlist:PlaylistId?=null,val observation:SourceSyncObservation?=null,val busy:Boolean=false,val uncertain:Boolean=false,val error:Boolean=false,val readbackFailed:Boolean=false,val saveFailed:Boolean=false)
+enum class SourceSyncSaveFailure { Request, Receipt }
+data class PlaylistSourceSyncState(val playlist:PlaylistId?=null,val observation:SourceSyncObservation?=null,val busy:Boolean=false,val uncertain:Boolean=false,val error:Boolean=false,val readbackFailed:Boolean=false,val saveFailure:SourceSyncSaveFailure?=null)
 internal object SourceSyncJson {
     private fun p(o:JsonObject,k:String)=o.getValue(k).jsonPrimitive.also {require(it!=JsonNull)}
     private fun str(o:JsonObject,k:String)=p(o,k).also {require(it.isString)}.content
@@ -68,22 +69,23 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
         val id=mutable.value.playlist ?: return null;val s=scope ?: return null
         if(owner!=visit||mutable.value.busy||!current(visit,s,id))return null
         val v=visit;val t=++ticket;val pending=receipt
-        mutable.value=mutable.value.copy(busy=true,error=false)
+        mutable.value=mutable.value.copy(busy=true,error=false,saveFailure=mutable.value.saveFailure?.takeIf {it==SourceSyncSaveFailure.Receipt})
         val ran=java.util.concurrent.atomic.AtomicBoolean(false)
         return work@{
             if(!ran.compareAndSet(false,true))return@work
             fun valid()=synchronized(this){current(v,s,id)&&ticket==t}
             try {
                 reconcile(s,id,synchronized(this){mutable.value.observation},pending,true,::valid)
-            }catch(_:Exception){synchronized(this){if(valid())mutable.value=mutable.value.copy(error=true,readbackFailed=mutable.value.observation?.operation?.accepted==true)}}
+            }catch(_:Exception){synchronized(this){if(valid())mutable.value=mutable.value.copy(error=true)}}
             finally{synchronized(this){if(visit==v&&ticket==t&&scope===s)mutable.value=mutable.value.copy(busy=false)}}
         }
     }
     private fun reconcile(s:AccountScope,id:PlaylistId,known:SourceSyncObservation?,pending:IntakeReceipt?,readStatus:Boolean,valid:()->Boolean) {
         // Acceptance is a fact, not the outcome of either fallible read below.
-        val before=synchronized(this){if(!valid())return else {
+        val (before, pendingMembership)=synchronized(this){if(!valid())return else {
+            val outstanding=mutable.value.readbackFailed
             if(known?.operation?.accepted==true)mutable.value=mutable.value.copy(observation=known,readbackFailed=true)
-            detail.managementDetail()
+            detail.managementDetail() to outstanding
         }}
         val list=synchronized(this){if(valid())playlists?.captureList()else null}
         var observed=known
@@ -98,10 +100,12 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
             observed=latest;statusComplete=true
         }catch(_:Exception){/* Retain known acceptance; membership is independent. */}
         val op=observed?.operation
-        synchronized(this){if(valid())mutable.value=mutable.value.copy(observation=observed,readbackFailed=op?.accepted==true)}
+        // A newer operation changes the status, not the disposition of an outstanding playlist read.
+        val membershipRequired=pendingMembership||op?.accepted==true
+        synchronized(this){if(valid())mutable.value=mutable.value.copy(observation=observed,readbackFailed=membershipRequired)}
         var snapshotRead=false
         var after:PlaylistDetail?=null
-        if(op?.accepted==true&&before!=null&&valid())try {
+        if(membershipRequired&&before!=null&&valid())try {
             after=api.playlistManagementSnapshot(s,id,valid);snapshotRead=true
         }catch(_:Exception){/* Keep the original durable intent for GET recovery. */}
         var listRead:(()->Unit)?=null
@@ -110,16 +114,17 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
                 val published=snapshotRead&&before!=null&&detail.publishManagement(before,if(after==before)before else after)
                 val missing=published&&after==null
                 if(missing&&list!=null)listRead=playlists?.confirmedMissing(list,id)
-                val reconciled=statusComplete&&(op?.accepted!=true||published)
-                mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&(op==null||!reconciled),readbackFailed=op?.accepted==true&&!reconciled,error=!reconciled)
+                val reconciled=statusComplete&&(!membershipRequired||published)
+                var saveFailure=mutable.value.saveFailure
                 if(op!=null&&pending!=null&&reconciled)try {
                     receipts.finish(api.session.endpoint.identity,s.accountId,pending,"accepted",op.id)
-                }catch(failure:Exception){
-                    // A confirmed absence retired detail, so the outer handler no longer owns error publication.
-                    if(missing)mutable.value=mutable.value.copy(error=true)
-                    throw failure
+                    saveFailure=null
+                }catch(_:Exception){
+                    // Wire acknowledgement and membership are known. Only local settlement is owed.
+                    saveFailure=SourceSyncSaveFailure.Receipt
                 }
-                if(op!=null&&!op.active&&reconciled)receipt=null
+                if(op!=null&&!op.active&&reconciled&&saveFailure==null)receipt=null
+                mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&(op==null||!reconciled),readbackFailed=membershipRequired&&!reconciled,error=!reconciled||saveFailure!=null,saveFailure=saveFailure)
             }}
         }finally{
             // The list owns this read even if receipt settlement fails. Never run its IO under the sync lock.
@@ -129,7 +134,7 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
     @Synchronized fun canStart():Boolean {
         val id=mutable.value.playlist ?: return false;val s=scope ?: return false
         val observation=mutable.value.observation ?: return false;val captured=detail.managementDetail() ?: return false
-        return current(visit,s,id)&&captured.playlist.id==id&&captured.canManage&&!mutable.value.busy&&!mutable.value.readbackFailed&&observation.eligible&&observation.operation?.let {it.active&&!it.accepted}!=true
+        return current(visit,s,id)&&captured.playlist.id==id&&captured.canManage&&!mutable.value.busy&&!mutable.value.readbackFailed&&mutable.value.saveFailure!=SourceSyncSaveFailure.Receipt&&observation.eligible&&observation.operation?.let {it.active&&!it.accepted}!=true
     }
     @Synchronized fun start():(() -> Unit)? {
         if(!canStart())return null
@@ -141,7 +146,7 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
         val binding=if(retry)old.candidateId!!.toLong() else observation.binding
         val v=visit;val t=++ticket
         // An older operation's completion is not acknowledgement of this new intent.
-        mutable.value=mutable.value.copy(busy=true,error=false,readbackFailed=false,saveFailed=false,observation=observation.copy(operation=if(retry)observation.operation else null))
+        mutable.value=mutable.value.copy(busy=true,error=false,readbackFailed=false,saveFailure=null,observation=observation.copy(operation=if(retry)observation.operation else null))
         val ran=java.util.concurrent.atomic.AtomicBoolean(false)
         return work@{
             if(!ran.compareAndSet(false,true))return@work
@@ -154,13 +159,7 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
                 val ack=api.startPlaylistSourceSync(s,id,key,binding,{valid()&&detail.ownsManagement(captured)},::valid)
                 require(ack.id==key)
                 membershipReadback=ack.accepted
-                if(membershipReadback) {
-                    reconcile(s,id,observation.copy(operation=ack),requireNotNull(durable),binding==0L,::valid)
-                }
-                else {
-                    receipts.finish(api.session.endpoint.identity,s.accountId,requireNotNull(durable),"accepted",key)
-                    synchronized(this){if(valid())mutable.value=mutable.value.copy(observation=observation.copy(operation=ack),uncertain=false)}
-                }
+                reconcile(s,id,observation.copy(operation=ack),requireNotNull(durable),membershipReadback&&binding==0L,::valid)
             }catch(error:Exception){
                 val refused=(error as? SafeFailure)?.reason==SafeFailure.Reason.Refused
                 val retired=(error as? SafeFailure)?.reason==SafeFailure.Reason.Retired
@@ -168,7 +167,7 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
                 if(!retired&&!membershipReadback)durable?.let {runCatching {receipts.failSourceSync(api.session.endpoint.identity,s.accountId,it,settleRefusal)}}
                 synchronized(this){if(valid()){
                     if(settleRefusal&&!membershipReadback)receipt=null
-                    mutable.value=mutable.value.copy(uncertain=durable!=null&&(!settleRefusal||membershipReadback),error=true,readbackFailed=membershipReadback,saveFailed=durable==null,observation=if(durable==null)observation else mutable.value.observation)
+                    mutable.value=mutable.value.copy(uncertain=durable!=null&&(!settleRefusal||membershipReadback),error=true,readbackFailed=membershipReadback,saveFailure=if(durable==null)SourceSyncSaveFailure.Request else null,observation=if(durable==null)observation else mutable.value.observation)
                 }}
             }finally{synchronized(this){if(visit==v&&ticket==t&&scope===s)mutable.value=mutable.value.copy(busy=false)}}
         }
