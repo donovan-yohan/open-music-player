@@ -11,6 +11,84 @@ class PlaylistSyncLifecycleTest {
  private fun vector(name:String)=javaClass.getResourceAsStream("/playlist-sync/$name.json")!!.bufferedReader().use{it.readText()}
  private fun id()=PlaylistId(Json.parseToJsonElement(vector("detail-before")).jsonObject.getValue("id").jsonPrimitive.long)
  private fun key()=Json.parseToJsonElement(vector("ack")).jsonObject.getValue("id").jsonPrimitive.content
+ private fun listPage(created:Boolean=false)="""{"data":[{"id":${id().value},"name":"Source","isPublic":false,"trackCount":0,"durationMs":0},{"id":99,"name":"Other","isPublic":false,"trackCount":0,"durationMs":0}${if(created)",{\"id\":88,\"name\":\"Created\",\"isPublic\":false,\"trackCount\":0,\"durationMs\":0}"else ""}],"total":${if(created)3 else 2},"limit":20,"offset":0}"""
+ private fun graph(f:HttpsFixture,dir:java.io.File):SourceSyncAppGraphProbe {
+  val s=AccountSession(f.endpoint,MemoryStore());check(s.accept(s.beginIntent(),SecretTokens("fixture-access","fixture-refresh","fixture-owner")))
+  val graph=SourceSyncAppGraphProbe(SoundQApi(s,f.client),dir)
+  f.reply(vector("detail-before"));graph.playlistDetail.open(id())
+  f.reply(listPage());graph.playlists.requestRead(graph.playlists.captureList()!!,PlaylistQuery("source",PlaylistSort.Name,true))!!()
+  return graph
+ }
+ @Test fun actualAppGraphMissingReadbackRemovesRowAndFencesDelayedListAndCreateReads(){
+  for(create in listOf(false,true)){
+   val dir=java.nio.file.Files.createTempDirectory("sync-list-owner").toFile()
+   try{HttpsFixture().use{f->
+    val graph=graph(f,dir);val entered=CountDownLatch(1);val release=CountDownLatch(1)
+    val query=graph.playlists.state.value.query
+    f.server.dispatcher=object:mockwebserver3.Dispatcher(){override fun dispatch(request:mockwebserver3.RecordedRequest):mockwebserver3.MockResponse {
+     if(request.url.encodedPath=="/api/v1/playlists"){
+      if(request.method=="POST")return mockwebserver3.MockResponse.Builder().code(201).body("""{"id":88,"name":"Created","description":"","coverUrl":"","isPublic":false,"trackCount":0,"durationMs":0}""").build()
+      entered.countDown();check(release.await(5,TimeUnit.SECONDS));return mockwebserver3.MockResponse.Builder().body(listPage(create)).build()
+     }
+     return if(request.url.encodedPath.endsWith("source-sync"))mockwebserver3.MockResponse.Builder().body(vector("pending")).build()else mockwebserver3.MockResponse.Builder().code(404).body("{}").build()
+    }}
+    val pool=Executors.newSingleThreadExecutor()
+    try{
+     val capture=graph.playlists.captureList()!!
+     val old=if(create)pool.submit{graph.playlists.create(capture,PlaylistDraft("Created"))}else pool.submit{graph.playlists.reload(capture)}
+     assertTrue(entered.await(3,TimeUnit.SECONDS));val mutation=graph.playlists.state.value.mutation
+     graph.playlistSync.enter(id())!!()
+     assertNull(graph.playlistDetail.state.value.id)
+     assertEquals("Successful matching404 did not notify the actual AppGraph list owner",listOf(99L),graph.playlists.state.value.rows.map{it.id.value})
+     assertEquals(query,graph.playlists.state.value.query);assertEquals(1,graph.playlists.state.value.total)
+     assertEquals(mutation,graph.playlists.state.value.mutation)
+     release.countDown();old.get(5,TimeUnit.SECONDS)
+     assertEquals("Delayed list publication resurrected confirmed deletion",listOf(99L),graph.playlists.state.value.rows.map{it.id.value})
+     assertFalse(graph.playlists.state.value.loading)
+     if(create){assertEquals(88L,graph.playlists.state.value.created!!.id.value);assertEquals(MutationOutcome.ReadbackFailed,graph.playlists.state.value.mutation!!.outcome)}
+    }finally{release.countDown();pool.shutdownNow();assertTrue(pool.awaitTermination(5,TimeUnit.SECONDS))}
+   }}finally{dir.deleteRecursively()}
+  }
+ }
+ @Test fun losing404CannotDamageReplacementDetailListOrAccount(){
+  for(replaceAccount in listOf(false,true)){
+   val dir=java.nio.file.Files.createTempDirectory("sync-list-losing").toFile()
+   try{HttpsFixture().use{f->
+    val graph=graph(f,dir);val entered=CountDownLatch(1);val release=CountDownLatch(1);val reads=java.util.concurrent.atomic.AtomicInteger()
+    f.server.dispatcher=object:mockwebserver3.Dispatcher(){override fun dispatch(request:mockwebserver3.RecordedRequest):mockwebserver3.MockResponse {
+     if(request.url.encodedPath.endsWith("source-sync"))return mockwebserver3.MockResponse.Builder().body(vector("pending")).build()
+     if(request.url.encodedPath=="/api/v1/playlists")return mockwebserver3.MockResponse.Builder().body(listPage()).build()
+     if(reads.incrementAndGet()==1){entered.countDown();check(release.await(5,TimeUnit.SECONDS));return mockwebserver3.MockResponse.Builder().code(404).body("{}").build()}
+     return mockwebserver3.MockResponse.Builder().body(vector("detail-before")).build()
+    }}
+    val pool=Executors.newSingleThreadExecutor()
+    try{
+     val work=graph.playlistSync.enter(id())!!;val old=pool.submit{work()};assertTrue(entered.await(3,TimeUnit.SECONDS))
+     if(replaceAccount){val s=graph.api.session;check(s.accept(s.beginIntent(),SecretTokens("replacement","replacement-refresh","replacement-owner")));graph.playlists.retire()}
+     graph.playlistDetail.open(id());graph.playlists.reload();val detail=graph.playlistDetail.state.value;val list=graph.playlists.state.value
+     release.countDown();old.get(5,TimeUnit.SECONDS)
+     assertSame(detail,graph.playlistDetail.state.value);assertSame(list,graph.playlists.state.value)
+    }finally{release.countDown();pool.shutdownNow();assertTrue(pool.awaitTermination(5,TimeUnit.SECONDS))}
+   }}finally{dir.deleteRecursively()}
+  }
+ }
+ @Test fun actualGraphLegacyBindingFailureStillRemovesConfirmedMissingListRow(){
+  val dir=java.nio.file.Files.createTempDirectory("sync-list-legacy").toFile()
+  try{HttpsFixture().use{f->
+   val graph=graph(f,dir)
+   f.reply(JsonObject(Json.parseToJsonElement(vector("eligible")).jsonObject+("bindingId" to JsonPrimitive(0))).toString());graph.playlistSync.enter(id())!!()
+   f.server.dispatcher=object:mockwebserver3.Dispatcher(){override fun dispatch(request:mockwebserver3.RecordedRequest):mockwebserver3.MockResponse {
+    if(request.method=="POST"){
+     val operation=Json.parseToJsonElement(request.body!!.utf8()).jsonObject.getValue("operationId")
+     val ack=Json.parseToJsonElement(vector("pending")).jsonObject.getValue("operation").jsonObject
+     return mockwebserver3.MockResponse.Builder().code(202).body(JsonObject(ack+("id" to operation)).toString()).build()
+    }
+    return mockwebserver3.MockResponse.Builder().code(if(request.url.encodedPath.endsWith("source-sync"))503 else 404).body("{}").build()
+   }}
+   graph.playlistSync.start()!!();assertNull(graph.playlistDetail.state.value.id)
+   assertEquals(listOf(99L),graph.playlists.state.value.rows.map{it.id.value});assertNull(graph.playlistSync.start())
+  }}finally{dir.deleteRecursively()}
+ }
  private fun ready(f:HttpsFixture,operation:String=key()):Pair<PlaylistDetailRepository,PlaylistSourceSyncRepository>{
   val s=AccountSession(f.endpoint,MemoryStore());check(s.accept(s.beginIntent(),SecretTokens("fixture-access","fixture-refresh","fixture-owner")))
   val api=SoundQApi(s,f.client);val detail=PlaylistDetailRepository(api);f.reply(vector("detail-before"));detail.open(id())

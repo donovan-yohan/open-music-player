@@ -310,6 +310,51 @@ class PlaylistSourceSyncTest {
         val body=Json.parseToJsonElement(vector("complete")).jsonObject
         return JsonObject(body+("operation" to JsonObject(body.getValue("operation").jsonObject+("id" to JsonPrimitive(key()))))).toString()
     }
+    @Test fun acceptedLegacyAckSurvivesFailedStatusRecoveryWithoutPost() { legacyReadbackFailure(false,false) }
+    @Test fun legacyBindingFailureStillPublishesIndependentManagement() { legacyReadbackFailure(false,true) }
+    @Test fun legacyBindingFailureStillRetiresMatchingManagement404() { legacyReadbackFailure(true,true) }
+    private fun legacyReadbackFailure(missing:Boolean,membershipFirst:Boolean) {
+        val dir=Files.createTempDirectory("legacy-independent-readback").toFile()
+        try {HttpsFixture().use {f->
+            val (api,detail,s)=ready(f);val file=File(dir,"journal.json");var operation=key()
+            val repo=PlaylistSourceSyncRepository(api,detail,IntakeReceipts(file),newOperation={operation})
+            f.reply(JsonObject(Json.parseToJsonElement(vector("eligible")).jsonObject+("bindingId" to JsonPrimitive(0))).toString());repo.enter(id())!!()
+            f.reply("{}",503);repo.start()!!()
+            val original=IntakeReceipts(file).entries(s.endpoint.identity,s.capture()!!.accountId).single()
+            val resolved=java.util.concurrent.atomic.AtomicBoolean(false);val acceptedBeforeRead=java.util.concurrent.atomic.AtomicBoolean(false)
+            val management=java.util.concurrent.atomic.AtomicInteger();val posts=java.util.concurrent.atomic.AtomicInteger()
+            f.server.dispatcher=object:mockwebserver3.Dispatcher(){override fun dispatch(request:mockwebserver3.RecordedRequest):mockwebserver3.MockResponse {
+                if(request.method=="POST") {
+                    posts.incrementAndGet()
+                    return mockwebserver3.MockResponse.Builder().code(202).body(if(operation==key())Json.parseToJsonElement(terminalObservation()).jsonObject.getValue("operation").toString() else vector("ack").replace(key(),operation)).build()
+                }
+                if(request.url.encodedPath.endsWith("source-sync")) {
+                    acceptedBeforeRead.set(repo.state.value.observation?.operation?.accepted==true&&repo.state.value.readbackFailed)
+                    return if(resolved.get())mockwebserver3.MockResponse.Builder().body(JsonObject(Json.parseToJsonElement(terminalObservation()).jsonObject+("bindingId" to JsonPrimitive(7))).toString()).build()
+                    else mockwebserver3.MockResponse.Builder().code(503).body("{}").build()
+                }
+                management.incrementAndGet()
+                return mockwebserver3.MockResponse.Builder().code(if(missing)404 else 200).body(if(missing)"{}"else vector("detail-after")).build()
+            }}
+            repo.start()!!()
+            if(membershipFirst)assertEquals("Binding failure suppressed independent management GET",1,management.get())
+            assertTrue("Accepted ACK was not recorded before fallible binding IO",acceptedBeforeRead.get())
+            assertTrue(repo.state.value.observation!!.operation!!.accepted);assertTrue(repo.state.value.readbackFailed)
+            assertNull("Accepted recovery offered POST replay",repo.start())
+            if(missing) {assertNull(detail.state.value.id);assertNull(detail.state.value.detail)} else {
+                assertEquals(PlaylistJson.detail(Json.parseToJsonElement(vector("detail-after")).jsonObject,id()),detail.state.value.detail)
+                repo.refresh()!!();assertTrue(repo.state.value.readbackFailed);assertTrue(repo.state.value.observation!!.operation!!.accepted)
+                assertNull("Failed status read cleared accepted recovery",repo.start());assertEquals(2,management.get())
+                assertEquals(original,IntakeReceipts(file).entries(s.endpoint.identity,s.capture()!!.accountId).single())
+                resolved.set(true);repo.refresh()!!();assertFalse(repo.state.value.readbackFailed);assertEquals(7L,repo.state.value.observation!!.binding)
+                operation=UUID.randomUUID().toString();repo.start()!!();assertEquals(2,posts.get())
+                val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+                val bodies=requests.filter{it.method=="POST"}.map{Json.parseToJsonElement(it.body!!.utf8()).jsonObject}
+                assertEquals(listOf(0L,0L,7L),bodies.map{it.getValue("bindingId").jsonPrimitive.long})
+                assertEquals(listOf(key(),key(),operation),bodies.map{it.getValue("operationId").jsonPrimitive.content})
+            }
+        }}finally{dir.deleteRecursively()}
+    }
     @Test fun freshBeginFailureCannotRewritePreviousReceiptOrOfferUnsentExactRetry() {
         val dir=Files.createTempDirectory("sync-begin-failure").toFile()
         try {HttpsFixture().use {f->

@@ -61,7 +61,7 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     val downloads=com.soundq.android.data.offline.DeviceDownloads(File(directory,"device-downloads"),session,api,mediaClient)
     val playlists=com.soundq.android.data.playlists.PlaylistRepository(api)
     val playlistDetail=com.soundq.android.data.playlists.PlaylistDetailRepository(api)
-    val playlistSync=com.soundq.android.data.playlists.PlaylistSourceSyncRepository(api,playlistDetail,com.soundq.android.data.acquisition.IntakeReceipts(File(directory,"playlist-sync-receipts.v1.json")))
+    val playlistSync=com.soundq.android.data.playlists.PlaylistSourceSyncRepository(api,playlistDetail,com.soundq.android.data.acquisition.IntakeReceipts(File(directory,"playlist-sync-receipts.v1.json")),playlists=playlists)
     val playlistBlend=com.soundq.android.data.playlists.PlaylistBlendRepository(api,playlistDetail,downloads)
     val playlistOrder=com.soundq.android.data.playlists.PlaylistOrderRepository(api,playlistDetail)
     val queuePlaylist=com.soundq.android.data.playlists.QueuePlaylistRepository(api)

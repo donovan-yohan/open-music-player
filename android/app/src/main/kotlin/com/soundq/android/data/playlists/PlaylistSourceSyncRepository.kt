@@ -38,7 +38,7 @@ internal object SourceSyncJson {
 /** Browse publication owns no player, queue, media grants or listening journal.
  * Durable request receipts use the existing no-backup intake journal. Recovery
  * reads the exact operation, or explicitly retries that same idempotent intent. */
-class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:PlaylistDetailRepository,private val receipts:IntakeReceipts=IntakeReceipts(),private val newOperation:()->String={UUID.randomUUID().toString()}) {
+class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:PlaylistDetailRepository,private val receipts:IntakeReceipts=IntakeReceipts(),private val newOperation:()->String={UUID.randomUUID().toString()},private val playlists:PlaylistRepository?=null) {
     private val mutable=MutableStateFlow(PlaylistSourceSyncState())
     val state:StateFlow<PlaylistSourceSyncState> = mutable
     private var visit=0L
@@ -74,25 +74,38 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
             if(!ran.compareAndSet(false,true))return@work
             fun valid()=synchronized(this){current(v,s,id)&&ticket==t}
             try {
-                val observed=api.playlistSourceSync(s,id,pending?.job,::valid)
-                val op=observed.operation
-                if(pending?.job!=null&&op!=null)require(op.id==pending.job)
-                reconcile(s,id,observed,pending,::valid)
+                reconcile(s,id,synchronized(this){mutable.value.observation},pending,true,::valid)
             }catch(_:Exception){synchronized(this){if(valid())mutable.value=mutable.value.copy(error=true,readbackFailed=mutable.value.observation?.operation?.accepted==true)}}
             finally{synchronized(this){if(visit==v&&ticket==t&&scope===s)mutable.value=mutable.value.copy(busy=false)}}
         }
     }
-    private fun reconcile(s:AccountScope,id:PlaylistId,observed:SourceSyncObservation,pending:IntakeReceipt?,valid:()->Boolean) {
-        val op=observed.operation
-        synchronized(this){if(valid())mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&(op==null||op.accepted&&!op.active),readbackFailed=op?.accepted==true)}
-        val before=synchronized(this){if(valid())detail.managementDetail()else null}
-        val snapshotRead=op?.accepted==true&&before!=null
-        val after=if(snapshotRead)api.playlistManagementSnapshot(s,id,valid)else null
+    private fun reconcile(s:AccountScope,id:PlaylistId,known:SourceSyncObservation?,pending:IntakeReceipt?,readStatus:Boolean,valid:()->Boolean) {
+        // Acceptance is a fact, not the outcome of either fallible read below.
+        val before=synchronized(this){if(!valid())return else {
+            if(known?.operation?.accepted==true)mutable.value=mutable.value.copy(observation=known,readbackFailed=true)
+            detail.managementDetail()
+        }}
+        val list=synchronized(this){if(valid())playlists?.captureList()else null}
+        var observed=known
+        var statusComplete=!readStatus
+        if(readStatus)try {
+            val latest=api.playlistSourceSync(s,id,pending?.job,valid)
+            if(pending?.job!=null&&latest.operation!=null)require(latest.operation.id==pending.job)
+            if(known?.operation?.accepted==true)require(latest.operation?.accepted==true)
+            observed=latest;statusComplete=true
+        }catch(_:Exception){/* Retain known acceptance; membership is independent. */}
+        val op=observed?.operation
+        synchronized(this){if(valid())mutable.value=mutable.value.copy(observation=observed,readbackFailed=op?.accepted==true)}
+        var snapshotRead=false
+        var after:PlaylistDetail?=null
+        if(op?.accepted==true&&before!=null&&valid())try {
+            after=api.playlistManagementSnapshot(s,id,valid);snapshotRead=true
+        }catch(_:Exception){/* Keep the original durable intent for GET recovery. */}
         synchronized(this){if(valid()) {
-            // A completed 404 is authoritative absence, not an unstarted read.
             val published=snapshotRead&&before!=null&&detail.publishManagement(before,if(after==before)before else after)
-            val reconciled=op?.accepted!=true||published
-            mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&(op==null||!reconciled),readbackFailed=!reconciled)
+            if(published&&after==null&&list!=null)playlists?.confirmedMissing(list,id)
+            val reconciled=statusComplete&&(op?.accepted!=true||published)
+            mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&(op==null||!reconciled),readbackFailed=op?.accepted==true&&!reconciled,error=!reconciled)
             if(op!=null&&pending!=null&&reconciled)receipts.finish(api.session.endpoint.identity,s.accountId,pending,"accepted",op.id)
             if(op!=null&&!op.active&&reconciled)receipt=null
         }}
@@ -126,11 +139,7 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
                 require(ack.id==key)
                 membershipReadback=ack.accepted
                 if(membershipReadback) {
-                    // Exact-operation GET also reads the current source binding.
-                    // Keep the durable request's legacy binding for any retry.
-                    val observed=if(binding==0L)api.playlistSourceSync(s,id,key,::valid)else observation.copy(operation=ack)
-                    require(observed.operation?.id==key)
-                    reconcile(s,id,observed,requireNotNull(durable),::valid)
+                    reconcile(s,id,observation.copy(operation=ack),requireNotNull(durable),binding==0L,::valid)
                 }
                 else {
                     receipts.finish(api.session.endpoint.identity,s.accountId,requireNotNull(durable),"accepted",key)

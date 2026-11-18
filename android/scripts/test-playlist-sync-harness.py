@@ -68,28 +68,40 @@ class Cases {
         self.assertEqual('skip',statuses['runnercontrols.Cases#assumed'])
         self.assertEqual('skip',statuses['runnercontrols.Cases#ignored'])
 
+    def launcher_case(self,optimize,failure,out,launcher=None):
+        out.mkdir(parents=True,exist_ok=True)
+        stale=out/'Unrelated.kt';stale.write_text('not Kotlin; must never be compiled')
+        oldjar=out/'tests.jar';oldjar.write_bytes(b'retained stale jar')
+        tools=out/'tools';tools.mkdir(exist_ok=True)
+        compiler=tools/'kotlinc';java=tools/'java'
+        compiler.write_text('#!'+sys.executable+'\nimport os,sys,json\nfrom pathlib import Path\na=sys.argv[1:]\nPath(os.environ["COMPILER_ARGS"]).write_text(json.dumps(a))\nif os.environ["FAIL_COMPILE"]=="1":sys.exit(23)\nif any(x.endswith("Unrelated.kt") for x in a):sys.exit(41)\nPath(a[a.index("-d")+1]).write_bytes(b"new compiled boundary jar")\n')
+        java.write_text('#!'+sys.executable+'\nimport os\nfrom pathlib import Path\nPath(os.environ["JAVA_CALLED"]).write_text("called")\n')
+        compiler.chmod(0o755);java.chmod(0o755)
+        marker=out/('java-called-'+uuid.uuid4().hex)
+        argv=[sys.executable]+(['-O'] if optimize else [])+[launcher or r/'scripts/test-playlist-source-sync.py','--cache',a.cache,'--out',out]
+        if launcher:argv.extend(['--source-root',r,'--tests-root',r])
+        extra={'PATH':str(tools)+os.pathsep+os.environ['PATH'],'COMPILER_ARGS':str(out/'compiler-args.json'),'JAVA_CALLED':str(marker),'FAIL_COMPILE':'1' if failure else '0','PYTHONOPTIMIZE':None}
+        invocation=f'launcher-{optimize}-{failure}-{uuid.uuid4().hex}'
+        mode=call(invocation+'-mode',[sys.executable]+(['-O'] if optimize else [])+['-c','import sys; print(sys.flags.optimize)'],extra)
+        self.assertEqual(0,mode.returncode);self.assertEqual(int(optimize),int(mode.stdout.strip()))
+        q=call(invocation,argv,extra)
+        if failure:
+            self.assertEqual(23,q.returncode,q.stdout+q.stderr);self.assertFalse(marker.exists());self.assertEqual(b'retained stale jar',oldjar.read_bytes())
+        else:
+            self.assertEqual(0,q.returncode,'Launcher did not complete successfully: '+q.stdout+q.stderr)
+            self.assertEqual(b'new compiled boundary jar',oldjar.read_bytes(),'Launcher did not produce current compiled jar')
+        self.assertNotIn(str(stale),json.loads((out/'compiler-args.json').read_text()))
+        return {'marker':marker,'exit':q.returncode,'invocation':invocation,'optimize':optimize}
+
+    def assert_current_dispatch(self,result):
+        self.assertTrue(result['marker'].is_file(),'Missing current Java dispatch marker')
+
     def test_actual_launcher_excludes_stale_sources_and_refuses_failed_compile_under_optimization(self):
         for optimize in (False,True):
             for failure in (False,True):
                 with self.subTest(optimize=optimize,failure=failure):
-                    out=a.out/f'launcher-{optimize}-{failure}';out.mkdir(exist_ok=True)
-                    stale=out/'Unrelated.kt';stale.write_text('not Kotlin; must never be compiled')
-                    oldjar=out/'tests.jar';oldjar.write_bytes(b'retained stale jar')
-                    tools=out/'tools';tools.mkdir(exist_ok=True)
-                    compiler=tools/'kotlinc';java=tools/'java'
-                    compiler.write_text('#!'+sys.executable+'\nimport os,sys,json\nfrom pathlib import Path\na=sys.argv[1:]\nPath(os.environ["COMPILER_ARGS"]).write_text(json.dumps(a))\nif os.environ["FAIL_COMPILE"]=="1":sys.exit(23)\nif any(x.endswith("Unrelated.kt") for x in a):sys.exit(41)\nPath(a[a.index("-d")+1]).write_bytes(b"new compiled boundary jar")\n')
-                    java.write_text('#!'+sys.executable+'\nimport os\nfrom pathlib import Path\nPath(os.environ["JAVA_CALLED"]).write_text("called")\n')
-                    compiler.chmod(0o755);java.chmod(0o755)
-                    marker=out/('java-called-'+uuid.uuid4().hex);argv=[sys.executable]+(['-O'] if optimize else [])+[r/'scripts/test-playlist-source-sync.py','--cache',a.cache,'--out',out]
-                    extra={'PATH':str(tools)+os.pathsep+os.environ['PATH'],'COMPILER_ARGS':str(out/'compiler-args.json'),'JAVA_CALLED':str(marker),'FAIL_COMPILE':'1' if failure else '0','PYTHONOPTIMIZE':None}
-                    mode=call(f'python-mode-{optimize}-{failure}',[sys.executable]+(['-O'] if optimize else [])+['-c','import sys; print(sys.flags.optimize)'],extra)
-                    self.assertEqual(0,mode.returncode);self.assertEqual(int(optimize),int(mode.stdout.strip()))
-                    q=call(f'launcher-{optimize}-{failure}',argv,extra)
-                    if failure:
-                        self.assertEqual(23,q.returncode,q.stdout+q.stderr);self.assertFalse(marker.exists());self.assertEqual(b'retained stale jar',oldjar.read_bytes())
-                    else:
-                        self.assertEqual(0,q.returncode,q.stdout+q.stderr);self.assertTrue(marker.is_file());self.assertEqual(b'new compiled boundary jar',oldjar.read_bytes())
-                    self.assertNotIn(str(stale),json.loads((out/'compiler-args.json').read_text()))
+                    result=self.launcher_case(optimize,failure,a.out/f'launcher-{optimize}-{failure}')
+                    if not failure:self.assert_current_dispatch(result)
 
     def generated_product(self,name,edit):
         src=r/'app/src/main/kotlin/com/soundq/android';root=a.out/name
@@ -115,6 +127,22 @@ class Cases {
         literal='val labels=listOf("POLL","DISPOSE","KEYS","VISIBLE","CALLBACK")'
         text=self.generated_product('literal-markers',lambda s:s.replace('fun sync() {','fun sync() {\n '+literal+'\n',1))
         self.assertIn(literal,text)
+
+    def test_generator_poll_condition_excludes_branch_brace_and_comment(self):
+        self.generated_product('poll-unbraced',lambda s:s)
+        original=json.loads((a.out/'poll-unbraced/generated/extracted-regions.json').read_text())
+        condition=original['poll_guard']['source']
+        def edit(s):
+            dispatch=s.index('kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO)',s.index('while(true)'))
+            extract=runpy.run_path(str(r/'scripts/host-tests/generate_playlist_sync_probes.py'))['block']
+            opening=s.index('{',dispatch);end=opening+len(extract(s,dispatch))+2
+            start=s.rindex(condition,0,dispatch)
+            return s[:start]+condition+' { // branch comment must not enter condition\n'+s[dispatch:end]+'\n            }'+s[end:]
+        text=self.generated_product('poll-braced',edit)
+        variant=json.loads((a.out/'poll-braced/generated/extracted-regions.json').read_text())
+        self.assertEqual(condition,variant['poll_guard']['source'])
+        self.assertEqual(original['poll_after_dispatch'],variant['poll_after_dispatch'])
+        self.assertIn('fun pollAfterDispatch(syncOwner:Long)',text)
 
     def test_generator_ignores_comment_string_and_character_braces(self):
         src=r/'app/src/main/kotlin/com/soundq/android'
@@ -142,34 +170,70 @@ class Freshness(unittest.TestCase):
         with mock.patch.object(a,'out',out):
             Harness.setUpClass()
             previous=Harness.events.read_bytes()
-            real_call=call
+            real_call=call;executed=[]
             def abort(name,argv,extra=None):
                 if name=='runner-execute':argv=[argv[0],'-XX:SoundQDeliberatelyInvalidOption=1',*argv[1:]]
-                return real_call(name,argv,extra)
+                result=real_call(name,argv,extra)
+                if name=='runner-execute':executed.append(result.returncode)
+                return result
             with mock.patch.dict(globals(),{'call':abort}):
-                with self.assertRaises((RuntimeError,FileNotFoundError)):
+                with self.assertRaisesRegex(RuntimeError,'^JUnit invocation produced no fresh terminal events$'):
                     Harness.setUpClass()
+            self.assertEqual(1,len(executed),'Injected Java did not execute')
+            self.assertNotEqual(0,executed[0],'Injected Java did not abort')
             self.assertTrue(any(f.read_bytes()==previous for f in out.glob('*events*.jsonl')))
+            (out/'abort-witness.json').write_text(json.dumps({'injected_java_exits':executed,'exact_missing_events_error':True}))
 
-    def test_stale_java_marker_cannot_hide_missing_current_dispatch(self):
-        out=a.out/'stale-marker';out.mkdir(exist_ok=True)
+    def test_aborted_java_control_rejects_compiler_failure(self):
+        out=a.out/'compiler-failure-control';out.mkdir(exist_ok=True)
+        real_call=call;compiles=[];executed=[]
+        def fail(name,argv,extra=None):
+            if name=='runner-compile':
+                compiles.append(name)
+                if len(compiles)==2:return subprocess.CompletedProcess(argv,23,'','injected compiler failure before Java')
+            if name=='runner-execute':executed.append(name)
+            return real_call(name,argv,extra)
+        with mock.patch.object(a,'out',out),mock.patch.dict(globals(),{'call':fail}):
+            with self.assertRaisesRegex(AssertionError,'does not match.*injected compiler failure before Java'):
+                self.test_aborted_actual_java_cannot_reuse_previous_junit_events()
+        self.assertEqual(2,len(compiles));self.assertEqual(1,len(executed))
+
+    def omitted_launcher(self,out,nonzero=False):
         scripts=out/'fault-input/scripts';(scripts/'host-tests').mkdir(parents=True,exist_ok=True)
         source=(r/'scripts/test-playlist-source-sync.py').read_text()
         head,tail=source.split("cmd=['java'",1)
         tail=tail.replace('subprocess.run(cmd,capture_output=True,text=True,env=env)',"subprocess.CompletedProcess(cmd,0,'','')",1)
+        if nonzero:
+            before,last=tail.rsplit('raise SystemExit(result.returncode)',1)
+            tail=before+'raise SystemExit(17)'+last
         faulty=scripts/'test-playlist-source-sync.py';faulty.write_text(head+"cmd=['java'"+tail)
         for name in ['PlaylistSyncLifecycleTest.kt','PlaylistSyncNamedRunner.kt','generate_playlist_sync_probes.py']:
             (scripts/'host-tests'/name).write_bytes((r/'scripts/host-tests'/name).read_bytes())
+        return faulty
+
+    def test_stale_java_marker_cannot_hide_missing_current_dispatch(self):
+        out=a.out/'stale-marker';out.mkdir(exist_ok=True)
+        faulty=self.omitted_launcher(out);case=Harness();witness=[]
         for optimize in (False,True):
-            case=out/f'launcher-{optimize}-False';case.mkdir(exist_ok=True);(case/'java-called').write_text('old invocation')
-        real_call=call
-        def omit(name,argv,extra=None):
-            argv=[str(faulty) if str(x)==str(r/'scripts/test-playlist-source-sync.py') else x for x in argv]
-            if str(faulty) in argv:argv=[*argv,'--source-root',r,'--tests-root',r]
-            return real_call(name,argv,extra)
-        with mock.patch.object(a,'out',out),mock.patch.dict(globals(),{'call':omit}),mock.patch.dict(env,{'PYTHONOPTIMIZE':''}):
-            with self.assertRaises(AssertionError):
-                Harness('test_actual_launcher_excludes_stale_sources_and_refuses_failed_compile_under_optimization').test_actual_launcher_excludes_stale_sources_and_refuses_failed_compile_under_optimization()
+            with self.subTest(optimize=optimize):
+                directory=out/f'launcher-{optimize}'
+                first=case.launcher_case(optimize,False,directory)
+                case.assert_current_dispatch(first)
+                second=case.launcher_case(optimize,False,directory,launcher=faulty)
+                # Exit/new-jar assertions have completed before the expected failure.
+                with self.assertRaisesRegex(AssertionError,'Missing current Java dispatch marker'):
+                    case.assert_current_dispatch(second)
+                self.assertTrue(first['marker'].is_file());self.assertNotEqual(first['marker'],second['marker'])
+                witness.append({'optimize':optimize,'first_marker':str(first['marker']),'second_marker':str(second['marker']),'first_exit':first['exit'],'second_exit':second['exit'],'first_invocation':first['invocation'],'second_invocation':second['invocation'],'missing_current_marker':True})
+        (out/'omitted-dispatch-witness.json').write_text(json.dumps(witness,indent=2))
+
+    def test_omitted_dispatch_control_rejects_nonzero_launcher_before_marker_check(self):
+        out=a.out/'nonzero-launcher';out.mkdir(exist_ok=True)
+        faulty=self.omitted_launcher(out,nonzero=True)
+        for optimize in (False,True):
+            with self.subTest(optimize=optimize):
+                with self.assertRaisesRegex(AssertionError,'Launcher did not complete successfully'):
+                    Harness().launcher_case(optimize,False,out/f'launcher-{optimize}',launcher=faulty)
 
 if __name__=='__main__':
     unittest.main(argv=[__file__,*remaining])

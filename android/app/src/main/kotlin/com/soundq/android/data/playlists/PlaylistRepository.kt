@@ -19,6 +19,16 @@ class PlaylistRepository(private val api: SoundQApi) {
     @Synchronized fun retire() { lifetime++; readVersion++; readScope = null; pending = null; mutable.value = PlaylistState() }
     @Synchronized fun retire(capture: PlaylistListCapture) { if (owns(capture)) retire() }
 
+    /** Confirmed absence from a matching management read, never a UI row guess. */
+    @Synchronized internal fun confirmedMissing(capture: PlaylistListCapture, id: PlaylistId): Boolean {
+        if (!owns(capture) || readScope?.let { !api.session.current(it) } == true) return false
+        readVersion++ // Older full-query and create readbacks cannot resurrect this row.
+        val before = mutable.value
+        val rows = before.rows.filterNot { it.id == id }
+        mutable.value = before.copy(rows = rows, total = before.total?.minus(before.rows.size - rows.size), loading = false)
+        return true
+    }
+
     fun reload() { captureList()?.let { reload(it) } ?: retire() }
     fun reload(capture: PlaylistListCapture) { requestRead(capture)?.invoke() }
     /** Claim the query before enqueue, not from a mutable destination when IO eventually starts. */
@@ -85,12 +95,15 @@ class PlaylistRepository(private val api: SoundQApi) {
 
     fun create(capture: PlaylistListCapture, draft: PlaylistDraft) {
         val receipt = Any()
+        val version: Long
         synchronized(this) {
             if (!owns(capture) || capture.intent != intent || pending != null || !mutable.value.canCreate(draft)) return
             pending = receipt; readVersion++; intent++
+            version = readVersion
             mutable.value = mutable.value.copy(loading = false, error = null, created = null, mutation = PlaylistMutation(MutationOutcome.Pending))
         }
         fun current() = synchronized(this) { owns(capture) && pending === receipt }
+        fun readCurrent() = synchronized(this) { current() && readVersion == version }
         var accepted: PlaylistSummary? = null
         var outcome = MutationOutcome.Confirmed
         var failure: SafeFailure.Reason? = null
@@ -103,9 +116,9 @@ class PlaylistRepository(private val api: SoundQApi) {
         if (!current()) return
         if (accepted != null) {
             try {
-                val page = readAll(capture.scope, mutable.value.query, ::current)
+                val page = readAll(capture.scope, mutable.value.query, ::readCurrent)
                 synchronized(this) {
-                    if (current()) mutable.value = mutable.value.copy(rows = page.rows, total = page.total)
+                    if (readCurrent()) mutable.value = mutable.value.copy(rows = page.rows, total = page.total)
                 }
             } catch (_: Exception) { outcome = MutationOutcome.ReadbackFailed; failure = SafeFailure.Reason.Network }
         }

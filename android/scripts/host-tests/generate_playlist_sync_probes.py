@@ -80,8 +80,18 @@ def generate(b,o):
     visible_start=code.index('val blendVisible=');visible_end=code.index('\n',visible_start)
     visible=product[visible_start:visible_end].split('=',1)[1]
     poll_start=code.index('if(',code.index('while(true)',effect))
-    dispatch=code.index('kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO)',poll_start)
-    guard=product[poll_start:dispatch].strip()
+    opening=code.index('(',poll_start);depth=1;end=opening+1
+    while end<len(code) and depth:
+        depth+=(code[end]=='(')-(code[end]==')');end+=1
+    if depth:raise ValueError('Unbalanced polling condition')
+    guard=product[poll_start:end]
+    branch=end
+    while code[branch].isspace():branch+=1
+    dispatch=code.index('kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO)',branch)
+    if code[branch]=='{':
+        branch_end=branch+len(block(product,branch))+2
+        if dispatch>=branch_end:raise ValueError('Polling dispatch outside branch')
+    elif dispatch!=branch:raise ValueError('Unexpected unbraced polling dispatch')
     poll=block(product,dispatch)
     lifecycle='''package com.soundq.android.data
 import com.soundq.android.data.playlists.*
@@ -129,4 +139,12 @@ internal class SourceSyncControlProbe {
     (o/'SourceSyncControlProbe.kt').write_text(rendering)
     (o/'callback-inputs.json').write_text(json.dumps({str(b/'product/ProductApp.kt'):hashlib.sha256(product.encode()).hexdigest(),str(b/'product/playlists/PlaylistSourceSyncControls.kt'):hashlib.sha256(controls.encode()).hexdigest()},indent=2))
     (o/'extracted-regions.json').write_text(json.dumps({name:{'source':value,'sha256':hashlib.sha256(value.encode()).hexdigest()} for name,value in {'callback':callback,'poll_guard':guard,'poll_after_dispatch':poll}.items()},indent=2))
-    return [o/'ProductSyncLifecycleProbe.kt',o/'SourceSyncControlProbe.kt']
+    outputs=[o/'ProductSyncLifecycleProbe.kt',o/'SourceSyncControlProbe.kt']
+    application=b/'SoundQApplication.kt'
+    if application.is_file():
+        app=application.read_text();wiring='\n'.join(next(line for line in app.splitlines() if line.strip().startswith('val '+name+'=')) for name in ('playlists','playlistDetail','playlistSync'))
+        graph=o/'SourceSyncAppGraphProbe.kt'
+        graph.write_text('package com.soundq.android.data\nimport java.io.File\ninternal class SourceSyncAppGraphProbe(val api:SoundQApi,val directory:File) {\n'+wiring+'\n}\n')
+        (o/'app-graph-input.json').write_text(json.dumps({'path':str(application),'sha256':hashlib.sha256(application.read_bytes()).hexdigest(),'wiring':wiring,'wiring_sha256':hashlib.sha256(wiring.encode()).hexdigest()},indent=2))
+        outputs.append(graph)
+    return outputs
