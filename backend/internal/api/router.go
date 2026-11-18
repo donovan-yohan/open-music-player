@@ -455,10 +455,14 @@ func (r *Router) setupRoutes() {
 		r.mux.HandleFunc("POST /api/v1/playlists/{id}/smart-reorder", r.withAuth(r.smartReorderHandlers.SmartReorderPlaylist))
 	}
 	if r.playlistImportHandlers != nil {
+		r.mux.HandleFunc("GET /api/v1/playlists/{id}/source-sync", r.withAuth(r.playlistImportHandlers.InspectSourceSync))
+		r.mux.HandleFunc("POST /api/v1/playlists/{id}/source-sync", r.withAuth(r.playlistImportHandlers.StartSourceSync))
 		r.mux.HandleFunc("POST /api/v1/playlist-imports", r.withAuth(r.playlistImportHandlers.CreateImport))
 		r.mux.HandleFunc("GET /api/v1/playlist-imports/{importJobId}", r.withAuth(r.playlistImportHandlers.GetImport))
 	} else {
 		playlistImportUnavailable := r.withAuth(unavailableHandler("Playlist import processing is disabled for this local mode"))
+		r.mux.HandleFunc("GET /api/v1/playlists/{id}/source-sync", playlistImportUnavailable)
+		r.mux.HandleFunc("POST /api/v1/playlists/{id}/source-sync", playlistImportUnavailable)
 		r.mux.HandleFunc("POST /api/v1/playlist-imports", playlistImportUnavailable)
 		r.mux.HandleFunc("GET /api/v1/playlist-imports/{importJobId}", playlistImportUnavailable)
 	}

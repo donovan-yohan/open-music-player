@@ -2,9 +2,11 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -117,20 +119,48 @@ func (s *SourceSelectionIngestion) CreateDownloadForDecision(ctx context.Context
 	if err != nil {
 		return nil, fmt.Errorf("marshal trusted candidate metadata: %w", err)
 	}
-	job := newSourceSelectionDownloadJob(userID, candidate)
-	if err := checkPersistablePlaylistTarget(job); err != nil {
-		return nil, err
-	}
-	_, err = s.db.ExecContext(ctx, sourceSelectionDownloadJobInsert, job.ID, userID, job.URL, job.SourceType, job.CandidateID, job.SourceID, job.Title, job.Artist, job.Album, job.Uploader, job.DurationMs, job.ThumbnailURL, metadata)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create durable source-selection download job: %w", err)
-	}
-	if err := s.decisions.AttachDownloadJobForUser(ctx, userID, decision.ID, uuid.MustParse(job.ID)); err != nil {
-		if cleanupErr := s.markUnlinkedFailed(ctx, userID, job.ID, fmt.Errorf("attach source selection decision: %w", err)); cleanupErr != nil {
-			return nil, fmt.Errorf("attach source selection decision: %w; cleanup failed: %v", err, cleanupErr)
-		}
 		return nil, err
 	}
+	defer tx.Rollback()
+	var prior uuid.NullUUID
+	if err = tx.QueryRowContext(ctx, `SELECT download_job_id FROM source_selection_decisions WHERE id=$1 AND user_id=$2 FOR UPDATE`, decision.ID, userID).Scan(&prior); err != nil {
+		return nil, err
+	}
+	job := newSourceSelectionDownloadJob(userID, candidate)
+	if prior.Valid {
+		// Idempotency reuses the original acquisition, never a conflicting job
+		// that happens to be attached to the same decision.
+		var owner uuid.UUID
+		var cid, sid, provider, sourceURL sql.NullString
+		if err = tx.QueryRowContext(ctx, `SELECT user_id,candidate_id,source_id,source_type,url FROM download_jobs WHERE id=$1`, prior.UUID).Scan(&owner, &cid, &sid, &provider, &sourceURL); err != nil {
+			return nil, fmt.Errorf("load durable acquisition: %w", err)
+		}
+		if owner != userID || cid.String != candidate.CandidateID || sid.String != candidate.SourceID || provider.String != candidate.Provider || strings.TrimSpace(sourceURL.String) != strings.TrimSpace(candidate.SourceURL) {
+			return nil, ErrSourceSelectionConflict
+		}
+		job.ID = prior.UUID.String()
+	} else {
+		if err = checkPersistablePlaylistTarget(job); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, sourceSelectionDownloadJobInsert, job.ID, userID, job.URL, job.SourceType, job.CandidateID, job.SourceID, job.Title, job.Artist, job.Album, job.Uploader, job.DurationMs, job.ThumbnailURL, metadata); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE source_selection_decisions SET download_job_id=$3 WHERE id=$1 AND user_id=$2`, decision.ID, userID, job.ID); err != nil {
+			return nil, err
+		}
+	}
+	// Persist import custody in the same decision/job transaction, before recovery
+	// could observe an apparently generic download.
+	if _, err = tx.ExecContext(ctx, `UPDATE playlist_import_items SET download_job_id=$2,status='queued',updated_at=clock_timestamp() WHERE selection_decision_id=$1 AND (download_job_id IS NULL OR download_job_id=$2)`, decision.ID, job.ID); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+
 	return &SourceSelectionDownload{Decision: decision, Job: job, Candidate: candidate}, nil
 }
 
@@ -156,7 +186,24 @@ func (s *SourceSelectionIngestion) EnqueueTrustedPlaylistDownload(ctx context.Co
 	if persisted == nil || persisted.Job == nil || persisted.Decision == nil || enqueuer == nil {
 		return nil, fmt.Errorf("persisted source-selection playlist download is required")
 	}
-	job, err := enqueuer.EnqueuePlaylistImportItemWithID(ctx, persisted.Job.ID, persisted.Job.UserID, persisted.Candidate, importJobID, importItemID, playlistID, playlistPosition)
+	// Link before Redis publication so boot recovery always sees the exact import item.
+	result, err := s.db.ExecContext(ctx, `UPDATE playlist_import_items i SET download_job_id=$2,status='queued',updated_at=clock_timestamp() FROM playlist_import_jobs j WHERE i.id=$1 AND i.import_job_id=j.id AND j.id=$3 AND j.playlist_id=$4 AND j.user_id=$5 AND (i.download_job_id IS NULL OR i.download_job_id=$2)`, importItemID, persisted.Job.ID, importJobID, playlistID, persisted.Decision.UserID)
+	if err != nil {
+		return nil, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil || n != 1 {
+		return nil, fmt.Errorf("playlist acquisition link was not admitted")
+	}
+	var job *download.DownloadJob
+	if recoverer, ok := enqueuer.(interface {
+		EnsurePlaylistImportItemWithID(context.Context, string, string, download.SourceCandidate, string, int64, int64, int) (*download.DownloadJob, error)
+	}); ok {
+		job, err = recoverer.EnsurePlaylistImportItemWithID(ctx, persisted.Job.ID, persisted.Job.UserID, persisted.Candidate, importJobID, importItemID, playlistID, playlistPosition)
+	} else {
+		job, err = enqueuer.EnqueuePlaylistImportItemWithID(ctx, persisted.Job.ID, persisted.Job.UserID, persisted.Candidate, importJobID, importItemID, playlistID, playlistPosition)
+	}
+
 	if err != nil {
 		if persistErr := s.markFailed(ctx, persisted.Decision.UserID, persisted.Job.ID, err); persistErr != nil {
 			return nil, fmt.Errorf("enqueue trusted playlist download: %w; persist failure: %v", err, persistErr)

@@ -253,12 +253,20 @@ func (l *SourceSelectionDownloadLifecycle) RecoverWithPlayback(ctx context.Conte
 		SELECT j.id, j.user_id, d.selected_candidate, j.mb_recording_id,
 			qi.queue_item_id, qi.insert_position,
 			pi.import_job_id, pi.id, pij.playlist_id, pi.playlist_position,
-			j.target_playlist_id
+			j.target_playlist_id, COALESCE(pij.is_source_sync,FALSE)
 		FROM download_jobs AS j
 		JOIN source_selection_decisions AS d ON d.download_job_id = j.id
 		LEFT JOIN source_selection_queue_intents AS qi
 			ON qi.decision_id = d.id AND qi.user_id = j.user_id AND qi.download_job_id = j.id
-		LEFT JOIN playlist_import_items AS pi ON pi.download_job_id = j.id::text
+		-- Observers of an adopted acquisition do not acquire its queue identity.
+		-- The originating decision link wins; pre-link legacy items retain their
+		-- original first-item identity, never a newer observing sync operation.
+		LEFT JOIN LATERAL (
+			SELECT item.* FROM playlist_import_items item
+			WHERE item.download_job_id = j.id::text
+			ORDER BY (item.selection_decision_id = d.id) DESC NULLS LAST, item.id ASC
+			LIMIT 1
+		) AS pi ON TRUE
 		LEFT JOIN playlist_import_jobs AS pij ON pij.id = pi.import_job_id AND pij.user_id = j.user_id
 		WHERE j.status NOT IN ('complete', 'failed')
 		ORDER BY j.updated_at ASC, j.id ASC
@@ -276,13 +284,26 @@ func (l *SourceSelectionDownloadLifecycle) RecoverWithPlayback(ctx context.Conte
 		var mbRecordingID uuid.NullUUID
 		var queueItemID, insertPosition sql.NullString
 		var importJobID uuid.NullUUID
+		var manualSync bool
 		var importItemID, playlistID, playlistPosition, targetPlaylistID sql.NullInt64
-		if err := rows.Scan(&jobID, &userID, &snapshot, &mbRecordingID, &queueItemID, &insertPosition, &importJobID, &importItemID, &playlistID, &playlistPosition, &targetPlaylistID); err != nil {
+		if err := rows.Scan(&jobID, &userID, &snapshot, &mbRecordingID, &queueItemID, &insertPosition, &importJobID, &importItemID, &playlistID, &playlistPosition, &targetPlaylistID, &manualSync); err != nil {
 			return recovered, err
 		}
 		candidate, err := candidateFromPersistedSelection(snapshot)
 		if err != nil {
 			return recovered, fmt.Errorf("decode durable source-selection job %s: %w", jobID, err)
+		}
+		// Classification belongs to the canonical server-created acquisition,
+		// not the latest observing operation or a newly supplied client flag.
+		if importJobID.Valid {
+			if manualSync {
+				if candidate.Metadata == nil {
+					candidate.Metadata = make(map[string]interface{})
+				}
+				candidate.Metadata["manualSync"] = true
+			} else {
+				delete(candidate.Metadata, "manualSync")
+			}
 		}
 		var mbID *string
 		if mbRecordingID.Valid {

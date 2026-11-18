@@ -107,6 +107,21 @@ func (r *PlaylistSourceRepository) UpsertBinding(ctx context.Context, binding *P
 	if err := lockOwnedPlaylist(ctx, tx, binding.UserID, binding.PlaylistID); err != nil {
 		return err
 	}
+	var oldProvider, oldSource string
+	var fingerprint sql.NullString
+	var generation int64
+	err = tx.QueryRowContext(ctx, `SELECT provider,provider_playlist_id,snapshot_fingerprint,snapshot_generation FROM playlist_source_bindings WHERE playlist_id=$1 FOR UPDATE`, binding.PlaylistID).Scan(&oldProvider, &oldSource, &fingerprint, &generation)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		binding.SnapshotGeneration = generation
+		binding.SnapshotFingerprint = fingerprint
+		if oldProvider != binding.Provider || oldSource != binding.ProviderPlaylistID {
+			binding.SnapshotGeneration++
+			binding.SnapshotFingerprint = sql.NullString{}
+		}
+	}
 	if err := upsertPlaylistSourceBinding(ctx, tx, binding); err != nil {
 		return err
 	}
@@ -115,7 +130,7 @@ func (r *PlaylistSourceRepository) UpsertBinding(ctx context.Context, binding *P
 
 // ApplyResolvedMapping atomically updates the owned binding, its stable source
 // entries, and the resolved playlist membership. It removes stale source-only
-// membership while retaining tracks that are in the user's library.
+// membership without deleting Library entries or original track/audio records.
 func (r *PlaylistSourceRepository) ApplyResolvedMapping(ctx context.Context, binding *PlaylistSourceBinding, entries []ResolvedPlaylistSourceEntry) error {
 	if err := validatePlaylistSourceBinding(binding); err != nil {
 		return err
@@ -133,9 +148,24 @@ func (r *PlaylistSourceRepository) ApplyResolvedMapping(ctx context.Context, bin
 		return err
 	}
 
+	if err := r.ApplyResolvedMappingTx(ctx, tx, binding, entries); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ApplyResolvedMappingTx applies a complete accepted mapping under the caller's
+// owned-playlist lock. Import orchestration uses it to commit job/items atomically.
+func (r *PlaylistSourceRepository) ApplyResolvedMappingTx(ctx context.Context, tx *sql.Tx, binding *PlaylistSourceBinding, entries []ResolvedPlaylistSourceEntry) error {
+	if err := validatePlaylistSourceBinding(binding); err != nil {
+		return err
+	}
+	if err := validateResolvedPlaylistSourceEntries(entries); err != nil {
+		return err
+	}
 	var priorFingerprint sql.NullString
 	var priorGeneration int64
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		SELECT snapshot_fingerprint, snapshot_generation
 		FROM playlist_source_bindings
 		WHERE playlist_id = $1
@@ -165,11 +195,7 @@ func (r *PlaylistSourceRepository) ApplyResolvedMapping(ctx context.Context, bin
 			WHERE old.source_binding_id = $2 AND old.track_id = pt.track_id
 		  )
 		  AND NOT (pt.track_id = ANY($3::bigint[]))
-		  AND NOT EXISTS (
-			SELECT 1 FROM user_library AS ul
-			WHERE ul.user_id = $4 AND ul.track_id = pt.track_id
-		  )
-	`, binding.PlaylistID, binding.ID, pq.Array(currentTrackIDs), binding.UserID); err != nil {
+	`, binding.PlaylistID, binding.ID, pq.Array(currentTrackIDs)); err != nil {
 		return err
 	}
 
@@ -246,7 +272,7 @@ func (r *PlaylistSourceRepository) ApplyResolvedMapping(ctx context.Context, bin
 	if _, err := tx.ExecContext(ctx, `UPDATE playlists SET updated_at = clock_timestamp() WHERE id = $1`, binding.PlaylistID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 // CompletePlaylistImportItem durably finishes one queued import item. When a

@@ -166,11 +166,11 @@ func (q *Queue) EnsurePlaylistImportItemWithID(ctx context.Context, jobID, userI
 			if job.PlaylistImportJobID != importJobID || job.PlaylistImportItemID != importItemID || job.PlaylistID != playlistID || job.PlaylistPosition != playlistPosition {
 				return nil, fmt.Errorf("playlist import metadata mismatch for download job %s", jobID)
 			}
-			_, positionErr := q.client.LPos(ctx, keyJobQueue, jobID, redis.LPosArgs{}).Result()
+			_, positionErr := q.client.LPos(ctx, downloadQueueKey(job), jobID, redis.LPosArgs{}).Result()
 			switch {
 			case positionErr == nil:
 			case errors.Is(positionErr, redis.Nil):
-				if err := q.client.LPush(ctx, keyJobQueue, jobID).Err(); err != nil {
+				if err := q.client.LPush(ctx, downloadQueueKey(job), jobID).Err(); err != nil {
 					return nil, fmt.Errorf("restore queued playlist import job: %w", err)
 				}
 			default:
@@ -230,7 +230,7 @@ func (q *Queue) enqueueJob(ctx context.Context, job *DownloadJob) (*DownloadJob,
 		return nil, err
 	}
 
-	if err := q.client.LPush(ctx, keyJobQueue, job.ID).Err(); err != nil {
+	if err := q.client.LPush(ctx, downloadQueueKey(job), job.ID).Err(); err != nil {
 		_ = q.client.Del(ctx, keyJobStatus+job.ID).Err()
 		return nil, fmt.Errorf("failed to enqueue job: %w", err)
 	}
@@ -244,7 +244,7 @@ func (q *Queue) Dequeue(ctx context.Context, timeout time.Duration) (*DownloadJo
 		timeout = defaultBlockTimeout
 	}
 
-	result, err := q.client.BRPop(ctx, timeout, keyJobQueue).Result()
+	result, err := q.client.BRPop(ctx, timeout, keyJobQueue, keyJobQueue+":manual-sync").Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return nil, ErrQueueEmpty
@@ -345,7 +345,7 @@ func (q *Queue) IncrementRetry(ctx context.Context, jobID string) error {
 
 	pipe := q.client.TxPipeline()
 	pipe.Set(ctx, keyJobStatus+job.ID, data, 0)
-	pipe.LPush(ctx, keyJobQueue, jobID)
+	pipe.LPush(ctx, downloadQueueKey(job), jobID)
 	_, err = pipe.Exec(ctx)
 	return err
 }
@@ -383,14 +383,14 @@ func (q *Queue) PublishQueuedRetry(ctx context.Context, jobID string) error {
 	if job.Status != StatusQueued {
 		return ErrJobNotRetryable
 	}
-	_, err = q.client.LPos(ctx, keyJobQueue, jobID, redis.LPosArgs{}).Result()
+	_, err = q.client.LPos(ctx, downloadQueueKey(job), jobID, redis.LPosArgs{}).Result()
 	if err == nil {
 		return nil
 	}
 	if !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("check queued retry: %w", err)
 	}
-	return q.client.LPush(ctx, keyJobQueue, jobID).Err()
+	return q.client.LPush(ctx, downloadQueueKey(job), jobID).Err()
 }
 
 // GetUserJobs retrieves all jobs for a specific user

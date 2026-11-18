@@ -34,6 +34,7 @@ type ImportRequest struct {
 }
 
 type ImportJob struct {
+	ManualSync    bool
 	ID            uuid.UUID
 	UserID        uuid.UUID
 	PlaylistID    int64
