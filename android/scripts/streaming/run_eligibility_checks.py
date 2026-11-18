@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded, SDK/Gradle-free codec eligibility facades. Not Android runtime proof."""
+"""SDK/Gradle-free codec eligibility and optional native onset proof. Not Android runtime proof."""
 import argparse
 import hashlib
 import json
@@ -11,6 +11,7 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output', required=True, type=Path)
 p.add_argument('--java-home', required=True, type=Path)
 p.add_argument('--reader-source', type=Path)
+p.add_argument('--jni-dir', type=Path, help='Private CMake soundq_streaming_jni output for the onset checks')
 a = p.parse_args()
 probes = Path(__file__).resolve().parent
 repo = probes.parents[2]
@@ -22,6 +23,8 @@ env = dict(os.environ, JAVA_HOME=str(a.java_home), JAVA_OPTS='-Xmx512m -XX:Activ
 results = []
 inputs = [probes / n for n in ('KeepFacade.kt', 'MediaFacade.kt', 'LeaseFacade.kt', 'PlatformWindowProbe.kt', 'EligibilityEosProbe.kt')]
 inputs += [native / 'NativePlaybackSource.kt', native / 'OriginalMetadataReader.kt', native / 'Mp3OriginalFrames.kt', reader]
+if a.jni_dir:
+    inputs += [probes / 'StartupJniProbe.kt', probes / 'StreamingJniProbe.kt', native / 'NativeCallbackBridge.kt']
 (out / 'inputs.json').write_text(json.dumps({str(f): hashlib.sha256(f.read_bytes()).hexdigest() for f in inputs}, indent=2)+'\n')
 
 def run(name, command):
@@ -39,4 +42,8 @@ java = [a.java_home / 'bin/java', '-Xmx512m', '-XX:ActiveProcessorCount=1', '-Dj
 failed = run('long-control', [*java, 'com.soundq.android.playback.nativeengine.PlatformWindowProbeKt']) != 0
 for mode in ('short-empty-eos', 'short-unmapped-seek', 'failure-read', 'failure-cancel', 'failure-decoded-budget'):
     failed |= run(mode, [*java, 'com.soundq.android.playback.nativeengine.EligibilityEosProbeKt', mode]) != 0
+if a.jni_dir:
+    jni_java = [java[0], '--enable-native-access=ALL-UNNAMED', f'-Djava.library.path={a.jni_dir.resolve()}', *java[1:]]
+    for mode in ('zero', 'deep'):
+        failed |= run('onset-'+mode, [*jni_java, 'com.soundq.android.playback.nativeengine.StartupJniProbeKt', mode]) != 0
 raise SystemExit(int(failed))

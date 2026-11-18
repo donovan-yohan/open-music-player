@@ -25,6 +25,7 @@ internal class AndroidPlatformWindowReader(private val source:OriginalAudioReadL
     private var encoding=AudioFormat.ENCODING_PCM_16BIT
     private var inputEnded=false
     private var outputEnded=false
+    private var startupFlushPending=false
     private var originUs:Long?=null
     private var encodedOriginUs=0L
     private var gaplessTrim=0L
@@ -70,7 +71,9 @@ internal class AndroidPlatformWindowReader(private val source:OriginalAudioReadL
             // trusting container duration. One bounded indexed sample witness.
             val thresholdFrame=rate*600L+(rate+999)/1000-1
             confirmedLong=readWindow(thresholdFrame,1,ByteBuffer.allocateDirect(8),eligibilityWitness=true)==1
-            seek(0)
+            // Keep the logical reset (including packet seek and its validation).
+            // No codec I/O follows in open; the first page may seek again.
+            seek(0,deferStartupFlush=true)
             source.checkCurrent();return rate
         } catch(error:Throwable) {closeReader();throw error}
     }
@@ -124,7 +127,7 @@ internal class AndroidPlatformWindowReader(private val source:OriginalAudioReadL
         return written
     }
     private fun unit()=if(encoding==AudioFormat.ENCODING_PCM_FLOAT)4 else 2
-    private fun seek(first:Long) {
+    private fun seek(first:Long,deferStartupFlush:Boolean=false) {
         releasePending(discard=true)
         val ex=requireNotNull(extractor);val decoder=requireNotNull(codec)
         // PREVIOUS_SYNC is not a sample-accurate floor for every extractor (MP3
@@ -134,7 +137,9 @@ internal class AndroidPlatformWindowReader(private val source:OriginalAudioReadL
         val packets=mp3Frames
         if(packets!=null) {packets.seek(indexedFirst);traversalFirst=packets.sampleFrame}
         else ex.seekTo(indexedFirst*1_000_000L/rate,MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-        decoder.flush();inputEnded=false;outputEnded=false;nextDecoded=null;cursor=first
+        if(!deferStartupFlush)decoder.flush()
+        startupFlushPending=deferStartupFlush
+        inputEnded=false;outputEnded=false;nextDecoded=null;cursor=first
     }
     private fun releasePending(discard:Boolean=false) {
         if(pendingIndex>=0)requireNotNull(codec).releaseOutputBuffer(pendingIndex,false)
@@ -153,6 +158,10 @@ internal class AndroidPlatformWindowReader(private val source:OriginalAudioReadL
         val ex=requireNotNull(extractor);val decoder=requireNotNull(codec)
         while(true) {
             checkWorker();check(System.nanoTime()<deadline) {"Audio decoder made no bounded progress"}
+            if(startupFlushPending) {
+                decoder.flush()
+                startupFlushPending=false
+            }
             if(!inputEnded) {
                 val index=decoder.dequeueInputBuffer(1000)
                 if(index>=0) {

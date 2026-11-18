@@ -24,10 +24,11 @@ bounded `read` requests, and never asks for the held tail merely to return PCM.
 
 ## Android runtime acceptance
 
-Build this cohort with
-`-POMP_TEST_RUNNER=com.soundq.android.DirectCodecFixtureRunner` and select only
-`com.soundq.android.playback.nativeengine.PhonePlatformWindowTest`. The direct
-runner substitutes plain `android.app.Application`, not SoundQApplication.
+Build the direct codec cohort with
+`-POMP_TEST_RUNNER=com.soundq.android.DirectCodecFixtureRunner` and select each
+intended `class#method` explicitly, including the tagged bookmark control
+below. The runner substitutes plain `android.app.Application`, not
+SoundQApplication.
 ProductFixtureRunner starts the product graph/controller/service and already
 owns the native singleton even in an otherwise separate test invocation. Do not
 force-close that healthy service to make a direct JNI test pass. Service
@@ -79,11 +80,17 @@ witness just beyond the integer-millisecond threshold. This is a bounded
 indexed seek, not trust in a duration estimate and not decoding the prefix.
 Actual first-audio latency including this probe must be measured on Android.
 An out-of-range witness with no decoded output and EOS means eligibility is not
-established; it does not seal an endpoint. Open resets to source zero afterward.
+established; it does not seal an endpoint. Open logically seeks to source zero
+afterward. The codec flush waits for the first read, where a nonzero seek can
+perform the same reset instead of flushing twice without intervening decode.
 Ordinary arbitrary-seek unmapped EOS still fails; read errors, revocation and
 bounded-decoder failures are not converted to a short-source result.
 
-The SDK/Gradle-free focused regressions use <=512MiB/one-core JVMs:
+The SDK/Gradle-free focused regressions use <=512MiB/one-core JVMs. Run from
+the repository root with `kotlinc` on `PATH`, `JAVA_HOME` exported as the
+absolute path to a full JDK, and `TMPDIR` exported as a writable private
+directory with a canonical absolute path (`pwd -P`). Use a fresh output
+directory for each invocation:
 
 ```sh
 python3 android/scripts/streaming/run_eligibility_checks.py --output <new-output> --java-home <full-JDK>
@@ -91,7 +98,7 @@ python3 android/scripts/streaming/run_direct_fixture_checks.py --output <new-out
 python3 android/scripts/streaming/run_mp3_metadata_checks.py --output <new-output> --java-home <full-JDK>
 ```
 
-The first compiles the unchanged production reader against declared Android
+The first compiles the production reader against declared Android
 facades: empty witness EOS, exact sample/end recovery, arbitrary seek refusal,
 source-read failure, revocation, decode budget and the retained long-source
 control. The second extracts the actual MP3 test method and supplies explicitly
@@ -99,6 +106,15 @@ failing JNI collaborators to prove cleanup before handle acquisition, primary
 failure/suppression and failed-custody retention. It also checks the actual
 direct runner's Application substitution against a framework facade. Neither
 script is Android codec, service, output or acoustic acceptance.
+
+To also run fresh zero and bookmarked startup through the real JNI worker and
+callback publication, pass `--jni-dir <private-jni-build>` to the eligibility
+runner. Configure that host build with `SOUNDQ_CALLBACK_TESTS=ON` and
+`SOUNDQ_CALLBACK_JNI_TESTS=ON` and build `soundq_streaming_jni` with the same
+full JDK. The test holds the fourth page, checks first consumed stereo PCM and
+the subsequent backward seek, and counts all startup flushes through first
+callback consumption against a synthetic codec that requires a flush before
+decoding. This proves work removal, not Android timing.
 
 For the observed cold-resume shape, generate private synthetic input with
 `generate_tagged_long_fixture.py --observed-cold-resume --output <new-output>`.
