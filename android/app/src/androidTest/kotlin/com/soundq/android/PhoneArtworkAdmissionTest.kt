@@ -69,8 +69,12 @@ class PhoneArtworkAdmissionTest {
             compose.waitForIdle();assertFalse("Ineligible caller must not paint cover",painted())
             compose.runOnIdle {eligible.value=true}
             fun awaitRead(number:Int) {
-                compose.waitUntil(10000){reads.get()>=number}
-                compose.waitForIdle()
+                // The IO observer runs before the composition publishes pixels. Wait for
+                // the real raster too, but let a failed or duplicate read fail immediately.
+                compose.waitUntil(10000) {
+                    val completed=reads.get()
+                    completed>=number&&(completed!=number||!decoded.get()||painted())
+                }
                 assertEquals(number,reads.get());assertTrue(decoded.get())
             }
             awaitRead(1)
