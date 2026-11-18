@@ -116,6 +116,7 @@ class ProductViewModel(app:Application):AndroidViewModel(app) {
     val queuePlaylist=graph.queuePlaylist.state
     fun playlistOrderActions() = com.soundq.android.data.playlists.PlaylistOrderActions(graph.playlistOrder) { work -> viewModelScope.launch(Dispatchers.IO) { work() } }
     fun queuePlaylistActions() = com.soundq.android.data.playlists.QueuePlaylistActions(graph.queuePlaylist, { work -> viewModelScope.launch(Dispatchers.IO) { work() } }, { playback.value })
+    val playlistSourceSync=graph.playlistSync.state
     val playlistBlend=graph.playlistBlend.state
     fun generatePlaylistBlend(capture:com.soundq.android.data.playlists.BlendCapture) {
         val work=graph.playlistBlend.generate(capture) ?: return

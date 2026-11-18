@@ -51,9 +51,10 @@ class PlaylistDetailRepository(private val api: SoundQApi) {
         selected?.let { request -> api.session.current(request.scope) } == true && !it.loading && it.error == null
     }?.detail
     @Synchronized internal fun ownsManagement(value: PlaylistDetail) = managementDetail() === value
-    @Synchronized internal fun publishManagement(before: PlaylistDetail, after: PlaylistDetail?) {
-        if (!ownsManagement(before)) return
+    @Synchronized internal fun publishManagement(before: PlaylistDetail, after: PlaylistDetail?):Boolean {
+        if (!ownsManagement(before)) return false
         if (after == null) retire() else mutable.value = mutable.value.copy(detail = after, error = null, loading = false)
+        return true
     }
     fun open(id: PlaylistId) { select(id)?.let(::load) }
     fun load(request: PlaylistDetailRequest) {

@@ -61,6 +61,7 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     val downloads=com.soundq.android.data.offline.DeviceDownloads(File(directory,"device-downloads"),session,api,mediaClient)
     val playlists=com.soundq.android.data.playlists.PlaylistRepository(api)
     val playlistDetail=com.soundq.android.data.playlists.PlaylistDetailRepository(api)
+    val playlistSync=com.soundq.android.data.playlists.PlaylistSourceSyncRepository(api,playlistDetail,com.soundq.android.data.acquisition.IntakeReceipts(File(directory,"playlist-sync-receipts.v1.json")),playlists=playlists)
     val playlistBlend=com.soundq.android.data.playlists.PlaylistBlendRepository(api,playlistDetail,downloads)
     val playlistOrder=com.soundq.android.data.playlists.PlaylistOrderRepository(api,playlistDetail)
     val queuePlaylist=com.soundq.android.data.playlists.QueuePlaylistRepository(api)
@@ -104,7 +105,7 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     }
     fun retireCatalog() {retireCatalog(false)}
     internal fun retireCatalogAfterPlaybackAccount() {retireCatalog(true)}
-    private fun retireCatalog(preserveCurrentLibrary:Boolean) {contextStarts.retire();harmonic.retire();playlistBlend.retireAccount();timeline.retire();known.clear();trackDetails.retire();downloads.retire();if(preserveCurrentLibrary)library.retireObsolete()else library.retire();playlists.retire();playlistDetail.retire();playlistManagement.retire();playlistOrder.retire();queuePlaylist.retire();playlistMembership.retire();home.retire();imports.retire();discovery.retire();catalog.retire();acquisition.retire()}
+    private fun retireCatalog(preserveCurrentLibrary:Boolean) {playlistSync.retire();contextStarts.retire();harmonic.retire();playlistBlend.retireAccount();timeline.retire();known.clear();trackDetails.retire();downloads.retire();if(preserveCurrentLibrary)library.retireObsolete()else library.retire();playlists.retire();playlistDetail.retire();playlistManagement.retire();playlistOrder.retire();queuePlaylist.retire();playlistMembership.retire();home.retire();imports.retire();discovery.retire();catalog.retire();acquisition.retire()}
     override fun close() {phoneAudio.close();if(playerArtworkOwner.isInitialized())playerArtwork.close();libraryArtwork.close();if(presenceOwner.isInitialized())presence.close();if(jamOwner.isInitialized())jam.close();if(controllerOwner.isInitialized())controller.close();io.cancel();retireCatalog()}
     private fun keystoreKey():SecretKey {
         val store=KeyStore.getInstance("AndroidKeyStore").apply {load(null)}

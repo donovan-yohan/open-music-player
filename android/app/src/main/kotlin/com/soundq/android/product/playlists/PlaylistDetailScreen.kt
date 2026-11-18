@@ -64,6 +64,7 @@ private fun transitionLabel(t:kotlinx.serialization.json.JsonObject):String {
     artwork:@Composable (com.soundq.android.data.Track,()->Boolean)->Unit={_,_->},
     harmonicFeedback:@Composable ()->Unit={},
     playback:PlaybackProjection=PlaybackProjection(),
+    sourceSync:@Composable ()->Unit={},
 ) {
     // Member rows represent tracks, not the saved mix's global cursor or an editor selection.
     // Reuse the accepted queue projection, including paused selection, in every list branch.
@@ -131,6 +132,7 @@ private fun transitionLabel(t:kotlinx.serialization.json.JsonObject):String {
         // Feedback shares the bounded member body; empty slots reserve no padded row.
         val feedback:@Composable ()->Unit={Column {
             harmonicFeedback()
+            sourceSync()
             if(actions!=null && management.playlist!=null) PlaylistDetailHeader { PlaylistManagementFeedback(management,actions) }
             if(orderActions!=null && order.outcome in setOf(com.soundq.android.data.MutationOutcome.Pending,com.soundq.android.data.MutationOutcome.Confirmed,com.soundq.android.data.MutationOutcome.Refused,com.soundq.android.data.MutationOutcome.Uncertain)) PlaylistDetailHeader {PlaylistOrderFeedback(order,orderActions)}
             if (state.loading) PlaylistDetailHeader { SoundQFeedback("Loading playlist", FeedbackKind.Loading) }

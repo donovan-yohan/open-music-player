@@ -23,10 +23,10 @@ class IntakeReceipts(private val file:File?=null) {
             require(body.getValue("version").jsonPrimitive.int==1)
             records=body.getValue("owners").jsonObject.mapValues {(_,v)->v.jsonArray.map {e->val o=e.jsonObject
                 val op=o.getValue("operation").jsonPrimitive.let {require(!it.isString);it.long.also {n->require(n>0)}}
-                val kind=o.getValue("kind").jsonPrimitive.content.also {require(it in setOf("download","source","playlist","research","queue","review"))}
+                val kind=o.getValue("kind").jsonPrimitive.content.also {require(it in setOf("download","source","playlist","research","queue","review","playlist-sync"))}
                 val phase=o.getValue("phase").jsonPrimitive.content.also {require(it in setOf("pending","accepted","uncertain","refused"))}
                 val job=o["job"]?.takeIf {it!=JsonNull}?.jsonPrimitive?.content?.also {ImportJobId(it)}
-                val playlist=o["playlistId"]?.let {p->p.jsonPrimitive.let {require(!it.isString&&kind=="source");it.long.also {n->require(n>0)}}}
+                val playlist=o["playlistId"]?.let {p->p.jsonPrimitive.let {require(!it.isString&&kind in setOf("source","playlist-sync"));it.long.also {n->require(n>0)}}}
                 IntakeReceipt(op,kind,phase,job,o["sessionId"]?.jsonPrimitive?.content?.also {ImportJobId(it)},o["candidateId"]?.jsonPrimitive?.content?.also {require(it.isNotBlank()&&it.length<=1024)},o["decisionId"]?.jsonPrimitive?.content?.also {ImportJobId(it)},playlist)
             }.also {r->require(r.zipWithNext().all {it.first.operation<it.second.operation})}}.let {LinkedHashMap(it)}
         }catch(_:Exception){rejected=true;records=linkedMapOf()}
@@ -44,7 +44,7 @@ class IntakeReceipts(private val file:File?=null) {
     @Synchronized fun entries(endpoint:String,account:String):List<IntakeReceipt> {load();check(!rejected);return records[key(endpoint,account)].orEmpty()}
     @Synchronized fun begin(endpoint:String,account:String,kind:String,sessionId:String?=null,candidateId:String?=null,decisionId:String?=null,job:String?=null,playlistId:Long?=null):IntakeReceipt {
         load();check(!rejected);job?.let {ImportJobId(it)}
-        require(playlistId==null||kind=="source"&&playlistId>0)
+        require(playlistId==null||kind in setOf("source","playlist-sync")&&playlistId>0)
         val k=key(endpoint,account);val previous=records[k].orEmpty()
         val receipt=IntakeReceipt((previous.lastOrNull()?.operation ?: 0)+1,kind,"pending",job,sessionId,candidateId,decisionId,playlistId)
         save(records+(k to (previous+receipt)));return receipt
@@ -53,5 +53,15 @@ class IntakeReceipts(private val file:File?=null) {
         load();check(!rejected);job?.let {ImportJobId(it)}
         val k=key(endpoint,account);val previous=records[k].orEmpty();require(previous.any {it.operation==receipt.operation})
         save(records+(k to previous.map {if(it.operation==receipt.operation)it.copy(phase=phase,job=job,decisionId=decisionId) else it}))
+    }
+    /** Source-sync failure may settle only the same unresolved durable intent.
+     * Sibling acquisition journals intentionally retain their existing finish contract. */
+    @Synchronized fun failSourceSync(endpoint:String,account:String,receipt:IntakeReceipt,refused:Boolean) {
+        require(receipt.kind=="playlist-sync")
+        load();check(!rejected)
+        val k=key(endpoint,account);val previous=records[k].orEmpty()
+        val current=previous.singleOrNull {it.operation==receipt.operation} ?: return
+        if(current.copy(phase=receipt.phase)!=receipt||current.phase !in setOf("pending","uncertain"))return
+        save(records+(k to previous.map {if(it===current)it.copy(phase=if(refused)"refused"else "uncertain")else it}))
     }
 }
