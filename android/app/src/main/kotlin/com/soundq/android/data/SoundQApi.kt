@@ -431,7 +431,10 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
     fun startPlaylistSourceSync(scope:AccountScope,id:com.soundq.android.data.playlists.PlaylistId,operation:String,binding:Long,admit:()->Boolean,valid:()->Boolean):com.soundq.android.data.playlists.SourceSyncOperation {
         require(java.util.UUID.fromString(operation).toString()==operation&&binding>=0)
         val body=buildJsonObject {put("operationId",operation);put("bindingId",binding)}
-        return com.soundq.android.data.playlists.SourceSyncJson.operation(authorized(scope,"/playlists/${id.value}/source-sync","POST",body,readOnly=false,valid=valid,expectedStatus=202,dispatchValid=admit),id)
+        // Connection retry policy does not forbid response-driven follow-ups.
+        // This allowance belongs to this explicit attempt, not its durable UUID.
+        val dispatched=java.util.concurrent.atomic.AtomicBoolean(false)
+        return com.soundq.android.data.playlists.SourceSyncJson.operation(authorized(scope,"/playlists/${id.value}/source-sync","POST",body,readOnly=false,valid=valid,expectedStatus=202,dispatchValid={admit()&&dispatched.compareAndSet(false,true)}),id)
     }
     fun playlistImport(scope:AccountScope,id:ImportJobId,valid:()->Boolean)=com.soundq.android.data.acquisition.AcquisitionJson.playlist(authorized(scope,"/playlist-imports/${id.value}",valid=valid,expectedStatus=200),id)
     fun createPlaylistImport(scope:AccountScope,source:ImportSource,name:String,maxItems:Int,valid:()->Boolean,admit:()->Boolean,description:String=""):com.soundq.android.data.acquisition.PlaylistImportProgress {

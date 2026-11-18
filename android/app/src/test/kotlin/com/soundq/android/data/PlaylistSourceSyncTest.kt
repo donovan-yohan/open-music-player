@@ -27,8 +27,11 @@ class PlaylistSourceSyncTest {
         HttpsFixture().use {f->
             val (api,detail,_)=ready(f);val repo=PlaylistSourceSyncRepository(api,detail,newOperation=::key)
             f.reply(vector("eligible"));repo.enter(id())!!()
+            val beforeMembership=detail.state.value.detail
             f.reply(vector("ack"),202);val action=repo.start()!!;action();action()
             assertFalse(repo.state.value.busy);assertEquals(key(),repo.state.value.observation!!.operation!!.id)
+            assertFalse(repo.state.value.observation!!.operation!!.accepted);assertTrue(repo.state.value.observation!!.operation!!.active)
+            assertSame("Resolving ACK is not accepted membership",beforeMembership,detail.state.value.detail)
             f.reply(vector("pending"));f.reply(vector("detail-pending"));repo.refresh()!!()
             assertTrue(repo.state.value.observation!!.operation!!.accepted);assertFalse(repo.state.value.readbackFailed)
             val expected=PlaylistJson.detail(Json.parseToJsonElement(vector("detail-pending")).jsonObject,id())
@@ -148,6 +151,147 @@ class PlaylistSourceSyncTest {
                 val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
                 assertEquals(1,requests.count{it.method=="PUT"});assertEquals(0,requests.count{it.method=="POST"})
             }finally{releaseRename.countDown();releaseSync.countDown();pool.shutdown();assertTrue(pool.awaitTermination(5,TimeUnit.SECONDS))}
+        }
+    }
+    @Test fun completedManagement404RevokesCapturedBrowseButNotListening() {
+        val dir=Files.createTempDirectory("sync-404-listening").toFile()
+        try {HttpsFixture().use {f->
+            val (api,detail,s)=ready(f);val capture=detail.capturePlayback()!!;val scope=s.capture()!!
+            DeviceListeningStore(File(dir,"domain.json")).use {store->
+                val account=ServerAccount(s.endpoint.identity,scope.accountId);val access=store.unlock(account)
+                val source=store.bindServerContent(access,HistoryKey.Server(account,ServerAudioId(capture.detail.tracks.first().id.value)),ContentRevision("a".repeat(64),1000),700000)!!
+                val binding=NativeListeningBinding(store,source,UUID.randomUUID(),77,0,0,700000,current={s.current(scope)})
+                fun deck(position:Long,end:NativeNaturalEndReceipt?=null)=NativeCallbackDeck(77,77,position,700000,48000,33600000,true,false,end==null,if(end==null)0 else 1,0,rate=1.0,traversalRevision=1,naturalEnd=end)
+                binding.observe(deck(1000),1000);binding.observe(deck(8000),2000);val stamp=binding.stamp()
+                val repo=PlaylistSourceSyncRepository(api,detail,newOperation=::key)
+                f.reply(vector("pending"));f.reply("{}",404);repo.enter(id())!!()
+                assertNull("Completed management 404 left a deleted browse detail live",detail.state.value.detail)
+                assertNull(detail.state.value.id);assertFalse(detail.ownsPlayback(capture));assertFalse(repo.canStart())
+                assertEquals(stamp,binding.stamp());binding.observe(deck(14000),3000);assertEquals(14000L,store.bookmark(source)!!.positionMs)
+                binding.observe(deck(700000,NativeNaturalEndReceipt(1,77,77,1)),4000)
+                assertNull(store.bookmark(source));assertEquals(1L,binding.consumedCount())
+                assertEquals(3,f.server.requestCount)
+            }
+        }}finally{dir.deleteRecursively()}
+    }
+    @Test fun acceptedStatusWithoutSnapshotRequestCannotRetireLoadingDetail() {
+        HttpsFixture().use {f->
+            val (api,detail,_)=ready(f);detail.select(id())
+            val repo=PlaylistSourceSyncRepository(api,detail,newOperation=::key)
+            f.reply(vector("pending"));repo.enter(id())!!()
+            assertEquals(id(),detail.state.value.id);assertTrue(detail.state.value.loading)
+            assertTrue(repo.state.value.readbackFailed);assertEquals(2,f.server.requestCount)
+        }
+    }
+    @Test fun held404CannotRevokeAReplacementDetailReference() {
+        HttpsFixture().use {f->
+            val (api,detail,_)=ready(f);val repo=PlaylistSourceSyncRepository(api,detail,newOperation=::key)
+            val entered=java.util.concurrent.CountDownLatch(1);val release=java.util.concurrent.CountDownLatch(1);val reads=java.util.concurrent.atomic.AtomicInteger()
+            f.server.dispatcher=object:mockwebserver3.Dispatcher(){override fun dispatch(request:mockwebserver3.RecordedRequest):mockwebserver3.MockResponse {
+                if(request.url.encodedPath.endsWith("source-sync"))return mockwebserver3.MockResponse.Builder().body(vector("pending")).build()
+                if(reads.incrementAndGet()==1){entered.countDown();check(release.await(5,TimeUnit.SECONDS));return mockwebserver3.MockResponse.Builder().code(404).body("{}").build()}
+                return mockwebserver3.MockResponse.Builder().body(vector("detail-before")).build()
+            }}
+            val pool=java.util.concurrent.Executors.newSingleThreadExecutor()
+            try {
+                val work=repo.enter(id())!!;val future=pool.submit{work()};assertTrue(entered.await(3,TimeUnit.SECONDS))
+                detail.open(id());val fresh=detail.state.value.detail!!
+                release.countDown();future.get(5,TimeUnit.SECONDS)
+                assertSame(fresh,detail.state.value.detail);assertTrue(repo.state.value.readbackFailed);assertFalse(repo.state.value.busy)
+            }finally{release.countDown();pool.shutdown();assertTrue(pool.awaitTermination(5,TimeUnit.SECONDS))}
+        }
+    }
+    @Test fun retryAfterZeroCannotAutomaticallyRedispatchOneSyncAttempt() {
+        val dir=Files.createTempDirectory("sync-wire-attempt").toFile()
+        try {HttpsFixture().use {f->
+            val (api,detail,s)=ready(f);val file=File(dir,"journal.json");val repo=PlaylistSourceSyncRepository(api,detail,IntakeReceipts(file),::key)
+            f.reply(vector("eligible"));repo.enter(id())!!()
+            val posts=java.util.concurrent.atomic.AtomicInteger()
+            f.server.dispatcher=object:mockwebserver3.Dispatcher(){override fun dispatch(request:mockwebserver3.RecordedRequest):mockwebserver3.MockResponse {
+                check(request.method=="POST")
+                return if(posts.incrementAndGet()==1)mockwebserver3.MockResponse.Builder().code(503).addHeader("Retry-After","0").body("{}").build()
+                else mockwebserver3.MockResponse.Builder().code(202).body(vector("ack")).build()
+            }}
+            repo.start()!!()
+            assertEquals("One explicit sync attempt dispatched more than once",1,posts.get())
+            assertTrue(repo.state.value.uncertain)
+            val saved=IntakeReceipts(file).entries(s.endpoint.identity,s.capture()!!.accountId).single()
+            assertEquals(key(),saved.job);assertEquals("1",saved.candidateId);assertTrue(saved.phase in setOf("pending","uncertain"))
+            repo.start()!!();assertEquals(2,posts.get());assertFalse(repo.state.value.uncertain)
+            val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}.filter{it.method=="POST"}
+            assertEquals(2,requests.size);val bodies=requests.map{Json.parseToJsonElement(it.body!!.utf8()).jsonObject}
+            assertEquals(bodies[0],bodies[1]);assertEquals(key(),bodies[0].getValue("operationId").jsonPrimitive.content)
+        }}finally{dir.deleteRecursively()}
+    }
+    @Test fun acceptedImportingRetryPublishesMembershipBeforeAnotherWrite() {
+        HttpsFixture().use {f->
+            val (api,detail,_)=ready(f);val repo=PlaylistSourceSyncRepository(api,detail,newOperation=::key)
+            f.reply(vector("eligible"));repo.enter(id())!!();f.reply("{}",503);repo.start()!!()
+            f.reply(Json.parseToJsonElement(vector("pending")).jsonObject.getValue("operation").toString(),202);f.reply(vector("detail-pending"));repo.start()!!()
+            assertEquals("Accepted importing ACK skipped authoritative membership",PlaylistJson.detail(Json.parseToJsonElement(vector("detail-pending")).jsonObject,id()),detail.state.value.detail)
+            assertTrue(repo.state.value.observation!!.operation!!.active);assertFalse(repo.state.value.readbackFailed);assertTrue(repo.canStart())
+            f.reply(vector("pending"));f.reply(vector("detail-pending"));repo.refresh()!!()
+            assertTrue(repo.state.value.observation!!.operation!!.active);assertFalse(repo.state.value.busy)
+        }
+    }
+    @Test fun legacyExactRetryKeepsOriginalBindingThenRefreshesBindingForFreshIntent() {
+        val dir=Files.createTempDirectory("sync-legacy-binding").toFile()
+        try {HttpsFixture().use {f->
+            val (api,detail,s)=ready(f);var operation=key();val file=File(dir,"journal.json")
+            val repo=PlaylistSourceSyncRepository(api,detail,IntakeReceipts(file),newOperation={operation})
+            f.reply(JsonObject(Json.parseToJsonElement(vector("eligible")).jsonObject+("bindingId" to JsonPrimitive(0))).toString());repo.enter(id())!!()
+            val posts=java.util.concurrent.atomic.AtomicInteger()
+            f.server.dispatcher=object:mockwebserver3.Dispatcher(){override fun dispatch(request:mockwebserver3.RecordedRequest):mockwebserver3.MockResponse {
+                if(request.method=="POST")return when(posts.incrementAndGet()) {
+                    1->mockwebserver3.MockResponse.Builder().code(503).body("{}").build()
+                    2->mockwebserver3.MockResponse.Builder().code(202).body(Json.parseToJsonElement(terminalObservation()).jsonObject.getValue("operation").toString()).build()
+                    else->mockwebserver3.MockResponse.Builder().code(202).body(vector("ack").replace(key(),operation)).build()
+                }
+                val body=if(request.url.encodedPath.endsWith("source-sync"))JsonObject(Json.parseToJsonElement(terminalObservation()).jsonObject+("bindingId" to JsonPrimitive(7))).toString() else vector("detail-after")
+                return mockwebserver3.MockResponse.Builder().body(body).build()
+            }}
+            repo.start()!!();assertTrue(repo.state.value.uncertain)
+            assertEquals("0",IntakeReceipts(file).entries(s.endpoint.identity,s.capture()!!.accountId).single().candidateId)
+            repo.start()!!()
+            assertEquals("Terminal recovery left the old legacy request binding actionable",7L,repo.state.value.observation!!.binding)
+            val original=IntakeReceipts(file).entries(s.endpoint.identity,s.capture()!!.accountId).single()
+            assertEquals("accepted",original.phase);assertEquals(key(),original.job);assertEquals("0",original.candidateId)
+            assertFalse(repo.state.value.readbackFailed);operation=UUID.randomUUID().toString();repo.start()!!()
+            val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+            val bodies=requests.filter{it.method=="POST"}.map{Json.parseToJsonElement(it.body!!.utf8()).jsonObject}
+            assertEquals(listOf(0L,0L,7L),bodies.map{it.getValue("bindingId").jsonPrimitive.long})
+            assertEquals(listOf(key(),key(),operation),bodies.map{it.getValue("operationId").jsonPrimitive.content})
+            assertTrue(requests.any{it.method=="GET"&&it.url.queryParameter("operationId")==key()})
+            val saved=IntakeReceipts(file).entries(s.endpoint.identity,s.capture()!!.accountId)
+            assertEquals(original,saved.first());assertEquals("7",saved.last().candidateId)
+        }}finally{dir.deleteRecursively()}
+    }
+    @Test fun refusedExactRetryCannotSettleOriginalUncertainOperation() {
+        val dir=Files.createTempDirectory("sync-retry-refused").toFile()
+        try {HttpsFixture().use {f->
+            val (api,detail,s)=ready(f);val file=File(dir,"journal.json");val repo=PlaylistSourceSyncRepository(api,detail,IntakeReceipts(file),::key)
+            f.reply(vector("eligible"));repo.enter(id())!!();f.reply("{}",503);repo.start()!!()
+            val original=IntakeReceipts(file).entries(s.endpoint.identity,s.capture()!!.accountId).single()
+            f.reply("{}",401);repo.start()!!()
+            assertTrue("Rejected retry discarded possibly committed original",repo.state.value.uncertain)
+            val retained=IntakeReceipts(file).entries(s.endpoint.identity,s.capture()!!.accountId).single()
+            assertEquals(original,retained);assertTrue(repo.state.value.error)
+            val recovered=PlaylistSourceSyncRepository(api,detail,IntakeReceipts(file),::key)
+            f.reply(vector("pending"));f.reply(vector("detail-pending"));recovered.enter(id())!!()
+            assertFalse(recovered.state.value.uncertain)
+            val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+            assertEquals(2,requests.count{it.method=="POST"});assertEquals(key(),requests[requests.lastIndex-1].url.queryParameter("operationId"))
+        }}finally{dir.deleteRecursively()}
+    }
+    @Test fun definitiveFreshRefusalMaySettleOnlyItsFreshReceipt() {
+        HttpsFixture().use {f->
+            val (api,detail,s)=ready(f);val journal=IntakeReceipts();val repo=PlaylistSourceSyncRepository(api,detail,journal,::key)
+            f.reply(vector("eligible"));repo.enter(id())!!();f.reply("{}",401);repo.start()!!()
+            assertFalse(repo.state.value.uncertain);assertTrue(repo.state.value.error)
+            assertEquals("refused",journal.entries(s.endpoint.identity,s.capture()!!.accountId).single().phase)
+            f.reply(vector("eligible"));repo.refresh()!!()
+            val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+            assertNull(requests.last().url.queryParameter("operationId"));assertEquals(1,requests.count{it.method=="POST"})
         }
     }
     /** Only the filesystem boundary fails once; the real journal and atomic move still run. */

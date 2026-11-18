@@ -81,7 +81,7 @@ class PlaylistSyncLifecycleTest {
    receipts.begin(s.endpoint.identity,s.capture()!!.accountId,"playlist-sync",job=key(),playlistId=id().value,candidateId="1")
    val repo=PlaylistSourceSyncRepository(api,detail,receipts,::key);val lifecycle=ProductSyncLifecycleProbe(repo);lifecycle.resume()
    f.reply(vector("pending"));f.reply(vector("detail-pending"));repo.enter(id())!!();val owner=repo.lifetime()
-   val delayed={lifecycle.poll(owner)};repo.retire();val initial=repo.enter(id())!!
+   val delayed={lifecycle.pollAfterDispatch(owner)};repo.retire();val initial=repo.enter(id())!!
    // Claim is the original race boundary, before executing any resulting IO.
    // A held response is not needed: queue the old poll behind the new enter.
    f.reply(vector("eligible"));delayed()
@@ -94,7 +94,41 @@ class PlaylistSyncLifecycleTest {
    initial();assertNotNull(repo.state.value.observation);assertFalse(repo.state.value.busy)
    val requests=(0 until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
    assertEquals(pending.job,requests[3].url.queryParameter("operationId"));assertEquals(0,requests.count{it.method=="POST"})
+   val beforePoll=f.server.requestCount
    lifecycle.poll(repo.lifetime());assertFalse(repo.state.value.busy)
+   val polled=(beforePoll until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+   assertEquals(2,polled.size)
+   val status=polled.filter{it.url.encodedPath.endsWith("source-sync")}
+   assertEquals(1,status.size);assertEquals("GET",status.single().method)
+   assertEquals(pending.job,status.single().url.queryParameter("operationId"));assertTrue(polled.none{it.method=="POST"})
+  }
+ }
+ @Test fun actualPollGuardSkipsInactiveAndReadsExactlyOnceWhileImporting(){
+  HttpsFixture().use{f->
+   val s=AccountSession(f.endpoint,MemoryStore());check(s.accept(s.beginIntent(),SecretTokens("fixture-access","fixture-refresh","fixture-owner")))
+   val api=SoundQApi(s,f.client);val detail=PlaylistDetailRepository(api);f.reply(vector("detail-before"));detail.open(id())
+   val receipts=com.soundq.android.data.acquisition.IntakeReceipts();receipts.begin(s.endpoint.identity,s.capture()!!.accountId,"playlist-sync",job=key(),playlistId=id().value,candidateId="1")
+   val repo=PlaylistSourceSyncRepository(api,detail,receipts,::key);val lifecycle=ProductSyncLifecycleProbe(repo);lifecycle.resume()
+   var response=vector("eligible")
+   f.server.dispatcher=object:mockwebserver3.Dispatcher(){override fun dispatch(request:mockwebserver3.RecordedRequest)=mockwebserver3.MockResponse.Builder().body(if(request.url.encodedPath.endsWith("source-sync"))response else vector("detail-pending")).build()}
+   repo.enter(id())!!();val owner=repo.lifetime();val inactive=f.server.requestCount
+   lifecycle.poll(owner);assertEquals("Inactive visit polled contrary to ProductApp",inactive,f.server.requestCount)
+   response=JsonObject(Json.parseToJsonElement(vector("eligible")).jsonObject+("operation" to Json.parseToJsonElement(vector("ack")))).toString()
+   repo.refresh()!!();val beforeResolving=f.server.requestCount;val unchanged=detail.state.value.detail
+   (0 until beforeResolving).forEach{assertNotNull(f.server.takeRequest(2,TimeUnit.SECONDS))}
+   lifecycle.poll(owner)
+   assertEquals(beforeResolving+1,f.server.requestCount);val resolving=f.server.takeRequest(2,TimeUnit.SECONDS)!!
+   assertEquals("GET",resolving.method);assertEquals(key(),resolving.url.queryParameter("operationId"))
+   assertSame("Unaccepted resolving poll published membership",unchanged,detail.state.value.detail)
+   response=vector("pending");repo.refresh()!!();val before=f.server.requestCount
+   (beforeResolving+1 until before).forEach{assertNotNull(f.server.takeRequest(2,TimeUnit.SECONDS))}
+   lifecycle.poll(owner);val requests=(before until f.server.requestCount).map{f.server.takeRequest(2,TimeUnit.SECONDS)!!}
+   val status=requests.filter{it.url.encodedPath.endsWith("source-sync")}
+   assertEquals(1,status.size);assertEquals("GET",status.single().method);assertEquals(key(),status.single().url.queryParameter("operationId"))
+   assertEquals(2,requests.size);assertTrue(requests.none{it.method=="POST"})
+   val terminal=Json.parseToJsonElement(vector("complete")).jsonObject
+   response=JsonObject(terminal+("operation" to JsonObject(terminal.getValue("operation").jsonObject+("id" to JsonPrimitive(key()))))).toString()
+   repo.refresh()!!();val complete=f.server.requestCount;lifecycle.poll(owner);assertEquals(complete,f.server.requestCount)
   }
  }
  @Test fun writeReadinessDoesNotDisableIndependentRecoveryOrSwapCallbacks(){

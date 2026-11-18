@@ -86,9 +86,11 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
         val op=observed.operation
         synchronized(this){if(valid())mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&(op==null||op.accepted&&!op.active),readbackFailed=op?.accepted==true)}
         val before=synchronized(this){if(valid())detail.managementDetail()else null}
-        val after=if(op?.accepted==true&&before!=null)api.playlistManagementSnapshot(s,id,valid)else null
+        val snapshotRead=op?.accepted==true&&before!=null
+        val after=if(snapshotRead)api.playlistManagementSnapshot(s,id,valid)else null
         synchronized(this){if(valid()) {
-            val published=after!=null&&before!=null&&detail.publishManagement(before,if(after==before)before else after)
+            // A completed 404 is authoritative absence, not an unstarted read.
+            val published=snapshotRead&&before!=null&&detail.publishManagement(before,if(after==before)before else after)
             val reconciled=op?.accepted!=true||published
             mutable.value=mutable.value.copy(observation=observed,uncertain=pending!=null&&(op==null||!reconciled),readbackFailed=!reconciled)
             if(op!=null&&pending!=null&&reconciled)receipts.finish(api.session.endpoint.identity,s.accountId,pending,"accepted",op.id)
@@ -116,14 +118,20 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
             if(!ran.compareAndSet(false,true))return@work
             fun valid()=synchronized(this){current(v,s,id)&&ticket==t}
             var durable=if(retry)old else null
-            var terminalReadback=false
+            var membershipReadback=false
             try {
                 if(!valid()||!detail.ownsManagement(captured))return@work
                 if(!retry){durable=receipts.begin(api.session.endpoint.identity,s.accountId,"playlist-sync",job=key,playlistId=id.value,candidateId=binding.toString());synchronized(this){if(valid())receipt=durable}}
                 val ack=api.startPlaylistSourceSync(s,id,key,binding,{valid()&&detail.ownsManagement(captured)},::valid)
                 require(ack.id==key)
-                terminalReadback=ack.accepted&&!ack.active
-                if(terminalReadback)reconcile(s,id,observation.copy(operation=ack),requireNotNull(durable),::valid)
+                membershipReadback=ack.accepted
+                if(membershipReadback) {
+                    // Exact-operation GET also reads the current source binding.
+                    // Keep the durable request's legacy binding for any retry.
+                    val observed=if(binding==0L)api.playlistSourceSync(s,id,key,::valid)else observation.copy(operation=ack)
+                    require(observed.operation?.id==key)
+                    reconcile(s,id,observed,requireNotNull(durable),::valid)
+                }
                 else {
                     receipts.finish(api.session.endpoint.identity,s.accountId,requireNotNull(durable),"accepted",key)
                     synchronized(this){if(valid())mutable.value=mutable.value.copy(observation=observation.copy(operation=ack),uncertain=false)}
@@ -131,10 +139,11 @@ class PlaylistSourceSyncRepository(private val api:SoundQApi,private val detail:
             }catch(error:Exception){
                 val refused=(error as? SafeFailure)?.reason==SafeFailure.Reason.Refused
                 val retired=(error as? SafeFailure)?.reason==SafeFailure.Reason.Retired
-                if(!retired&&!terminalReadback)durable?.let {runCatching {receipts.failSourceSync(api.session.endpoint.identity,s.accountId,it,refused)}}
+                val settleRefusal=refused&&!retry
+                if(!retired&&!membershipReadback)durable?.let {runCatching {receipts.failSourceSync(api.session.endpoint.identity,s.accountId,it,settleRefusal)}}
                 synchronized(this){if(valid()){
-                    if(refused&&!terminalReadback)receipt=null
-                    mutable.value=mutable.value.copy(uncertain=durable!=null&&(!refused||terminalReadback),error=true,readbackFailed=terminalReadback,saveFailed=durable==null,observation=if(durable==null)observation else mutable.value.observation)
+                    if(settleRefusal&&!membershipReadback)receipt=null
+                    mutable.value=mutable.value.copy(uncertain=durable!=null&&(!settleRefusal||membershipReadback),error=true,readbackFailed=membershipReadback,saveFailed=durable==null,observation=if(durable==null)observation else mutable.value.observation)
                 }}
             }finally{synchronized(this){if(visit==v&&ticket==t&&scope===s)mutable.value=mutable.value.copy(busy=false)}}
         }
