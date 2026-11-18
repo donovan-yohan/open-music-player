@@ -56,6 +56,20 @@ def call(text, name):
     return text[start:closing(text, text.index('(', start))]
 
 
+def without_history_only_bodies(text):
+    code = masked(text)
+    branches = list(re.finditer(r'\bif\s*\(\s*route\.destination\s*==\s*HomeDestination\.History\s*\)\s*', code))
+    # The destination Column has History-only header, search and list bodies.
+    # Fail closed on source drift; retain each else (the list's Home content).
+    assert len(branches) == 3, 'Expected three History-only source regions'
+    for branch in reversed(branches):
+        opening = branch.end()
+        assert code[opening:opening + 1] == '{', 'Expected braced History-only source region'
+        end = closing(text, opening)
+        text = text[:opening + 1] + text[end - 1:]
+    return text
+
+
 class Adoption(unittest.TestCase):
     def test_four_real_headers_and_no_local_root_title_drawing(self):
         # Home/Discover now keep the same header owner for their full collections.
@@ -105,8 +119,8 @@ class Adoption(unittest.TestCase):
         self.assertLess(files['discover'].index('SoundQTabs('), files['discover'].index('LazyColumn('))
         self.assertNotIn('SoundQTabs(', files['playlists'])
         home = function(files['home'], 'HomeDestinationScreen')
-        header = call(home, 'MainPageHeader')
-        home = home[home.index(header) + len(header):].split('if(route.destination==HomeDestination.History)', 1)[0]
+        home = home[home.index(call(home, 'Column')):]
+        home = without_history_only_bodies(home)
         self.assertNotIn('SearchStrip', home)
         self.assertNotIn('HistorySearch(', home)
 
