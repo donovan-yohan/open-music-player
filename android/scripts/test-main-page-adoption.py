@@ -33,6 +33,10 @@ def masked(text):
                   lambda m: ' ' * len(m[0]), text, flags=re.S)
 
 
+def call_count(text, name):
+    return len(re.findall(r'\b' + re.escape(name) + r'\s*\(', masked(text)))
+
+
 def closing(text, opening):
     code = masked(text)
     left, right = code[opening], {'(': ')', '{': '}', '[': ']'}[code[opening]]
@@ -82,7 +86,7 @@ class Adoption(unittest.TestCase):
         }
         for key, title in [('library', 'Library'), ('home', 'Home'), ('discover', 'Discover'), ('playlists', 'Playlists')]:
             with self.subTest(page=key):
-                self.assertEqual(files[key].count('MainPageHeader('), 1)
+                self.assertEqual(call_count(files[key], 'MainPageHeader'), 1)
                 self.assertEqual(files[key].count('MainPageHeader(' + titles[key]), 1)
                 self.assertNotRegex(files[key], r'Text\("' + title + r'"\s*[,)]')
         wrapper = function(files['wrapper'], 'MainPageHeader')
@@ -95,13 +99,13 @@ class Adoption(unittest.TestCase):
     def test_three_search_consumers_and_adjacent_history_use_actual_owner(self):
         for key in ['library', 'discover', 'playlists', 'home']:
             with self.subTest(page=key):
-                self.assertEqual(files[key].count('SoundQSearchStrip('), 1)
+                self.assertEqual(call_count(files[key], 'SoundQSearchStrip'), 1)
         for key, name in [('library', 'LibrarySearch'), ('home', 'HistorySearch')]:
             self.assertNotIn('BasicTextField(', function(files[key], name))
         self.assertNotIn('SoundQEntryField(', files['discover'])
         self.assertNotIn('SoundQTextField(search', files['playlists'])
         strip = function(files['components'], 'SoundQSearchStrip')
-        self.assertEqual(strip.count('BasicTextField('), 1)
+        self.assertEqual(call_count(strip, 'BasicTextField'), 1)
         self.assertIn('editorModifier.weight(1f)', strip)
         self.assertIn('if(value.text.isEmpty())Text(placeholder', strip)
         self.assertIn('contentAlignment=Alignment.CenterStart', strip)
@@ -111,7 +115,7 @@ class Adoption(unittest.TestCase):
     def test_fixed_chrome_precedes_one_bounded_discover_playlist_body(self):
         for key in ['discover', 'playlists']:
             source = files[key]
-            self.assertEqual(source.count('LazyColumn('), 1)
+            self.assertEqual(call_count(source, 'LazyColumn'), 1)
             lazy = source.index('LazyColumn(')
             self.assertLess(source.index('MainPageHeader('), lazy)
             self.assertLess(source.index('SoundQSearchStrip('), lazy)
@@ -122,7 +126,7 @@ class Adoption(unittest.TestCase):
         home = home[home.index(call(home, 'Column')):]
         home = without_history_only_bodies(home)
         self.assertNotIn('SearchStrip', home)
-        self.assertNotIn('HistorySearch(', home)
+        self.assertEqual(call_count(home, 'HistorySearch'), 0)
 
     def test_opt_in_tabs_media_and_parent_chrome_owners_retained(self):
         self.assertIn('SoundQTabsTreatment.MainPageCells', function(files['library'], 'LibraryFilters'))
