@@ -21,7 +21,9 @@ func newSourceSelectionTestRepository(t *testing.T) (*DB, *SourceSelectionReposi
 		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres source selection integration tests")
 	}
 	database, ctx := newFavoritesTestDB(t)
-	if _, err := database.Exec(`DROP TABLE IF EXISTS source_selection_queue_intents; DROP TABLE IF EXISTS source_selection_decisions; DROP TABLE IF EXISTS source_selection_sessions;`); err != nil {
+	// Import items reference decisions. Drop this dependent fixture table too;
+	// CASCADE alone would erase its FK without recreating the existing column.
+	if _, err := database.Exec(`DROP TABLE IF EXISTS playlist_import_items; DROP TABLE IF EXISTS source_selection_queue_intents; DROP TABLE IF EXISTS source_selection_decisions; DROP TABLE IF EXISTS source_selection_sessions;`); err != nil {
 		t.Fatalf("reset source selection schema: %v", err)
 	}
 	if err := database.Migrate(); err != nil {

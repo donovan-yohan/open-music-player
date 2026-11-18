@@ -105,6 +105,7 @@ jobs:
           BACKEND_GO_TEST_ARGS: -v -race -coverprofile=coverage.out
           DATABASE_URL: postgres://test:test@localhost:5432/openmusicplayer_test?sslmode=disable
           REDIS_URL: redis://localhost:6379
+          OMP_MANUAL_SYNC_REDIS_URL: redis://localhost:6379/15
 
       - name: Run AI assist replay eval
         run: ../scripts/eval ai-assist --mode replay --output "$RUNNER_TEMP/ai-assist-replay.jsonl"

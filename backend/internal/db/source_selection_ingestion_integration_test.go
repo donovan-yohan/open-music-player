@@ -55,12 +55,37 @@ func TestSourceSelectionIngestionFailsUnlinkedJobWhenAttachmentConflicts(t *test
 	if !errors.Is(err, ErrSourceSelectionConflict) {
 		t.Fatalf("attachment error = %v", err)
 	}
-	var status, failure string
-	if err := database.QueryRowContext(ctx, `SELECT status, error FROM download_jobs WHERE user_id = $1 AND candidate_id = $2`, userID, candidate.CandidateID).Scan(&status, &failure); err != nil {
+	// Atomic custody now refuses before creating an unlinked job. Preserve
+	// the conflicting original instead of manufacturing a failed extra row.
+	var count int
+	var status string
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE user_id=$1`, userID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if status != download.StatusFailed || failure == "" {
-		t.Fatalf("unlinked cleanup = (%q, %q)", status, failure)
+	if err := database.QueryRowContext(ctx, `SELECT status FROM download_jobs WHERE id=$1`, existingID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || status != download.StatusQueued {
+		t.Fatalf("conflict changed acquisition custody: count=%d status=%s", count, status)
+	}
+}
+
+func TestSourceSelectionIngestionReusesExactCanonicalAcquisition(t *testing.T) {
+	database, repo, ctx := newSourceSelectionTestRepository(t)
+	user := seedSourceSelectionUser(t, database, "canonical-reuse@fixture.test")
+	candidate := download.SourceCandidate{CandidateID: "youtube:canonical", Provider: "youtube", SourceID: "canonical", SourceURL: "https://fixture.invalid/canonical", Title: "Canonical"}
+	ingestion := NewSourceSelectionIngestion(database, repo)
+	first, err := ingestion.CreateTrustedDownload(ctx, user, SourceSelectionOriginDirectURL, candidate, "synthetic source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ingestion.CreateDownloadForDecision(ctx, user, first.Decision, candidate)
+	if err != nil || second.Job.ID != first.Job.ID {
+		t.Fatalf("canonical replay changed acquisition: %v", err)
+	}
+	var count int
+	if err = database.QueryRow(`SELECT COUNT(*) FROM download_jobs WHERE user_id=$1`, user).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("duplicate canonical acquisition: %d %v", count, err)
 	}
 }
 

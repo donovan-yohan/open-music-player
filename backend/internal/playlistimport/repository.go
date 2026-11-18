@@ -294,7 +294,7 @@ func linkAssociationItems(ctx context.Context, tx *sql.Tx, associations []ItemSo
 	}
 	_, err := tx.ExecContext(ctx, `
 		UPDATE playlist_import_items AS i
-		SET playlist_source_entry_id = input.source_entry_id, updated_at = clock_timestamp()
+		SET playlist_source_entry_id = input.source_entry_id, source_bound = TRUE, updated_at = clock_timestamp()
 		FROM unnest($1::bigint[], $2::bigint[]) AS input(item_id, source_entry_id)
 		WHERE i.id = input.item_id AND i.playlist_source_entry_id IS NULL
 	`, pq.Array(itemIDs), pq.Array(sourceEntryIDs))
@@ -326,82 +326,76 @@ func (r *ImportRepository) CompletePlaylistImportItem(ctx context.Context, itemI
 	if itemID <= 0 || trackID <= 0 {
 		return fmt.Errorf("playlist import item and track IDs must be positive")
 	}
-
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	var importJobID uuid.UUID
+	defer tx.Rollback()
 	var playlistID int64
-	var playlistPosition int
-	var sourceEntryID sql.NullInt64
-	var existingTrackID sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `
-		SELECT i.import_job_id, j.playlist_id, i.playlist_position,
-			i.playlist_source_entry_id, i.track_id
-		FROM playlist_import_items AS i
-		JOIN playlist_import_jobs AS j ON j.id = i.import_job_id
-		WHERE i.id = $1
-		FOR UPDATE OF i, j
-	`, itemID).Scan(&importJobID, &playlistID, &playlistPosition, &sourceEntryID, &existingTrackID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		return err
+	err = tx.QueryRowContext(ctx, `SELECT j.playlist_id FROM playlist_import_items i JOIN playlist_import_jobs j ON j.id=i.import_job_id WHERE i.id=$1`, itemID).Scan(&playlistID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
 	}
-	if existingTrackID.Valid && existingTrackID.Int64 != trackID {
-		return fmt.Errorf("playlist import item %d already points to track %d", itemID, existingTrackID.Int64)
-	}
-
-	if sourceEntryID.Valid {
-		result, err := tx.ExecContext(ctx, `
-			UPDATE playlist_source_entries
-			SET track_id = $2, updated_at = clock_timestamp()
-			WHERE id = $1 AND (track_id IS NULL OR track_id = $2)
-		`, sourceEntryID.Int64, trackID)
-		if err != nil {
-			return err
-		}
-		rows, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if rows == 0 {
-			return fmt.Errorf("playlist source entry %d is missing or points to another track", sourceEntryID.Int64)
-		}
-	}
-
-	if playlistPosition < 0 {
-		playlistPosition = 0
-	}
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO playlist_tracks (playlist_id, track_id, position)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (playlist_id, track_id) DO NOTHING
-	`, playlistID, trackID, playlistPosition)
 	if err != nil {
 		return err
 	}
-	rows, err := result.RowsAffected()
+	// Same lock order as snapshot acceptance: playlist -> job/item -> source.
+	if _, err = tx.ExecContext(ctx, `SELECT id FROM playlists WHERE id=$1 FOR UPDATE`, playlistID); err != nil {
+		return err
+	}
+	var job uuid.UUID
+	var position int
+	var entry, existing sql.NullInt64
+	var bound bool
+	err = tx.QueryRowContext(ctx, `SELECT i.import_job_id,i.playlist_position,i.playlist_source_entry_id,i.track_id,i.source_bound FROM playlist_import_items i JOIN playlist_import_jobs j ON j.id=i.import_job_id WHERE i.id=$1 FOR UPDATE OF i,j`, itemID).Scan(&job, &position, &entry, &existing, &bound)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	if rows > 0 {
-		if _, err := tx.ExecContext(ctx, `UPDATE playlists SET updated_at = clock_timestamp() WHERE id = $1`, playlistID); err != nil {
+	if existing.Valid && existing.Int64 != trackID {
+		return db.ErrPlaylistSourceEntryTrackConflict
+	}
+	desired := !bound
+	var bindingID int64
+	if entry.Valid {
+		var previous sql.NullInt64
+		err = tx.QueryRowContext(ctx, `SELECT e.source_binding_id,e.source_order,e.track_id FROM playlist_source_entries e JOIN playlist_source_bindings b ON b.id=e.source_binding_id WHERE e.id=$1 AND b.playlist_id=$2 FOR UPDATE OF e`, entry.Int64, playlistID).Scan(&bindingID, &position, &previous)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			if previous.Valid && previous.Int64 != trackID {
+				return db.ErrPlaylistSourceEntryTrackConflict
+			}
+			desired = true
+			if _, err = tx.ExecContext(ctx, `UPDATE playlist_source_entries SET track_id=$2,updated_at=clock_timestamp() WHERE id=$1`, entry.Int64, trackID); err != nil {
+				return err
+			}
+		}
+	}
+	if desired {
+		if position < 0 {
+			position = 0
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO playlist_tracks(playlist_id,track_id,position) VALUES($1,$2,$3) ON CONFLICT(playlist_id,track_id) DO NOTHING`, playlistID, trackID, position); err != nil {
+			return err
+		}
+		if bindingID > 0 {
+			_, err = tx.ExecContext(ctx, `WITH ordered AS (SELECT pt.track_id,ROW_NUMBER() OVER(ORDER BY CASE WHEN e.source_order IS NULL THEN 1 ELSE 0 END,e.source_order NULLS LAST,pt.position,pt.track_id)-1 AS pos FROM playlist_tracks pt LEFT JOIN (SELECT track_id,MIN(source_order) source_order FROM playlist_source_entries WHERE source_binding_id=$1 AND track_id IS NOT NULL GROUP BY track_id) e ON e.track_id=pt.track_id WHERE pt.playlist_id=$2) UPDATE playlist_tracks pt SET position=o.pos FROM ordered o WHERE pt.playlist_id=$2 AND pt.track_id=o.track_id`, bindingID, playlistID)
+			if err != nil {
+				return err
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE playlists SET updated_at=clock_timestamp() WHERE id=$1`, playlistID); err != nil {
 			return err
 		}
 	}
-
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE playlist_import_items
-		SET status = $2, track_id = $3, error = NULL, updated_at = clock_timestamp()
-		WHERE id = $1
-	`, itemID, ItemStatusImported, trackID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE playlist_import_items SET status='imported',track_id=$2,error=NULL,updated_at=clock_timestamp() WHERE id=$1`, itemID, trackID); err != nil {
 		return err
 	}
-	if err := refreshPlaylistImportJobCounts(ctx, tx, importJobID); err != nil {
+	if err = refreshPlaylistImportJobCounts(ctx, tx, job); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -426,7 +420,7 @@ func refreshPlaylistImportJobCounts(ctx context.Context, tx *sql.Tx, importJobID
 			queued_items = c.queued_items,
 			failed_items = c.failed_items,
 			skipped_items = c.skipped_items,
-			status = CASE
+			status = CASE WHEN j.status='superseded' THEN 'superseded'
 				WHEN c.queued_items > 0 THEN 'importing'
 				WHEN c.failed_items > 0 AND c.imported_items + c.skipped_items = 0 THEN 'failed'
 				WHEN c.failed_items > 0 THEN 'partial_failure'
@@ -476,7 +470,7 @@ func (r *ImportRepository) RefreshJobCounts(ctx context.Context, jobID uuid.UUID
 		    queued_items = COALESCE(c.queued_items, 0),
 		    failed_items = COALESCE(c.failed_items, 0),
 		    skipped_items = COALESCE(c.skipped_items, 0),
-		    status = CASE
+		    status = CASE WHEN j.status='superseded' THEN 'superseded'
 		      WHEN COALESCE(c.total_items, 0) = 0 THEN 'failed'
 		      WHEN COALESCE(c.queued_items, 0) > 0 THEN 'importing'
 		      WHEN COALESCE(c.failed_items, 0) > 0 AND COALESCE(c.imported_items, 0) + COALESCE(c.skipped_items, 0) = 0 THEN 'failed'
