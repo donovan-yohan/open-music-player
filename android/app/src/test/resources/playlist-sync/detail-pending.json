@@ -1,0 +1,1 @@
+{"canManage":true,"id":1,"name":"Source fixture","isPublic":false,"trackCount":2,"durationMs":20000,"createdAt":"2026-11-18T03:18:17.265873Z","updatedAt":"2026-11-18T03:18:17.304358Z","tracks":[{"id":2,"title":"B","artist":"Artist","album":"Album","durationMs":10000},{"id":3,"title":"Manual","artist":"Artist","album":"Album","durationMs":10000}]}

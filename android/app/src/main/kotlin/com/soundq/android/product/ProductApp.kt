@@ -74,11 +74,12 @@ import com.soundq.android.product.preferences.*
     val playlists by model.playlists.collectAsStateWithLifecycle()
     val playlistDetail by model.playlistDetail.collectAsStateWithLifecycle()
     val playlistBlend by model.playlistBlend.collectAsStateWithLifecycle()
-    LaunchedEffect(playlistDetail.detail) {model.graph.playlistBlend.sourceChanged()}
+    val playlistSourceSync by model.playlistSourceSync.collectAsStateWithLifecycle()
     val blendLifecycle=androidx.lifecycle.compose.LocalLifecycleOwner.current
     var blendForeground by remember {mutableStateOf(false)}
     var playlistArtworkVisit by remember {mutableLongStateOf(0L)}
     val playlistManagement by model.playlistManagement.collectAsStateWithLifecycle()
+    LaunchedEffect(playlistDetail.detail) {model.graph.playlistBlend.sourceChanged()}
     val playlistOrder by model.playlistOrder.collectAsStateWithLifecycle()
     val queuePlaylist by model.queuePlaylist.collectAsStateWithLifecycle()
     var destination by rememberSaveable {mutableStateOf("Library")}
@@ -90,16 +91,33 @@ import com.soundq.android.product.preferences.*
     val acquisitionPlaylistJob=acquisitionOwner?.restoreJob(acquisitionReturn)
     val blendVisible=destination=="Playlists" && importView==null && playlistDetail.id!=null && auth is AuthState.SignedIn
     DisposableEffect(model,blendLifecycle,blendVisible) {
+        var syncDisposed=false
         fun sync() {
+            if(syncDisposed)return
             val foreground=blendVisible && blendLifecycle.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            if(!foreground)model.graph.playlistSync.retire()
             model.graph.playlistBlend.visible(foreground)
             if(blendForeground!=foreground)playlistArtworkVisit++
             blendForeground=foreground
         }
         val observer=LifecycleEventObserver {_,_->sync()}
         blendLifecycle.lifecycle.addObserver(observer);sync()
-        onDispose {model.graph.playlistBlend.visible(false);blendLifecycle.lifecycle.removeObserver(observer)}
+        onDispose {syncDisposed=true;model.graph.playlistSync.retire();model.graph.playlistBlend.visible(false);blendLifecycle.lifecycle.removeObserver(observer)}
     }
+    LaunchedEffect(model,playlistDetail.id,accountVersion,blendForeground,playlistArtworkVisit) {
+        val id=playlistDetail.id.takeIf {blendForeground}
+        var syncOwner=-1L
+        if(id==null){model.graph.playlistSync.retire()}else try {
+            val work=model.graph.playlistSync.enter(id);syncOwner=model.graph.playlistSync.lifetime()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){work?.invoke()}
+            while(true){
+                kotlinx.coroutines.delay(1500)
+                if(model.graph.playlistSync.state.value.observation?.operation?.active==true)
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){model.graph.playlistSync.refresh()?.invoke()}
+            }
+        }finally{model.graph.playlistSync.leave(syncOwner)}
+    }
+
     val catalogActions=if(destination=="Catalog" && importView==null && auth is AuthState.SignedIn) remember(model,accountVersion){model.catalogActions()} else null
     DisposableEffect(catalogActions){onDispose {catalogActions?.close()}}
     var discoveryVisit by remember {mutableStateOf(0L)}
@@ -356,6 +374,7 @@ import com.soundq.android.product.preferences.*
                             model.graph.playlistBlend.acceptedPlan(),model.graph.playlistBlend.capture()?.let(model.graph.playlistBlend::canGenerate)==true,
                             model.graph.playlistBlend.capture()?.let(model.graph.playlistBlend::canRecover)==true,model::playPlaylist,
                             {p,index,track,valid->model.quickQueuePlaylist(p,index,track,valid)},revealOwner,harmonicEntry,
+                            sourceSync={com.soundq.android.product.playlists.PlaylistSourceSyncControls(playlistSourceSync,{model.harmonicWork(model.graph.playlistSync.start())},{model.harmonicWork(model.graph.playlistSync.refresh())})},
                             playback=playback,harmonicFeedback=harmonicFeedback,artwork={track,rowCurrent->com.soundq.android.product.artwork.TrackArtwork(model.graph,artworkCapture?.scope,track.takeIf {it.artwork!=null} ?: model.graph.track(track.id) ?: track,
                                 {rowCurrent()&&artworkCapture?.let {captured->model.graph.playlistDetail.ownsPlayback(captured)&&captured.detail.tracks.any {it===track}}==true},sourceOwner=artworkCapture)})}
                         else playlistActions?.let { actions -> com.soundq.android.product.playlists.PlaylistsScreen(playlists,actions.capture,actions::create,actions::reload,actions::startNew,model::openPlaylist,
