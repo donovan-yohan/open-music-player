@@ -34,8 +34,10 @@ import soundq.design.generated.SoundQComposeTokens as T
     gestureState:PlaylistOrderGesture=remember {PlaylistOrderGesture()},onReorder:((QueueMoveIntent)->Boolean)?=null,
     onQueue:((String)->Unit)?=null,queueEnabled:Boolean=true,revealOwner:RowRevealOwner=remember {RowRevealOwner()},
     artwork:(@Composable (String)->Unit)?=null,
+    header:(@Composable ()->Unit)?=null,
 ) {
     val order=rows.map {it.occurrence}
+    val headerCount=if(header!=null)1 else 0
     val list=rememberLazyListState()
     val density=LocalDensity.current
     val motion=SoundQ.motion.queue
@@ -68,8 +70,9 @@ import soundq.design.generated.SoundQComposeTokens as T
     }
     fun sample(g:PlaylistMemberDragSession):List<QueueItemBounds> {
         list.layoutInfo.visibleItemsInfo.forEach {item ->
+            if(item.index<headerCount)return@forEach
             val id=item.key as? String ?: return@forEach
-            measured[id]=QueueItemBounds(id,item.index,item.offset+g.scroll,item.size.toFloat())
+            measured[id]=QueueItemBounds(id,item.index-headerCount,item.offset+g.scroll,item.size.toFloat())
         }
         return measured.values.toList()
     }
@@ -83,7 +86,7 @@ import soundq.design.generated.SoundQComposeTokens as T
         if(order==intent.insertedOrder()) {
             val index=order.indexOf(intent.occurrence)
             if(index>=0) {
-                list.scrollToItem(index)
+                list.scrollToItem(index+headerCount)
                 withFrameNanos { }
                 focus[intent.occurrence]?.requestFocus()
             }
@@ -126,9 +129,11 @@ import soundq.design.generated.SoundQComposeTokens as T
             }
         }
     }
-    SoundQMediaListRules(list) {rules -> LazyColumn(modifier.fillMaxWidth().heightIn(max=T.SEMANTIC_DIMENSION_APP_MAX*T.MOTION_SHEET_MEDIUM)
+    // The detail host supplies a bounded remaining-height body, never a lazy item.
+    SoundQMediaListRules(list) {rules -> LazyColumn(modifier.fillMaxSize()
         .onGloballyPositioned {listTop=it.positionInRoot().y}
         .onPreviewKeyEvent(gestureState::onKey).then(rules),state=list,userScrollEnabled=active==null) {
+        if(header!=null)item(contentType="playlist-feedback") {header()}
         itemsIndexed(rows,key={_,r->r.occurrence}) {index,row ->
             val requester=remember(row.occurrence) {focus.getOrPut(row.occurrence){FocusRequester()}}
             val pinnable=LocalPinnableContainer.current

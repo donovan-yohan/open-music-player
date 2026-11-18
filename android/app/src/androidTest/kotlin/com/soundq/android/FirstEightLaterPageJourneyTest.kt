@@ -99,7 +99,7 @@ class FirstEightLaterPageJourneyTest {
             assertEquals(before.selectedOccurrence,model.playback.value.selectedOccurrence)
             assertFalse(model.playback.value.isPlaying)
             captureListeningStage("first8-playlist-21-opened")
-            compose.onNodeWithContentDescription("Back to playlists").performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Back to playlists").assertIsDisplayed().performClick()
             compose.waitUntil(10000){app.graph.playlistDetail.state.value.id==null}
             assertEquals(21,app.graph.playlists.state.value.rows.size)
             assertEquals(before.queue,model.playback.value.queue)

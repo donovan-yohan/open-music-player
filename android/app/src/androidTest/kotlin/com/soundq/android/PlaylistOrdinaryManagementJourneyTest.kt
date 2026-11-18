@@ -105,7 +105,7 @@ class PlaylistOrdinaryManagementJourneyTest {
                 compose.onNode(hasText("Playlists") and hasClickAction()).performClick()
                 compose.waitUntil(10000){app.graph.playlists.state.value.rows.size==1};click(name)
                 compose.waitUntil(10000){app.graph.playlistDetail.state.value.detail!=null}
-                compose.onNodeWithContentDescription("Playlist actions").performScrollTo().performClick();click("Rename playlist")
+                compose.onNodeWithContentDescription("Playlist actions").assertIsDisplayed().performClick();click("Rename playlist")
                 compose.onNodeWithContentDescription("Playlist name").performTextReplacement("Edited playlist")
                 compose.onNodeWithContentDescription("Description").performScrollTo().performTextReplacement("After")
                 compose.onNodeWithContentDescription("Cover URL").performScrollTo().performTextReplacement("https://art.invalid/new")
@@ -115,7 +115,7 @@ class PlaylistOrdinaryManagementJourneyTest {
                 assertEquals("After",app.graph.playlistDetail.state.value.detail!!.playlist.draft.description)
                 assertEquals("https://art.invalid/new",app.graph.playlistDetail.state.value.detail!!.playlist.draft.coverUrl)
                 assertFalse(app.graph.playlistDetail.state.value.detail!!.playlist.draft.isPublic)
-                compose.onNodeWithContentDescription("Playlist actions").performScrollTo().performClick();click("Select tracks")
+                compose.onNodeWithContentDescription("Playlist actions").assertIsDisplayed().performClick();click("Select tracks")
                 sheetClick("Fixture 1");sheetClick("Fixture 2");sheetClick("Remove selected tracks");sheetClick("Cancel")
                 assertEquals(0,calls.count {it.endsWith("/batch-remove")})
                 sheetClick("Remove selected tracks");capture("playlist-batch-remove-confirmation");sheetClick("Remove selected tracks")

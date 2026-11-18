@@ -53,7 +53,7 @@ class PlaylistDetailJourneyTest {
             }}
             assertEquals(paused.selectedOccurrence,model.playback.value.selectedOccurrence);assertFalse(model.playback.value.isPlaying)
             assertEquals(1,model.playback.value.queue.count {it.manual&&it.trackId==1L})
-            compose.onNodeWithContentDescription("Back to playlists").performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Back to playlists").assertIsDisplayed().performClick()
             compose.waitUntil(5000) { app.graph.playlistDetail.state.value.id == null }
             compose.onNodeWithText("Create private playlist").performScrollTo().assertIsDisplayed()
             compose.runOnIdle { model.controller.pause() }
