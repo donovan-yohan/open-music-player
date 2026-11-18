@@ -21,6 +21,8 @@ internal class LibraryArtwork(
         const val MAX_SIDE=192; const val PLAYER_SIDE=1024
         const val MAX_CACHE_BYTES=8*1024*1024; const val MAX_CACHE_ENTRIES=64
         const val MAX_WORKERS=3; const val MAX_JOBS=MAX_ROWS+MAX_PLAYERS
+        // A subset of row leases/jobs, never additional capacity. Two workers stay demand-only.
+        const val MAX_SPECULATIVE_ROWS=8; const val MAX_SPECULATIVE_JOBS=1
     }
     private data class Key(val owner:AccountSession,val epoch:Long,val account:String,val url:String,val side:Int)
     private class Cached(val scope:AccountScope,val pixels:Bitmap)
@@ -83,21 +85,45 @@ internal class LibraryArtwork(
     @Synchronized fun open(scope:AccountScope?,track:Track?,current:()->Boolean):Row = openBounded(scope,track,current,MAX_SIDE,decode)
     @Synchronized internal fun openPlayer(scope:AccountScope?,track:Track?,current:()->Boolean):Row =
         openBounded(scope,track,current,PLAYER_SIDE,{decodeArtwork(it,PLAYER_SIDE)})
-    private fun openBounded(scope:AccountScope?,track:Track?,current:()->Boolean,side:Int,decoder:(ByteArray)->Bitmap?):Row {
+    @Synchronized internal fun openThumbnail(scope:AccountScope?,track:Track?,visible:Boolean,current:()->Boolean):Row =
+        openBounded(scope,track,current,MAX_SIDE,decode,visible)
+    @Synchronized internal fun openThumbnail(capture:LibraryTrackCapture?,visible:Boolean,current:()->Boolean):Row =
+        openThumbnail(capture?.scope,capture?.track,visible,current)
+    private fun openBounded(scope:AccountScope?,track:Track?,current:()->Boolean,side:Int,decoder:(ByteArray)->Bitmap?,visible:Boolean=true):Row {
         sweep()
-        val row=Row(scope,track,current,side,decoder)
-        val rowCount=rows.count {it.maxSide==MAX_SIDE}
-        val playerCount=rows.size-rowCount
-        if(closed||(side==MAX_SIDE&&rowCount>=MAX_ROWS)||(side!=MAX_SIDE&&playerCount>=MAX_PLAYERS)||!row.current())row.close()
-        else {rows.add(row);row.readCached()}
+        val row=Row(scope,track,current,side,decoder,visible)
+        if(closed||!row.current())row.close()
+        else if(admit(row))row.readCached()
+        else if(visible)row.close()
         return row
     }
+    private fun admit(row:Row):Boolean {
+        if(row in rows)return true
+        val player=row.maxSide!=MAX_SIDE
+        if(!player&&row.visible) {
+            // Native precomposed rows can yield their lease without renewing source authority.
+            while(rows.count {it.maxSide==MAX_SIDE}>=MAX_ROWS) {
+                val speculative=rows.firstOrNull {!it.visible} ?: break
+                speculative.suspendRead()
+            }
+        }
+        if(rows.count {(it.maxSide!=MAX_SIDE)==player}>=(if(player)MAX_PLAYERS else MAX_ROWS))return false
+        if(!row.visible&&rows.count {!it.visible}>=MAX_SPECULATIVE_ROWS)return false
+        rows.add(row);return true
+    }
+    private var draining=false
+    private fun drainSpeculation() {
+        if(draining||closed)return
+        draining=true
+        try {rows.toList().filter {!it.visible&&it.requested}.forEach {it.start()}} finally {draining=false}
+    }
     internal inner class Row(private val scope:AccountScope?,private val track:Track?,private val eligible:()->Boolean,
-        internal val maxSide:Int,private val decoder:(ByteArray)->Bitmap?):AutoCloseable {
+        internal val maxSide:Int,private val decoder:(ByteArray)->Bitmap?,internal var visible:Boolean):AutoCloseable {
         private val mutable=MutableStateFlow<Bitmap?>(null)
         val state:StateFlow<Bitmap?> = mutable
         private var alive=true
         private var started=false
+        internal var requested=false; private set
         private var work:Work?=null
         private val key=if(scope!=null&&track?.artwork!=null)Key(scope.owner,scope.epoch,scope.accountId,track.artwork,maxSide) else null
         internal fun readCached():Unit = synchronized(this@LibraryArtwork) {
@@ -109,28 +135,41 @@ internal class LibraryArtwork(
             return alive
         }
         fun bitmap():Bitmap?=synchronized(this@LibraryArtwork){if(current())mutable.value else null}
+        /** Promote the same lease/flight on viewport entry; never recapture its source predicate. */
+        fun visibility(value:Boolean):Unit=synchronized(this@LibraryArtwork) {
+            visible=value
+            if(value&&!started)start()
+        }
+        internal fun suspendRead() {
+            rows.remove(this);mutable.value=null;started=false
+            val old=work;work=null;old?.detach(this)
+        }
         fun start():Unit = synchronized(this@LibraryArtwork) {
-            if(started||!current())return
-            started=true
+            requested=true
+            if(started||!current()||!admit(this))return
             readCached()
-            if(mutable.value!=null)return
+            if(mutable.value!=null){started=true;return}
             val shared=flights[key]?.takeIf {it.current()}
             if(shared!=null) {
-                work=shared;shared.subscribers[this]={mutable.value=it};return
+                started=true;work=shared;shared.subscribers[this]={mutable.value=it};return
             }
-            if(jobs.size>=MAX_JOBS){close();return}
-            val next=Work(key!!,scope!!,decoder)
+            // Count cancelled running speculation too: ignoring interruption cannot steal a second lane.
+            if(!visible&&jobs.count {it.speculative}>=MAX_SPECULATIVE_JOBS)return
+            if(jobs.size>=MAX_JOBS){if(visible)close();return}
+            started=true
+            val next=Work(key!!,scope!!,decoder,!visible)
             work=next;next.subscribers[this]={mutable.value=it};flights[key]=next;jobs.add(next)
             try {executor.execute(next)} catch(_:RejectedExecutionException){next.cancel();jobs.remove(next);close()}
         }
         override fun close():Unit = synchronized(this@LibraryArtwork) {
             if(!alive)return
             alive=false;mutable.value=null
-            work?.detach(this);work=null;rows.remove(this)
+            rows.remove(this);val old=work;work=null;old?.detach(this)
+            drainSpeculation()
             // No recycle: an already submitted Compose draw may still reference this bitmap.
         }
     }
-    private inner class Work(val key:Key,val scope:AccountScope,val decoder:(ByteArray)->Bitmap?):Runnable {
+    private inner class Work(val key:Key,val scope:AccountScope,val decoder:(ByteArray)->Bitmap?,val speculative:Boolean):Runnable {
         val subscribers=mutableMapOf<Row,(Bitmap)->Unit>()
         var thread:Thread?=null
         private var call:Call?=null
@@ -179,6 +218,7 @@ internal class LibraryArtwork(
             finally {synchronized(this@LibraryArtwork) {
                 finished=true;call=null;thread=null;subscribers.clear();jobs.remove(this)
                 if(flights[key]===this)flights.remove(key)
+                drainSpeculation()
             }}
         }
     }

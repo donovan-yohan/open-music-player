@@ -52,7 +52,7 @@ internal class QueueClearCapture(private val captured:PlaybackProjection) {
     val timelineOverview=remember(model,accountEpoch){com.soundq.android.product.timeline.WaveformOverview()}
     val timelineSnap=remember(model,accountEpoch){mutableStateOf(com.soundq.android.data.timeline.SnapMode.Free)}
     val timelineList=rememberLazyListState()
-    val arrangementList=rememberLazyListState()
+    val arrangementList=rememberSoundQThumbnailListState()
     val expanded=remember(model,accountEpoch){mutableStateMapOf<String,Boolean>()}
     SideEffect {expanded.keys.retainAll(timeline.document.clips.map {it.occurrence}.toSet())}
     var editorReturnView by remember {mutableStateOf(false)}
@@ -172,7 +172,7 @@ internal class QueueClearCapture(private val captured:PlaybackProjection) {
             Box(if(reduced)Modifier else Modifier.animateItem()) {
                 SoundQMediaRow(row.title,row.artist,row.current||(accepted==null&&row.occurrence==playback.selectedOccurrence),
                     {if(seekValid())model.controller.seekArrangement(accepted!!.identity,row.seekMs!!) else if(rowValid())onEdit(row.occurrence)},{menu=true},enabled=rowValid(),
-                    artwork={com.soundq.android.product.artwork.TrackArtwork(model.graph,scope,model.graph.track(com.soundq.android.data.TrackId(row.track)),rowValid,sourceOwner=presentation.base)},
+                    artwork={SoundQThumbnailItem(listState,row.occurrence) {com.soundq.android.product.artwork.TrackArtwork(model.graph,scope,model.graph.track(com.soundq.android.data.TrackId(row.track)),rowValid,sourceOwner=presentation.base)}},
                     metadata={LibraryMetadataContent(listOf(LibraryMetadataField("${queueTime(row.startMs)}–${queueTime(row.endMs)}","Arrangement position ${queueTime(row.startMs)} to ${queueTime(row.endMs)}")))})
                 DropdownMenu(menu,{menu=false}) {
                     DropdownMenuItem(text={Text("Go to track")},onClick={menu=false;if(seekValid())model.controller.seekArrangement(accepted!!.identity,row.seekMs!!)},enabled=seekValid())

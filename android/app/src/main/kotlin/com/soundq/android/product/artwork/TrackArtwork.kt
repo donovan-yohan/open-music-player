@@ -23,9 +23,11 @@ private class ArtworkTrackIdentity(val track:Track?) {
 
 /** The source owner keys terminal route/read lifetimes independently of immutable track metadata. */
 @Composable internal fun TrackArtwork(graph:AppGraph,scope:AccountScope?,track:Track?,current:()->Boolean,modifier:Modifier=Modifier,sourceOwner:Any?=null) {
-    val row=remember(graph.libraryArtwork,scope,ArtworkTrackIdentity(track),sourceOwner){graph.libraryArtwork.open(scope,track,current)}
+    val visible=com.soundq.designsystem.LocalSoundQThumbnailVisible.current
+    val row=remember(graph.libraryArtwork,scope,ArtworkTrackIdentity(track),sourceOwner){graph.libraryArtwork.openThumbnail(scope,track,visible(),current)}
     val mounted=remember(row){AtomicBoolean(true)}
     DisposableEffect(row){row.start();onDispose {mounted.set(false);row.close()}}
+    LaunchedEffect(row,visible){snapshotFlow {visible()}.collect {row.visibility(it)}}
     ArtworkPaint(row.state,row::bitmap,mounted,72.dp,modifier)
 }
 

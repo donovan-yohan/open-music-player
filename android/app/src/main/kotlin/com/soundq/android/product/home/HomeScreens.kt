@@ -35,9 +35,9 @@ import java.time.format.DateTimeFormatter
     val top = model.home.top.collectAsStateWithLifecycle().value
     val history = model.home.history.collectAsStateWithLifecycle().value
     var collection by rememberSaveable(route) {mutableStateOf<HomeSection?>(null)}
-    val previewScroll = rememberLazyListState()
-    val recentScroll = rememberLazyListState()
-    val topScroll = rememberLazyListState()
+    val previewScroll = rememberSoundQThumbnailListState()
+    val recentScroll = rememberSoundQThumbnailListState()
+    val topScroll = rememberSoundQThumbnailListState()
     val listState = when(collection) {HomeSection.Recent->recentScroll;HomeSection.Top->topScroll;else->previewScroll}
     BackHandler(collection!=null) {collection=null}
     LaunchedEffect(route,collection,recent.rows,recent.loading) {
@@ -83,15 +83,15 @@ import java.time.format.DateTimeFormatter
                     event.playedAt.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("MMM d, yyyy HH:mm")),
                     event.contextType,
                 ).joinToString(" · ")
-                HomeTrackRow(model,route,HomeSection.History,state.rows,event.entry,model.homePlay(route,HomeSection.History,state.rows,event.entry,event.id),model.homeQueue(route,HomeSection.History,state.rows,event.entry,event.id),revealOwner,metadata)
+                SoundQThumbnailItem(listState,event.id) {HomeTrackRow(model,route,HomeSection.History,state.rows,event.entry,model.homePlay(route,HomeSection.History,state.rows,event.entry,event.id),model.homeQueue(route,HomeSection.History,state.rows,event.entry,event.id),revealOwner,metadata)}
             }
             state.error?.let {error -> item {HomeStateCell {SoundQFeedback("Could not load listening history",FeedbackKind.Error,error.message,"Retry history",{model.loadHome(route,HomeSection.History,state,append=state.retryAppend)})}}}
             if(!state.loading&&state.error==null&&state.hasMore)item {SoundQListActionRow("Load more history",{model.loadHome(route,HomeSection.History,state,append=true)})}
         } else {
             if(collection==null||collection==HomeSection.Recent)homeSection("Recently played",HomeSection.Recent,if(model.home.owns(route,HomeSection.Recent)) recent else HomeReadState(loading=true),model,route,onLibrary,revealOwner,
-                full=collection==HomeSection.Recent,onOpenCollection={if(model.home.revealRecent(route,recent))collection=HomeSection.Recent})
+                listState=listState,full=collection==HomeSection.Recent,onOpenCollection={if(model.home.revealRecent(route,recent))collection=HomeSection.Recent})
             if(collection==null||collection==HomeSection.Top)homeSection("Your top tracks",HomeSection.Top,if(model.home.owns(route,HomeSection.Top)) top else HomeReadState(loading=true),model,route,onLibrary,revealOwner,
-                full=collection==HomeSection.Top,onOpenCollection={if(model.home.owns(route,HomeSection.Top))collection=HomeSection.Top})
+                listState=listState,full=collection==HomeSection.Top,onOpenCollection={if(model.home.owns(route,HomeSection.Top))collection=HomeSection.Top})
         }
         }
     }
@@ -107,7 +107,7 @@ import java.time.format.DateTimeFormatter
         onSubmit={val text=draft.text;onSearch(text)},onClear={draft=TextFieldValue("");onSearch("")},enabled=enabled)
 }
 
-private fun LazyListScope.homeSection(title:String,section:HomeSection,state:HomeReadState,model:ProductViewModel,route:HomeRoute,onLibrary:()->Unit,revealOwner:RowRevealOwner,full:Boolean=false,onOpenCollection:()->Unit={}) {
+private fun LazyListScope.homeSection(title:String,section:HomeSection,state:HomeReadState,model:ProductViewModel,route:HomeRoute,onLibrary:()->Unit,revealOwner:RowRevealOwner,listState:LazyListState,full:Boolean=false,onOpenCollection:()->Unit={}) {
     if(!full)item {Row(Modifier.fillMaxWidth().heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically) {
         Text(title,style=SoundQ.typography.title,modifier=Modifier.weight(1f).clickable(enabled=!state.loading,onClick=onOpenCollection)
             .padding(horizontal=SoundQ.spacing.gutter,vertical=SoundQ.spacing.medium).semantics {heading()})
@@ -119,7 +119,7 @@ private fun LazyListScope.homeSection(title:String,section:HomeSection,state:Hom
     // Slice presentation only. Row capabilities and the eligible playback
     // context must retain the original authoritative list, including hidden rows.
     val visible=if(full)state.rows else state.rows.take(5)
-    itemsIndexed(visible,key={index,row -> "${section.name}:${row.track.id.value}:$index"}) {_,row -> HomeTrackRow(model,route,section,state.rows,row,model.homePlay(route,section,state.rows,row),model.homeQueue(route,section,state.rows,row),revealOwner)}
+    itemsIndexed(visible,key={index,row -> "${section.name}:${row.track.id.value}:$index"}) {index,row -> SoundQThumbnailItem(listState,"${section.name}:${row.track.id.value}:$index") {HomeTrackRow(model,route,section,state.rows,row,model.homePlay(route,section,state.rows,row),model.homeQueue(route,section,state.rows,row),revealOwner)}}
     if(section==HomeSection.Recent) {
         state.error?.let {error -> item {HomeStateCell {SoundQFeedback("Could not load $title",FeedbackKind.Error,error.message,"Retry $title",{model.loadHome(route,section,state,append=state.retryAppend)})}}}
         if(full&&state.error==null&&state.serverHasMore)item {SoundQListActionRow("Load more",{

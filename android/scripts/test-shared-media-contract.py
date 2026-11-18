@@ -27,7 +27,7 @@ class SharedMediaContract(unittest.TestCase):
     def test_queue_forwards_occurrence_artwork_into_shared_row(self):
         source = (DESIGN / 'OccurrenceQueue.kt').read_text()
         self.assertIn('artwork:@Composable (String)->Unit', source)
-        self.assertIn('artwork={artwork(row.occurrence)}', source)
+        self.assertIn('artwork={SoundQThumbnailItem(list,row.occurrence) {artwork(row.occurrence)}}', source)
         self.assertIn('SoundQMediaRow(', source)
 
     def test_harmonic_song_results_share_media_anatomy(self):

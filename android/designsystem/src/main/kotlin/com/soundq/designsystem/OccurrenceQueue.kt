@@ -48,7 +48,7 @@ import soundq.design.generated.SoundQComposeTokens as T
     artwork:@Composable (String)->Unit={SoundQArtworkSlot()},
 ) {
     val order=rows.map {it.occurrence}
-    val list=rememberLazyListState()
+    val list=rememberSoundQThumbnailListState()
     val density=LocalDensity.current
     val motion=SoundQ.motion.queue
     val edge=with(density){T.MOTION_QUEUE_EDGE_ZONE.toPx()}
@@ -170,7 +170,7 @@ import soundq.design.generated.SoundQComposeTokens as T
                 }.background(mediaRowBackground(row.current))
                 .mediaRowBottomRule()
                 .semantics {customActions=actions},verticalAlignment=Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) {SoundQMediaRow(row.title,row.subtitle,row.current,{if(active==null)onSelect(row.occurrence)},{if(active==null)menu=row.occurrence},artwork={artwork(row.occurrence)},metadata=metadata?.let {slot->{slot(row)}})}
+                Box(Modifier.weight(1f)) {SoundQMediaRow(row.title,row.subtitle,row.current,{if(active==null)onSelect(row.occurrence)},{if(active==null)menu=row.occurrence},artwork={SoundQThumbnailItem(list,row.occurrence) {artwork(row.occurrence)}},metadata=metadata?.let {slot->{slot(row)}})}
                 CompositionLocalProvider(LocalViewConfiguration provides configuration) {
                     Box(Modifier.size(SoundQ.sizes.mediaRow)
                         .onGloballyPositioned {coordinates=it}

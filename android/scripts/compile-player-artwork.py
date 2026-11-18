@@ -8,6 +8,8 @@ import argparse
 import os
 import subprocess
 import zipfile
+import json
+import hashlib
 
 p=argparse.ArgumentParser()
 p.add_argument('--output',type=Path,required=True)
@@ -25,12 +27,18 @@ for group,name in [('androidx.compose.ui','ui-android'),('androidx.compose.ui','
     destination=a.output/(name+'.jar')
     with zipfile.ZipFile(aar) as archive:destination.write_bytes(archive.read('classes.jar'))
     jars.append(destination)
+for name in ['lifecycle-runtime-android','lifecycle-runtime-compose-android']:
+    aar=next((cache/'androidx.lifecycle'/name/'2.11.0').glob('**/*.aar'))
+    destination=a.output/(name+'.jar')
+    with zipfile.ZipFile(aar) as archive:destination.write_bytes(archive.read('classes.jar'))
+    jars.append(destination)
+jars += [module('androidx.lifecycle','lifecycle-common-jvm','2.11.0')]
 jars += [android_jar(),module('org.jetbrains.kotlinx','kotlinx-coroutines-core-jvm','1.10.2'),module('com.squareup.okio','okio-jvm','3.18.1')]
 http=next((gradle_cache()/'9.7.0/transforms').glob('*/transformed/okhttp-runtime.jar'))
 jars.append(http)
-for name in ['PlayerArtwork.kt','SelectedPlayerArtwork.kt','TrackArtwork.kt','LibraryArtwork.kt','LibraryRowArtwork.kt']:
+for name in ['PlayerArtwork.kt','SelectedPlayerArtwork.kt','TrackArtwork.kt','LibraryArtwork.kt','LibraryRowArtwork.kt','ThumbnailReadGate.kt','PhoneArtwork.kt']:
     (a.output/name).write_text((main/'product/artwork'/name).read_text())
-for name in ['Contracts.kt','AccountSession.kt']:(a.output/name).write_text((main/'data'/name).read_text())
+for name in ['Contracts.kt','AccountSession.kt','LibraryCollection.kt','BoundedLibraryCorpus.kt']:(a.output/name).write_text((main/'data'/name).read_text())
 projection=(main/'playback/ControllerProjection.kt').read_text()
 start=projection.index('@kotlinx.serialization.Serializable data class QueueOccurrence')
 end=projection.index('/** Disposable immutable projection')
@@ -48,15 +56,33 @@ validate=owner[owner.index('fun validateTimeline('):owner.index('/** Durable dra
 rate=next(line for line in (main/'data/timeline/LinkedPhase.kt').read_text().splitlines() if line.startswith('internal fun TimelineClip.rateOne()'))
 owner=owner[owner.index('@Serializable data class TimelineDocument'):owner.index('fun validateTempoDocument')].replace('@Serializable ','')
 (a.output/'TimelineDocument.kt').write_text('package com.soundq.android.data.timeline\nclass PhaseLink { fun contains(occurrence:String)=false }\n'+owner+validate+rate)
+(a.output/'QueuePolicy.kt').write_text((main/'playback/QueuePolicy.kt').read_text())
+(a.output/'ThumbnailWindow.kt').write_text((r/'designsystem/src/main/kotlin/com/soundq/designsystem/ThumbnailWindow.kt').read_text())
 (a.output/'LibraryCapture.kt').write_text('package com.soundq.android.data.playlists\nimport com.soundq.android.data.*\nclass LibraryTrackCapture internal constructor(internal val scope:AccountScope,val track:Track,internal val lifetime:Long)\n')
 api=(main/'data/SoundQApi.kt').read_text();start=api.index('        fun safeMediaUrl(value: String)');end=api.index('\n    }\n}',start)
 (a.output/'MediaPolicy.kt').write_text('package com.soundq.android.data\nimport okhttp3.HttpUrl.Companion.toHttpUrlOrNull\nobject SoundQApi {\n'+api[start:end]+'\n}\n')
+(a.output/'UnrelatedPlayback.kt').write_text('''package com.soundq.android.playback
+interface PlaybackRef {class Device:PlaybackRef}
+class PlaybackClockAuthority
+class ListeningSpeedState
+class SelectedDevicePlaybackOwner
+''')
+(a.output/'PhoneAccess.kt').write_text('package com.soundq.android.data.deviceaudio\nenum class AccessState {AVAILABLE}\n')
 (a.output/'GraphBoundary.kt').write_text('''package com.soundq.android
 import com.soundq.android.data.*
 import com.soundq.android.product.artwork.*
 internal class AppGraph(val session:AccountSession,val playerArtwork:SelectedPlayerArtwork,val libraryArtwork:LibraryArtwork) {
+ val applicationContext:android.content.Context get()=error("compile-only graph boundary")
+ val phoneAudio:PhoneAudioBoundary get()=error("compile-only graph boundary")
  fun track(id:TrackId):Track?=error("compile-only graph boundary")
 }
+class PhoneAudioBoundary {
+ fun current(version:Long):Boolean=error("compile-only phone owner")
+ fun observed(ref:com.soundq.android.playback.PlaybackRef.Device):PhoneRowBoundary?=error("compile-only phone owner")
+}
+class PhoneRowBoundary(val aliases:List<PhoneAliasBoundary>)
+class PhoneAliasBoundary(val state:com.soundq.android.data.deviceaudio.AccessState,val locator:PhoneLocatorBoundary)
+class PhoneLocatorBoundary(val value:String)
 ''')
 slot=(r/'designsystem/src/main/kotlin/com/soundq/designsystem/PlayerComponents.kt').read_text()
 start=slot.index('@Composable fun SoundQArtworkSlot(');end=slot.index('\n/** Shared five-control',start)
@@ -79,7 +105,10 @@ enum class SoundQIcon {Note}
 @Composable fun SoundQIcon(icon:SoundQIcon,contentDescription:String?,tint:Color) {}
 '''+slot[start:end])
 command=['kotlinc','-jvm-target','17','-J-XX:ActiveProcessorCount=1','-Xplugin='+kotlin_plugin('compose-compiler-plugin.jar'),*[str(x) for x in a.output.glob('*.kt')],'-cp',os.pathsep.join(map(str,jars)),'-d',str(a.output/'ui.jar')]
+(a.output/'commands.json').write_text(json.dumps({'cwd':os.getcwd(),'command':command,'TMPDIR':str(a.output.resolve())},indent=2))
+(a.output/'compiled-inputs.json').write_text(json.dumps({str(x.resolve()):hashlib.sha256(x.read_bytes()).hexdigest() for x in [*a.output.glob('*.kt'),*jars]},indent=2))
 result=subprocess.run(command,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,env=dict(os.environ,TMPDIR=str(a.output.resolve())))
+(a.output/'exits.json').write_text(json.dumps([result.returncode]))
 (a.output/'compile.log').write_text(result.stdout)
 print(result.stdout,end='')
 if result.returncode:raise SystemExit(result.returncode)

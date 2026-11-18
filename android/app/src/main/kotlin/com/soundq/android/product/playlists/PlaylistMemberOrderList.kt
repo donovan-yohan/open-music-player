@@ -38,7 +38,7 @@ import soundq.design.generated.SoundQComposeTokens as T
 ) {
     val order=rows.map {it.occurrence}
     val headerCount=if(header!=null)1 else 0
-    val list=rememberLazyListState()
+    val list=rememberSoundQThumbnailListState()
     val density=LocalDensity.current
     val motion=SoundQ.motion.queue
     val edge=with(density){T.MOTION_QUEUE_EDGE_ZONE.toPx()}
@@ -156,7 +156,7 @@ import soundq.design.generated.SoundQComposeTokens as T
                     SoundQSwipeQueue(row.title,reveal,onQueue!=null&&queueEnabled&&active==null,queue,current=row.current) {front,admit->
                         SoundQMediaRow(row.title,row.subtitle,row.current,{if(active==null&&admit())onSelect(row.occurrence)},
                             onMore={if(active==null){reveal.close();menu=row.occurrence}},modifier=front,
-                            artwork=artwork?.let {slot->{slot(row.occurrence)}},supporting="${index+1}",enabled=active==null,
+                            artwork=artwork?.let {slot->{SoundQThumbnailItem(list,row.occurrence) {slot(row.occurrence)}}},supporting="${index+1}",enabled=active==null,
                             metadata={com.soundq.android.product.LibraryMetadataContent(com.soundq.android.product.memberDurationMetadata(row.durationMs))})
                     }
                 }

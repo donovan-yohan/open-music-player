@@ -51,7 +51,7 @@ import com.soundq.android.product.preferences.*
     val incomingShare by model.graph.incomingShares.state.collectAsStateWithLifecycle()
     val catalog by model.graph.catalog.state.collectAsStateWithLifecycle()
     var importView by remember {mutableStateOf<ImportView?>(null)}
-    val libraryScroll=rememberLazyListState()
+    val libraryScroll=rememberSoundQThumbnailListState()
     var revealImported by remember {mutableStateOf<TrackId?>(null)}
     DisposableEffect(Unit) {onDispose {importView?.let(model.graph.imports::close)}}
     LaunchedEffect(revealImported,library.rows,library.loading,library.error) {
@@ -428,9 +428,9 @@ import com.soundq.android.product.preferences.*
                             if(phoneRow!=null) {
                                 val phoneVisit=remember(accountVersion,paginationNavigation,rowVisit,panel){java.util.concurrent.atomic.AtomicBoolean(true)}
                                 DisposableEffect(phoneVisit){onDispose {phoneVisit.set(false)}}
-                                PhoneLibraryRow(model,phoneRow,playback.queue.singleOrNull {it.occurrenceId==playback.selectedOccurrence}?.ref==mixedRow.ref,revealOwner,
+                                SoundQThumbnailItem(libraryScroll,mixedRow.stable) {PhoneLibraryRow(model,phoneRow,playback.queue.singleOrNull {it.occurrenceId==playback.selectedOccurrence}?.ref==mixedRow.ref,revealOwner,
                                     {phoneVisit.get()&&destination=="Library"&&panel==null&&rowLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)},
-                                    {if(phoneVisit.get()){selectedPhone=phoneRow;panel="PhoneTrack"}})
+                                    {if(phoneVisit.get()){selectedPhone=phoneRow;panel="PhoneTrack"}})}
                             } else {
                             val track=requireNotNull(mixedRow.server)
                             val index=library.rows.indexOfFirst {it===track}
@@ -451,7 +451,7 @@ import com.soundq.android.product.preferences.*
                                 reveal,valid(),track.liked,capturedRow?.let {model.graph.library.offerLike(it.scope,track.id)}!=null,
                                 {capturedRow?.let {model.likeLibrary(it,valid)}},{capturedRow?.let {model.enqueueLibrary(it,valid)}},
                                 {if(valid()){if(library.query.liked||library.query.collection!=null)model.playLibraryCollection(library,selected=track.id,current=collectionCurrent)else model.play(index,library.rows)}},{if(valid()){revealOwner.close();trackCapture=capturedRow;trackPlaylistActions=capturedRoute;selected=track;panel="Track"}},
-                                artwork={com.soundq.android.product.artwork.LibraryRowArtwork(model.graph.libraryArtwork,capturedRow,valid)},
+                                artwork={SoundQThumbnailItem(libraryScroll,mixedRow.stable) {com.soundq.android.product.artwork.LibraryRowArtwork(model.graph.libraryArtwork,capturedRow,valid)}},
                                 metadata={LibraryMetadataContent(libraryRowMetadata(track.durationMs,library.analysis[track.id],keyNotation))},
                                 onQuickQueue={capturedRow?.let {model.quickQueueLibrary(it,valid)}},
                                 supporting=when(mutation){MutationOutcome.Pending->"Saving Like";MutationOutcome.Uncertain->"Like not confirmed — reload";MutationOutcome.ReadbackFailed->"Like saved — reload failed";MutationOutcome.Refused->"Like refused";else->if(track.liked==true)"Liked" else null})

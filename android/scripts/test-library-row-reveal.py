@@ -55,6 +55,9 @@ EFFECTS
 fun <T> remember(vararg keys:Any?,block:()->T):T=block()
 class Disposal {fun onDispose(block:()->Unit){}}
 fun DisposableEffect(vararg keys:Any?,block:Disposal.()->Unit){Disposal().block()}
+// This callback fixture has no Compose list or viewport. Forward only the slot.
+private class FixtureMixedRow(val stable:Long)
+private fun SoundQThumbnailItem(state:Unit,key:Any,content:()->Unit)=content()
 class Driver {
  var activate:()->Unit={};var like:()->Unit={};var queue:()->Unit={}
  var state:RowRevealState?=null
@@ -86,6 +89,7 @@ class LibraryRowBindingExtractedTest {
   val model=Model(Graph(repository));val library=repository.state.value
   val keyNotation=com.soundq.android.data.preferences.KeyNotationState(ready=true)
   val track=library.rows.single();val index=0;val playback=Playback()
+  val libraryScroll=Unit;val mixedRow=FixtureMixedRow(track.id.value)
   val libraryActions:LibraryPlaylistActions?=null
   val rowLifetime=LibraryRowLifetime {true};val revealOwner=RowRevealOwner()
   var trackCapture:LibraryTrackCapture?=null;var trackPlaylistActions:LibraryPlaylistActions?=null

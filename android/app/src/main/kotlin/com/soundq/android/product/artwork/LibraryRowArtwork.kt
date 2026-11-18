@@ -7,8 +7,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Keep acknowledged Library capture guards. Share the same draw-time checked paint body. */
 @Composable internal fun LibraryRowArtwork(loader:LibraryArtwork,capture:LibraryTrackCapture?,current:()->Boolean) {
-    val row=remember(loader,capture){loader.open(capture,current)}
+    val visible=com.soundq.designsystem.LocalSoundQThumbnailVisible.current
+    val row=remember(loader,capture){loader.openThumbnail(capture,visible(),current)}
     val mounted=remember(row){AtomicBoolean(true)}
     DisposableEffect(row){row.start();onDispose {mounted.set(false);row.close()}}
+    LaunchedEffect(row,visible){snapshotFlow {visible()}.collect {row.visibility(it)}}
     ArtworkPaint(row.state,row::bitmap,mounted,72.dp)
 }

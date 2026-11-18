@@ -27,7 +27,8 @@ private fun LazyListScope.downloadHeader(content:@Composable ()->Unit) {
     var confirmation by remember(scope){mutableStateOf<List<DeviceDownload>?>(null)}
     var options by remember(scope){mutableStateOf(false)}
     val revealOwner=remember(scope){RowRevealOwner()}
-    LazyColumn(Modifier.fillMaxSize().closeRowRevealOutside(revealOwner)) {
+    val thumbnails=rememberSoundQThumbnailListState()
+    LazyColumn(Modifier.fillMaxSize().closeRowRevealOutside(revealOwner),state=thumbnails) {
         downloadHeader {Text("Downloads",style=SoundQ.typography.heading,modifier=Modifier.semantics {heading()})}
         downloadHeader {Text("Saved on this device.",style=SoundQ.typography.caption)}
         downloadHeader {SoundQButton(if(remote)"Back to Library" else "Go online",onBack,variant=SoundQButtonVariant.Secondary)}
@@ -51,8 +52,8 @@ private fun LazyListScope.downloadHeader(content:@Composable ()->Unit) {
                         if(queueEnabled)model.playDownload(scope,row,rowValid) else menu=true
                     }
                 },onMore={reveal.close();menu=true},modifier=front,
-                    artwork={com.soundq.android.product.artwork.TrackArtwork(model.graph,scope,row.track,
-                        {rowValid()&&!model.playback.value.localOnly},sourceOwner=lifetime to playback.localOnly)},
+                    artwork={SoundQThumbnailItem(thumbnails,row.track.id.value) {com.soundq.android.product.artwork.TrackArtwork(model.graph,scope,row.track,
+                        {rowValid()&&!model.playback.value.localOnly},sourceOwner=lifetime to playback.localOnly)}},
                     supporting=status,metadata={com.soundq.android.product.LibraryMetadataContent(com.soundq.android.product.memberDurationMetadata(row.track.durationMs))},enabled=!state.rejected)
             }
             if(menu)SoundQSheet("Device copy",{menu=false}) {
