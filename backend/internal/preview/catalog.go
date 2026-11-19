@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,8 +31,8 @@ const (
 )
 
 var (
-	clipName    = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}\.mp3$`)
-	apiTrack    = regexp.MustCompile(`^/tracks/[1-9][0-9]*$`)
+	clipName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}\.mp3$`)
+
 	errManifest = errors.New("invalid preview manifest")
 	errFile     = errors.New("invalid preview file")
 )
@@ -98,7 +97,7 @@ func decodeClip(dec *json.Decoder) (string, clip, error) {
 		"url": &key, "file": &c.filename, "length": &c.length, "sha256": &digest,
 		"sampleRate": &c.rate, "frames": &c.frames, "excerptStartFrames": &offset,
 		"rightsRef": &rightsRef, "attribution": &attribution, "expiresAt": &c.expiresAt,
-	}) || !canonicalSource(key) || !clipName.MatchString(c.filename) ||
+	}) || canonicalSource(parseSource(key)) == validators.SourceUnknown || !clipName.MatchString(c.filename) ||
 		c.length < 1 || c.length > maxClipBytes || (c.rate != 44100 && c.rate != 48000) ||
 		c.frames < 1 || c.frames > maxSeconds*c.rate || offset == nil || *offset < 0 ||
 		!validProvenance(rightsRef) || !validProvenance(attribution) || c.expiresAt.IsZero() ||
@@ -113,34 +112,6 @@ func decodeClip(dec *json.Decoder) (string, clip, error) {
 
 func validProvenance(s string) bool {
 	return len(s) <= 512 && strings.TrimSpace(s) != "" && strings.IndexFunc(s, unicode.IsControl) < 0
-}
-
-func canonicalSource(raw string) bool {
-	if len(raw) > maxURLBytes || strings.IndexFunc(raw, func(r rune) bool {
-		return unicode.IsSpace(r) || unicode.IsControl(r) || r == '\\' || r == '#'
-	}) >= 0 {
-		return false
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.User != nil || u.String() != raw {
-		return false
-	}
-	result := validators.DefaultRegistry().Validate(raw)
-	if !result.Valid {
-		return false
-	}
-	switch u.Host {
-	case "www.youtube.com":
-		return result.MediaType == "video" && raw == result.Canonical
-	case "music.youtube.com":
-		return result.MediaType == "video" && raw == strings.Replace(result.Canonical, "www.youtube.com", "music.youtube.com", 1)
-	case "soundcloud.com":
-		return validators.IsSoundCloudTrackPermalinkPath(u.Path) && result.MediaType == "track" && raw == result.Canonical
-	case "api.soundcloud.com":
-		return result.MediaType == "track" && !u.ForceQuery && u.RawQuery == "" && u.RawPath == "" && apiTrack.MatchString(u.Path)
-	default:
-		return false
-	}
 }
 
 // decodeObject requires each declared field exactly once, with no case folding.
