@@ -20,6 +20,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
 
+internal class DeckReadinessExpired : IllegalStateException("Audio deck did not become ready")
+
 /** Service-owned occurrence queue. Native acknowledgements are the only running position clock. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal class NativeCallbackPlayer(
@@ -121,7 +123,7 @@ internal class NativeCallbackPlayer(
             committed = true
             invalidateState()
             return true
-        } catch (e: TimeoutCancellationException) {
+        } catch (_: DeckReadinessExpired) {
             if (valid()) throw SafeFailure(SafeFailure.Reason.Network)
             return false
         } catch (e: CancellationException) {
@@ -1259,8 +1261,9 @@ internal class NativeCallbackPlayer(
         return done()
     }
 
-    private suspend fun awaitDeckReady(slot: Int, identity: Long, current: () -> Boolean, nativeCurrent: () -> Boolean = current): NativeCallbackDeck =
-        withTimeout(15_000) {
+    private suspend fun awaitDeckReady(slot: Int, identity: Long, current: () -> Boolean, nativeCurrent: () -> Boolean = current): NativeCallbackDeck {
+        // Only this wait's deadline is a preparation failure; owner cancellation still propagates.
+        return withTimeoutOrNull(15_000) {
             var value:NativeCallbackDeck?=null
             while(value==null) {
                 check(current())
@@ -1274,7 +1277,8 @@ internal class NativeCallbackPlayer(
                 if(value==null)delay(20)
             }
             requireNotNull(value)
-        }
+        } ?: throw DeckReadinessExpired()
+    }
 
     private suspend fun bindJournal(item:MediaItem,grant:MediaGrant,file:NativePlaybackSource,slot:Int,identity:Long,allowResume:Boolean,current:()->Boolean) {
         val ready=awaitDeckReady(slot,identity,current)
