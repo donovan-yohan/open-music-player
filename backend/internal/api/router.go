@@ -16,6 +16,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/middleware"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/observability"
+	"github.com/openmusicplayer/backend/internal/preview"
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/search"
 	"github.com/openmusicplayer/backend/internal/validators"
@@ -41,6 +42,7 @@ type Router struct {
 	playbackHandlers        *PlaybackHandlers
 	queueHandlers           *queue.Handlers
 	discoveryHandlers       *discovery.Handlers
+	discoveryPreview        *preview.Catalog
 	weeklyHandlers          *WeeklyHandlers
 	releaseRadarHandlers    *ReleaseRadarHandlers
 	agentToolsHandler       http.Handler
@@ -93,6 +95,7 @@ type RouterConfig struct {
 	PlaybackHandlers        *PlaybackHandlers
 	QueueHandlers           *queue.Handlers
 	DiscoveryHandlers       *discovery.Handlers
+	DiscoveryPreview        *preview.Catalog
 	WeeklyHandlers          *WeeklyHandlers
 	ReleaseRadarHandlers    *ReleaseRadarHandlers
 	AgentToolsHandler       http.Handler
@@ -165,6 +168,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		playbackHandlers:        cfg.PlaybackHandlers,
 		queueHandlers:           cfg.QueueHandlers,
 		discoveryHandlers:       cfg.DiscoveryHandlers,
+		discoveryPreview:        cfg.DiscoveryPreview,
 		weeklyHandlers:          cfg.WeeklyHandlers,
 		releaseRadarHandlers:    cfg.ReleaseRadarHandlers,
 		agentToolsHandler:       cfg.AgentToolsHandler,
@@ -202,7 +206,15 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 	// the response actually sent (including conditional 304 and compression).
 	var response http.Handler = routes
 	if cfg.ResponseTransforms {
-		response = middleware.Timing(middleware.Gzip(middleware.ETag(routes)))
+		transformed := middleware.Gzip(middleware.ETag(routes))
+		response = middleware.Timing(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			// The preview contract fixes the encoded byte length and requires identity.
+			if req.Pattern == discoveryPreviewPattern {
+				routes.ServeHTTP(w, req)
+				return
+			}
+			transformed.ServeHTTP(w, req)
+		}))
 	}
 	r.handler = telemetry.HTTPWithLogger(response, log, func(event logger.HTTPCompletion) {
 		if cfg.Metrics != nil {
@@ -279,6 +291,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /api/v1/musicbrainz/search/albums", r.withAuth(r.musicbrainzHandlers.SearchAlbums))
 
 	// Browse/discovery routes (auth required)
+	r.registerDiscoveryPreview()
 	if h := r.weeklyHandlers; h != nil {
 		r.mux.HandleFunc("GET /api/v1/me/discovery/weekly", r.withWeeklyAuth(h.Weekly))
 		r.mux.HandleFunc("GET /api/v1/me/discovery/preferences", r.withWeeklyAuth(h.Preferences))
@@ -353,6 +366,11 @@ func (r *Router) setupRoutes() {
 
 	// Exact stored recording identity/current-account membership; not playback grants.
 	r.mux.HandleFunc("GET /api/v1/catalog/recordings/{mb_id}/resolution", r.withAuth(r.libraryHandlers.ResolveCatalogRecording))
+	source := r.withAuth(r.browseHandlers.GetRecordingSource)
+	r.mux.HandleFunc("GET /api/v1/catalog/recordings/{mb_id}/source", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Cache-Control", "private, no-store")
+		source(w, req)
+	})
 	// Conditional stored-membership surface; legacy numeric Add stays unchanged.
 	r.mux.HandleFunc("POST /api/v1/catalog/recordings/{mb_id}/membership", r.withAuth(r.libraryHandlers.AddCatalogMembership))
 

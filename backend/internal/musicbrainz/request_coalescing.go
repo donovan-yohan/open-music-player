@@ -28,6 +28,9 @@ func (c *Client) doRequest(ctx context.Context, reqURL string) ([]byte, error) {
 	if bounded {
 		flightKey += "\x00radar-1mib-1retry"
 	}
+	if recordingSourceRead(ctx) {
+		flightKey += "\x00recording-source"
+	}
 	if budget := weeklyBudget(ctx); budget != nil {
 		flightKey += fmt.Sprintf("\x00weekly-4requests-2mib-%p", budget)
 	}

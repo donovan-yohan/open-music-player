@@ -104,6 +104,24 @@ func (v *SoundCloudValidator) Validate(rawURL string) ValidationResult {
 	}
 }
 
+// IsSoundCloudTrackPermalinkPath restricts a SoundCloud web path to a single
+// track permalink. Callers must still validate the URL, host, and credentials.
+func IsSoundCloudTrackPermalinkPath(path string) bool {
+	user, track, ok := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(path, "/"), "/"), "/")
+	if !ok || user == "" || track == "" || strings.Contains(track, "/") {
+		return false
+	}
+	switch strings.ToLower(user) {
+	case "pages", "settings":
+		return false
+	}
+	switch strings.ToLower(track) {
+	case "sets", "likes", "tracks", "albums", "playlists", "reposts", "followers", "following", "popular-tracks":
+		return false
+	}
+	return true
+}
+
 // validateMainURL validates soundcloud.com URLs
 func (v *SoundCloudValidator) validateMainURL(rawURL string, parsed *url.URL) ValidationResult {
 	// Split path into segments, filtering empty strings

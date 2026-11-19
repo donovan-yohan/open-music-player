@@ -34,6 +34,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/observability"
 	"github.com/openmusicplayer/backend/internal/playlistimport"
+	"github.com/openmusicplayer/backend/internal/preview"
 	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/research"
@@ -522,6 +523,10 @@ func runServer() int {
 		}
 	}()
 	cfg := config.Load()
+	discoveryPreview, err := preview.Load(os.Getenv("DISCOVERY_PREVIEW_DIR"))
+	if err != nil {
+		log.Warn(ctx, "Discovery previews disabled", map[string]interface{}{"reason": err.Error()})
+	}
 	maintenanceConfig, err := maintenanceStartupConfig(cfg)
 	if err != nil {
 		log.Error(ctx, "Invalid maintenance configuration", nil, err)
@@ -982,6 +987,7 @@ func runServer() int {
 		PlaybackHandlers:        playbackHandlers,
 		QueueHandlers:           queueHandlers,
 		DiscoveryHandlers:       discoveryHandlers,
+		DiscoveryPreview:        discoveryPreview,
 		WeeklyHandlers:          weeklyHandlers,
 		ReleaseRadarHandlers:    releaseRadarHandlers,
 		AgentToolsHandler:       agentToolsHandler,
