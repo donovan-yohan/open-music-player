@@ -3,7 +3,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 object AudioFormat {const val ENCODING_PCM_16BIT=2;const val ENCODING_PCM_FLOAT=4}
 class MediaFormat {
-    private val values=mutableMapOf<String,Any>(KEY_MIME to "audio/raw",KEY_SAMPLE_RATE to 8000,KEY_CHANNEL_COUNT to 1,KEY_PCM_ENCODING to 2)
+    private val values=mutableMapOf<String,Any>(KEY_MIME to "audio/raw",KEY_SAMPLE_RATE to (MediaCodec.onset?.rate ?: 8000),KEY_CHANNEL_COUNT to 1,KEY_PCM_ENCODING to 2)
     fun getString(k:String)=values[k] as? String
     fun getInteger(k:String)=values[k] as Int
     fun setInteger(k:String,v:Int){values[k]=v}
@@ -25,6 +25,7 @@ class MediaExtractor {
     fun advance()=true
     fun seekTo(us:Long,mode:Int){
         MediaCodec.lastSeekUs=us
+        MediaCodec.onset?.seek(us)
         if(us>0 && MediaCodec.scenario=="failure-cancel")requireNotNull(source).revoke()
     }
     fun release(){}
@@ -36,11 +37,12 @@ class MediaCodec {
     val outputFormat=MediaFormat()
     fun configure(f:MediaFormat,a:Any?,b:Any?,flags:Int){}
     fun start(){};fun stop(){};fun release(){releases++}
-    fun flush(){step=1}
-    fun dequeueInputBuffer(timeout:Long)=0
+    fun flush(){step=1;onset?.flush(lastSeekUs)}
+    fun dequeueInputBuffer(timeout:Long):Int {onset?.checkInput();return 0}
     fun getInputBuffer(i:Int)=ByteBuffer.allocate(8)
     fun queueInputBuffer(i:Int,offset:Int,count:Int,time:Long,flags:Int){}
     fun dequeueOutputBuffer(info:BufferInfo,timeout:Long):Int {
+        onset?.let {return it.output(info)}
         step++
         if(step==1)return INFO_OUTPUT_FORMAT_CHANGED
         if(scenario!="long") {
@@ -61,17 +63,67 @@ class MediaCodec {
         info.offset=0;info.size=if(lastSeekUs>0)8002*2 else 4
         info.flags=0;info.presentationTimeUs=lastSeekUs;return 0
     }
-    fun getOutputBuffer(i:Int)=if(scenario=="failure-decoded-budget" && lastSeekUs>0)ByteBuffer.allocate(60000) else {
+    fun getOutputBuffer(i:Int)=onset?.pcm() ?: if(scenario=="failure-decoded-budget" && lastSeekUs>0)ByteBuffer.allocate(60000) else {
         val frames=if(scenario=="long" && lastSeekUs>0)8002 else 2
         ByteBuffer.allocate(frames*2).order(ByteOrder.LITTLE_ENDIAN).apply {
             repeat(frames) {putShort(if(it%2==0)8192 else 16384)};flip()
         }
     }
-    fun releaseOutputBuffer(i:Int,render:Boolean){}
+    fun releaseOutputBuffer(i:Int,render:Boolean){onset?.releaseOutput()}
     companion object {
         const val BUFFER_FLAG_END_OF_STREAM=4;const val BUFFER_FLAG_CODEC_CONFIG=2;const val INFO_OUTPUT_FORMAT_CHANGED=-2
         var tailRequested=false;var lastSeekUs=0L;var releases=0
         var scenario="long"
+        internal var onset:OnsetCodecFixture?=null
         fun createDecoderByType(mime:String)=MediaCodec()
     }
+}
+
+// The extractor seek alone cannot reset this codec or discard a held buffer.
+internal class OnsetCodecFixture {
+    val rate = 48000
+    val events = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    private val chunk = 12000
+    private var next = 0L
+    private var first = 0L
+    private var needsFlush = false
+    private var formatPending = true
+    private var holding = false
+
+    fun seek(us: Long) {
+        check(!holding)
+        events.add("seek:$us")
+        needsFlush = true
+    }
+
+    fun flush(us: Long) {
+        check(!holding && needsFlush)
+        events.add("flush:$us")
+        needsFlush = false
+        next = (us * rate + 500_000) / 1_000_000
+    }
+
+    fun checkInput() { check(!needsFlush) { "Unflushed codec input" } }
+
+    fun output(info: MediaCodec.BufferInfo): Int {
+        check(!needsFlush && !holding)
+        if (formatPending) {
+            formatPending = false
+            return MediaCodec.INFO_OUTPUT_FORMAT_CHANGED
+        }
+        first = next
+        next += chunk
+        info.size = chunk * 2
+        info.presentationTimeUs = first * 1_000_000 / rate
+        holding = true
+        events.add("pcm:$first")
+        return 0
+    }
+
+    fun pcm(): ByteBuffer = ByteBuffer.allocate(chunk * 2).order(ByteOrder.LITTLE_ENDIAN).apply {
+        repeat(chunk) { putShort(((first + it) % 251 + 4096).toShort()) }
+        flip()
+    }
+
+    fun releaseOutput() { check(holding); holding = false }
 }
