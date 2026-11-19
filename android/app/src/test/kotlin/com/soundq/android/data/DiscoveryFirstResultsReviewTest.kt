@@ -12,6 +12,7 @@ import okhttp3.Response
 import org.junit.Assert.*
 import org.junit.Test
 import java.time.Instant
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit.SECONDS
@@ -29,6 +30,7 @@ class DiscoveryFirstResultsReviewTest {
         val saveEntered = CountDownLatch(1)
         val releaseSave = CountDownLatch(1)
         val releasePeer = CountDownLatch(1)
+        val peerEntered = CompletableFuture<Boolean>()
         val peerResponseThreads = LinkedBlockingQueue<Thread>()
         val store = object : SessionStore {
             @Volatile var saved: SecretTokens? = null
@@ -36,7 +38,7 @@ class DiscoveryFirstResultsReviewTest {
             override fun clear() { saved = null }
             override fun save(endpoint: ApiEndpoint, tokens: SecretTokens) {
                 if (tokens.access == "rotated") {
-                    saveEntered.countDown(); releaseSave.cross()
+                    saveEntered.countDown(); releaseSave.cross("rotation save release ($mode)")
                     if (mode == "save failure") throw java.io.IOException()
                 }
                 saved = tokens
@@ -59,8 +61,15 @@ class DiscoveryFirstResultsReviewTest {
                 if (request.url.encodedPath == "/api/v1/auth/refresh") return reply(f.auth("A", "rotated"))
                 val p = checkNotNull(request.url.queryParameter("providers"))
                 if (request.headers["Authorization"] == "Bearer a") {
-                    if (p == "youtube") return reply("{}", 401)
-                    releasePeer.cross()
+                    if (p == "youtube") {
+                        // This fixture tests an admitted peer. A 401 before peer entry can withdraw
+                        // the old bearer before SoundCloud's production network guard admits it.
+                        return reply("{}", if (peerEntered.get(8, SECONDS)) 401 else 503)
+                    }
+                    check(p == "soundcloud" && request.method == "GET" &&
+                        request.url.encodedPath == "/api/v1/discovery/search" && request.url.queryParameter("q") == "seed")
+                    peerEntered.complete(true)
+                    releasePeer.cross("SoundCloud response release ($mode)")
                     return reply(batch("seed", p), peerCode)
                 }
                 check(request.headers["Authorization"] == "Bearer rotated")
@@ -70,22 +79,33 @@ class DiscoveryFirstResultsReviewTest {
         try {
             repo.edit(view, "seed")
             val work = owner.launch { repo.search(view, repo.state.value.draft) }
-            saveEntered.cross()
+            check(saveEntered.await(8, SECONDS)) {
+                "rotation save did not enter ($mode): old SoundCloud entered TLS=${peerEntered.getNow(false)}, requests=${f.server.requestCount}"
+            }
             assertFalse(session.current(scope)); assertFalse(session.remoteCurrent(scope)); assertNull(session.capture())
-            val firstRequests = List(3) { f.server.takeRequest(4, SECONDS)!! }
-            assertEquals(setOf("youtube", "soundcloud"), firstRequests.filter { it.method == "GET" }.map { it.url.queryParameter("providers") }.toSet())
-            assertEquals(1, firstRequests.count { it.url.encodedPath == "/api/v1/auth/refresh" })
+            assertRotationGets(f, setOf("youtube", "soundcloud"), "a", mode)
+            val refresh = f.takeRotationRequest("refresh POST ($mode)")
+            assertEquals("POST", refresh.method)
+            assertEquals("/api/v1/auth/refresh", refresh.url.encodedPath)
+            assertNull(refresh.headers["Authorization"])
+            assertEquals("""{"refreshToken":"r"}""", refresh.body?.utf8())
             assertRetired { api.discoverySearch(scope, "not admitted") }
             assertRetired { api.like(scope, TrackId(7), true) }
+            assertNull("no rows before the held peer reply ($mode)", repo.state.value.results)
             val replacement = when (mode) {
-                "lock" -> { assertTrue(session.lockLocal()); null }
+                "lock" -> {
+                    assertTrue("local lock must succeed during the save", session.lockLocal())
+                    assertSame(AuthState.LocalLocked, session.state.value)
+                    assertSame(DiscoveryReadState.Retired, session.discoveryReadState(scope))
+                    null
+                }
                 "signout" -> session.revoke().let { retirement -> owner.launch { session.clearRetired(retirement) } }
                 "replacement" -> session.beginIntent().let { intent -> owner.launch { assertTrue(session.accept(intent, SecretTokens("replacement", "r2", "A"))) } }
                 else -> null
             }
             if (mode == "cancel") work.cancel() else {
                 releasePeer.countDown()
-                val peer = checkNotNull(peerResponseThreads.poll(4, SECONDS))
+                val peer = checkNotNull(peerResponseThreads.poll(4, SECONDS)) { "old SoundCloud response headers not received ($mode)" }
                 // Either the peer joined the very save that is held, or it left the search worker.
                 // In particular, releasing save immediately after server receipt would mask the bug.
                 observeThread(peer) { stack -> stack.any { it.className == "java.util.concurrent.CompletableFuture" && it.methodName == "get" } ||
@@ -102,23 +122,48 @@ class DiscoveryFirstResultsReviewTest {
                 assertEquals(setOf(SourceProvider.YouTube, SourceProvider.SoundCloud), results.rows.map { it.provider }.toSet())
                 assertTrue(results.providers.all { it.status == "ok" })
                 for (row in results.rows) assertEquals(id(row.provider.wire), repo.inspect(view, row)!!.selection.id)
-                val retries = List(if (peerCode == 401) 2 else 1) { f.server.takeRequest(4, SECONDS)!! }
-                assertEquals(if (peerCode == 401) setOf("youtube", "soundcloud") else setOf("youtube"), retries.map { it.url.queryParameter("providers") }.toSet())
-                assertTrue(retries.all { it.headers["Authorization"] == "Bearer rotated" })
-                assertEquals(3 + retries.size, f.server.requestCount)
+                val retriedProviders = if (peerCode == 401) setOf("youtube", "soundcloud") else setOf("youtube")
+                assertRotationGets(f, retriedProviders, "rotated", mode)
+                assertEquals(3 + retriedProviders.size, f.server.requestCount)
             } else {
                 assertTrue(repo.state.value.results?.rows.isNullOrEmpty())
                 assertFalse(repo.state.value.pendingProviders)
                 assertEquals(3, f.server.requestCount)
                 when (mode) {
-                    "lock", "cancel" -> assertEquals("rotated", store.saved?.access)
+                    "lock", "cancel" -> {
+                        assertEquals("rotated", store.saved?.access)
+                        assertEquals("r-rotated", store.saved?.refresh)
+                        assertEquals("A", store.saved?.accountId)
+                        if (mode == "lock") {
+                            assertSame(AuthState.LocalLocked, session.state.value)
+                            assertNull(session.capture())
+                        }
+                    }
                     "replacement" -> assertEquals("replacement", store.saved?.access)
                     "signout" -> assertNull(store.saved)
                     "save failure" -> assertTrue(session.state.value is AuthState.SaveRequired)
                 }
                 if (mode != "cancel") assertFalse(session.remoteCurrent(scope))
             }
-        } finally { releasePeer.countDown(); releaseSave.countDown(); owner.cancel() }
+        } finally {
+            peerEntered.complete(false)
+            releasePeer.countDown(); releaseSave.countDown(); owner.cancel()
+        }
+    }
+
+    private fun HttpsFixture.takeRotationRequest(expected: String): RecordedRequest =
+        checkNotNull(server.takeRequest(4, SECONDS)) { "missing $expected (TLS requests=${server.requestCount})" }
+
+    private fun assertRotationGets(f: HttpsFixture, providers: Set<String>, bearer: String, mode: String) {
+        val actual = List(providers.size) { i ->
+            val request = f.takeRotationRequest("$bearer provider GET ${i + 1}/${providers.size} ($mode)")
+            assertEquals("GET", request.method)
+            assertEquals("/api/v1/discovery/search", request.url.encodedPath)
+            assertEquals("seed", request.url.queryParameter("q"))
+            assertEquals("Bearer $bearer", request.headers["Authorization"])
+            request.url.queryParameter("providers")
+        }
+        assertEquals("provider GETs for bearer $bearer ($mode)", providers, actual.toSet())
     }
 
     @Test fun queuedOldBearerIsRefusedAtActualNetworkAdmissionAfterRotation() = HttpsFixture().use { f ->
@@ -335,7 +380,7 @@ class DiscoveryFirstResultsReviewTest {
         check(accept(beginIntent(), SecretTokens("a", "r", "A")))
     }
 
-    private fun CountDownLatch.cross() { check(await(8, SECONDS)) { "fixture barrier timed out" } }
+    private fun CountDownLatch.cross(gate: String = "fixture barrier") { check(await(8, SECONDS)) { "$gate timed out" } }
     private fun Job.finish() = runBlocking { withTimeout(5000) { join() } }
     private fun observeThread(thread: Thread, predicate: (Array<StackTraceElement>) -> Boolean) {
         val until = System.nanoTime() + SECONDS.toNanos(4)
