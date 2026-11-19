@@ -8,8 +8,22 @@ or use an empty array to disable previews. A malformed manifest disables the
 entire allowlist and logs a safe reason without printing its contents or path.
 No DB, storage, import or provider configuration is needed for the route.
 
-Use one manifest row per exact source returned to the client. All fields are
-required, once each. The manifest is a JSON array (max 256 rows / 256 KiB):
+Use one manifest row per exact source key. `GET /api/v1/discovery/search`
+may include `previewSourceUrl` on a `results[]` row. Send that string verbatim
+as `{"url":"…"}` to `POST /api/v1/discovery/preview`. Keep the original
+`sourceUrl` and candidate ID for import and selection. The preview key is not
+stored in the selection snapshot and does not indicate clip availability.
+
+Search preserves an exact canonical key, including the YouTube Music host.
+It can also derive a key from a YouTube `youtu.be` share link, or remove known
+tracking parameters (`si`, `utm_source`, `utm_medium`, `utm_campaign`,
+`utm_term`, `utm_content`, `utm_id`) from that link, an exact YouTube watch path,
+or a direct SoundCloud track permalink. SoundCloud API keys must be exact numeric
+track URLs. Search omits the hint for ambiguous or unsupported URLs and never
+follows redirects. Neither the manifest nor the preview POST accepts aliases.
+
+All manifest fields are required, once each. The manifest is a JSON array
+(max 256 rows / 256 KiB):
 
 | Field | Value |
 | --- | --- |

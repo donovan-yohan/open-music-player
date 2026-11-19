@@ -494,7 +494,7 @@ paths:
           description: Candidate options plus a short-lived server-owned selection snapshot. Discovery does not imply a recommended winner.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DiscoverySearchResponse' }
+              schema: { $ref: '#/components/schemas/DiscoverySearchHTTPResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -505,7 +505,8 @@ paths:
       operationId: streamDiscoveryPreview
       summary: Stream an operator-cleared temporary preview without adding it to Library
       description: |
-        Looks up the exact canonical import source in a local allowlist, without
+        Pass the Search result's previewSourceUrl verbatim as url, when present.
+        Looks up the exact canonical source key in a local allowlist, without
         URL normalization, provider requests, downloads, or Library writes. No
         query parameters. The JSON request is capped at 8192 bytes and must
         contain exactly one case-sensitive url field. A 200 is identity-encoded
@@ -2966,6 +2967,28 @@ components:
         selectionSessionId: { type: string, format: uuid }
         recommendedCandidateId: { type: string, nullable: true, deprecated: true }
         selectionExpiresAt: { type: string, format: date-time }
+
+    DiscoverySearchHTTPResponse:
+      allOf:
+        - $ref: '#/components/schemas/DiscoverySearchResponse'
+        - type: object
+          properties:
+            results:
+              type: array
+              items:
+                allOf:
+                  - $ref: '#/components/schemas/DiscoveryCandidate'
+                  - type: object
+                    properties:
+                      previewSourceUrl:
+                        type: string
+                        format: uri
+                        maxLength: 4096
+                        description: >-
+                          Optional exact local-manifest key for temporary preview of this row.
+                          Omitted when a provider-consistent single-source identity cannot be derived.
+                          Does not indicate that a clip is mounted or available, and does not
+                          replace sourceUrl or change the selection snapshot.
 
     ResolveDiscoveryURLResponse:
       type: object

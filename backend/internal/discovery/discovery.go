@@ -20,6 +20,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
+	"github.com/openmusicplayer/backend/internal/preview"
 )
 
 const (
@@ -84,6 +85,18 @@ type SearchResponse struct {
 	// neutral source-session contract. Discovery does not set a recommendation.
 	RecommendedCandidateID string     `json:"recommendedCandidateId,omitempty"`
 	SelectionExpiresAt     *time.Time `json:"selectionExpiresAt,omitempty"`
+}
+
+// Keep Preview's exact-key hint out of the shared candidate, Assist and
+// selection snapshots. Only the ordinary Search HTTP results carry it.
+type searchHTTPResponse struct {
+	SearchResponse
+	Results []searchResult `json:"results"`
+}
+
+type searchResult struct {
+	Candidate
+	PreviewSourceURL string `json:"previewSourceUrl,omitempty"`
 }
 
 type SearchSection struct {
@@ -743,7 +756,11 @@ func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 	if userCtx != nil && !h.persistSelection(w, r, userCtx.UserID, &resp, "discovery_search") {
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	results := make([]searchResult, len(resp.Results))
+	for i, candidate := range resp.Results {
+		results[i] = searchResult{Candidate: candidate, PreviewSourceURL: preview.SourceKey(candidate.Provider, candidate.SourceURL)}
+	}
+	writeJSON(w, http.StatusOK, searchHTTPResponse{SearchResponse: resp, Results: results})
 }
 
 const sourceSelectionSessionTTL = 15 * time.Minute
