@@ -78,6 +78,7 @@ private class State(var value:PlaybackProjection)
 private class Handler {fun post(r:Runnable){r.run()}}
 private class Controller(p:PlaybackProjection) {
  var controller:ControllerPort?=ControllerPort();var closed=false;val connection=Connection();val state=State(p);val handler=Handler();var clockRequest=0L;var scratch=0
+ private var contextIntent=0L
  fun retireScratch(){scratch++};fun publish(){}
  CONTROLLER
 }

@@ -100,7 +100,7 @@ SERVICE
 }
 class Controller(val device:Facade) {val mutable=MutableStateFlow(PlaybackProjection());val state=mutable;var closed=false;var controller:Facade?=device;val connection=Connection();var queueRevision=0L;var projectedRevision=-1L;var projectedQueue=listOf<QueueOccurrence>();var contextError:String?=null;val syncAdmissions=mutableMapOf<String,SyncAdmission>();var performancePublication=0L
  class SyncAdmission {val identity:ArrangementIdentity?=null;val unlinkPublication:Long?=null;fun completeUnlink(observed:Boolean){error("Out of scope")}}
- fun retireScratch(){}
+ fun retireScratch(observedSelection:Boolean=false){}
 FIELDS
 RETIRE
 LISTENER

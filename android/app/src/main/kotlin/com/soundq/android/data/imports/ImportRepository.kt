@@ -8,8 +8,13 @@ import kotlinx.coroutines.flow.StateFlow
 
 class ImportDraft internal constructor(val text:String) { override fun toString()="ImportDraft([redacted])" }
 class ImportView internal constructor(internal val scope:AccountScope)
-class ImportSubmission internal constructor(internal val scope:AccountScope,internal val source:ImportSource,internal val choice:SourceChoice?=null,internal val playlist:PlaylistId?=null) { internal var dispatched=false;internal var wireEntered=false;internal var canceled=false }
-class ImportSourcePlan internal constructor(internal val view:ImportView,val choice:SourceChoice)
+class ImportSubmission internal constructor(internal val scope:AccountScope,internal val source:ImportSource,internal val choice:SourceChoice?=null,internal val playlist:PlaylistId?=null,internal val routeValid:()->Boolean={true}) {
+    internal var dispatched=false
+    internal var wireEntered=false
+    internal var canceled=false
+    internal var linkRefused=false
+}
+class ImportSourcePlan internal constructor(internal val view:ImportView,val choice:SourceChoice,internal val fromDiscovery:Boolean=false)
 enum class ImportPlaylistPhase { AwaitingImport, AwaitingLibrary, AwaitingMembership, Confirmed }
 data class ImportPlaylistConfirmation(val playlist:PlaylistId,val job:ImportJobId,val track:TrackId?,val phase:ImportPlaylistPhase)
 data class ImportsState(val draft:ImportDraft=ImportDraft(""),val pending:Boolean=false,val consumed:Boolean=false,val acknowledgement:ImportAcknowledgement?=null,val selected:ImportJob?=null,val recent:List<ImportJob> = emptyList(),val loading:Boolean=false,val error:SafeFailure.Reason?=null,val invalidLink:Boolean=false,val sourceReceipt:SourceImportReceipt?=null,val durableReceipt:com.soundq.android.data.acquisition.IntakeReceipt?=null,val sourcePlan:ImportSourcePlan?=null,val playlistChoices:List<PlaylistSummary> = emptyList(),val playlistTotal:Int?=null,val chosenPlaylist:PlaylistSummary?=null,val playlistConfirmation:ImportPlaylistConfirmation?=null)
@@ -61,13 +66,19 @@ class ImportRepository(private val session:AccountSession,private val api:SoundQ
         return ImportSubmission(candidate.scope,source).also {submission=it}
     }
     /** A read-only confirmation stage. The exact source remains owned by its Discover capability. */
-    @Synchronized fun sourceSessionConsumed(choice:SourceChoice)=choice.selection.id in consumedSourceSessions
+    @Synchronized fun sourceSessionConsumed(choice:SourceChoice)=sourceSessionConsumed(choice.selection)
+    @Synchronized internal fun sourceSessionConsumed(selection:SourceSession)=selection.id in consumedSourceSessions
     @Synchronized fun prepareSource(candidate:ImportView,choice:SourceChoice):Boolean {
         if(!current(candidate)||mutable.value.pending||mutable.value.consumed||!session.current(choice.scope)||!choice.valid()||choice.consumed||choice.selection.id in consumedSourceSessions||!choice.candidate.downloadable)return false
         read=null;mutable.value=mutable.value.copy(sourcePlan=ImportSourcePlan(candidate,choice),playlistChoices=emptyList(),playlistTotal=null,chosenPlaylist=null,loading=false,error=null)
         return true
     }
     private fun ownsPlan(candidate:ImportView,plan:ImportSourcePlan)=synchronized(this){current(candidate)&&plan.view===candidate&&mutable.value.sourcePlan===plan&&plan.choice.valid()&&!plan.choice.consumed}
+    @Synchronized internal fun prepareDiscoverySource(candidate:ImportView,choice:SourceChoice):Boolean {
+        if(!current(candidate)||!canClaimDiscovery()||!session.current(choice.scope)||!choice.valid()||choice.consumed||sourceSessionConsumed(choice)||!choice.candidate.downloadable)return false
+        read=null;mutable.value=mutable.value.copy(sourcePlan=ImportSourcePlan(candidate,choice,fromDiscovery=true),playlistChoices=emptyList(),playlistTotal=null,chosenPlaylist=null,loading=false,error=null)
+        return true
+    }
     @Synchronized fun cancelSourcePlan(candidate:ImportView,plan:ImportSourcePlan) {
         if(current(candidate)&&mutable.value.sourcePlan===plan){read=null;mutable.value=mutable.value.copy(sourcePlan=null,playlistChoices=emptyList(),playlistTotal=null,chosenPlaylist=null,loading=false,error=null)}
     }
@@ -94,10 +105,29 @@ class ImportRepository(private val session:AccountSession,private val api:SoundQ
     }
     @Synchronized fun claimPlannedSource(candidate:ImportView,plan:ImportSourcePlan):ImportSubmission? {
         if(!ownsPlan(candidate,plan)||mutable.value.loading)return null
-        return claimSource(candidate,plan.choice,mutable.value.chosenPlaylist?.id)
+        return claimSource(candidate,plan.choice,mutable.value.chosenPlaylist?.id,mayReplaceTerminal=plan.fromDiscovery,plan=plan)
     }
     @Synchronized fun claimSource(candidate:ImportView,choice:SourceChoice,playlist:PlaylistId?=null):ImportSubmission? {
-        if(!current(candidate)||mutable.value.pending||mutable.value.consumed||!session.current(choice.scope)||!choice.valid()||choice.consumed||choice.selection.id in consumedSourceSessions||!choice.candidate.downloadable)return null
+        return claimSource(candidate,choice,playlist,mayReplaceTerminal=false)
+    }
+    // Do not retire an uncertain operation, an unfinished decision, or an open confirmation.
+    private fun canClaimDiscovery(plan:ImportSourcePlan?=null):Boolean = mutable.value.let {state->
+        !state.pending&&state.sourcePlan===plan&&(!state.consumed||state.acknowledgement!=null||state.sourceReceipt?.phase==SourceImportPhase.DecisionRefused||
+            state.sourceReceipt==null&&state.durableReceipt==null&&submission?.let {it.choice==null&&(it.canceled||it.linkRefused)}==true)
+    }
+    @Synchronized internal fun claimDiscoveryLink(candidate:ImportView,source:ImportSource,valid:()->Boolean):ImportSubmission? {
+        if(!current(candidate)||!canClaimDiscovery()||!valid()||submission?.source?.url==source.url&&mutable.value.acknowledgement!=null)return null
+        identityVersion++;read=null
+        mutable.value=ImportsState(draft=ImportDraft(source.url),pending=true,consumed=true,recent=mutable.value.recent)
+        return ImportSubmission(candidate.scope,source,routeValid=valid).also {submission=it}
+    }
+    @Synchronized internal fun abandonDiscoverySubmission(post:ImportSubmission) {
+        if(submission!==post||post.dispatched||post.wireEntered||!session.current(post.scope))return
+        post.dispatched=true;post.canceled=true
+        mutable.value=mutable.value.copy(pending=false,sourceReceipt=mutable.value.sourceReceipt?.copy(phase=SourceImportPhase.DecisionRefused),error=SafeFailure.Reason.Retired)
+    }
+    private fun claimSource(candidate:ImportView,choice:SourceChoice,playlist:PlaylistId?,mayReplaceTerminal:Boolean,plan:ImportSourcePlan?=null):ImportSubmission? {
+        if(!current(candidate)||(if(mayReplaceTerminal)!canClaimDiscovery(plan) else mutable.value.pending||mutable.value.consumed)||!session.current(choice.scope)||!choice.valid()||choice.consumed||choice.selection.id in consumedSourceSessions||!choice.candidate.downloadable)return null
         try {if(api.intakeReceipts.entries(session.endpoint.identity,candidate.scope.accountId).any {it.sessionId==choice.selection.id&&it.phase!="refused"})return null}catch(_:Exception){mutable.value=mutable.value.copy(error=SafeFailure.Reason.StoreRejected);return null}
         choice.consumed=true;consumedSourceSessions.add(choice.selection.id);identityVersion++;read=null
         mutable.value=ImportsState(draft=ImportDraft(choice.candidate.source.url),pending=true,consumed=true,recent=mutable.value.recent,sourceReceipt=SourceImportReceipt(choice))
@@ -277,11 +307,15 @@ class ImportRepository(private val session:AccountSession,private val api:SoundQ
         try {
             // Closing a route does not revoke an already dispatched account-owned receipt.
             val ack=api.createImport(candidate.scope,candidate.source,admit={synchronized(this){
-                (owns(candidate)&&view?.let(::current)==true).also {if(it)candidate.wireEntered=true}
+                (owns(candidate)&&view?.let(::current)==true&&candidate.routeValid()).also {if(it)candidate.wireEntered=true}
             }},current={owns(candidate)})
             synchronized(this){if(submission===candidate && session.current(candidate.scope))mutable.value=mutable.value.copy(pending=false,acknowledgement=ack,error=null)}
         } catch(e:Exception) {
-            synchronized(this){if(submission===candidate && session.current(candidate.scope))mutable.value=mutable.value.copy(pending=false,error=(e as? SafeFailure)?.reason ?: SafeFailure.Reason.Uncertain)}
+            synchronized(this){if(owns(candidate)) {
+                val reason=(e as? SafeFailure)?.reason ?: SafeFailure.Reason.Uncertain
+                candidate.linkRefused=reason==SafeFailure.Reason.Refused||reason==SafeFailure.Reason.Retired&&!candidate.wireEntered
+                mutable.value=mutable.value.copy(pending=false,error=reason)
+            }}
         }
     }
 }

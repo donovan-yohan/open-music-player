@@ -242,21 +242,13 @@ data class LazyListItemInfo(val key:Any,val offset:Int,val size:Int)
   result,=re.findall(pattern,screen,re.M)
   return result
  collection=line(r'^    (var radarCollection by .*)$')
- details=line(r'^    (var radarDetails by .*)$')
  show=line(r'^    (val showRadarCollection=.*)$')
- surface,line_end=screen.index('    val radarSurfaceOwner='),screen.index('    BackHandler(state.canBack')
- owner=screen[surface:line_end]
- route_writer='\n'.join(block(screen,'    fun '+name+'(') for name in ('renewRadarArtwork','changeRadarDetails','changeRadarCollection') if 'fun '+name+'(' in screen)
+ owner=block(screen,'    val radarSurfaceOwner=')+' else null'
+ route_writer='\n'.join(block(screen,'    fun '+name+'(') for name in ('renewRadarArtwork','changeRadarCollection'))
  reset=block(screen,'    LaunchedEffect(view,state.draft.text)')
- invalidate=block(screen,'    LaunchedEffect(view,state.draft,radar.page,radar.stale')
- open_row=line(r'^                    (val open:\(\)->Unit=.*radarCurrent.*)$')
- sheet_start=screen.index('    radarDetails?.takeIf')
- sheet=screen[sheet_start:screen.rindex('\n}')]
- assert sheet.count('SoundQSheet("Song evidence",')==1 and sheet.count('SoundQButton("Find sources",')==1
  eligibility_visit=line(r'^    (var radarSurfaceVisit by .*)$')
- # Admit the already-accepted foreground landing; layout transitions must not touch it.
  visit_value=line(r'^                radarSurfaceVisit=if\(landing!=null\)(.*?)else null$')
- system_back=line(r'^    BackHandler\(showRadarCollection&&radarDetails==null\) \{([^\n]+)\}$')
+ system_back=line(r'^    BackHandler\(showRadarCollection\) \{([^\n]+)\}$')
  header_back=line(r'SoundQIconButton\(SoundQIcon.Back,"Back to Discover",\{([^\n]+?)\},Modifier')
  heading_all=line(r'clickable\(enabled=visibleRadarPage[^\n]+\) \{\n\s+([^\n]+)\n')
  row_all=line(r'SoundQListActionRow\("View all",\{([^\n]+?)\},enabled=')
@@ -276,13 +268,7 @@ internal fun hostRadarRowArtwork(client:OkHttpClient,repository:DiscoveryReposit
 '''+row.replace('model.graph.mediaClient','client')+'\n}\n')
  with (out/'DiscoverArtworkBinding.kt').open('a') as binding:
   binding.write('''
-internal data class HostEvidence(val dismiss:()->Unit,var find:(()->Unit)?=null)
-private object SoundQ {object typography {val title=Any();val mono=Any();val caption=Any()}}
-private enum class FeedbackKind {Loading,Error}
-private fun Text(text:String,style:Any?=null) {}
-private fun SoundQFeedback(text:String,kind:FeedbackKind) {}
-internal data class HostRadarRoute(val full:Boolean,val owner:'''+owner_type+'''?,val systemBack:()->Unit,val headerBack:()->Unit,val headingAll:()->Unit,val rowAll:()->Unit,
- val open:(RadarSong)->()->Unit,val evidence:HostEvidence?,val hasEvidence:()->Boolean) {
+internal data class HostRadarRoute(val full:Boolean,val owner:'''+owner_type+'''?,val systemBack:()->Unit,val headerBack:()->Unit,val headingAll:()->Unit,val rowAll:()->Unit) {
  fun row(client:OkHttpClient,repo:DiscoveryRepository,view:DiscoveryView,page:RadarPage,song:RadarSong,draft:DiscoveryDraft,list:LazyListState,pool:RadarArtworkPool) =
     hostRadarRowArtwork(client,repo,view,page,song,draft,owner,full,list,pool)
 }
@@ -295,23 +281,11 @@ internal fun hostRadarRoute(model:RadarViewModel,view:DiscoveryView?,radarArtwor
  val radarShown=true
  val radarActive=true
  val focus=object {fun clearFocus(){}}
-'''+collection+'\n'+details+'\n'+eligibility_visit+'\n'+'''
+ val rows=object {fun renew(){}} // Pending row work has its own mounted journey.
+'''+collection+'\n'+eligibility_visit+'\n'+'''
  remember(view) { radarSurfaceVisit='''+visit_value+''' }
-'''+route_writer+'\n'+reset+'\n'+invalidate+'\n'+show+'\n'+owner+'''
- fun rowOpen(song:RadarSong):()->Unit {
-    val page=checkNotNull(visibleRadarPage);val draft=state.draft
-'''+open_row+'''
-    return open
- }
- var evidence:HostEvidence?=null
- fun SoundQSheet(title:String,onDismiss:()->Unit,content:()->Unit) {
-    check(title=="Song evidence");evidence=HostEvidence(onDismiss);content()
- }
- fun SoundQButton(title:String,onClick:()->Unit,enabled:Boolean) {
-    check(title=="Find sources");if(enabled)checkNotNull(evidence).find=onClick
- }
-'''+sheet+'''
- return HostRadarRoute(showRadarCollection,radarSurfaceOwner,{'''+system_back+'''},{'''+header_back+'''},{'''+heading_all+'''},{'''+row_all+'''},::rowOpen,evidence,{radarDetails!=null})
+'''+route_writer+'\n'+reset+'\n'+show+'\n'+owner+'''
+ return HostRadarRoute(showRadarCollection,radarSurfaceOwner,{'''+system_back+'''},{'''+header_back+'''},{'''+heading_all+'''},{'''+row_all+'''})
 }
 ''')
  decode=main/'product/artwork/LibraryArtwork.kt';inputs[str(decode.relative_to(r))]=hashlib.sha256(decode.read_bytes()).hexdigest()

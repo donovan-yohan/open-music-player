@@ -94,7 +94,7 @@ class MediaItem(val id:String) {
 class ControllerProjection(val appContext:com.soundq.android.SoundQApplication) {
  val controller:MediaController?=MediaController(appContext.graph)
  val connection=Connection();val handler=Handler()
- var contextIntent=0L;var contextError:String?=null;var closed=false
+ var contextIntent=0L;var selectionIncarnation=0L;var contextError:String?=null;var closed=false
  fun refuseContext(s:String){contextError=s}
 BODY
 }

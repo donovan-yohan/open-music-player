@@ -1,5 +1,6 @@
 #include "callback_host.hpp"
 #include "platform_pcm_reader.hpp"
+#include "preview_pcm_reader.hpp"
 #include <jni.h>
 #include <cstdint>
 #include <string>
@@ -161,6 +162,17 @@ Java_com_soundq_android_playback_nativeengine_NativeCallbackBridge_loadReader(
         auto factory=std::make_shared<const soundq::nativeengine::PcmReaderFactory>([peer]{return std::make_unique<soundq::nativeengine::PlatformPcmReader>(peer);});
         return registry().loadReader(handle,deck,std::move(factory),identity,generation,position,speed)?JNI_TRUE:JNI_FALSE;
     } catch(...) {if(env->ExceptionCheck())env->ExceptionClear();return JNI_FALSE;}
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_soundq_android_playback_nativeengine_NativeCallbackBridge_loadPreview(
+    JNIEnv* env,jclass,jlong handle,jint deck,jobject input,jlong generation) {
+    try {
+        if (handle<=0 || (deck!=2 && deck!=3) || generation<=0 || !input) return JNI_FALSE;
+        using namespace soundq::nativeengine;
+        auto peer=std::make_shared<PreviewPeer>(env,input);
+        auto factory=std::make_shared<const PcmReaderFactory>([peer]{return std::make_unique<PreviewPcmReader>(peer);});
+        return registry().loadReader(handle,deck,std::move(factory),generation,generation,0,1,true)?JNI_TRUE:JNI_FALSE;
+    } catch (...) {if(env->ExceptionCheck())env->ExceptionClear();return JNI_FALSE;}
 }
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_soundq_android_playback_nativeengine_NativeCallbackBridge_loadSpeed(

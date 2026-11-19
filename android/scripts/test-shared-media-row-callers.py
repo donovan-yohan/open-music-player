@@ -160,7 +160,7 @@ class SharedMediaRowCallersContract(unittest.TestCase):
         self.assertIn('"Check Library"', text)
         self.assertNotIn('Artists are from MusicBrainz. Albums search metadata', text)
 
-    def test_discovery_results_share_row_without_changing_inspect_import_boundary(self):
+    def test_discovery_rows_share_anatomy_and_split_preview_from_add(self):
         text = source('discovery/DiscoverScreen.kt')
         rows = between(text, 'items(results.rows', '            } else {')
         self.shared(rows)
@@ -173,14 +173,20 @@ class SharedMediaRowCallersContract(unittest.TestCase):
         self.assertIn('SoundQSearchStrip(editor,', text)
         self.assertIn('LazyColumn(Modifier.fillMaxWidth().weight(1f),state=scroll)', text)
         self.assertLess(text.index('SoundQSearchStrip('), text.index('LazyColumn('))
-        self.assertEqual(rows.count('repository.inspect(it,row)'), 2)
-        entities = between(text, 'items(entities)', '    state.inspected?.let')
+        self.assertIn('rows.preview(', rows)
+        self.assertIn('rows.addSource(', rows)
+        self.assertNotIn('repository.inspect(', rows)
+        radar = between(text, 'items(page.songs.take', 'if(!showRadarCollection&&page.songs.isNotEmpty())')
+        self.shared(radar)
+        self.assertIn('rows.preview(', radar)
+        self.assertIn('rows.addRecording(', radar)
+        entities = text[text.index('items(entities)'):]
         self.shared(entities)
         self.assertIn('repository.refine(route,entity)', entities)
         self.assertNotIn('submitSourceImport', entities)
         self.assertNotIn('contentPadding=PaddingValues(SoundQ.spacing.gutter)', text)
-        self.assertIn('if(!choice.valid())', text)
-        self.assertIn('model.submitSourceImport(it,choice)', text)
+        self.assertNotIn('SoundQSheet("Source details"', text)
+        self.assertNotIn('SoundQSheet("Song evidence"', text)
 
 
 if __name__ == '__main__':

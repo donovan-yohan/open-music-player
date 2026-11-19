@@ -74,18 +74,20 @@ app = source('SoundQApplication.kt')
 callback = block(app, 'libraryOwnershipReadback=').split('=', 1)[1]
 screen = source('product/discovery/DiscoverScreen.kt')
 start = screen.index('    // A normal route visit,')
-end = screen.index('    LaunchedEffect(view,state.draft,radar.page,radar.stale,radar.phase)')
+end = screen.index('    fun search()')
 # This span includes the actual observer, acknowledgement and effect key expressions.
 emit('Bindings.kt', '''package bindings
 import androidx.lifecycle.*
 import com.soundq.android.data.discovery.*
 import com.soundq.android.product.*
 private class RadarArtworkRoute {fun retire(){}}
+private class RowActions {val surface:RadarArtworkRoute?=null;fun renew(){}}
+private fun rememberDiscoveryRowActions(model:ProductViewModel,view:DiscoveryView?,root:RadarArtworkRoute,shown:Boolean)=RowActions()
 fun bind(model:ProductViewModel,view:DiscoveryView?,catalogDetails:Any?=null,radarVisible:()->Boolean={true}) {
  val repository=model.graph.discovery
  val state=repository.state.value
  val radar=repository.radar.value
- var radarDetails:Triple<RadarPage,RadarSong,DiscoveryDraft>?=null
+ val radarArtworkRoot=RadarArtworkRoute()
  var radarCollection=false
 ''' + screen[start:end] + '\n}\n')
 emit('Effects.kt', '''package bindings

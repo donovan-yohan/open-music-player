@@ -223,6 +223,14 @@ class ProductViewModel(app:Application):AndroidViewModel(app) {
         val receipt=graph.imports.claim(view,draft) ?: return
         viewModelScope.launch(Dispatchers.IO){graph.imports.submit(receipt)}
     }
+    internal fun addDiscoveryLink(view:ImportView,source:ImportSource,valid:()->Boolean):Boolean =
+        submitDiscoveryImport(graph.imports.claimDiscoveryLink(view,source,valid))
+    private fun submitDiscoveryImport(receipt:ImportSubmission?):Boolean {
+        if(receipt==null)return false
+        viewModelScope.launch(Dispatchers.IO){graph.imports.submit(receipt)}
+            .invokeOnCompletion {graph.imports.abandonDiscoverySubmission(receipt)}
+        return true
+    }
     fun searchSources(view:com.soundq.android.data.discovery.DiscoveryView,draft:com.soundq.android.data.discovery.DiscoveryDraft) {
         val request=graph.discovery.claimSearch(view,draft) ?: return
         viewModelScope.launch(Dispatchers.IO){graph.discovery.search(request)}.invokeOnCompletion {graph.discovery.abandonSearch(request)}
@@ -245,8 +253,7 @@ class ProductViewModel(app:Application):AndroidViewModel(app) {
         graph.imports.prepareSource(view,choice)
     }
     fun confirmSourceImport(view:ImportView,plan:com.soundq.android.data.imports.ImportSourcePlan) {
-        val receipt=graph.imports.claimPlannedSource(view,plan) ?: return
-        viewModelScope.launch(Dispatchers.IO){graph.imports.submit(receipt)}
+        submitDiscoveryImport(graph.imports.claimPlannedSource(view,plan))
     }
     fun recoverSourceImport(view:ImportView,receipt:com.soundq.android.data.discovery.SourceImportReceipt) {viewModelScope.launch(Dispatchers.IO){graph.imports.recoverSource(view,receipt)}}
     fun retrySourceImport(view:ImportView,receipt:com.soundq.android.data.discovery.SourceImportReceipt) {viewModelScope.launch(Dispatchers.IO){graph.imports.retrySource(view,receipt)}}

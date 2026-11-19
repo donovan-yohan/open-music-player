@@ -9,7 +9,7 @@ import com.soundq.android.data.catalog.*
 
 /** Closed source-only capability; no catalog, research, audio or playback authority. */
 enum class SourceProvider(val wire:String,val label:String) { YouTube("youtube","YouTube"), SoundCloud("soundcloud","SoundCloud") }
-class SourceCandidate internal constructor(val id:String,val provider:SourceProvider,val source:ImportSource,val title:String,val artist:String,val durationMs:Long,val downloadable:Boolean,val uploader:String="",val album:String="",val sourceId:String="",val thumbnailUrl:String?=null,val playable:Boolean=false,val explicit:Boolean?=null) {
+class SourceCandidate internal constructor(val id:String,val provider:SourceProvider,val source:ImportSource,val title:String,val artist:String,val durationMs:Long,val downloadable:Boolean,val uploader:String="",val album:String="",val sourceId:String="",val thumbnailUrl:String?=null,val playable:Boolean=false,val explicit:Boolean?=null,internal val previewSource:ImportSource?=null) {
     override fun toString()="SourceCandidate([redacted])"
 }
 class SourceSession internal constructor(val id:String,val expires:Instant)

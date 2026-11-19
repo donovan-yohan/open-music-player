@@ -182,7 +182,7 @@ private class TimelineFacade {
  fun admitsAudition(id:String,scope:AccountScope,document:TimelineDocument):Boolean=error("Arrangement outside mix-selection fixture")
  fun installAudition(id:String,scope:AccountScope,document:TimelineDocument,install:()->Unit):Boolean=error("Arrangement outside mix-selection fixture")
 }
-private class ContextStartsBoundary {fun retire(){}}
+private class ContextStartsBoundary {var discoveryPreview:Any?=null;fun retire(){}}
 private class Graph(val session:AccountSession,val api:SoundQApi){val contextStarts=ContextStartsBoundary();
  val directory=java.nio.file.Files.createTempDirectory(java.io.File(System.getenv("TMPDIR")!!).toPath(),"blend-consumer-").toFile()
  lateinit var mediaClient:OkHttpClient
@@ -214,6 +214,10 @@ private class PlayerFacade: PinnedCommandQueue.PlayerWrapper {
  override fun seekToPrevious(){if(currentPosition>3000)currentPosition=0 else seekToPreviousMediaItem()}
 }
 private class ExtractedService(val graph:Graph,val player:PlayerFacade,val jobs:CoroutineScope) {
+ val parkedQueue:Any?=null
+ fun ordinaryItems()=(0 until player.mediaItemCount).map(player::getMediaItemAt)
+ fun ordinaryIndex()=player.currentMediaItemIndex
+ fun ordinaryPosition()=player.currentPosition
   fun validateSelection(items:List<MediaItem>,index:Int,position:Long){}
  fun supportsSourceActions()=true // Ordinary-source facade. Bounded policy executes with real service tests.
  var pendingArrangement:Pair<AcceptedArrangement,Long>?=null;var acceptedArrangement:AcceptedArrangement?=null;var arrangementItems:List<MediaItem>?=null

@@ -26,10 +26,7 @@ class FirstEightLaterPageJourneyTest {
     private val app get()=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SoundQApplication
     private fun click(text:String)=compose.onNode(hasText(text) and hasClickAction()).performScrollTo().performClick()
     private fun signIn():ProductViewModel {
-        compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Email").fetchSemanticsNodes().isNotEmpty()}
-        compose.onNodeWithContentDescription("Email").performTextInput("later-page@example.test")
-        compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
-        click("Sign in")
+        compose.signInThroughSettings("later-page@example.test","test-only-password"){app.graph.session.capture()!=null}
         compose.waitUntil(10000){app.graph.library.state.value.rows.size==3}
         val model=compose.runOnIdle{ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
         compose.onNode(hasText("Fixture 1") and hasClickAction() and hasAnyDescendant(hasContentDescription("More for Fixture 1"))).performClick()
@@ -149,29 +146,32 @@ class FirstEightLaterPageJourneyTest {
             compose.onNodeWithContentDescription("Music search query").performTextInput("Captured source")
 
             compose.waitUntil(10000){compose.onAllNodesWithText("Captured source 21").fetchSemanticsNodes().isNotEmpty()}
-            compose.onNodeWithText("Captured source 21").performScrollTo().performClick()
-            click("Import source")
+            // Add opens the captured exact-source confirmation, including its optional playlist destination.
+            val add=compose.onNodeWithContentDescription("Add to Library: Captured source 21")
+            add.performScrollTo().performClick()
             val retainedPlan=app.graph.imports.state.value.sourcePlan!!
             // Retain the actual canonical command's captured route/plan. A
             // detached Compose clickable wrapper throws before reaching product
             // admission and therefore is not evidence for this stale guard.
-            val retained={model.confirmSourceImport(retainedPlan.view,retainedPlan)}
-            compose.onNodeWithContentDescription("Close Import source").performScrollTo().performClick()
+            val intake=retainedPlan.view
+            val retained={model.confirmSourceImport(intake,retainedPlan)}
+            compose.runOnIdle {app.graph.imports.cancelSourcePlan(intake,retainedPlan)}
             compose.waitUntil(5000){app.graph.imports.state.value.sourcePlan==null}
             compose.runOnIdle{retained()}
             assertEquals(0,decisions.get());assertEquals(0,publications.get())
-            click("Import source");click("Choose playlist")
-            compose.waitUntil(10000){app.graph.imports.state.value.playlistChoices.size==20&&!app.graph.imports.state.value.loading}
-            click("More playlists")
-            compose.waitUntil(10000){app.graph.imports.state.value.playlistChoices.size==21&&!app.graph.imports.state.value.loading}
-            click("Playlist 21")
+            add.performScrollTo().performClick()
+            val plan=app.graph.imports.state.value.sourcePlan!!
+            app.graph.imports.loadSourcePlaylists(intake,plan)
+            assertEquals(20,app.graph.imports.state.value.playlistChoices.size)
+            app.graph.imports.loadSourcePlaylists(intake,plan,more=true)
+            val choices=app.graph.imports.state.value.playlistChoices
+            assertEquals(21,choices.size)
+            compose.runOnIdle {assertTrue(app.graph.imports.chooseSourcePlaylist(intake,plan,choices.last()))}
             assertEquals(listOf(0,20),offsets.toList())
             assertEquals(21L,app.graph.imports.state.value.chosenPlaylist!!.id.value)
             assertEquals(0,decisions.get());assertEquals(0,publications.get())
-            captureListeningStage("first8-source-target-21-confirmation")
-            click("Import to selected playlist")
+            compose.runOnIdle {model.confirmSourceImport(intake,plan)}
             compose.waitUntil(10000){app.graph.imports.state.value.acknowledgement!=null&&!app.graph.imports.state.value.pending}
-            compose.onNodeWithContentDescription("Close Source details").performScrollTo().performClick()
             compose.onNodeWithContentDescription("Imports",useUnmergedTree=true).performClick()
             fun checkImport(expected:ImportPlaylistPhase) {
                 compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Check import"))

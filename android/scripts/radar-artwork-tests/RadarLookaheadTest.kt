@@ -37,7 +37,7 @@ class RadarLookaheadTest {
         val draft = repository.state.value.draft
         val surface = RadarArtworkRoute()
         private val viewJob = SupervisorJob()
-        private val model = RadarViewModel(RadarGraph(repository), CoroutineScope(viewJob))
+        val model = RadarViewModel(RadarGraph(repository), CoroutineScope(viewJob))
         val navSlot = HostComposition.Slot()
         fun route() = HostComposition.render(navSlot) { hostRadarRoute(model, view, surface) }
         fun settleActions() = runBlocking { withTimeout(5_000) { viewJob.children.toList().joinAll() } }
@@ -275,11 +275,11 @@ class RadarLookaheadTest {
         }
     }
 
-    @Test fun songEvidenceRetiresHeldAndPendingArtworkBeforeSlotCleanup() = evidenceCover(dismissBeforeDrain = false)
+    @Test fun leavingFullListRetiresHeldAndPendingArtworkBeforeSlotCleanup() = layoutRetirement(returnBeforeDrain = false)
 
-    @Test fun rapidSongEvidenceDismissDoesNotReviveRetainedArtwork() = evidenceCover(dismissBeforeDrain = true)
+    @Test fun rapidReturnToFullListDoesNotReviveRetainedArtwork() = layoutRetirement(returnBeforeDrain = true)
 
-    private fun evidenceCover(dismissBeforeDrain: Boolean) = fixture { f ->
+    private fun layoutRetirement(returnBeforeDrain: Boolean) = fixture { f ->
         f.layout(0)
         val held = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -301,25 +301,23 @@ class RadarLookaheadTest {
             assertTrue("old speculative decode reached loopback and holds its permit", held.await(2, TimeUnit.SECONDS))
             val (pending, pendingPublished) = bind(full, 5)
             assertEquals(listOf(2, 1, 0, 0), pool.resources())
-            full.open(f.page.songs.first())()
-            val covered = f.route()
-            val sheet = checkNotNull(covered.evidence)
-            assertTrue(covered.full && covered.hasEvidence())
-            assertTrue("sheet keeps the original repository landing", f.repository.radarCurrent(f.view, f.page, f.page.songs[5], f.draft))
-            if (dismissBeforeDrain) sheet.dismiss() // No uncovered route apply until after the old finally.
+            full.headerBack()
+            val compact = f.route()
+            assertFalse(compact.full)
+            assertTrue("layout change keeps the original repository landing", f.repository.radarCurrent(f.view, f.page, f.page.songs[5], f.draft))
+            if (returnBeforeDrain) compact.rowAll()
             assertEquals(listOf(2, 1, 0, 0), pool.resources())
             assertEquals(listOf(path(4)), f.paths.toList())
             release.countDown()
             settle(pool)
-            assertEquals("retired unseen slot must not dispatch (dismissed=$dismissBeforeDrain)", listOf(path(4)), f.paths.toList())
+            assertEquals("retired unseen slot must not dispatch (dismissed=$returnBeforeDrain)", listOf(path(4)), f.paths.toList())
             assertEquals("no retired cache publication", 0, pool.resources()[2])
             assertNull(activePublished.value); assertNull(pendingPublished.value)
             assertNull(active()); assertNull(pending())
-            assertEquals(dismissBeforeDrain, !covered.hasEvidence())
-            assertNull("covered list grants no fresh row owner", covered.owner)
-            if (!dismissBeforeDrain) sheet.dismiss()
+            assertFalse(checkNotNull(full.owner).current())
+            if (!returnBeforeDrain) compact.rowAll()
             val fresh = f.route()
-            assertTrue(fresh.full); assertNull(fresh.evidence); assertNotSame(full.owner, fresh.owner)
+            assertTrue(fresh.full); assertNotSame(full.owner, fresh.owner)
             val (pixels, _) = bind(fresh, 5, freshSlot)
             settle(pool)
             assertEquals(21, pixels()?.width)
@@ -333,50 +331,30 @@ class RadarLookaheadTest {
         }
     }
 
-    @Test fun songEvidenceRetainedRowAndSheetCallbacksCannotTargetSuccessor() = fixture { f ->
-        f.route().headingAll()
-        val song = f.page.songs.first()
-        val oldOpen = f.route().open(song)
-        oldOpen()
-        val a = checkNotNull(f.route().evidence)
-        a.dismiss()
-        oldOpen()
-        assertFalse("retained row cannot reopen a dismissed sheet", f.route().hasEvidence())
-        f.route().open(song)()
-        val b = f.route()
-        val current = checkNotNull(b.evidence)
-        a.dismiss()
-        assertTrue("same-song successor survives old dismiss", b.hasEvidence())
-        enqueueFind(f, song)
-        checkNotNull(a.find)()
-        f.settleActions()
-        assertEquals("old sheet cannot issue membership even with same accepted row", 1, f.metadata.server.requestCount)
-        checkNotNull(current.find)()
-        verifyFind(f, song)
+    @Test fun retainedLayoutOwnerCannotReviveAfterRepeatedBackAndReturn() = fixture { f ->
+        val compact=f.route()
+        compact.headingAll()
+        val full=f.route()
+        full.systemBack()
+        val returned=f.route()
+        assertFalse(checkNotNull(compact.owner).current())
+        assertFalse(checkNotNull(full.owner).current())
+        assertTrue(checkNotNull(returned.owner).current())
+        returned.rowAll()
+        assertTrue(f.route().full)
+        assertFalse(checkNotNull(full.owner).current())
+        assertEquals(1,f.metadata.server.requestCount)
     }
 
-    @Test fun currentSongEvidenceFindSourcesPreservesLandingAndAutoDismissesOnDraftChange() = fixture { f ->
-        val preview = f.route()
-        val song = f.page.songs.first()
-        preview.open(song)()
-        val current = checkNotNull(f.route().evidence)
-        assertTrue(f.repository.radarCurrent(f.view, f.page, song, f.draft))
-        enqueueFind(f, song)
-        checkNotNull(current.find)()
-        verifyFind(f, song)
-        // The view, accepted page and old blank draft can all return through real search Back.
-        val invalid = f.route()
-        assertNull(invalid.evidence)
-        assertFalse("invalidation clears the selection, not just the rendered sheet", invalid.hasEvidence())
+    @Test fun canonicalFindSourcesReadStillPreservesLandingAcrossBack() = fixture { f ->
+        val song=f.page.songs.first()
+        assertTrue(f.repository.radarCurrent(f.view,f.page,song,f.draft))
+        enqueueFind(f,song)
+        f.model.findReleaseSources(f.view,f.page,song,f.draft)
+        verifyFind(f,song)
         assertTrue(f.repository.back(f.view))
-        assertTrue(f.repository.radarCurrent(f.view, f.page, song, f.draft))
-        assertNull("auto-dismissed sheet cannot revive on return to the same draft", f.route().evidence)
-        val fresh = f.route()
-        val owner = checkNotNull(fresh.owner)
-        assertNotSame(preview.owner, owner)
-        fresh.open(song)()
-        assertNotNull(f.route().evidence)
-        assertEquals(4, f.metadata.server.requestCount)
+        assertTrue(f.repository.radarCurrent(f.view,f.page,song,f.draft))
+        assertEquals(4,f.metadata.server.requestCount)
     }
 
     private fun enqueueFind(f: Fixture, song: RadarSong) {
