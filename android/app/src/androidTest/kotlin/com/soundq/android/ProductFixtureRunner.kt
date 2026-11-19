@@ -42,6 +42,7 @@ open class ProductFixtureRunner:AndroidJUnitRunner() {
 /** Installed only by this test runner: production graph/endpoint/Keystore never start. */
 open class FixtureApplication:SoundQApplication() {
     protected open fun prepareGraph(graph:AppGraph) {}
+    @Volatile internal var beforeFixtureSessionSave:((SecretTokens)->Unit)?=null
     lateinit var fixtureClient:OkHttpClient
         private set
     lateinit var bootstrapThread:Thread
@@ -64,7 +65,7 @@ open class FixtureApplication:SoundQApplication() {
                 prepared.set(AppGraph(this,ProductTransportFixture.endpoint,fixtureClient,object:SessionStore {
                     private var tokens:SecretTokens?=null
                     override fun load(endpoint:ApiEndpoint)=tokens
-                    override fun save(endpoint:ApiEndpoint,tokens:SecretTokens){this.tokens=tokens}
+                    override fun save(endpoint:ApiEndpoint,tokens:SecretTokens){beforeFixtureSessionSave?.invoke(tokens);this.tokens=tokens}
                     override fun clear(){tokens=null}
                 },fixtureClient).also {graph ->
                     graph.directory.listFiles()?.filter {it.name.startsWith("queue-")}?.forEach {it.delete()}

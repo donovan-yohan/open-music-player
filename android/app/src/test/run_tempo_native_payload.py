@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='tempo-native-payload-',dir=os.environ['
 import com.soundq.android.data.timeline.*
 import kotlinx.serialization.Serializable
 '''+occurrence+'''
-enum class PlaybackSource {Queue,Arrangement,SavedMix}
+'''+next(line for line in text.splitlines() if line.startswith('enum class PlaybackSource '))+'''
 data class PlaybackProjection(val connection:Connection=Connection.Connected,val source:PlaybackSource=PlaybackSource.Queue,val queue:List<QueueOccurrence> = emptyList(),val arrangement:AcceptedArrangement?=null) {enum class Connection {Connected,Connecting,Disconnected}}
 ''')
     sources=[main/'data/timeline'/x for x in ['Timeline.kt','TimelineOwner.kt','TimelineGeometry.kt','LinkedPhase.kt','TempoTransition.kt','Waveform.kt']]

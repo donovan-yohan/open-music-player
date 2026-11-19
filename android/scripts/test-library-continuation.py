@@ -77,6 +77,11 @@ private class ExtractedService(val graph:Graph,val jobs:CoroutineScope) {fun ren
  var acceptedArrangement:AcceptedArrangement?=null;var pendingArrangement:Any?=null;var arrangementItems:List<MediaItem>?=null;var arrangementReadyCalls=0;var likeRefreshCalls=0
  fun arrangementReady(){arrangementReadyCalls++};fun refreshLikeButton(){likeRefreshCalls++};fun retireArrangement():Unit=error("Arrangement retirement outside continuation fixture")
  val player=Player();val transport=Transport();val grants=ConcurrentHashMap<String,MediaGrant>();val mixGrants=ConcurrentHashMap<String,AutoCloseable>();fun publishSessionExtras(){};fun scheduleSave(){}
+ private class ParkedQueue(val items:List<MediaItem>)
+ private val parkedQueue:ParkedQueue?=null
+ fun ordinaryItems()=(0 until player.mediaItemCount).map(player::getMediaItemAt)
+ fun ordinaryIndex()=player.currentMediaItemIndex
+ fun ordinaryPosition()=player.currentPosition
  val continuation=ServiceLibraryContinuation(player,transport,graph,jobs){tracks,_ -> graph.rememberTracks(tracks);resolve(tracks.map{MediaItem.Builder().setMediaId(it.id.value.toString()).build()})}
  fun bind(){transport.onIntentChanged=continuation::command;player.addListener(LISTENER)}
  RESOLVE

@@ -275,8 +275,25 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
     }
     @Synchronized fun hideRadar(landing:RadarLanding) {if(radarLanding===landing){cancelRadar();radarLanding=null}}
     private fun radarVisible(candidate:DiscoveryView)=radarLanding?.let {it.view===candidate&&it.visible()}==true&&current(candidate)&&session.remoteCurrent(candidate.scope)&&session.state.value is AuthState.SignedIn
-    @Synchronized fun radarCurrent(candidate:DiscoveryView,page:RadarPage,song:RadarSong,draft:DiscoveryDraft):Boolean =
-        radarAdmitted&&radarVisible(candidate)&&mutable.value.draft===draft&&draft.text.isBlank()&&radarMutable.value.page===page&&!radarMutable.value.stale&&radarMutable.value.phase==RadarPhase.Ready&&page.songs.any {it===song}
+    @Synchronized fun radarCurrent(candidate:DiscoveryView,page:RadarPage,song:RadarSong,draft:DiscoveryDraft,preview:Boolean=false):Boolean =
+        radarAdmitted&&(if(preview) view===candidate&&session.previewOwnerCurrent(candidate.scope)&&
+            radarLanding?.let {it.view===candidate&&it.visible()}==true else radarVisible(candidate))&&
+            mutable.value.draft===draft&&draft.text.isBlank()&&radarMutable.value.page===page&&!radarMutable.value.stale&&radarMutable.value.phase==RadarPhase.Ready&&page.songs.any {it===song}
+    @Synchronized internal fun sourceRowGuard(candidate:DiscoveryView,results:SourceResults,row:SourceCandidate,preview:Boolean=false):()->Boolean {
+        val incarnation=detailsIncarnation
+        return {synchronized(this) {
+            view===candidate&&(if(preview)session.previewOwnerCurrent(candidate.scope) else session.discoveryCurrent(candidate.scope))&&detailsIncarnation===incarnation&&
+                mutable.value.let {it.phase==DiscoveryPhase.Ready&&it.resultType==DiscoveryResultType.Song&&it.results?.batches?.any {batch->batch===results}==true}&&
+                results.rows.any {it===row}
+        }}
+    }
+    @Synchronized internal fun sourceRowChoice(candidate:DiscoveryView,results:SourceResults,row:SourceCandidate,valid:()->Boolean):SourceChoice? {
+        val exact=sourceRowGuard(candidate,results,row)
+        if(!exact()||!valid()||!row.downloadable)return null
+        val selection=results.selection ?: return null
+        if(!selection.expires.isAfter(now())) {mutable.value=mutable.value.copy(expired=true);return null}
+        return SourceChoice(candidate.scope,row,selection) {exact()&&valid()&&selection.expires.isAfter(now())}
+    }
     /** Only display grows. Canonical page/song identity remains the action context. */
     @Synchronized fun moreRadar(candidate:DiscoveryView,page:RadarPage,draft:DiscoveryDraft) {
         if(page.songs.firstOrNull()?.let {radarCurrent(candidate,page,it,draft)}!=true)return

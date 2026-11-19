@@ -12,6 +12,8 @@ import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** AUTHORED, NOT EXECUTED. Parent owns all SDK/runtime/native visual admission. */
 class ReleaseRadarContentTest {
@@ -21,10 +23,16 @@ class ReleaseRadarContentTest {
   val app=instrumentation.targetContext.applicationContext as SoundQApplication
   val server=ProductTransportFixture.server;val old=server.dispatcher
   val requests=CopyOnWriteArrayList<String>()
+  val release=CountDownLatch(1)
+  val exact="/api/v1/catalog/recordings/33333333-3333-4333-8333-333333333333/source"
   val wire=instrumentation.context.assets.open("release-radar-wire.json").bufferedReader().use {it.readText()}
   try {
     server.dispatcher=object:Dispatcher(){override fun dispatch(request:RecordedRequest):MockResponse {
      val path=request.url.encodedPath
+     if(path==exact) {
+      check(request.method=="GET");requests.add("GET $path");check(release.await(15,TimeUnit.SECONDS))
+      return MockResponse.Builder().body("""{"recordingMbid":"33333333-3333-4333-8333-333333333333","sourceUrl":null}""").build()
+     }
      if(path.startsWith("/api/v1/me/discovery/")||path.startsWith("/api/v1/discovery/")||path in setOf("/api/v1/source-selections","/api/v1/queue/items","/api/v1/playback/urls"))requests.add(request.method+" "+path)
      val body=when {
       path=="/api/v1/me/discovery/releases"->wire
@@ -45,15 +53,16 @@ class ReleaseRadarContentTest {
    val page=prepared.discovery.radar.value.page!!
    compose.onNodeWithText("New releases").assertExists()
    compose.onNodeWithText("Synthetic newest song").performScrollTo().performClick()
-   compose.onNodeWithText("Song evidence").assertIsDisplayed()
-   compose.onNodeWithText("Find sources").performScrollTo().performClick()
-   compose.waitUntil(10000){prepared.discovery.state.value.results!=null}
-   compose.onNodeWithText("Synthetic source").performScrollTo().performClick()
-   compose.onNodeWithText("Source details").assertIsDisplayed()
-   compose.onNodeWithText("Preview source").assertExists()
-   compose.onNodeWithText("Import source").assertExists()
-   instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
-   compose.onNodeWithContentDescription("Back to previous search").performClick()
+   val loading="Loading preview for Synthetic newest song"
+   compose.waitUntil(10000){requests.count {it=="GET $exact"}==1&&compose.onAllNodesWithContentDescription(loading,useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+   compose.onNodeWithContentDescription(loading,useUnmergedTree=true).assertIsDisplayed().assertHasNoClickAction()
+   compose.onNodeWithText("Song evidence").assertDoesNotExist()
+   compose.onNodeWithContentDescription("Add to Library: Synthetic newest song").assertIsEnabled()
+   // Move the actual Activity through STOP and return to the same accepted row.
+   compose.activityRule.scenario.moveToState(androidx.lifecycle.Lifecycle.State.CREATED)
+   compose.activityRule.scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED)
+   release.countDown()
+   compose.onNodeWithContentDescription(loading,useUnmergedTree=true).assertDoesNotExist()
    compose.onNodeWithText("Synthetic newest song").performScrollTo().assertIsDisplayed()
    assertSame(page,prepared.discovery.radar.value.page)
    compose.onNodeWithContentDescription("Music search query").performTextInput("ordinary search")
@@ -64,7 +73,7 @@ class ReleaseRadarContentTest {
    assertEquals(queue,model.playback.value.queue)
    assertFalse(model.playback.value.isPlaying)
   } finally {
-   server.dispatcher=old;app.graph.session.retire()
+   release.countDown();server.dispatcher=old;app.graph.session.retire()
   }
  }
 }

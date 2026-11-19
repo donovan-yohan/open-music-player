@@ -50,10 +50,10 @@ object PerformanceCommands {
  }
 }
 class Harness {
- var contextError:String?=null
+ var contextError:String?=null;var contextIntent=0L
  val mutable=MutableStateFlow(PlaybackProjection());val state=mutable;var closed=false;val device=Facade();var controller:Facade?=device;val handler=Handler();val tick=Any();val connection=Connection();var queueRevision=0L;var projectedRevision=-1L;var projectedQueue=listOf<QueueOccurrence>()
  // No scratch capability/lease is owned here; retirement must not simulate one.
- private fun retireScratch(){check(PerformanceCommands.BEGIN !in supportedSessionCommands) {"Scratch owner outside player-details fixture"}}
+ private fun retireScratch(observedSelection:Boolean=false){check(PerformanceCommands.BEGIN !in supportedSessionCommands) {"Scratch owner outside player-details fixture"}}
 '''+sync_admission+'\n'+fields+'\n'+helper+'\n'+listener+'\n'+publish+'''
  fun disconnect(){val c=controller!!;
 '''+detach+'''

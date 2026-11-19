@@ -37,6 +37,7 @@ struct Intent {
     std::string path;
     double gain = 1, speed = 1;
     bool play = false, gainDirty = false, playDirty = false, unloading = false;
+    uint64_t handoffPause = 0;
 };
 struct Host final : Callbacks {
     std::unique_ptr<Output> output;
@@ -121,7 +122,7 @@ struct Host final : Callbacks {
                 // the currently rendered assignment during turnover. Fence the
                 // captured engine assignment, not that future worker generation.
                 if (deck.scratching && !submit(Operation::CancelScratch)) return false;
-                intent.gesture = 0; intent.play = false; intent.playDirty = false;
+                intent.gesture = 0; intent.play = false; intent.playDirty = false; intent.handoffPause = 0;
                 if (deck.identity) {
                     // Cancel may restore pre-gesture play/rate. Pause and the
                     // ordinary listening rate follow it, including any queued
@@ -440,12 +441,12 @@ struct Host final : Callbacks {
         intent = std::move(accepted);
         return true;
     }
-    bool loadReader(int deck,std::shared_ptr<const PcmReaderFactory> factory,uint64_t identity,uint64_t generation,uint64_t position,double speed) {
+    bool loadReader(int deck,std::shared_ptr<const PcmReaderFactory> factory,uint64_t identity,uint64_t generation,uint64_t position,double speed,bool progressive) {
         if(schedule || scheduleRetiring || deck<0 || deck>=4 || error.load()!=0 || !identity || !generation || !factory || !admittedSpeed(speed))return false;
         auto& intent=intents[deck];
         if(!workers[deck] || intent.unloading || generation<=intent.generation)return false;
         Intent accepted{generation,identity,position,0,{},intent.gain,speed,false,true,true,false};
-        if(!workers[deck]->replaceReader(std::move(factory),identity,generation,position,speed))return false;
+        if(!workers[deck]->replaceReader(std::move(factory),identity,generation,position,speed,progressive))return false;
         intent=std::move(accepted);return true;
     }
     bool crossfade(int out,uint64_t og,int in,uint64_t ig,uint64_t ms) {
@@ -489,6 +490,21 @@ struct Host final : Callbacks {
             return true;
         }
         if (error.load(std::memory_order_acquire) != 0 || intent.unloading) return false;
+        if (operation == 11) {
+            // Handoff Pause uses the last JNI argument as the captured assignment
+            // generation. Unlike normal play intent, true means FIFO admission.
+            Snapshot snap;
+            if (!eventNanos || value != 0 || intent.generation != eventNanos ||
+                w->generation() != eventNanos || !intent.identity || intent.gesture ||
+                !capture(snap) || snap.decks[deck].generation != eventNanos ||
+                snap.decks[deck].identity != intent.identity || snap.decks[deck].scratching ||
+                !command(Operation::Pause, static_cast<uint32_t>(deck))) return false;
+            intent.handoffPause = sequence;
+            intent.play = false;
+            intent.playDirty = false;
+            return true;
+        }
+        if (operation >= 1 && operation <= 6) intent.handoffPause = 0;
         if (operation == 7) {
             if (value < 0 || value > 1) return false;
             intent.gain = value; intent.gainDirty = true; pump(); return true;
@@ -531,6 +547,9 @@ struct Host final : Callbacks {
     }
     std::string state() {
         pump();
+        // Read the post-block FIFO frontier BEFORE the coherent capture. The
+        // reverse order could bless an older, already-quiet pre-Pause snapshot.
+        const auto structural = engine->completedStructuralSequence();
         Snapshot snap = last;
         const bool coherent = capture(snap);
         if (coherent) last = snap;
@@ -588,6 +607,8 @@ struct Host final : Callbacks {
             const bool completionSource = coherent && matching && !intent.unloading &&
                 intent.identity == d.identity && intent.generation == d.generation &&
                 error.load() == 0 && stats.error == 0;
+            const bool handoffPaused = completionSource && intent.handoffPause != 0 &&
+                structural >= intent.handoffPause && !d.playing && !d.scratching;
             const auto frame = matching ? d.sourceFrame : 0;
             const auto rate = w ? w->sourceRate() : 0;
             const auto extent = w ? w->sourceFrames() : 0;
@@ -596,6 +617,7 @@ struct Host final : Callbacks {
                 << ",\"sourceFrames\":" << extent << ",\"positionMs\":" << milliseconds(frame, rate)
                 << ",\"durationMs\":" << milliseconds(extent, rate)
                 << ",\"playing\":" << (matching && d.playing ? "true" : "false")
+                << ",\"handoffPaused\":" << (handoffPaused ? "true" : "false")
                 << ",\"speed\":" << intent.speed
                 << ",\"rate\":" << d.rate << ",\"scratching\":" << (d.scratching ? "true" : "false")
                 << ",\"ready\":" << (ready ? "true" : "false")
@@ -656,9 +678,9 @@ bool Registry::loadSpeed(uint64_t h, int d, const std::string& p, uint64_t id, u
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->valid(h) && impl_->host->load(d, p, id, g, ms, speed);
 }
-bool Registry::loadReader(uint64_t h,int d,std::shared_ptr<const PcmReaderFactory> factory,uint64_t id,uint64_t g,uint64_t ms,double speed) {
+bool Registry::loadReader(uint64_t h,int d,std::shared_ptr<const PcmReaderFactory> factory,uint64_t id,uint64_t g,uint64_t ms,double speed,bool progressive) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    return impl_->valid(h) && impl_->host->loadReader(d,std::move(factory),id,g,ms,speed);
+    return impl_->valid(h) && impl_->host->loadReader(d,std::move(factory),id,g,ms,speed,progressive);
 }
 bool Registry::control(uint64_t h, int op, int d, double v, uint64_t t) {
     std::lock_guard<std::mutex> lock(impl_->mutex);

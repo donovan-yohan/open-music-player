@@ -3,6 +3,7 @@ package com.soundq.android.playback.nativeengine
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import com.soundq.android.data.DiscoveryPreviewInput
 import kotlinx.coroutines.*
 import kotlinx.coroutines.android.asCoroutineDispatcher
 import org.json.JSONObject
@@ -32,6 +33,7 @@ internal data class NativeCallbackDeck(
     val naturalEnd: NativeNaturalEndReceipt? = null,
     /** Requested ordinary listening speed; [rate] is the applied engine pace. */
     val speed: Double = 1.0,
+    val handoffPaused: Boolean = false,
 )
 
 internal data class NativeCallbackSnapshot(
@@ -76,6 +78,7 @@ internal data class NativeCallbackSnapshot(
                 deck.optBoolean("pitchPreserved"), deck.optLong("processingEpoch"), deck.optDouble("effectiveBpm",Double.NaN), deck.optLong("tempoGeneration"),
                 deck.optDouble("boundaryGain", 1.0),
                 deck.optLong("traversalRevision"), naturalEnd(root, deck), deck.optDouble("speed", 1.0),
+                root.optBoolean("coherent") && root.optLong("scheduleRevision") == 0L && deck.optBoolean("handoffPaused"),
             ) }
             val rate = root.optInt("sampleRate", 0)
             return NativeCallbackSnapshot(json, root.getInt("error"), decks.first(), decks,
@@ -109,6 +112,7 @@ internal class NativeCallbackOwner(
     private val ordinaryFiles = mutableMapOf<Int, File>()
     private val borrowedOriginals = mutableSetOf<NativePlaybackSource.BorrowedOriginal>()
     private val ordinaryOriginals = mutableMapOf<Int, NativePlaybackSource.BorrowedOriginal>()
+    private val previews = mutableMapOf<Int, DiscoveryPreviewInput>()
     private var arrangementBorrowed = false
     @Volatile private var observationRevision = 0L
     @Volatile var diagnostics: String = "{}"
@@ -166,12 +170,25 @@ internal class NativeCallbackOwner(
         }
     }
 
+    suspend fun loadPreview(deck: Int, input: DiscoveryPreviewInput, generation: Long, current: () -> Boolean): Boolean =
+        withContext(dispatcher) {
+            if (deck !in 2..3 || deck in previews || arrangementBorrowed || closing || handle == 0L || !current()) return@withContext false
+            previews[deck] = input // custody precedes JNI; retained until worker/unassign drain
+            try { calls.loadPreview(handle, deck, input, generation) } catch (_: Throwable) { false }
+        }
+
     suspend fun control(operation: Int, value: Double = 0.0, current: () -> Boolean = { true }): Boolean = controlDeck(0, operation, value, current)
     suspend fun controlDeck(deck: Int, operation: Int, value: Double = 0.0, current: () -> Boolean = { true }): Boolean =
         withContext(dispatcher) {
             !closing && handle != 0L && current() &&
                 try { calls.control(handle, operation, deck, value, System.nanoTime()) } catch (_: Throwable) { false }
         }
+
+    /** Capture a Pause for this exact assignment, not the slot's latest intent. */
+    suspend fun pauseForHandoff(deck: Int, generation: Long): Boolean = withContext(dispatcher) {
+        !closing && handle != 0L && generation > 0 &&
+            try { calls.control(handle, 11, deck, 0.0, generation) } catch (_: Throwable) { false }
+    }
 
     suspend fun crossfade(outgoing: Int, outgoingGeneration: Long, incoming: Int, incomingGeneration: Long, milliseconds: Long, current: () -> Boolean): Boolean = withContext(dispatcher) {
         !closing && handle != 0L && current() && try { calls.crossfade(handle, outgoing, outgoingGeneration, incoming, incomingGeneration, milliseconds) } catch (_: Throwable) { false }
@@ -181,7 +198,9 @@ internal class NativeCallbackOwner(
     suspend fun unloadDeck(deck: Int): Boolean = withContext(dispatcher) {
         val file = ordinaryFiles[deck]
         val original=ordinaryOriginals[deck]
-        if(file==null && original==null)return@withContext true
+        val preview = previews[deck]
+        if(file==null && original==null && preview==null)return@withContext true
+        preview?.cancel()
         original?.reader?.revoke()
         if (closing || handle == 0L) return@withContext false
         val retired = try {
@@ -194,6 +213,7 @@ internal class NativeCallbackOwner(
             } == true
         } catch (_: Throwable) { false }
         if (retired) {
+            previews.remove(deck)
             if(original!=null) {
                 if(!withContext(Dispatchers.IO){original.release()})return@withContext false
                 ordinaryOriginals.remove(deck);borrowedOriginals.remove(original)
@@ -321,7 +341,7 @@ internal class NativeCallbackOwner(
     }
     suspend fun sourcesDrained(fileId:String?=null):Boolean = withContext(dispatcher) {
         if(!descriptorsDrained(fileId))false
-        else if(fileId==null)borrowed.isEmpty() && borrowedOriginals.isEmpty() && ordinaryFiles.isEmpty() && ordinaryOriginals.isEmpty()
+        else if(fileId==null)borrowed.isEmpty() && borrowedOriginals.isEmpty() && ordinaryFiles.isEmpty() && ordinaryOriginals.isEmpty() && previews.isEmpty()
         else (borrowedOriginals+ordinaryOriginals.values).none {it.physicalFileId==null || it.physicalFileId==fileId}
     }
     suspend fun retainedBytes(): Long = withContext(dispatcher) { borrowed.sumOf { it.length() } }
@@ -388,6 +408,7 @@ internal class NativeCallbackOwner(
     }
 
     suspend fun close() {
+        withContext(dispatcher) { previews.values.forEach { it.cancel() } }
         var success = withContext(dispatcher) {
             closing = true
             borrowedOriginals.forEach {it.reader.revoke()}

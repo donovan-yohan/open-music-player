@@ -54,6 +54,19 @@ object DiscoveryJson {
         val selection=SourceSession(uuid(text(o,"selectionSessionId")),Instant.parse(text(o,"selectionExpiresAt")))
         SourceResults(query,listOf(row),selection,listOf(ProviderObservation(row.provider,"ok")))
     }
+    private val videoPreviewKey=Regex("https://(?:www|music)\\.youtube\\.com/watch\\?v=[A-Za-z0-9_-]{11}")
+    private val cloudPreviewKey=Regex("https://(?:soundcloud\\.com/[A-Za-z0-9_-]{3,25}/[A-Za-z0-9_-]+|api\\.soundcloud\\.com/tracks/[1-9][0-9]*)")
+    private val nonTrackCloudOwners=setOf("pages","settings","discover","stream","you","search","upload","people","groups","tags","popular","charts","terms-of-use","privacy")
+    private val nonTrackCloudSections=setOf("sets","likes","tracks","albums","playlists","reposts","followers","following","popular-tracks")
+    private fun previewSource(value:JsonElement?,provider:SourceProvider):ImportSource? {
+        val key=(value as? JsonPrimitive)?.takeIf {it.isString}?.content ?: return null
+        val canonical=if(provider==SourceProvider.YouTube)videoPreviewKey else cloudPreviewKey
+        if(key.startsWith("https://soundcloud.com/")) {
+            val path=key.removePrefix("https://soundcloud.com/").lowercase()
+            if(path.substringBefore('/') in nonTrackCloudOwners||path.substringAfter('/') in nonTrackCloudSections)return null
+        }
+        return ImportSource.parse(key)?.takeIf {it.provider==provider.wire&&it.url==key&&canonical.matches(key)}
+    }
     fun candidate(o:JsonObject):SourceCandidate {
         val id=text(o,"candidateId");require(id.isNotBlank()&&id.length<=1024&&id.none {it.code<32})
         val provider=SourceProvider.entries.single {it.wire==text(o,"provider")}
@@ -62,7 +75,7 @@ object DiscoveryJson {
         val duration=o["durationMs"]?.jsonPrimitive?.let {require(!it.isString);it.long.also {n->require(n>=0)}} ?: 0
         return SourceCandidate(id,provider,source,text(o,"title"),o["artist"]?.let(::string).orEmpty(),duration,bool(o,"downloadable"),o["uploader"]?.let(::string).orEmpty(),o["metadata"]?.jsonObject?.get("album")?.let(::string).orEmpty(),
             o["sourceId"]?.let(::string).orEmpty(),o["thumbnailUrl"]?.takeUnless {it==JsonNull}?.let(::string),
-            o["playable"]?.let {bool(o,"playable")} ?: false,o["explicit"]?.takeUnless {it==JsonNull}?.let {bool(o,"explicit")})
+            o["playable"]?.let {bool(o,"playable")} ?: false,o["explicit"]?.takeUnless {it==JsonNull}?.let {bool(o,"explicit")},previewSource(o["previewSourceUrl"],provider))
     }
     fun decision(o:JsonObject,session:String,candidate:String,knownId:String?=null):SourceDecision=parse {
         // Only an exact previously acknowledged ID can survive the server's session-link purge.

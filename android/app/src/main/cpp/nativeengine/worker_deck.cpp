@@ -59,6 +59,20 @@ Batch neighborhood(Batch batch, uint64_t extent, uint64_t cursor) {
     }
     return batch;
 }
+// Initial admission demands only one short page. Refills keep the current page
+// and copy it into a new two-page bank before reading the next (forward only).
+Batch previewWindow(Batch batch, uint64_t extent, uint64_t cursor, bool open) {
+    const auto center = cursor / previewPageFrames * previewPageFrames;
+    batch.count = 0;
+    for (uint32_t i = 0; i < (open ? 1u : 2u); ++i) {
+        const auto first = center + i * previewPageFrames;
+        if (extent && first >= extent) break;
+        batch.first[i] = first;
+        batch.frames[i] = extent ? static_cast<uint32_t>(std::min<uint64_t>(previewPageFrames,extent-first)) : previewPageFrames;
+        ++batch.count;
+    }
+    return batch;
+}
 // Keeps the released portable decoder and all exact file validation unchanged.
 class PortablePcmReader final : public PcmReader {
     sq_file_decoder* decoder;
@@ -134,9 +148,10 @@ struct WorkerDeck::Impl {
         uint64_t identity = 0, generation = 0, start = 0;
         double speed = 1;
         std::shared_ptr<const PcmReaderFactory> factory;
+        bool progressive = false;
     };
     struct Job {
-        bool open = false;
+        bool open = false, progressive = false;
         uint64_t token = 0, extent = 0, cursor = 0;
         std::string path;
         Batch batch{}, reuse{}; // immutable current-bank sources, never shared destinations
@@ -238,20 +253,23 @@ struct WorkerDeck::Impl {
         if (outstanding || pendingState != Pending::None) return false;
         Job job{};
         job.open = open;
+        job.progressive = intended.progressive;
         job.path = open ? intended.path : std::string{};
         if(open)job.factory=intended.factory;
         job.token = token.load(std::memory_order_acquire);
         job.extent = extent;
         job.cursor = cursor; // milliseconds for open, source frames for subsequent fills
         job.speed = intended.speed;
-        if (open) job.batch.count = 4;
+        if (job.progressive) job.batch = previewWindow({}, extent, cursor, open);
+        else if (open) job.batch.count = 4;
         else job.batch = neighborhood({}, extent, cursor);
         // Only an ordinary forward turnover of acknowledged, unprocessed PCM.
         // A strictly newer last page requires real reader work only while the
         // worker's endpoint still matches this job (rechecked before copying).
         // Backward fills and speed transitions retain existing decoding behavior.
         // No processed SpeedPages enter here.
-        if (!open && job.speed == 1 && submittedSpeed == 1 && current.count &&
+        if (!open && job.progressive) job.reuse = current;
+        else if (!open && job.speed == 1 && submittedSpeed == 1 && current.count &&
             job.batch.first[0] > current.first[0] &&
             job.batch.first[job.batch.count - 1] > current.first[current.count - 1])
             job.reuse = current;
@@ -404,9 +422,13 @@ struct WorkerDeck::Impl {
         const auto& observed = snapshot.decks[deck];
         if (observed.generation != intended.generation || observed.identity != intended.identity ||
             !std::isfinite(observed.sourceFrame) || observed.sourceFrame < 0) return;
+        // A prepared preview has one acknowledged page, and must not discover a
+        // tail failure while the old selection still owns playback. Only the
+        // committed preview receives Play; wait for its native playback receipt.
+        if (intended.progressive && !observed.playing) return;
         const auto cursor = extent && observed.sourceFrame >= static_cast<double>(extent)
             ? extent - 1 : static_cast<uint64_t>(observed.sourceFrame);
-        const auto target = neighborhood({}, extent, cursor);
+        const auto target = intended.progressive ? previewWindow({}, extent, cursor, false) : neighborhood({}, extent, cursor);
         if (!sameRange(current, target) || intended.speed != submittedSpeed) startFill(false, cursor);
     }
     void run() {
@@ -463,8 +485,9 @@ struct WorkerDeck::Impl {
                     // A cancelled read can learn EOS without updating control extent.
                     // Its newer endpoint could skip every uncopied page; fall back
                     // to real in-range reads and their final source-validation fence.
-                    if (decoder->endFrames() != job.extent) job.reuse = {};
-                    result.batch = neighborhood(job.batch, result.extent, job.cursor);
+                    if (!job.progressive && decoder->endFrames() != job.extent) job.reuse = {};
+                    result.batch = job.progressive ? previewWindow(job.batch, result.extent, job.cursor, job.open)
+                                                   : neighborhood(job.batch, result.extent, job.cursor);
                     const auto center = (result.extent ? std::min(job.cursor, result.extent - 1) : job.cursor) / pageFrames;
                     // Decode the cursor/interpolation-neighbor pair first.
                     // Known ends add backward/forward safety; unknown ends use
@@ -492,6 +515,31 @@ struct WorkerDeck::Impl {
                                 result.batch.first[i], result.batch.frames[i], pages[result.batch.slots[i]].get(), stale);
                             if (error != SQ_FILE_OK) { result.error = error; break; }
                             decodedFrames.fetch_add(result.batch.frames[i], std::memory_order_relaxed);
+                        }
+                    } else if (job.progressive) {
+                        for (uint32_t i = 0; i < result.batch.count && !obsolete(job.token); ++i) {
+                            const auto first = result.batch.first[i];
+                            const auto count = result.batch.frames[i];
+                            auto* dst = pages[result.batch.slots[i]].get();
+                            bool copied = false;
+                            for (uint32_t old = 0; old < job.reuse.count; ++old) {
+                                if (job.reuse.first[old] != first || job.reuse.frames[old] != count) continue;
+                                std::copy_n(pages[job.reuse.slots[old]].get(), size_t{count} * 2, dst);
+                                copied = true;
+                                break;
+                            }
+                            if (copied) continue;
+                            if (result.extent && first >= result.extent) break;
+                            uint32_t read = 0;
+                            decodeCalls.fetch_add(1, std::memory_order_relaxed);
+                            result.error = decoder->read(first, count, dst, size_t{pageSamples} * sizeof(float), read);
+                            result.extent = decoder->endFrames();
+                            if (result.error || (read != count && (!result.extent || first + read != result.extent))) {
+                                if (!result.error) result.error = SQ_FILE_DECODE;
+                                break;
+                            }
+                            result.batch.frames[i] = read;
+                            decodedFrames.fetch_add(read, std::memory_order_relaxed);
                         }
                     } else for (const auto page : priority) {
                         for (uint32_t i = 0; i < result.batch.count; ++i) {
@@ -593,10 +641,11 @@ bool WorkerDeck::replace(const std::string& path, uint64_t identity, uint64_t ge
     // structural receipt AND concrete worker reply before scheduling reopen.
     return true;
 }
-bool WorkerDeck::replaceReader(std::shared_ptr<const PcmReaderFactory> factory, uint64_t identity, uint64_t generation, uint64_t ms, double speed) {
-    if(!factory)return false;
+bool WorkerDeck::replaceReader(std::shared_ptr<const PcmReaderFactory> factory, uint64_t identity, uint64_t generation, uint64_t ms, double speed, bool progressive) {
+    if(!factory || (progressive && (ms != 0 || speed != 1)))return false;
     if(!replace("/original-descriptor",identity,generation,ms,speed))return false;
     impl_->intended.path.clear(); impl_->intended.factory=std::move(factory);
+    impl_->intended.progressive=progressive;
     return true;
 }
 void WorkerDeck::fenceSeek() {
@@ -606,7 +655,7 @@ void WorkerDeck::fenceSeek() {
 }
 bool WorkerDeck::setSpeed(double speed) {
     auto& p = *impl_;
-    if (!std::isfinite(speed) || speed < transport::minListeningSpeed || speed > transport::maxListeningSpeed ||
+    if (p.intended.progressive || !std::isfinite(speed) || speed < transport::minListeningSpeed || speed > transport::maxListeningSpeed ||
         p.unloading || p.phase == Impl::Phase::Retiring || p.phase == Impl::Phase::Failed || p.phase == Impl::Phase::Empty) return false;
     if (speed == p.intended.speed) return true;
     p.intended.speed = speed;
@@ -638,7 +687,7 @@ bool WorkerDeck::retire() {
     return true;
 }
 bool WorkerDeck::retired() const noexcept {
-    return impl_->unloading && impl_->engine.completedStructuralSequence() >= impl_->retirementReceipt;
+    return impl_->unloading && (!impl_->intended.progressive || !impl_->outstanding) && impl_->engine.completedStructuralSequence() >= impl_->retirementReceipt;
 }
 uint32_t WorkerDeck::sourceRate() const noexcept { return impl_->rate; }
 uint64_t WorkerDeck::generation() const noexcept { return impl_->intended.generation; }

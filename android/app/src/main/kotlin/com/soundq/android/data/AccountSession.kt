@@ -113,8 +113,8 @@ class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore)
         try { store.save(endpoint, accepted) } catch (_: Exception) {
             synchronized(this) {
                 if (saveCurrent(intent) && pending === accepted) {
-                    // A later explicit save retry must not revive Discover GETs
-                    // held across a failed rotation, even under the same epoch.
+                    // Only failure (not entering save) retires admitted Discover reads.
+                    // An explicit save retry must not revive them in the same epoch.
                     if(tokens==null&&refresh?.first==intent)discoveryReadRevision++
                     if(localLocked)beforeLocalLock=AuthState.SaveRequired() else mutable.value = AuthState.SaveRequired()
                 }
@@ -132,12 +132,15 @@ class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore)
     @Synchronized fun capture(): AccountScope? = if(localLocked)null else (deviceAccount ?: tokens?.accountId)?.let { AccountScope(this, epoch, it, discoveryReadRevision) }
     @Synchronized fun current(scope: AccountScope): Boolean = !localLocked && scope.owner === this && scope.epoch == epoch && (deviceAccount ?: tokens?.accountId) == scope.accountId
     @Synchronized fun remoteCurrent(scope: AccountScope): Boolean = current(scope) && deviceAccount == null && tokens != null
+    /** Pending/installed preview ownership is not a token or new dispatch admission. */
+    @Synchronized internal fun previewOwnerCurrent(scope: AccountScope): Boolean =
+        discoveryReadState(scope) != DiscoveryReadState.Retired
     @Synchronized fun checkRemote(scope: AccountScope) { if (!remoteCurrent(scope)) throw SafeFailure(SafeFailure.Reason.Retired) }
     @Synchronized fun access(scope: AccountScope): String { checkRemote(scope); return tokens!!.access }
     @Synchronized internal fun discoveryCurrent(scope:AccountScope)=
         current(scope)&&scope.discoveryReadRevision==discoveryReadRevision
 
-    /** Only the bearer actually selected for this GET may enter the wire. */
+    /** Only the currently usable bearer selected for the exact Discover request may enter the wire. */
     @Synchronized internal fun discoveryDispatchCurrent(scope:AccountScope,access:String) =
         scope.discoveryReadRevision==discoveryReadRevision&&remoteCurrent(scope)&&tokens?.access==access
 
@@ -151,7 +154,7 @@ class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore)
         refresh?.takeIf { (intent,flight)->
             scope.discoveryReadRevision==discoveryReadRevision&&!localLocked&&scope.owner===this&&scope.epoch==epoch&&intent==epoch&&
                 tokens==null&&deviceAccount==null&&pending?.accountId==scope.accountId&&
-                mutable.value is AuthState.SignedIn&&!flight.isDone
+                (mutable.value as? AuthState.SignedIn)?.accountId==scope.accountId&&!flight.isDone
         }?.second
 
     internal fun awaitDiscoveryRead(scope:AccountScope):Boolean {
@@ -322,7 +325,7 @@ class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore)
     fun refresh(scope: AccountScope, attemptedAccess: String? = null, exchange: (String) -> SecretTokens): Boolean =
         refreshExchange(scope,attemptedAccess) { RefreshExchange.Rotated(exchange(it)) }
     internal fun refreshExchange(scope: AccountScope, attemptedAccess: String? = null, joinDiscoverySave:Boolean=false, exchange: (String) -> RefreshExchange): Boolean {
-        // A second admitted Discover 401 arriving during save joins that exchange;
+        // An admitted Discover 401 arriving during save joins that exchange;
         // it cannot start an exchange here or borrow the withdrawn bearer.
         val flight: CompletableFuture<Boolean>
         val before: SecretTokens?

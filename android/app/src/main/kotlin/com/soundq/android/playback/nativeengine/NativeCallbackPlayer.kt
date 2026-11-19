@@ -7,6 +7,8 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.soundq.android.AppGraph
 import com.soundq.android.data.AccountScope
 import com.soundq.android.data.AuthState
+import com.soundq.android.data.DiscoveryPreviewInput
+import com.soundq.android.data.SafeFailure
 import com.soundq.android.playback.*
 import com.soundq.android.playback.QueuePolicy
 import com.soundq.android.data.timeline.*
@@ -54,6 +56,105 @@ internal class NativeCallbackPlayer(
     private var ordinaryDeck = 0
     private var ordinaryIdentity = 0L
     private var sourceSequence = 0L
+    internal class ParkedCursor(initialPosition: Long) {
+        var position: Long = initialPosition
+            private set
+        fun acknowledgePause(cursor: Long) { position = cursor }
+    }
+    internal class ParkedQueue(val items: List<MediaItem>, val index: Int, internal val cursor: ParkedCursor) {
+        val position get() = cursor.position
+    }
+    private class Preview(val input: DiscoveryPreviewInput, val scope: AccountScope,
+        val queue: ParkedQueue, val order: List<Int>, val durations: Map<String, Long>)
+    private class PreviewPreparation(val input: DiscoveryPreviewInput) {
+        val drained = CompletableDeferred<Boolean>()
+    }
+    private var previewPreparation: PreviewPreparation? = null
+    private var previewStartFence: Deferred<Boolean>? = null
+    @Volatile private var preview: Preview? = null
+    // Once the ordinary queue is live, only its retained selection owns the
+    // late Pause and first explicit reload (including zero), never old rows.
+    private var restoredPark: ParkedCursor? = null
+    internal val parkedQueue get() = preview?.queue
+    internal var previewQueueTransient = false
+        private set
+    internal val queueShuffleEnabled get() = shuffle
+
+    /** Called on Main. Native loads a paused spare deck; old audio remains selected and playing. */
+    internal suspend fun prepareDiscoveryPreview(item: MediaItem, input: DiscoveryPreviewInput, scope: AccountScope,
+        current: () -> Boolean): Boolean {
+        while (true) {
+            if (!current() || released || arrangement != null) return false
+            val previous = previewPreparation ?: break
+            previous.input.cancel()
+            if (!previous.drained.await()) return false
+        }
+        val request = PreviewPreparation(input)
+        previewPreparation = request
+        val deck = if (ordinaryDeck == 2) 3 else 2
+        val generation = maxOf(epoch, sourceSequence) + 2
+        sourceSequence = generation
+        var committed = false
+        var borrowed = false
+        fun valid() = !released && previewPreparation === request && !input.canceled && current() && graph.session.previewOwnerCurrent(scope)
+        // Only thread-safe fields reach the owner. UI eligibility is checked on Main at each suspension.
+        fun nativeCurrent() = graph.session.previewOwnerCurrent(scope) && !released && !input.canceled
+        try {
+            tail?.join() // a previous accepted preview may still be retiring its old deck
+            if (!valid()) return false
+            if (!owner.recoverOutput(::nativeCurrent) || !valid()) return false
+            borrowed = true
+            if (!withContext(NonCancellable) { owner.loadPreview(deck, input, generation, ::nativeCurrent) }) return false
+            val ready = awaitDeckReady(deck, generation, ::valid, ::nativeCurrent)
+            if (!owner.controlDeck(deck, 7, volume.toDouble(), ::nativeCurrent) || !valid()) return false
+            val previous = preview
+            val parked = previous?.queue ?: ParkedQueue(items, index, restoredPark ?: ParkedCursor(position))
+            val next = Preview(input, scope, parked, previous?.order ?: order, previous?.durations ?: durations.toMap())
+            previewPreparation = null
+            retireSelection(forPreview = true, park = parked.cursor.takeIf { previous == null })
+            previewQueueTransient = true
+            preview = next
+            items = listOf(item); index = 0; position = 0; order = listOf(0)
+            durations.clear(); error = null; outputUnavailable = false
+            epoch = maxOf(epoch, generation); ordinaryDeck = deck; ordinaryIdentity = generation; eofCount = ready.eofCount
+            selectedLoaded = true; intent = false; playback = Player.STATE_READY
+            committed = true
+            invalidateState()
+            return true
+        } catch (e: TimeoutCancellationException) {
+            if (valid()) throw SafeFailure(SafeFailure.Reason.Network)
+            return false
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            if (valid()) throw SafeFailure(input.failure ?: SafeFailure.Reason.InvalidResponse)
+            return false
+        } finally {
+            if (!committed) input.cancel()
+            withContext(NonCancellable) {
+                val drained = committed || !borrowed || owner.unloadDeck(deck)
+                // Failed drain stays latched and refuses successors. Owner retains JNI custody.
+                if ((committed || drained) && previewPreparation === request) previewPreparation = null
+                request.drained.complete(drained)
+            }
+        }
+    }
+
+    private fun finishDiscoveryPreview(failure: String? = null, restore: Boolean = true, keepPending: Boolean = false) {
+        val installed = preview ?: return
+        retireSelection(keepPending = keepPending)
+        preview = null
+        restoredPark = installed.queue.cursor.takeIf { restore }
+        items = if (restore) installed.queue.items else emptyList()
+        index = if (restore) installed.queue.index else 0
+        position = if (restore) installed.queue.position else 0
+        order = if (restore) installed.order else emptyList()
+        durations.clear(); if (restore) durations.putAll(installed.durations)
+        if (!restore) queueScope = null
+        intent = false; playback = Player.STATE_IDLE
+        error = failure?.let { PlaybackException(it, null, PlaybackException.ERROR_CODE_IO_UNSPECIFIED) }
+        invalidateState()
+    }
     private class Successor(val item: MediaItem, val grant: MediaGrant, val uri: String,
         val deck: Int, val identity: Long, val outgoing: MediaItem, val outgoingGrant: MediaGrant,
         val outgoingUri: String, val outgoingDeck: Int, val outgoingIdentity: Long, val outgoingEof: Long,
@@ -92,7 +193,7 @@ internal class NativeCallbackPlayer(
     /** Acquire only one immediate traversal successor. IO and decoding remain off callback. */
     private fun prepareSuccessor() {
         val preference = graph.crossfadePreferences.state.value
-        if (!preference.ready || preference.error || preference.seconds == 0 || released || arrangement != null ||
+        if (!preference.ready || preference.error || preference.seconds == 0 || released || arrangement != null || preview != null ||
             !selectedLoaded || playback != Player.STATE_READY || successor != null || successorJob != null || desiredSeek != null) return
         // Finite crossfade scheduling needs sealed endpoints. Do not repeatedly
         // acquire/cancel successors while this local source end is still unknown.
@@ -225,6 +326,7 @@ internal class NativeCallbackPlayer(
     /** Explicit original-file mutation barrier. It grants no filesystem deletion authority. */
     internal suspend fun retirePhoneFile(ref:com.soundq.android.playback.PlaybackRef.Device):Boolean {
         fun matches(item:MediaItem)=(com.soundq.android.playback.PlaybackRef.read(item.mediaMetadata.extras?.getString("playbackRef")) as? com.soundq.android.playback.PlaybackRef.Device)?.let {graph.phoneAudio.sameFile(it,ref)}==true
+        if (parkedQueue?.items?.any(::matches) == true) finishDiscoveryPreview()
         if(arrangement!=null&&arrangementSourceItems.any(::matches))return false
         val fileId=graph.phoneAudio.sourceFileId(ref).value.toString()
         // A previously failed close can retain custody without a native identity or queue row.
@@ -272,6 +374,7 @@ internal class NativeCallbackPlayer(
     /** Accepted speed for the selected occurrence: the native deck's applied rate once its
      * source is assigned, otherwise the stored preference that will apply at load. */
     internal fun listeningSpeed(): com.soundq.android.playback.ListeningSpeedState? {
+        if (preview != null) return null
         val item = selected() ?: return null
         val (min, max) = speedBounds
         val reason = when {
@@ -338,6 +441,11 @@ internal class NativeCallbackPlayer(
     internal fun nativeTraversalForTest(): List<Int> = order.toList()
     private val accountJob = jobs.launch {
         combine(graph.session.state, graph.session.scopeRevision) { state, _ -> state }.collect { auth ->
+            preview?.let { installed ->
+                if (graph.session.previewOwnerCurrent(installed.scope)) return@collect
+                finishDiscoveryPreview(restore =
+                    graph.session.rotationCurrent(installed.scope) || graph.session.resumesLocal(installed.scope))
+            }
             val scope = queueScope
             if(items.isNotEmpty()&&scope==null&&!graph.phoneAudio.current(queueVersion)){clearQueue();invalidateState()}
             if (items.isNotEmpty() && scope != null && !graph.session.current(scope)) {
@@ -761,8 +869,9 @@ internal class NativeCallbackPlayer(
 
     private fun done(): ListenableFuture<*> = Futures.immediateVoidFuture()
     private var queueVersion=-1L
-    private fun currentScope() = if(queueScope!=null)queueScope?.let(graph.session::current)==true else graph.phoneAudio.current(queueVersion)
-    private fun assignmentCurrent() = currentScope() && if (arrangement != null)
+    private fun currentScope() = preview?.let { graph.session.previewOwnerCurrent(it.scope) }
+        ?: if(queueScope!=null)queueScope?.let(graph.session::current)==true else graph.phoneAudio.current(queueVersion)
+    private fun assignmentCurrent() = currentScope() && if (preview != null) true else if (arrangement != null)
         arrangementGrants.isNotEmpty() && arrangementGrants.all { (uri, grant) -> grants[uri] === grant && grant.current(graph) }
         else activeGrant?.let { grants[activeUri] === it && it.current(graph) } == true
     private fun selected() = items.getOrNull(index)
@@ -810,7 +919,7 @@ internal class NativeCallbackPlayer(
     }
 
     override fun getState(): State {
-        val commands = Player.Commands.Builder().addAll(
+        val commandBuilder = Player.Commands.Builder().addAll(
             Player.COMMAND_PLAY_PAUSE, Player.COMMAND_PREPARE, Player.COMMAND_STOP, Player.COMMAND_RELEASE,
             Player.COMMAND_CHANGE_MEDIA_ITEMS, Player.COMMAND_SET_MEDIA_ITEM, Player.COMMAND_GET_TIMELINE,
             Player.COMMAND_GET_CURRENT_MEDIA_ITEM, Player.COMMAND_GET_METADATA, Player.COMMAND_SET_REPEAT_MODE,
@@ -819,10 +928,14 @@ internal class NativeCallbackPlayer(
             Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
             Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
             Player.COMMAND_GET_VOLUME, Player.COMMAND_SET_VOLUME, Player.COMMAND_GET_AUDIO_ATTRIBUTES,
-        ).build()
+        )
+        if (preview != null) commandBuilder.removeAll(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM,
+            Player.COMMAND_SEEK_TO_MEDIA_ITEM, Player.COMMAND_SEEK_TO_DEFAULT_POSITION, Player.COMMAND_SEEK_TO_NEXT,
+            Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM, Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+        val commands = commandBuilder.build()
         val rows = items.map { item ->
             val duration = duration(item)
-            MediaItemData.Builder(item.mediaId).setMediaItem(item).setIsSeekable(true)
+            MediaItemData.Builder(item.mediaId).setMediaItem(item).setIsSeekable(preview == null)
                 .setDurationUs(if (duration == C.TIME_UNSET) C.TIME_UNSET else Math.multiplyExact(duration, 1000)).build()
         }
         val base = State.Builder().setAvailableCommands(commands).setPlaylist(rows)
@@ -830,7 +943,8 @@ internal class NativeCallbackPlayer(
             .setPlaybackSuppressionReason(if (intent && !acknowledgedPlaying && playback == Player.STATE_READY)
                 Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS else Player.PLAYBACK_SUPPRESSION_REASON_NONE)
             .setPlaybackState(playback).setIsLoading(playback == Player.STATE_BUFFERING)
-            .setPlayerError(error).setRepeatMode(repeat).setShuffleModeEnabled(shuffle).setVolume(volume)
+            .setPlayerError(error).setRepeatMode(if (preview == null) repeat else Player.REPEAT_MODE_OFF)
+            .setShuffleModeEnabled(preview == null && shuffle).setVolume(volume)
             // Accepted listening pace only (controllers extrapolate source position with it).
             // COMMAND_SET_SPEED_AND_PITCH is not offered: requests use the receipted service command.
             .setPlaybackParameters(PlaybackParameters((listeningSpeed()?.takeIf { it.unavailable == null }?.accepted ?: 1.0).toFloat()))
@@ -964,6 +1078,8 @@ internal class NativeCallbackPlayer(
         val selected = if (startIndex == C.INDEX_UNSET) 0 else startIndex
         require(next.isEmpty() || selected in next.indices)
         retireSelection()
+        preview = null
+        previewQueueTransient = false
         items = next
         if (next.isEmpty()) intent = false
         index = selected
@@ -979,7 +1095,13 @@ internal class NativeCallbackPlayer(
     }
 
     /** Revocation is synchronous. The old acquisition then joins before any successor is admitted. */
-    private fun retireSelection(natural:Boolean=false) {
+    private fun retireSelection(natural:Boolean=false, forPreview:Boolean=false, park:ParkedCursor?=null,
+        keepPending: Boolean = false, keepPark: Boolean = false) {
+        if (!natural && !forPreview && !keepPending) previewPreparation?.input?.cancel()
+        if (!keepPark) restoredPark = null
+        val needsHandoffPause = forPreview && selectedLoaded
+        previewStartFence = null
+        preview?.input?.cancel()
         retireSpeedRequest(); observedSpeed = null
         if(!natural)journal.freeze()
         cancelSuccessor(natural=natural)
@@ -1001,24 +1123,60 @@ internal class NativeCallbackPlayer(
         acknowledgedSeekPosition = null
         pausePosition = null; acknowledgedPausePosition = null
         val retirement = epoch
+        val retiringPreview = preview
         val retiringDeck=ordinaryDeck;val retiringIdentity=ordinaryIdentity
         val predecessor = tail
+        val startFence = if (forPreview) CompletableDeferred<Boolean>().also { previewStartFence = it } else null
         tail = lifetime.launch {
             predecessor?.join()
-            owner.controlDeck(retiringDeck,2) {true}
-            var final=owner.snapshot {true}
-            withTimeoutOrNull(2_000) {
-                while(final?.decks?.getOrNull(retiringDeck)?.let {it.identity==retiringIdentity&&it.playing}==true) {
-                    delay(10);final=owner.snapshot {true}
+            var pauseAccepted = !needsHandoffPause
+            if (needsHandoffPause && owner.pauseForHandoff(retiringDeck, retiringIdentity)) {
+                val cursor = withTimeoutOrNull(2_000) {
+                    var acknowledged: Long? = null
+                    while (acknowledged == null) {
+                        val snap = owner.snapshot { true }
+                        if (snap != null && snap.error != 0) break
+                        val d = snap?.decks?.getOrNull(retiringDeck)
+                        if (d != null && d.identity == retiringIdentity && d.generation == retiringIdentity &&
+                            d.error == 0 && !d.playing && d.handoffPaused && d.sourceRate > 0 && d.positionMs >= 0) {
+                            acknowledged = d.positionMs
+                        } else delay(10)
+                    }
+                    acknowledged
                 }
+                pauseAccepted = cursor != null
+                if (park != null && cursor != null) {
+                    park.acknowledgePause(cursor)
+                    if (!released && restoredPark === park && position != cursor) {
+                        position = cursor
+                        acknowledgedPausePosition = cursor
+                        invalidateState()
+                    }
+                }
+            } else if (!forPreview) {
+                owner.controlDeck(retiringDeck,2) {true}
             }
-            journal.finalCursor(final)
-            if (!owner.unload() && !released && epoch == retirement) fail("Audio source could not be released")
+            if (forPreview || retiringPreview != null) journal.retire() else {
+                var final = owner.snapshot { true }
+                withTimeoutOrNull(2_000) {
+                    while (final?.decks?.getOrNull(retiringDeck)?.let { it.identity == retiringIdentity && it.playing } == true) {
+                        delay(10); final = owner.snapshot { true }
+                    }
+                }
+                journal.finalCursor(final)
+            }
+            val drained = if (retiringPreview != null) owner.unloadDeck(retiringDeck) else owner.unload()
+            // Outage/refusal restores paused at the explicitly degraded entry
+            // checkpoint. Drain proves custody only, never authorizes Play.
+            startFence?.complete(pauseAccepted && drained)
+            if (!drained && !released && epoch == retirement) fail("Audio source could not be released")
         }
     }
 
     private fun clearQueue() {
         retireSelection()
+        preview = null
+        previewQueueTransient = false
         items = emptyList(); order = emptyList(); index = 0; position = 0
         queueScope = null; intent = false; playback = Player.STATE_IDLE; error = null
         durations.clear()
@@ -1027,7 +1185,7 @@ internal class NativeCallbackPlayer(
     override fun handlePrepare(): ListenableFuture<*> {
         if (released || items.isEmpty() || pending != null) return done()
         if (selectedLoaded) { dispatchIntent(recoverOutput = true); return done() }
-        if (arrangement != null) return done()
+        if (arrangement != null || preview != null) return done()
         try { validate(items) } catch (_: Exception) { fail("Audio source is no longer available"); return done() }
         val item = requireNotNull(selected())
         val uri = item.localConfiguration!!.uri.toString()
@@ -1040,6 +1198,7 @@ internal class NativeCallbackPlayer(
         ordinaryDeck = 0; ordinaryIdentity = generation; sourceSequence = generation
         val predecessor = tail
         val seekAtPreparation=explicitSeek
+        val fromPark = restoredPark
         fun current() = !released && generation == epoch && grant.current(graph) && grants[uri] === grant
         playback = Player.STATE_BUFFERING
         error = null
@@ -1059,23 +1218,24 @@ internal class NativeCallbackPlayer(
                 ensureActive()
                 check(current())
                 val original=file as? NativePlaybackSource.BorrowedOriginal
-                val initialPosition = if(position==0L && explicitSeek==seekAtPreparation && original!=null)journal.initialResume(original,grant,ordinaryDeck) else position
+                val allowResume = fromPark == null && position == 0L && explicitSeek == seekAtPreparation
+                val initialPosition = if(allowResume && original!=null)journal.initialResume(original,grant,ordinaryDeck) else position
                 if(initialPosition!=position){position=initialPosition;acknowledgedSeekPosition=initialPosition}
                 transferred = true
                 val accepted = withContext(NonCancellable) { owner.load(requireNotNull(file), generation, generation, initialPosition, ::current, loadSpeed(item)) }
                 check(current())
                 check(accepted)
-                bindJournal(item,grant,requireNotNull(file),ordinaryDeck,generation,position==0L&&explicitSeek==seekAtPreparation,::current)
+                bindJournal(item,grant,requireNotNull(file),ordinaryDeck,generation,allowResume&&explicitSeek==seekAtPreparation,::current)
                 check(current())
+                if (restoredPark === fromPark) restoredPark = null
                 selectedLoaded = true
                 desiredSeek = if (position != initialPosition&&acknowledgedSeekPosition==null) position else null
                 withContext(NonCancellable) { owner.control(7, volume.toDouble(), ::current) }
                 // Play is deferred one main turn so existing focus listener can reject it first.
                 dispatchIntent(generation)
-            } catch (_: CancellationException) {
-                // Superseded work cannot change the successor's error or play intent.
-            } catch (_: Exception) {
-                if (generation==epoch&&currentScope()&&grants[uri]===grant) { fail(if(grant.device!=null)"Audio source could not be prepared. Check Local audio access or choose the file again." else "Audio source could not be prepared. Try again when the server is available."); retireSelection() }
+            } catch (failure: Exception) {
+                if (failure is CancellationException) { /* Superseded work cannot affect the successor. */ }
+                else if (generation==epoch&&currentScope()&&grants[uri]===grant) { fail(if(grant.device!=null)"Audio source could not be prepared. Check Local audio access or choose the file again." else "Audio source could not be prepared. Try again when the server is available."); retireSelection() }
             } finally {
                 if (!transferred) withContext(NonCancellable + Dispatchers.IO) { file?.let {owner.releaseUnborrowed(it)} }
                 if (generation == epoch) {
@@ -1095,21 +1255,26 @@ internal class NativeCallbackPlayer(
         return done()
     }
 
-    private suspend fun bindJournal(item:MediaItem,grant:MediaGrant,file:NativePlaybackSource,slot:Int,identity:Long,allowResume:Boolean,current:()->Boolean) {
-        val ready=withTimeout(15_000) {
+    private suspend fun awaitDeckReady(slot: Int, identity: Long, current: () -> Boolean, nativeCurrent: () -> Boolean = current): NativeCallbackDeck =
+        withTimeout(15_000) {
             var value:NativeCallbackDeck?=null
             while(value==null) {
                 check(current())
-                val d=owner.snapshot(current)?.decks?.getOrNull(slot)
+                val snapshot = checkNotNull(owner.snapshot(nativeCurrent))
+                check(snapshot.error == 0)
+                val d=snapshot.decks.getOrNull(slot)
                 if(d!=null&&d.identity==identity&&d.generation==identity) {
                     check(d.error==0)
                     if(d.ready&&!d.preparing&&d.sourceRate>0)value=d
                 }
                 if(value==null)delay(20)
             }
-            value
+            requireNotNull(value)
         }
-        val resume=try {journal.bind(item,grant,file,requireNotNull(ready),slot,current)}catch(failure:Exception){if(grant.device!=null)throw failure else {check(current());return}}
+
+    private suspend fun bindJournal(item:MediaItem,grant:MediaGrant,file:NativePlaybackSource,slot:Int,identity:Long,allowResume:Boolean,current:()->Boolean) {
+        val ready=awaitDeckReady(slot,identity,current)
+        val resume=try {journal.bind(item,grant,file,ready,slot,current)}catch(failure:Exception){if(grant.device!=null)throw failure else {check(current());return}}
         if(allowResume&&resume>0 && file !is NativePlaybackSource.BorrowedOriginal) {
             journal.fenceSeek(slot)
             check(journal.beginSeek(slot,2,ready.naturalEnd?.count ?: 0))
@@ -1135,6 +1300,10 @@ internal class NativeCallbackPlayer(
                 yield()
                 if (released || generation != epoch || revision != transportRevision || !selectedLoaded) return@launch
                 val playing = intent && assignmentCurrent()
+                if (playing && preview != null && previewStartFence?.await() == false) {
+                    if (!released && generation == epoch && revision == transportRevision) fail("Preview audio output could not be prepared")
+                    return@launch
+                }
                 val current = { !released && generation == epoch && revision == transportRevision && (!playing || intent && assignmentCurrent()) }
                 if (recoverOutput) {
                     // Reopening belongs to the retained source, not to Play's
@@ -1173,7 +1342,12 @@ internal class NativeCallbackPlayer(
     }
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
-        if(playWhenReady!=intent)journal.transportIntent(playWhenReady)
+        if (!playWhenReady && preview != null) { finishDiscoveryPreview(); return done() }
+        if (preview == null) {
+            previewPreparation?.input?.cancel()
+            if (playWhenReady) previewQueueTransient = false
+            if(playWhenReady!=intent)journal.transportIntent(playWhenReady)
+        }
         revokePerformance()
         if (!playWhenReady && arrangement != null) { performanceTransportHeld = true; performanceDecks = emptyMap() }
         transportRevision++
@@ -1187,12 +1361,13 @@ internal class NativeCallbackPlayer(
     }
 
     override fun handleStop(): ListenableFuture<*> {
+        if (preview != null) { finishDiscoveryPreview(); return done() }
         // A stopped synthetic row has no ordinary source capability. Restore the
         // exact authorized originals paused; service timeline observation retires
         // accepted arrangement metadata. Native bytes still drain via old owner.
         val sources = arrangementSourceItems.takeIf { arrangement != null && assignmentCurrent() }
         intent = false
-        retireSelection()
+        retireSelection(keepPark = true)
         if (sources != null) {
             items = sources; index = 0; position = 0
             order = if (shuffle) NativeCallbackTraversal.permutation(items.size, index, random) else items.indices.toList()
@@ -1211,16 +1386,20 @@ internal class NativeCallbackPlayer(
         accountJob.cancel()
         retireSelection()
         val predecessor = tail
+        val preparingPreview = previewPreparation
         lifetime.launch {
             predecessor?.join()
+            preparingPreview?.drained?.await()
             owner.close()
             lifetime.cancel()
         }
         return done()
     }
 
-    override fun handleSetRepeatMode(repeatMode: Int): ListenableFuture<*> { cancelSuccessor(); repeat = repeatMode; return done() }
+    override fun handleSetRepeatMode(repeatMode: Int): ListenableFuture<*> { if (preview == null) { previewQueueTransient = false; cancelSuccessor(); repeat = repeatMode }; return done() }
     override fun handleSetShuffleModeEnabled(shuffleModeEnabled: Boolean): ListenableFuture<*> {
+        if (preview != null) return done()
+        previewQueueTransient = false
         cancelSuccessor()
         if (shuffle != shuffleModeEnabled) {
             shuffle = shuffleModeEnabled
@@ -1243,6 +1422,7 @@ internal class NativeCallbackPlayer(
 
     private fun mutate(next: List<MediaItem>, nextOrder: List<Int>, fallback: Int, preserveCurrent: Boolean = true): ListenableFuture<*> {
         validate(next)
+        previewQueueTransient = false
         cancelSuccessor()
         if (next.isEmpty()) { clearQueue(); return done() }
         val previous = selected()?.mediaId
@@ -1261,7 +1441,7 @@ internal class NativeCallbackPlayer(
     }
 
     override fun handleAddMediaItems(insertionIndex: Int, mediaItems: List<MediaItem>): ListenableFuture<*> {
-        if (mediaItems.isEmpty()) return done()
+        if (preview != null || mediaItems.isEmpty()) return done()
         val next = items.toMutableList().apply { addAll(insertionIndex, mediaItems) }
         val nextOrder = NativeCallbackTraversal.insert(order, insertionIndex, mediaItems.size, index,
             mediaItems.all { it.mediaMetadata.extras?.getBoolean("manual") == true },
@@ -1274,20 +1454,27 @@ internal class NativeCallbackPlayer(
         return if (shuffle) NativeCallbackTraversal.permutation(next.size, selected, random) else next.indices.toList()
     }
     override fun handleRemoveMediaItems(fromIndex: Int, toIndex: Int): ListenableFuture<*> {
+        if (preview != null) { if (fromIndex == 0 && toIndex == 1) finishDiscoveryPreview(); return done() }
         val next = items.toMutableList().apply { subList(fromIndex, toIndex).clear() }
         return mutate(next, rebuilt(next, fromIndex), fromIndex, index !in fromIndex until toIndex)
     }
     override fun handleMoveMediaItems(fromIndex: Int, toIndex: Int, newIndex: Int): ListenableFuture<*> {
+        if (preview != null) return done()
         val next = items.toMutableList().apply { val moved = subList(fromIndex, toIndex).toList(); subList(fromIndex, toIndex).clear(); addAll(newIndex, moved) }
         return mutate(next, rebuilt(next, 0), 0)
     }
     override fun handleReplaceMediaItems(fromIndex: Int, toIndex: Int, mediaItems: List<MediaItem>): ListenableFuture<*> {
+        if (preview != null) return done()
         val next = items.toMutableList().apply { subList(fromIndex, toIndex).clear(); addAll(fromIndex, mediaItems) }
         return mutate(next, rebuilt(next, fromIndex), fromIndex, index !in fromIndex until toIndex)
     }
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
         if (items.isEmpty()) return done()
+        if (preview != null) return done()
+        previewPreparation?.input?.cancel()
+        restoredPark = null
+        previewQueueTransient = false
         explicitSeek++;journal.fenceSeek(ordinaryDeck)
         val traversal = activeOrder()
         val next = when (seekCommand) {
@@ -1364,6 +1551,7 @@ internal class NativeCallbackPlayer(
 
     private fun fail(message: String) {
         if (released) return
+        if (preview != null) { finishDiscoveryPreview(message, keepPending = true); return }
         if (selectedLoaded) retireSelection()
         intent = false; acknowledgedPlaying = false; playback = Player.STATE_IDLE
         error = PlaybackException(message, null, PlaybackException.ERROR_CODE_IO_UNSPECIFIED)
@@ -1373,6 +1561,7 @@ internal class NativeCallbackPlayer(
     /** A route error is not a source-release receipt. Keep selection and cursor. */
     private fun failOutput() {
         if (released) return
+        if (preview != null) { outputUnavailable = true; finishDiscoveryPreview("Preview audio output is unavailable"); return }
         if (!outputUnavailable) {
             revokePerformance()
             performanceTransportHeld = true; performanceDecks = emptyMap()
@@ -1442,11 +1631,16 @@ internal class NativeCallbackPlayer(
             speedBounds = snapshot.speedMin to snapshot.speedMax; reconcileSpeed = true
             speedPreferenceChanged(); onSpeedChanged?.invoke()
         }
-        journal.observe(snapshot,allowNatural=intent&&desiredSeek==null)
+        if (preview == null && !previewQueueTransient) journal.observe(snapshot,allowNatural=intent&&desiredSeek==null)
         if (observeSuccessor(snapshot)) return
         val deck = snapshot.decks.getOrNull(ordinaryDeck) ?: return
         if (!selectedLoaded || deck.identity != ordinaryIdentity || deck.generation != ordinaryIdentity) return
-        if (!assignmentCurrent()) { intent = false; retireSelection(); playback = Player.STATE_IDLE; invalidateState(); return }
+        if (!assignmentCurrent()) {
+            if (preview != null) return // account observer restores or discards the parked owner
+            if (previewPreparation != null && queueScope?.let(graph.session::previewOwnerCurrent) == true &&
+                queueScope?.let(graph.session::current) == false) return // held save cannot retire the pending read via the old grant
+            intent = false; retireSelection(); playback = Player.STATE_IDLE; invalidateState(); return
+        }
         if (deck.error != 0) { fail("Audio format could not be decoded"); return }
         if (deck.sourceRate > 0 && deck.sourceFrames > 0) selected()?.let { durations[it.mediaId] = deck.durationMs }
         acknowledgedPlaying = deck.playing
@@ -1471,6 +1665,7 @@ internal class NativeCallbackPlayer(
         val eof = desiredSeek == null && deck.eofCount > eofCount
         eofCount = maxOf(eofCount, deck.eofCount)
         if (eof) {
+            if (preview != null) { finishDiscoveryPreview(keepPending = true); return }
             val outgoing = selected() ?: return
             val generation = epoch
             val revision = transportRevision

@@ -3,6 +3,7 @@ package com.soundq.android.data
 import kotlinx.serialization.json.*
 import com.soundq.android.data.discovery.DiscoveryCalls
 import com.soundq.android.data.discovery.SourceProvider
+import com.soundq.android.data.catalog.RecordingMbid
 import com.soundq.android.data.imports.*
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -18,10 +19,11 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         .callTimeout(20, TimeUnit.SECONDS)
         .addInterceptor { chain ->
             val r=chain.request()
-            // Grouped Discover can wait up to 16 s before sending headers.
-            // Keep the total call bounded without cutting it off at the ordinary 10 s read timeout.
-            val readChain=if(r.method=="GET"&&r.url.encodedPath=="/api/v1/discovery/search")
-                chain.withReadTimeout(20,TimeUnit.SECONDS) else chain
+            // Discovery can wait on an upstream source before sending response headers.
+            // Keep total calls bounded and leave ordinary request deadlines alone.
+            val discoveryRead=r.method=="GET"&&r.url.encodedPath=="/api/v1/discovery/search"
+            val previewRead=r.method=="POST"&&r.url.encodedPath=="/api/v1/discovery/preview"
+            val readChain=if(discoveryRead||previewRead)chain.withReadTimeout(20,TimeUnit.SECONDS)else chain
             readChain.proceed(r)
         }
         .addNetworkInterceptor { chain ->
@@ -122,13 +124,14 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
             else throw error
         }
     }
-    private fun authorized(scope: AccountScope, path: String, method: String = "GET", body: JsonObject? = null, readOnly: Boolean = method == "GET", valid: () -> Boolean = { true }, expectedStatus: Int? = null, acceptedStatuses:Set<Int>? = null, dispatchValid: (() -> Boolean)? = null, allowMissing: Boolean = false, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, privateFeature: Boolean = false, rawJson:String?=null, calls:DiscoveryCalls?=null, received:((String)->Unit)?=null): JsonObject {
+    private fun authorized(scope: AccountScope, path: String, method: String = "GET", body: JsonObject? = null, readOnly: Boolean = method == "GET", valid: () -> Boolean = { true }, expectedStatus: Int? = null, acceptedStatuses:Set<Int>? = null, dispatchValid: (() -> Boolean)? = null, allowMissing: Boolean = false, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, privateFeature: Boolean = false, rawJson:String?=null, calls:DiscoveryCalls?=null, received:((String)->Unit)?=null, previewRecording:String?=null): JsonObject {
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
         val access = session.access(scope)
-        val discoveryRead=method=="GET"&&path.startsWith("/discovery/search?")
+        val discoveryRead=method=="GET"&&(path.startsWith("/discovery/search?")||
+            (previewRecording!=null&&path=="/catalog/recordings/$previewRecording/source"))
         fun exchange(bearer:String, admit:(()->Boolean)?):Reply = if(discoveryRead) {
-            // Only Discover search GETs use this split. wire calls responseValid only
-            // after the network guard admitted the exact still-usable bearer.
+            // Only Search GETs and the pending Radar preview's exact recording GET
+            // use this split; ordinary Add lookup and resolve POST do not.
             wire(path,access=bearer,calls=calls,dispatchValid={session.discoveryDispatchCurrent(scope,bearer)},
                 responseValid={valid()&&session.awaitDiscoveryRead(scope)&&valid()},valid=valid)
         } else wire(path,method,body,bearer,admit,headers,emptyBody,rawJson,calls) {session.remoteCurrent(scope) && valid()}
@@ -381,6 +384,45 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         ImportJson.job(authorized(scope,"/downloads/${id.value}",valid=current,expectedStatus=200),id)
     fun recentImports(scope: AccountScope, current: () -> Boolean = {true}): List<ImportJob> =
         ImportJson.recent(authorized(scope,"/downloads",valid=current,expectedStatus=200))
+    internal fun recordingSource(scope:AccountScope,recording:RecordingMbid,valid:()->Boolean):ImportSource? =
+        recordingSource(scope,recording,null,valid)
+
+    internal fun recordingPreviewSource(scope:AccountScope,recording:RecordingMbid,valid:()->Boolean):ImportSource? =
+        recordingSource(scope,recording,recording,valid)
+
+    private fun recordingSource(scope:AccountScope,recording:RecordingMbid,previewRecording:RecordingMbid?,valid:()->Boolean):ImportSource? {
+        val reply=authorized(scope,"/catalog/recordings/${recording.value}/source",valid=valid,expectedStatus=200,previewRecording=previewRecording?.value)
+        val returned=reply["recordingMbid"] as? JsonPrimitive
+        if(returned?.isString!=true||returned.content!=recording.value)throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+        val raw=reply["sourceUrl"]
+        if(raw===JsonNull)return null
+        val value=(raw as? JsonPrimitive)?.takeIf {it.isString}?.content ?: throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+        return ImportSource.parse(value)?.takeIf {it.url==value} ?: throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+    }
+
+    /** Builds but does not dispatch the exact-source read. The service owns its cancellation. */
+    internal fun discoveryPreview(scope: AccountScope, source: ImportSource, pendingCurrent: () -> Boolean = { true }): DiscoveryPreviewInput {
+        fun current() = session.previewOwnerCurrent(scope)
+        session.checkRemote(scope)
+        var attemptedAccess: String? = null // decoder worker only
+        return DiscoveryPreviewInput(createCall={
+            if (!pendingCurrent()) throw SafeFailure(SafeFailure.Reason.Retired)
+            val access=session.access(scope)
+            attemptedAccess=access
+            val sent = java.util.concurrent.atomic.AtomicBoolean()
+            val request = Request.Builder().url("${session.endpoint.identity}/discovery/preview")
+                .tag(WireGuard::class.java, WireGuard {pendingCurrent() && session.discoveryDispatchCurrent(scope,access) && sent.compareAndSet(false,true)})
+                .header("Authorization", "Bearer $access")
+                .cacheControl(CacheControl.Builder().noCache().noStore().build())
+                .header("Accept", "audio/mpeg").header("Accept-Encoding", "identity")
+                .post(payload("url" to source.url).toString().toRequestBody("application/json".toMediaType())).build()
+            http.newCall(request)
+        },refresh={valid->
+            fun reopenCurrent() = pendingCurrent() && valid()
+            reopenCurrent() && refresh(scope,attemptedAccess,routeValid=::reopenCurrent,joinDiscoverySave=true)
+        },current=::current)
+    }
+
     internal fun resolveSource(scope:AccountScope,source:ImportSource,calls:DiscoveryCalls?=null,valid:()->Boolean):com.soundq.android.data.discovery.SourceResults {
         val body=authorized(scope,"/discovery/resolve-url","POST",payload("url" to source.url),readOnly=false,valid=valid,expectedStatus=200,calls=calls)
         return com.soundq.android.data.discovery.DiscoveryJson.resolved(body,source.url)

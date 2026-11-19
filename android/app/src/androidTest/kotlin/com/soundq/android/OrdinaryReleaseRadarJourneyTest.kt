@@ -1,15 +1,10 @@
 package com.soundq.android
 
-import android.app.Activity
-import android.app.Instrumentation
-import android.content.Intent
-import android.content.IntentFilter
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import com.soundq.android.data.AuthState
-import com.soundq.android.data.imports.ImportPlaylistPhase
 import com.soundq.android.product.ProductViewModel
 import mockwebserver3.*
 import org.json.JSONObject
@@ -39,13 +34,17 @@ class OrdinaryReleaseRadarJourneyTest {
         compose.onNodeWithText("Radar fixture 06").assertDoesNotExist()
         captureListeningStage("combined-radar-first-five")
         val list=compose.onNode(hasScrollToIndexAction())
-        for(count in listOf(10,15,20)) {
-            list.performScrollToNode(hasText("Load more"));compose.onNodeWithText("Load more").performClick()
-            compose.waitUntil(10000){repository.radar.value.visibleCount==count}
-            assertSame(page,repository.radar.value.page)
-            list.performScrollToNode(hasText("Radar fixture %02d".format(count)))
-            assertEquals(reads,ProductTransportFixture.requests.count {it=="GET /api/v1/me/discovery/releases"})
-        }
+        list.performScrollToNode(hasContentDescription("View all New releases"))
+        compose.onNodeWithContentDescription("View all New releases").performClick()
+        list.performScrollToNode(hasText("Radar fixture 20"))
+        compose.onNodeWithContentDescription("Add to Library: Radar fixture 20").assertIsDisplayed()
+        val sourceRead="GET /api/v1/catalog/recordings/${page.songs.last().recording.value}/source"
+        val sourceReads=ProductTransportFixture.requests.count {it==sourceRead}
+        compose.onNodeWithText("Radar fixture 20").performClick()
+        compose.waitUntil(10000){ProductTransportFixture.requests.count {it==sourceRead}==sourceReads+1}
+        compose.onNodeWithText("Song evidence").assertDoesNotExist()
+        assertSame(page,repository.radar.value.page)
+        assertEquals(reads,ProductTransportFixture.requests.count {it=="GET /api/v1/me/discovery/releases"})
         compose.onNodeWithText("Load more").assertDoesNotExist()
         captureListeningStage("combined-radar-twenty")
         compose.onNode(hasText("Home") and hasClickAction() and !isHeading()).performClick()
@@ -62,6 +61,8 @@ class OrdinaryReleaseRadarJourneyTest {
         val page=repository.radar.value.page!!
         val queue=model.playback.value.queue
         val scope=app.graph.session.capture()!!
+        val sourcePath="GET /api/v1/catalog/recordings/${page.songs.first().recording.value}/source"
+        val before=ProductTransportFixture.requests.count {it==sourcePath}
         val staleAccountAction=compose.onNodeWithText("Radar fixture 01").fetchSemanticsNode()
             .config[androidx.compose.ui.semantics.SemanticsActions.OnClick].action!!
         compose.runOnIdle {
@@ -83,8 +84,10 @@ class OrdinaryReleaseRadarJourneyTest {
         compose.onNodeWithText("Song evidence").assertDoesNotExist()
         compose.onNode(hasText("Discover") and hasClickAction() and !isHeading()).performClick()
         compose.waitUntil(10000){repository.radar.value.page!=null&&repository.radar.value.page!==replacement}
+        assertEquals(before,ProductTransportFixture.requests.count {it==sourcePath})
         compose.onNodeWithText("Radar fixture 01").assertIsDisplayed().performClick()
-        compose.onNodeWithText("Song evidence").assertIsDisplayed()
+        compose.waitUntil(10000){ProductTransportFixture.requests.count {it==sourcePath}==before+1}
+        compose.onNodeWithText("Song evidence").assertDoesNotExist()
         assertEquals(queue,model.playback.value.queue);assertFalse(model.playback.value.isPlaying)
         assertNull(app.graph.imports.state.value.acknowledgement)
         assertTrue(ProductTransportFixture.requests.none {it=="POST /api/v1/source-selections"||it=="POST /api/v1/queue/items"})
@@ -97,61 +100,50 @@ class OrdinaryReleaseRadarJourneyTest {
         val imported=AtomicBoolean(false);val calls=CopyOnWriteArrayList<String>()
         val after=instrumentation.context.assets.open("ordinary-radar-after-import-wire.json").bufferedReader().use {it.readText()}
         val recording="33333333-3333-4333-8333-000000000001"
-        val selection="123e4567-e89b-12d3-a456-426614174010"
-        val decision="123e4567-e89b-12d3-a456-426614174011"
         val job="123e4567-e89b-12d3-a456-426614174012"
-        val candidate="""{"candidateId":"ordinary-radar-source","provider":"youtube","sourceUrl":"https://youtu.be/synthetic","title":"Synthetic source","artist":"Synthetic listened artist","downloadable":true,"playable":false}"""
+        val source="https://www.youtube.com/watch?v=SQPreview01"
+        val exactPath="/api/v1/catalog/recordings/$recording/source"
         fun reply(body:String,code:Int=200)=MockResponse.Builder().code(code).addHeader("Content-Type","application/json").body(body).build()
-        val monitor=instrumentation.addMonitor(IntentFilter(Intent.ACTION_VIEW).apply {addDataScheme("https")},Instrumentation.ActivityResult(Activity.RESULT_CANCELED,null),true)
         server.dispatcher=object:Dispatcher(){override fun dispatch(request:RecordedRequest):MockResponse {
             val path=request.url.encodedPath;calls.add(request.method+" "+path)
             if(request.headers["Authorization"]!="Bearer synthetic-fixture-access")return old.dispatch(request)
             return when {
                 path=="/api/v1/me/discovery/releases"&&imported.get()->reply(after)
-                path.endsWith("/membership")->reply("""{"recordingMbid":"$recording","inLibrary":false}""")
-                path=="/api/v1/discovery/search"&&request.url.queryParameter("providers")=="soundcloud"->reply(emptyDiscoveryProvider(request.url.queryParameter("q")!!,"soundcloud"))
-                path=="/api/v1/discovery/search"->reply(JSONObject().put("query",request.url.queryParameter("q")).put("results",org.json.JSONArray("[$candidate]")).put("providers",org.json.JSONArray("""[{"provider":"youtube","status":"ok"}]""")).put("selectionSessionId",selection).put("selectionExpiresAt","2030-01-01T00:00:00Z").toString())
-                path=="/api/v1/playlists"->reply("""{"data":[{"id":7,"name":"Synthetic radar playlist","isPublic":false,"trackCount":0,"durationMs":0}],"total":1,"limit":20,"offset":0}""")
-                path=="/api/v1/source-selections"->{check(request.method=="POST");reply("""{"id":"$decision","sessionId":"$selection","selectedCandidateId":"ordinary-radar-source","action":"selected","selectedCandidate":$candidate}""",201)}
-                path=="/api/v1/queue/items"->{check(request.method=="POST");check(JSONObject(request.body!!.utf8()).getLong("playlistId")==7L);reply("""{"queue":{},"idempotent":true,"downloadJobId":"$job"}""",202)}
+                path==exactPath->{check(request.method=="GET");reply("""{"recordingMbid":"$recording","sourceUrl":"$source"}""")}
+                path=="/api/v1/downloads"&&request.method=="POST"->{
+                    val body=JSONObject(request.body!!.utf8())
+                    check(body.getString("url")==source&&body.getString("source_type")=="youtube"&&body.length()==2)
+                    reply("""{"job_id":"$job","status":"queued"}""",201)
+                }
                 path=="/api/v1/downloads/$job"->{imported.set(true);reply("""{"job_id":"$job","status":"complete","progress":100,"track_id":7,"source_type":"youtube","created_at":"2026-11-14T12:00:00Z"}""")}
-                path=="/api/v1/library"&&imported.get()->reply("""{"tracks":[{"id":7,"title":"Imported synthetic source","artist":"Synthetic listened artist","has_metadata_override":false,"mb_verified":true,"mb_recording_id":"$recording"}],"total":1,"limit":100,"offset":0}""")
-                path=="/api/v1/playlists/7"->reply("""{"id":7,"name":"Synthetic radar playlist","isPublic":false,"trackCount":1,"durationMs":0,"tracks":[{"id":7,"title":"Imported synthetic source"}]}""")
+                path=="/api/v1/library"&&imported.get()->reply("""{"tracks":[{"id":7,"title":"Imported synthetic source","artist":"Synthetic listened artist","is_liked":false,"has_metadata_override":false,"mb_verified":true,"mb_recording_id":"$recording"}],"total":1,"limit":100,"offset":0}""")
                 path=="/api/v1/downloads"->reply("""{"jobs":[]}""")
                 else->old.dispatch(request)
             }
         }}
         try {
             val model=open(app);val queue=model.playback.value.queue
-            val libraryRevision=app.graph.library.state.value.pageRevision
-            compose.onNodeWithText("Radar fixture 01").performScrollTo().performClick()
-            compose.onNodeWithText("Find sources").performScrollTo().performClick()
-            compose.waitUntil(10000){app.graph.discovery.state.value.results!=null}
-            compose.onNodeWithText("Synthetic source").performScrollTo().performClick()
-            compose.onNodeWithText("Preview source").performScrollTo().performClick()
-            compose.waitUntil(5000){monitor.hits>0}
-            compose.onNodeWithText("Import source").performScrollTo().performClick()
-            compose.onNodeWithText("Choose playlist").performScrollTo().performClick()
-            compose.onNodeWithText("Synthetic radar playlist").performScrollTo().performClick()
-            compose.onNodeWithText("Import to selected playlist").performScrollTo().performClick()
-            compose.waitUntil(10000){app.graph.imports.state.value.acknowledgement!=null}
-            assertFalse(imported.get());assertFalse(app.graph.discovery.radar.value.stale)
-            instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
-            compose.onNodeWithContentDescription("Back to previous search").performClick()
+            compose.onNodeWithContentDescription("Add to Library: Radar fixture 01").performScrollTo().performClick()
+            compose.waitUntil(10000){app.graph.imports.state.value.acknowledgement?.id?.value==job}
+            compose.onNodeWithText("Song evidence").assertDoesNotExist()
             compose.onNodeWithContentDescription("Imports").performClick()
-            compose.onAllNodes(hasText("Check import") and hasClickAction()).onFirst().performScrollTo().performClick()
-            compose.waitUntil(10000){app.graph.imports.state.value.playlistConfirmation?.phase==ImportPlaylistPhase.Confirmed}
-            assertTrue(app.graph.discovery.radar.value.stale)
-            assertEquals(libraryRevision,app.graph.library.state.value.pageRevision)
+            compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Check import"))
+            compose.onNodeWithText("Check import").performClick()
+            compose.waitUntil(10000){app.graph.imports.state.value.selected?.track?.value==7L}
+            // Check import only certifies the job. Use the canonical exact Library
+            // readback to witness membership without navigating to Library.
+            val scope=checkNotNull(app.graph.session.capture())
+            assertNotNull(app.graph.api.trackDetailsSnapshot(scope,com.soundq.android.data.TrackId(7)){app.graph.session.current(scope)})
+            compose.waitUntil(10000){app.graph.discovery.radar.value.stale}
             compose.onNodeWithContentDescription("Close Imports").performClick()
             compose.waitUntil(10000){app.graph.discovery.radar.value.page?.songs?.size==19&&!app.graph.discovery.radar.value.stale}
             assertEquals(5,app.graph.discovery.radar.value.visibleCount)
             compose.onNodeWithText("Radar fixture 01").assertDoesNotExist()
             compose.onNodeWithText("Radar fixture 02").performScrollTo().assertIsDisplayed()
-            assertEquals(1,calls.count {it=="POST /api/v1/source-selections"})
-            assertEquals(1,calls.count {it=="POST /api/v1/queue/items"})
+            assertEquals(1,calls.count {it=="GET $exactPath"})
+            assertEquals(1,calls.count {it=="POST /api/v1/downloads"})
+            assertTrue(calls.none {it=="POST /api/v1/source-selections"||it=="POST /api/v1/queue/items"||it.startsWith("POST /api/v1/playlists")})
             assertEquals(queue,model.playback.value.queue);assertFalse(model.playback.value.isPlaying)
-            captureListeningStage("combined-radar-confirmed-readback")
-        } finally {instrumentation.removeMonitor(monitor);server.dispatcher=old;app.graph.session.retire()}
+        } finally {server.dispatcher=old;app.graph.session.retire()}
     }
 }

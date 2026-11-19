@@ -54,6 +54,43 @@ int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--json") {
         std::cout << json << '\n'; assert(registry.close(handle)); return 0;
     }
+    if (argc == 2 && std::string(argv[1]) == "--handoff-pause") {
+        assert(registry.load(handle, 0, "/fake/first", 17, 17, 321));
+        assert(registry.control(handle, 1, 0, 0, 0));
+        until(registry, handle, *out, "\"playing\":true");
+        // Different from the last consumer poll: actually render another block.
+        out->block();
+        const auto before = deck(registry.state(handle));
+        assert(!registry.control(handle, 11, 0, 0, 16));
+        assert(registry.control(handle, 11, 0, 0, 17));
+        const auto held = deck(registry.state(handle));
+        assert(held.find("\"playing\":true") != std::string::npos);
+        assert(held.find("\"handoffPaused\":false") != std::string::npos);
+        out->block();
+        const auto paused = deck(registry.state(handle));
+        assert(paused.find("\"handoffPaused\":true") != std::string::npos);
+        assert(paused.find("\"playing\":false") != std::string::npos);
+        const auto frame = [](const std::string& value) {
+            return std::stod(value.substr(value.find("\"sourceFrame\":") + 14));
+        };
+        assert(frame(paused) == frame(before) && frame(paused) > 321 * 32);
+        assert(registry.control(handle, 8, 0, 0, 0));
+        assert(deck(registry.state(handle)).find("\"handoffPaused\":false") != std::string::npos);
+        until(registry, handle, *out, "\"identity\":0");
+        assert(registry.load(handle, 0, "/fake/zero", 18, 18, 0));
+        until(registry, handle, *out, "\"ready\":true");
+        assert(deck(registry.state(handle)).find("\"handoffPaused\":false") != std::string::npos);
+        assert(registry.control(handle, 11, 0, 0, 18));
+        assert(deck(registry.state(handle)).find("\"handoffPaused\":false") != std::string::npos);
+        out->block();
+        const auto zero = deck(registry.state(handle));
+        assert(zero.find("\"handoffPaused\":true") != std::string::npos && frame(zero) == 0);
+        out->callback->outputError(-899);
+        assert(deck(registry.state(handle)).find("\"handoffPaused\":false") != std::string::npos);
+        std::cout << "PASS exact moving and zero Pause, held callback, slot reuse, outage: " << frame(paused) << " -> " << frame(zero) << '\n';
+        assert(registry.close(handle));
+        return 0;
+    }
     // Held decoder reads are drained before schedule retirement releases bytes.
     assert(registry.prepareSchedule(handle,99,{"/fake/a","/fake/b"},{0,0,1000,0,0,0,0,1000,0,0}));
     assert(registry.arrangement(handle,4,0));out->block();

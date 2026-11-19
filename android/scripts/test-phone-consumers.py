@@ -15,7 +15,7 @@ def block(path,marker):
     return text[start:i]
 service='\n'.join(block('playback/SoundQLibraryService.kt',m) for m in ['    private fun resolveDevice(','    private fun grantFor(','    private fun resolve(']).replace('private fun resolve(','fun resolve(')
 prepare=block('playback/nativeengine/NativeCallbackPlayer.kt','    override fun handlePrepare(').replace('override fun','fun',1)
-bind=block('playback/nativeengine/NativeCallbackPlayer.kt','    private suspend fun bindJournal(')
+bind='\n'.join(block('playback/nativeengine/NativeCallbackPlayer.kt',marker) for marker in ('    private suspend fun awaitDeckReady(', '    private suspend fun bindJournal('))
 seek=block('playback/nativeengine/NativeCallbackPlayer.kt','    private fun seekNative(')
 repeat=block('playback/nativeengine/NativeCallbackPlayer.kt','else if (successor == index)').replace('else if','if',1)
 source=block('playback/nativeengine/NativeCallbackSource.kt','    override fun prepare(item:').replace('override fun','fun',1)
@@ -94,8 +94,12 @@ private class Hardware {
  suspend fun controlDeck(slot:Int,operation:Int,value:Double=0.0,current:()->Boolean):Boolean {if(!current())return false;if(operation==3){position=value.toLong();revision++};return true}
 }
 private class CanonicalPrepare(val graph:Graph,val grants:ConcurrentHashMap<String,MediaGrant>,val items:List<MediaItem>,val lifetime:CoroutineScope) {
+ private class Preview(val scope:AccountScope,val file:NativePlaybackSource.OwnedTemporary,var handedToOwner:Boolean=false)
+ private val preview:Preview?=null
+ private fun finishDiscoveryPreview(message:String):Unit=error("Discovery preview outside the ordinary Phone fixture")
  var intent=true;var released=false;var pending:Job?=null;var tail:Job?=null;var selectedLoaded=false;var arrangement:Any?=null;var activeGrant:MediaGrant?=null;var activeUri:String?=null;var queueScope:AccountScope?=null
  var epoch=1L;var sourceSequence=0L;var ordinaryDeck=0;var ordinaryIdentity=0L;var playback=Player.STATE_IDLE;var error:Any?=null;var eofCount=0L;var position=0L;val preparing=AtomicInteger();var explicitSeek=0L;var seekRevision=0L;var submittedSeek:Long?=null;var desiredSeek:Long?=null;var acknowledgedSeekPosition:Long?=null;var outputUnavailable=false;val volume=1f
+ var restoredPark:Any?=null // no Discovery transition in the original-device fixture
  val source=Source(graph,grants);val owner=Hardware();val journal=NativeListeningJournal(graph,lifetime)
  fun loadSpeed(item:MediaItem)=1.0
  fun selected()=items.firstOrNull();fun validate(rows:List<MediaItem>){check(rows.all {grants[it.localConfiguration!!.uri.toString()]?.current(graph)==true})}
@@ -320,6 +324,8 @@ private class LogicalPlayer:QueuePlayer {
 }
 private class QueueTransport {var revision=0L;var committed=0;var rejected=0;fun selectionCommitted(){committed++};fun rejectSelection(){rejected++}}
 private class QueueService(val graph:Graph,val jobs:CoroutineScope) {
+ val parkedQueue:Any?=null
+ fun previewQueueTransient()=false
  val grants=ConcurrentHashMap<String,MediaGrant>();val mixGrants=ConcurrentHashMap<String,com.soundq.android.playback.mix.MixGrant>()
  val player:QueuePlayer=LogicalPlayer();val transport=QueueTransport()
  var account:AccountScope?=null;var restoring=false;var rejectedQueue=false;var saveJob:Job?=null;val queueFileLock=Any()

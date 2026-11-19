@@ -195,9 +195,9 @@ object Modifier {
  fun mediaRowBottomRule()=this
  fun align(alignment:Int)=this
  fun background(color:Int)=this
- fun semantics(mergeDescendants:Boolean,content:Semantics.()->Unit)=apply {Semantics().content()}
+ fun semantics(mergeDescendants:Boolean=false,content:Semantics.()->Unit)=apply {Semantics().content()}
  fun clearAndSetSemantics(content:Semantics.()->Unit)=apply {Semantics().content()}
- fun clickable(role:Int,enabled:Boolean=true,onClick:()->Unit)=this
+ fun clickable(role:Int,enabled:Boolean=true,onClickLabel:String?=null,onClick:()->Unit)=this
  fun testTag(value:String)=this
  fun padding(horizontal:Int=0,vertical:Int=0,start:Int=0)=this
  fun weight(value:Float,fill:Boolean=true)=this
@@ -213,7 +213,7 @@ class BoxConstraintsScope {val maxWidth:Float get()=error("Native constraint mea
 fun BoxWithConstraints(modifier:Modifier,content:BoxConstraintsScope.()->Unit):Unit=error("Enlarged layout requires mounted Compose")
 fun Column(modifier:Modifier=Modifier,verticalArrangement:Int=0,content:()->Unit){content()}
 fun Row(modifier:Modifier=Modifier,verticalAlignment:Int=0,horizontalArrangement:Int=0,content:()->Unit){content()}
-object SoundQIcon {val Note=0;val More=1}
+object SoundQIcon {val Note=0;val More=1;val Play=2;val Plus=3}
 var fallback=0
 fun SoundQIcon(icon:Int,label:String?,tint:Int=0){if(icon==SoundQIcon.Note)fallback++}
 fun Image(image:ImageBitmap,label:String?,modifier:Modifier,contentScale:Int){error("Decoded image painting outside host slot fixture")}
@@ -230,7 +230,13 @@ fun Text(value:String,modifier:Modifier=Modifier,color:Int=0,style:TextStyle,max
 fun SoundQMediaIdentityText(text:String,selected:Boolean,identity:Any?,style:TextStyle,color:Int=0,modifier:Modifier=Modifier)=
  Text(text,modifier,color,style,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
 fun SoundQDivider(modifier:Modifier=Modifier){}
-fun CellIcon(icon:Int,label:String,action:()->Unit,modifier:Modifier=Modifier){}
+fun CellIcon(icon:Int,label:String,action:()->Unit,modifier:Modifier=Modifier,enabled:Boolean=true){}
+class SoundQMediaPreviewActions(val pending:Boolean,val addEnabled:Boolean,val onAdd:()->Unit)
+enum class LiveRegionMode {Polite}
+var Semantics.liveRegion:LiveRegionMode
+ get()=error("Preview progress outside artwork fixture")
+ set(value) {error("Preview progress outside artwork fixture")}
+fun CircularProgressIndicator(modifier:Modifier,color:Int,strokeWidth:Int):Unit=error("Preview progress outside artwork fixture")
 fun SoundQRow(title:String,subtitle:String,current:Boolean,onActivate:()->Unit,modifier:Modifier,leading:()->Unit,trailing:()->Unit,supportingContent:(()->Unit)?=null){text.add(subtitle);leading();supportingContent?.invoke();trailing()}
 fun SoundQIconButton(icon:Int,label:String,action:()->Unit){}
 fun mediaRowBackground(current:Boolean):Int=if(current)SoundQ.colors.surface else SoundQ.colors.background

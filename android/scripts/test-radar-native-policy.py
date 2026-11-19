@@ -49,7 +49,8 @@ vm = source('product/ProductViewModel.kt')
 emit('ProductViewModel.kt', '''package com.soundq.android.product
 import kotlinx.coroutines.*
 import com.soundq.android.data.discovery.*
-class Graph(val discovery:DiscoveryRepository) {val mediaClient=Any()}
+class Graph(val discovery:DiscoveryRepository) {val mediaClient=Any();val api=HostPreviewApi()}
+class HostPreviewApi {fun recordingPreviewSource(scope:com.soundq.android.data.AccountScope,id:com.soundq.android.data.catalog.RecordingMbid,valid:()->Boolean):com.soundq.android.data.imports.ImportSource?=error("Network is outside row wiring fixture")}
 object Dispatchers {var IO:CoroutineDispatcher=object:CoroutineDispatcher(){override fun dispatch(context:kotlin.coroutines.CoroutineContext,block:Runnable)=block.run()}}
 class ProductViewModel(val graph:Graph,val viewModelScope:CoroutineScope) {
 ''' + '\n'.join(block(vm, '    fun ' + name) for name in ['loadReleaseRadar(', 'searchSources(', 'findReleaseSources(']) + '\n}\n')
@@ -57,15 +58,15 @@ screen = source('product/discovery/DiscoverScreen.kt')
 lifecycle = block(screen, '    DisposableEffect(view,radarLifecycle,catalogDetails,radarShown)')
 presentation = block(screen, '            visibleRadarPage?.let {page->')
 invalidation = block(screen, '    LaunchedEffect(view,radarInvalidation,radar.stale,radar.phase,')
-surface = screen[screen.index('    val radarSurfaceOwner='):screen.index('    BackHandler(state.canBack')]
+surface = block(screen, '    val radarSurfaceOwner=') + ' else null'
 collection = block(screen, '    fun changeRadarCollection(')
 renew = block(screen, '    fun renewRadarArtwork(')
-change_details = block(screen, '    fun changeRadarDetails(')
 emit('Bindings.kt', '''package bindings
 import androidx.lifecycle.*
 import com.soundq.android.data.discovery.*
 import com.soundq.android.product.*
 import com.soundq.android.product.discovery.RadarArtworkRoute
+private val rows=HostRows()
 var radarActive=false
 internal var radarSurfaceVisit:RadarArtworkRoute?=null
 var radarCollection=false
@@ -73,11 +74,10 @@ var radarCollection=false
 private val defaultArtworkRoot=RadarArtworkRoute()
 fun bind(model:ProductViewModel,view:DiscoveryView?,catalogDetails:Any?=null,radarVisible:()->Boolean={true}):()->Unit {
  val repository=model.graph.discovery
- var radarDetails:Triple<RadarPage,RadarSong,DiscoveryDraft>?=null
  val radarLifecycle=LocalLifecycleOwner.current
  val radarShown=radarVisible()
-''' + change_details + '\n' + lifecycle + '\n return Effect.dispose\n}\n' + '''
-internal fun render(model:ProductViewModel,view:DiscoveryView?,full:Boolean=false,shown:Boolean=true,catalogDetails:Any?=null,radarArtworkRoot:RadarArtworkRoute=defaultArtworkRoot):()->Triple<RadarPage,RadarSong,DiscoveryDraft>? {
+''' + lifecycle + '\n return Effect.dispose\n}\n' + '''
+internal fun render(model:ProductViewModel,view:DiscoveryView?,full:Boolean=false,shown:Boolean=true,catalogDetails:Any?=null,radarArtworkRoot:RadarArtworkRoute=defaultArtworkRoot):()->RadarSong? {
  val repository=model.graph.discovery
  val radar=repository.radar.value
  val state=repository.state.value
@@ -86,11 +86,14 @@ internal fun render(model:ProductViewModel,view:DiscoveryView?,full:Boolean=fals
  val fullRadarScroll=Any() // Host declaration only; real priority/layout is tested by the artwork runner.
  val radarShown=shown
  val focus=Focus()
- var radarDetails:Triple<RadarPage,RadarSong,DiscoveryDraft>?=null
+ val rowSurface=RadarArtworkRoute(root=radarArtworkRoot)
+ val intake:Any?=Any()
+ val imports=HostImports(false)
+ rows.selected=null
  UI.rows.clear();UI.actions.clear();UI.messages.clear();UI.artwork.clear()
  if(catalogDetails!=null){UI.forget();return {null}}
  if(!radarActive||!radarShown||state.draft.text.isNotBlank()||radarSurfaceVisit==null)UI.forget()
-''' + change_details + '\n' + surface + '\n if(state.draft.text.isBlank()) {\n' + presentation + '\n}\n return {radarDetails}\n}\n' + '''
+''' + surface + '\n if(state.draft.text.isBlank()) {\n' + presentation + '\n}\n return {rows.selected}\n}\n' + '''
 fun invalidation(model:ProductViewModel,view:DiscoveryView?) {
  val radar=model.graph.discovery.radar.value
  val state=model.graph.discovery.state.value
@@ -138,7 +141,7 @@ assert 'radarFixtureAdmission' not in line
 assert 'items(page.songs.take(if(showRadarCollection)20 else 5)' in presentation
 assert 'RadarArtwork(model.graph.mediaClient,repository,view,page,song,draft,radarSurfaceOwner,fullList=fullRadarScroll.takeIf {showRadarCollection})' in presentation
 # Full normal text-change/debounce/submit owners stay in the delivered source.
-assert 'val changed=next.text!=editor.text;editor=next;if(changed)view?.let {repository.edit(it,next.text)}' in screen
+assert 'val changed=next.text!=editor.text;editor=next;if(changed){rows.renew();view?.let {repository.edit(it,next.text)}}' in screen
 assert 'LaunchedEffect(view,state.draft) {' in screen and 'delay(350)' in screen
 assert 'if(latest.draft===draft&&latest.phase==DiscoveryPhase.Idle)model.searchSources(route,draft)' in screen
 emit('HttpUrl.kt', '''package okhttp3
@@ -224,7 +227,19 @@ fun SoundQFeedback(value:String,kind:FeedbackKind){UI.messages+=value}
 fun discoverHeader(block:()->Unit)=block()
 fun item(block:()->Unit)=block()
 fun <T> items(rows:List<T>,key:(T)->Any,block:(T)->Unit){rows.forEach {key(it);block(it)}}
-fun SoundQMediaRow(title:String,artist:String,current:Boolean,onActivate:()->Unit,onMore:()->Unit,artwork:()->Unit,supporting:String,enabled:Boolean){UI.rows+=UI.Row(title,onActivate,onMore,enabled);artwork()}
+class SoundQMediaPreviewActions(val pending:Boolean,val addEnabled:Boolean,val onAdd:()->Unit)
+class HostImports(val pending:Boolean)
+class HostRows {
+ var selected:RadarSong?=null
+ fun renew(){}
+ fun pending(song:RadarSong)=false
+ val adding=false
+ fun preview(view:DiscoveryView,song:RadarSong,title:String,artist:String,current:()->Boolean,source:(()->Boolean)->com.soundq.android.data.imports.ImportSource?) {
+  if(current())selected=song
+ }
+ fun addRecording(view:DiscoveryView,intake:Any,song:RadarSong,current:()->Boolean){if(current())error("Write outside row wiring fixture")}
+}
+fun SoundQMediaRow(title:String,artist:String,current:Boolean,onActivate:()->Unit,onMore:(()->Unit)?,artwork:()->Unit,supporting:String,enabled:Boolean,preview:SoundQMediaPreviewActions){UI.rows+=UI.Row(title,onActivate,preview.onAdd,enabled);artwork()}
 fun SoundQListActionRow(label:String,onClick:()->Unit,enabled:Boolean,description:String){if(enabled)UI.actions[label]=onClick}
 fun SoundQButton(label:String,onClick:()->Unit,variant:SoundQButtonVariant,enabled:Boolean){if(enabled)UI.actions[label]=onClick}
 ''')
@@ -279,7 +294,7 @@ fun main(){
    details=render(f.model,v,full=true)
    check(UI.rows.map {it.title}==p.songs.map {it.title})
    check("View all" !in UI.actions);check(r.radar.value.page===p);check(f.api.reads==1)
-   UI.rows.lastOrNull()?.let {it.open();check(details()!!.first===p&&details()!!.second===p.songs[UI.rows.lastIndex]&&details()!!.third===d)}
+   UI.rows.lastOrNull()?.let {it.open();check(details()===p.songs[UI.rows.lastIndex])}
   }
   check("Some releases may be missing" !in UI.messages);check(p.songs.size==n)
   // Playback-like rerenders retain the budget, as do query-only changes.

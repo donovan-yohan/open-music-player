@@ -46,14 +46,28 @@ class NativeCallbackJourneyTest {
         private var identity = 0L
         private var generation = 0L
         private var playing = false
+        private var handoffPaused = false
+        private var previewIdentity = 0L
+        private var previewPlaying = false
         private fun thread() { check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper()); threads.add(Thread.currentThread().name) }
         override fun open(): Long { thread(); return 1 }
         override fun load(handle: Long, deck: Int, path: String, identity: Long, generation: Long, positionMs: Long): Boolean {
-            thread(); this.identity = identity; this.generation = generation; position = positionMs; playing = false; return true
+            thread(); this.identity = identity; this.generation = generation; position = positionMs; playing = false; handoffPaused = false; return true
+        }
+        override fun loadPreview(handle: Long, deck: Int, input: com.soundq.android.data.DiscoveryPreviewInput, generation: Long): Boolean {
+            thread(); check(deck == 2); previewIdentity = generation; return true
         }
         override fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long): Boolean {
             thread(); operations.add(operation)
             if (operation == 8 && !allowUnload) return false
+            if (deck == 2) {
+                when (operation) { 1 -> previewPlaying = true; 2 -> previewPlaying = false; 8 -> { previewIdentity = 0; previewPlaying = false } }
+                return true
+            }
+            if (operation == 11) {
+                if (identity == 0L || eventNanos != generation) return false
+                playing = false; handoffPaused = true; return true
+            }
             when (operation) { 1 -> playing = true; 2 -> playing = false; 3 -> position = value.toLong(); 8 -> { identity = 0; playing = false } }
             return true
         }
@@ -61,9 +75,11 @@ class NativeCallbackJourneyTest {
             thread()
             val d = JSONObject().put("identity", identity).put("generation", generation).put("positionMs", position)
                 .put("durationMs", 3000).put("sourceRate", 48000).put("sourceFrames", 144000)
-                .put("ready", identity != 0L).put("preparing", false).put("playing", playing)
+                .put("ready", identity != 0L).put("preparing", false).put("playing", playing).put("handoffPaused", identity != 0L && handoffPaused)
                 .put("eofCount", endedCount).put("openDecoders", if (identity == 0L) 0 else 1).put("error", 0)
-            return JSONObject().put("error", 0).put("decks", JSONArray().put(d)).toString()
+            return JSONObject().put("error", 0).put("coherent", true).put("decks", JSONArray().put(d).put(d).put(JSONObject(d.toString()).put("identity",previewIdentity)
+                .put("generation",previewIdentity).put("ready",previewIdentity != 0L).put("playing",previewPlaying)
+                .put("openDecoders",if (previewIdentity == 0L) 0 else 1))).toString()
         }
         override fun close(handle: Long): Boolean { thread(); if (!allowClose) return false; identity = 0; return true }
     }
@@ -130,6 +146,42 @@ class NativeCallbackJourneyTest {
             main { f.player.stop() }
             f.await { !f.file.exists() }
             assertEquals(1, f.hardware.threads.distinct().size)
+        }
+    }
+
+    @Test fun previewEofNeverCompletesAQueueOccurrenceAndRetainsModesAndCursor() {
+        Fixture().use { f ->
+            val ready = java.util.concurrent.CompletableFuture<Boolean>()
+            val completed = mutableListOf<MediaItem>()
+            main {
+                f.player.addCompletionListener { completed.add(it) }
+                f.player.setMediaItems(listOf(f.item("old"),f.item("queued",manual=true)),0,320)
+                f.player.shuffleModeEnabled = true
+                f.player.repeatMode = Player.REPEAT_MODE_ONE
+                val item = MediaItem.Builder().setMediaId("discovery-preview:test").setUri("soundqpreview://play/test").build()
+                val scope=checkNotNull(f.graph.session.capture())
+                val source=checkNotNull(com.soundq.android.data.imports.ImportSource.parse("https://youtu.be/fixture"))
+                f.jobs.launch {
+                    try {
+                        val accepted=f.player.prepareDiscoveryPreview(item,f.graph.api.discoveryPreview(scope,source),scope) { true }
+                        if (accepted) f.player.play()
+                        ready.complete(accepted)
+                    } catch (e: Throwable) { ready.completeExceptionally(e) }
+                }
+            }
+            f.await { f.player.isPlaying && f.player.currentMediaItem?.mediaId == "discovery-preview:test" }
+            assertTrue(ready.get(5,TimeUnit.SECONDS))
+            assertEquals("preview must not enter ordinary source acquisition",1L,f.entered.count)
+            f.hardware.endedCount = 1L
+            f.await { f.player.currentMediaItem?.mediaId == "old" }
+            main {
+                assertEquals(listOf("old","queued"),(0 until f.player.mediaItemCount).map { f.player.getMediaItemAt(it).mediaId })
+                assertEquals(320L,f.player.currentPosition)
+                assertFalse(f.player.playWhenReady)
+                assertTrue(f.player.shuffleModeEnabled)
+                assertEquals(Player.REPEAT_MODE_ONE,f.player.repeatMode)
+                assertTrue(completed.isEmpty())
+            }
         }
     }
 

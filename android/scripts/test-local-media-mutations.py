@@ -30,6 +30,9 @@ private data class AccountScope(val accountId:String,val epoch:Long=1)
 private class Graph {class Endpoint {val identity="fixture"};val endpoint=Endpoint()}
 private class Grant(val device:PlaybackRef.Device?,val account:String="server",var current:Boolean=true) {val track=TrackId(1);val localOnly=device!=null;val scope:AccountScope get()=if(device!=null)error("Phone audio has no server scope")else AccountScope(account);fun current(graph:Graph)=current}
 private class Probe {
+ val preview:Any?=null
+ var previewQueueTransient=false
+ fun finishDiscoveryPreview():Unit=error("Discovery preview outside ordinary queue mutation fixture")
  val grants=mutableMapOf<String,Grant>();var items=emptyList<MediaItem>();var index=0;var selectedLoaded=false;var pending:Any?=null;var playback=0;var queueScope:AccountScope?=null;val graph=Graph();var position=0;var error:Any?=null;var order=emptyList<Int>();val durations=mutableMapOf<String,Long>();var shuffle=false;val random=Random(7);var cancelled=0;var retired=0;var prepares=0
  object Player {const val STATE_IDLE=0}
  fun cancelSuccessor(){cancelled++};fun clearQueue(){items=emptyList();order=emptyList();queueScope=null};fun done()=ListenableFuture<Unit>();fun selected()=items.getOrNull(index);fun retireSelection(){retired++};fun handlePrepare(){prepares++}

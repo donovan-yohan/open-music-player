@@ -252,6 +252,7 @@ private class RetirementHardware {
  val dispatcher=Dispatchers.Unconfined
  val borrowed=mutableSetOf<String>();val ordinaryFiles=mutableMapOf<Int,String>()
  val borrowedOriginals=mutableSetOf<RetainedSource>();val ordinaryOriginals=mutableMapOf<Int,RetainedSource>()
+ val previews=emptyMap<Int,Any>() // Original-source fixtures never install a Discovery preview.
  var drainChecks=0
 DRAIN
  val decks=mutableMapOf(0 to 111L,1 to 222L);var hold:CompletableDeferred<Unit>?=null;var entered=false
@@ -262,7 +263,12 @@ DRAIN
 }
 private class RetirementCandidate(val item:Item,val outgoing:Item,val deck:Int=1,val identity:Long=222,val outgoingDeck:Int=0,val outgoingIdentity:Long=111,val armed:Boolean=true,val arming:Boolean=false)
 private class RetirementJournal {val retired=mutableListOf<Int>();fun retire(slot:Int,drain:Boolean=false){retired+=slot}}
+private class ParkedQueue(val items:List<Item>)
 private class Retirement(val graph:AppGraph,var items:List<Item>) {
+ // These file-retirement fixtures exercise ordinary queue custody, with no installed preview.
+ private val parkedQueue:ParkedQueue?=null
+ private var previewQueueTransient=false
+ private fun finishDiscoveryPreview():Unit=error("Preview teardown is outside this fixture")
  var index=0;val arrangement:Any?=null;val arrangementSourceItems=emptyList<Item>();var successor:RetirementCandidate?=null
  var pending:Job?=null;var tail:Job?=null;var successorJob:Job?=null;var successorAttempt:String?=null;var successorRevision=0L
  var ordinaryIdentity=111L;var ordinaryDeck=0;var selectedLoaded=true;var playback=3;var position=42000L;var released=false;var error:Any?=null
