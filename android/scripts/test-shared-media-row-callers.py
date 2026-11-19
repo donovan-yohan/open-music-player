@@ -165,7 +165,8 @@ class SharedMediaRowCallersContract(unittest.TestCase):
         rows = between(text, 'items(results.rows', '            } else {')
         self.shared(rows)
         self.assertIn('subtitle=row.artist', rows)
-        self.assertIn('row.provider.label', rows)
+        self.assertIn('DiscoveryProviderMark(row.provider,', rows,
+                      'the row must show the mark for its actual source provider')
         self.assertIn('duration(row.durationMs)', rows)
         self.assertIn('DiscoveryArtwork(model.graph.mediaClient,row.thumbnailUrl', rows)
         self.assertIn('repository.state.value.results===results', rows)
