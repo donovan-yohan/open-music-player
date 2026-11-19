@@ -26,7 +26,10 @@ private class Fixture(radarAdmitted:Boolean=true,dispatcher:kotlinx.coroutines.C
   @Suppress("UNCHECKED_CAST") val admitted=getter.invoke(guard) as ()->Boolean
   if(!admitted())throw SafeFailure(SafeFailure.Reason.Retired)
   val action=synchronized(this){calls+=request.url.encodedPath;val buffer=okio.Buffer();request.body?.writeTo(buffer);payloads+=buffer.readUtf8();check(request.url.host=="fixture.invalid");check(replies.isNotEmpty()){ "unexpected request ${request.url}" };replies.removeFirst()}
-  val (status,body)=action();Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(status).message("synthetic").body(body.toResponseBody("application/json".toMediaType())).build()
+  val (status,body)=action()
+  val provider=request.url.queryParameter("providers")
+  val sent=if(provider=="soundcloud") """{"query":${JsonPrimitive(request.url.queryParameter("q")!!)},"results":[],"providers":[{"provider":"soundcloud","status":"ok"}]}""" else body
+  Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(status).message("synthetic").body(sent.toResponseBody("application/json".toMediaType())).build()
  }.build()
  val directory=java.nio.file.Files.createTempDirectory("radar-readback").toFile()
  val graph=ReadbackGraph(session,client,directory,radarFixtureAdmission=radarAdmitted,dispatcher=dispatcher)
@@ -48,7 +51,7 @@ fun main(args:Array<String>){
   val find=r.claimFindSources(view,page,song,blank)!!;check(r.claimFindSources(view,page,song,blank)==null)
   f.reply("""{"recordingMbid":"${song.recording.value}","inLibrary":false}""");val search=r.findSources(find)!!
   check(search.draft.text=="Synthetic newest song Synthetic listened artist");check(r.state.value.phase==DiscoveryPhase.Loading)
-  f.reply(source(search.draft.text));r.search(search)
+  repeat(2){f.reply(source(search.draft.text))};kotlinx.coroutines.runBlocking {r.search(search)}
   check(f.calls.last()=="/api/v1/discovery/search");val results=r.state.value.results!!;val choice=r.inspect(view,results.rows.single())!!
   var preview:String?=null;check(r.preview(view,choice){preview=it});check(preview=="https://www.youtube.com/watch?v=synthetic");check(r.state.value.results===results)
   // Preserve the real source import/playlist owner. Radar creates no decision.
@@ -116,24 +119,24 @@ fun main(args:Array<String>){
   val f=Fixture();val fresh=f.graph.discovery;val view=fresh.open()!!.also {fresh.showRadar(it){true}};f.reply(wire);fresh.loadRadar(fresh.claimRadar(view)!!);val page=fresh.radar.value.page!!;val song=page.songs.single()
   val action=fresh.claimFindSources(view,page,song,fresh.state.value.draft)!!;f.reply("{}",503);check(fresh.findSources(action)==null);check(fresh.state.value.draft.text.isBlank());check(fresh.radar.value.error!=null)
   fresh.libraryChanged();check(fresh.radar.value.stale);check(fresh.claimFindSources(view,page,song,fresh.state.value.draft)==null)
-  fresh.edit(view,"source query");val draft=fresh.state.value.draft;f.reply(source(draft.text,"2000-01-01T00:00:00Z"));fresh.search(view,draft);check(fresh.inspect(view,fresh.state.value.results!!.rows.single())==null);check(fresh.state.value.expired)
+  fresh.edit(view,"source query");val draft=fresh.state.value.draft;repeat(2){f.reply(source(draft.text,"2000-01-01T00:00:00Z"))};kotlinx.coroutines.runBlocking {fresh.search(view,draft)};check(fresh.inspect(view,fresh.state.value.results!!.rows.single())==null);check(fresh.state.value.expired)
   println("production hold, membership unknown refusal, library invalidation, retained source expiry: PASS")
  }
  run {
   val f=Fixture();val r=f.graph.discovery;val view=r.open()!!.also {r.showRadar(it){true}}
   f.reply(wire);r.loadRadar(r.claimRadar(view)!!);val page=r.radar.value.page!!
-  r.edit(view,"ordinary artist query")
+  check(r.selectType(view,DiscoveryResultType.Artist)==null);r.edit(view,"ordinary artist query")
   val grouped=Json.parseToJsonElement(source("ordinary artist query")).jsonObject
   val sections=Json.parseToJsonElement("""[{"kind":"artists","items":[{"kind":"artist","id":"11111111-1111-4111-8111-111111111111","title":"Exact Artist","subtitle":"Group"}]},{"kind":"albums","items":[{"kind":"album","id":"22222222-2222-4222-8222-222222222222","title":"Exact Album","subtitle":"Artist"}]}]""")
-  f.reply(JsonObject(grouped+mapOf("sections" to sections)).toString());r.search(view,r.state.value.draft);val accepted=r.state.value.results!!
-  r.selectType(view,DiscoveryResultType.Artist);check(r.details(view,accepted.entities.first())!=null)
+  f.reply(JsonObject(grouped+mapOf("sections" to sections)).toString());kotlinx.coroutines.runBlocking {r.search(view,r.state.value.draft)};val accepted=r.state.value.results!!
+  check(r.details(view,accepted.entities.first())!=null)
   val refined=r.refine(view,accepted.entities.first())!!;check(refined.text=="Exact Artist")
-  f.reply(source(refined.text));r.search(view,refined);check(r.back(view));check(r.state.value.results===accepted)
+  f.reply(source(refined.text));kotlinx.coroutines.runBlocking {r.search(view,refined)};check(r.back(view));check(r.state.value.results===accepted)
   r.selectType(view,DiscoveryResultType.Album);check(r.details(view,accepted.entities.last())!=null)
   r.edit(view,"https://youtu.be/synthetic")
   val candidate=grouped.getValue("results").jsonArray.single()
   f.reply("""{"selectionRequired":true,"candidate":$candidate,"selectionSessionId":"123e4567-e89b-12d3-a456-426614174010","selectionExpiresAt":"2030-01-01T00:00:00Z"}""")
-  r.search(view,r.state.value.draft);check(f.calls.last()=="/api/v1/discovery/resolve-url")
+  kotlinx.coroutines.runBlocking {r.search(view,r.state.value.draft)};check(f.calls.last()=="/api/v1/discovery/resolve-url")
   val direct=r.inspect(view,r.state.value.results!!.rows.single())!!;check(r.preview(view,direct){})
   r.edit(view,"");check(r.radar.value.page===page);check(!direct.valid())
   check(r.state.value.recent.isNotEmpty());check(f.calls.none {it.contains("/queue/")||it.contains("source-selections")})

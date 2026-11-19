@@ -12,12 +12,12 @@ class DiscoveryContractRepairTest {
             val session=AccountSession(f.endpoint,MemoryStore()).apply {accept(beginIntent(),SecretTokens("a","r","A"))}
             val repository=DiscoveryRepository(session,SoundQApi(session,f.client));val route=repository.open()!!
             for(count in listOf(25,36)) {
-                repository.edit(route,"海 & music");f.reply(fanout(count));repository.search(route,repository.state.value.draft)
+                repository.edit(route,"海 & music");f.replySong(fanout(count));repository.searchBlocking(route,repository.state.value.draft)
                 assertEquals("Go limit12 fans out over three surfaces: $count unique rows are valid",DiscoveryPhase.Ready,repository.state.value.phase)
                 assertEquals(count,repository.state.value.results!!.rows.size)
                 assertNotNull(repository.inspect(route,repository.state.value.results!!.rows.last()))
             }
-            assertEquals(2,f.server.requestCount)
+            assertEquals(4,f.server.requestCount)
         }
     }
     @Test fun excessiveDuplicateAndMalformedFanoutStayRefused() {

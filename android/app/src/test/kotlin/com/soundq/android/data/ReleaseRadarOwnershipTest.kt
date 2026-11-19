@@ -16,7 +16,7 @@ class ReleaseRadarOwnershipTest {
    f.reply("""{"recordingMbid":"${song.recording.value}","inLibrary":false}""")
    val request=repo.findSources(find)!!
    assertEquals("Synthetic newest song Synthetic listened artist",request.draft.text)
-   f.reply(DiscoveryBoundaryTest.search(request.draft.text));repo.search(request)
+   f.replySong(DiscoveryBoundaryTest.search(request.draft.text));repo.searchBlocking(request)
    val sources=repo.state.value.results!!;val choice=repo.inspect(view,sources.rows.single())!!
    assertTrue(repo.preview(view,choice){})
    assertTrue(repo.back(view));assertSame(page,repo.radar.value.page);assertTrue(repo.state.value.draft.text.isBlank())

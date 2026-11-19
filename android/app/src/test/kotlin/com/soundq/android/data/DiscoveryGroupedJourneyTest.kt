@@ -10,14 +10,22 @@ class DiscoveryGroupedJourneyTest {
         HttpsFixture().use {f->
             val session=AccountSession(f.endpoint,MemoryStore()).apply {accept(beginIntent(),SecretTokens("a","r","A"))}
             val r=DiscoveryRepository(session,SoundQApi(session,f.client));val view=r.open()!!
-            f.reply(grouped());r.edit(view,"seed");r.search(view,r.state.value.draft)
+            f.replySong(DiscoveryBoundaryTest.search("seed"));r.edit(view,"seed");r.searchBlocking(view,r.state.value.draft)
+            val songPage=r.state.value.results!!;val song=r.inspect(view,songPage.rows.single())!!
+            f.takeSongRequests()
+            val groupedSearch=r.selectType(view,DiscoveryResultType.Artist)!!
+            assertFalse(song.valid());assertNull(r.state.value.results)
+            f.reply(grouped());r.searchBlocking(groupedSearch)
             val page=r.state.value.results!!
             assertEquals("youtube,soundcloud,musicbrainz",f.server.takeRequest().url.queryParameter("providers"))
             assertEquals(1,page.rows.size);assertEquals(2,page.entities.size)
-            r.selectType(view,DiscoveryResultType.Artist)
+            assertNull(r.inspect(view,song.candidate)) // same wire ID is not the new row capability
+            assertEquals(listOf("seed"),r.state.value.recent)
+            assertNull(r.selectType(view,DiscoveryResultType.Album));assertSame(page,r.state.value.results)
+            assertNull(r.selectType(view,DiscoveryResultType.Artist));assertSame(page,r.state.value.results)
             val draft=r.refine(view,page.entities.first())!!
             assertEquals("Exact Artist",draft.text);assertEquals(DiscoveryResultType.Artist,r.state.value.resultType)
-            f.reply(DiscoveryBoundaryTest.search("Exact Artist"));r.search(view,draft)
+            f.reply(DiscoveryBoundaryTest.search("Exact Artist"));r.searchBlocking(view,draft)
             assertTrue(r.back(view));assertSame(page,r.state.value.results);assertEquals("seed",r.state.value.draft.text)
             assertEquals(DiscoveryResultType.Artist,r.state.value.resultType)
             r.close(view);val fresh=r.open()!!;assertSame(page,r.state.value.results)
@@ -26,7 +34,7 @@ class DiscoveryGroupedJourneyTest {
             assertTrue(r.preview(fresh,choice){launched=it});assertEquals(choice.candidate.source.url,launched)
             assertFalse(r.preview(fresh,choice){error("No activity")});assertSame(choice,r.state.value.inspected)
             r.edit(fresh,"");assertFalse(choice.valid());assertFalse(r.preview(fresh,choice){fail("stale preview")})
-            assertEquals(2,f.server.requestCount)
+            assertEquals(4,f.server.requestCount)
         }
     }
     @Test fun sourceProvidersStayClosedAndUnknownGroupedProviderCannotBecomeCandidate() {

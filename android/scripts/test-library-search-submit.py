@@ -76,6 +76,7 @@ data class TextFieldValue(val text:String,val selection:TextRange=TextRange(0),v
 }
 open class Modifier(val ops:List<String> = emptyList()) {companion object:Modifier()}
 fun Modifier.fillMaxWidth()=Modifier(ops+"fillWidth")
+fun Modifier.size(size:Int)=Modifier(ops+"size:$size")
 fun Modifier.heightIn(min:Int)=Modifier(ops+"minHeight:$min")
 fun Modifier.weight(weight:Float)=Modifier(ops+"weight:$weight")
 fun Modifier.padding(horizontal:Int,vertical:Int)=Modifier(ops+"padding:$horizontal:$vertical")
@@ -83,7 +84,7 @@ class Semantics {var contentDescription="";var testTag=""}
 fun Modifier.semantics(body:Semantics.()->Unit)=apply {UI.purpose=Semantics().apply(body).contentDescription}
 fun Modifier.clearAndSetSemantics(body:Semantics.()->Unit)=this
 val Int.dp get()=this
-object Alignment {val CenterVertically=0;val CenterStart=1}
+object Alignment {val CenterVertically=0;val CenterStart=1;val Center=2}
 object Arrangement {val Center=0}
 fun Column(modifier:Modifier,verticalArrangement:Int=0,body:()->Unit){body()}
 class RowScope
@@ -96,9 +97,10 @@ object SoundQ {
  object spacing {val gutter=0;val small=0}
 }
 enum class SoundQIcon {Search,Close}
+fun SoundQIcon(icon:SoundQIcon,description:String?,tint:Int){}
 fun Text(text:String,modifier:Modifier=Modifier,style:Style,color:Int){UI.decorations.add(text);UI.decorationStyle=style}
 fun SoundQDivider(){}
-enum class ImeAction {Search}
+enum class ImeAction {Search,Done}
 class KeyboardOptions(val imeAction:ImeAction)
 class KeyboardActions(val onSearch:()->Unit)
 data class Action(val enabled:Boolean,val click:()->Unit)

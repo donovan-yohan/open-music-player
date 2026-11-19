@@ -11,7 +11,7 @@ class DiscoverCatalogContinuationTest {
         HttpsFixture().use { f ->
             val session=AccountSession(f.endpoint,MemoryStore()).apply {accept(beginIntent(),SecretTokens("a","r",CatalogContractTest.A))}
             val api=SoundQApi(session,f.client);val discovery=DiscoveryRepository(session,api);val view=discovery.open()!!
-            f.reply(grouped());discovery.edit(view,"seed");discovery.search(view,discovery.state.value.draft)
+            discovery.selectType(view,DiscoveryResultType.Artist);f.reply(grouped());discovery.edit(view,"seed");discovery.searchBlocking(view,discovery.state.value.draft)
             val page=discovery.state.value.results!!;val draft=discovery.state.value.draft
             val details=discovery.details(view,page.entities.first())!!
             val catalog=CatalogRepository(api);val actions=CatalogActions(catalog){it()}
@@ -47,7 +47,7 @@ class DiscoverCatalogContinuationTest {
         HttpsFixture().use {f ->
             val session=AccountSession(f.endpoint,MemoryStore()).apply {accept(beginIntent(),SecretTokens("a","r","A"))}
             val api=SoundQApi(session,f.client);val discovery=DiscoveryRepository(session,api);val view=discovery.open()!!
-            f.reply(grouped());discovery.edit(view,"seed");discovery.search(view,discovery.state.value.draft)
+            discovery.selectType(view,DiscoveryResultType.Artist);f.reply(grouped());discovery.edit(view,"seed");discovery.searchBlocking(view,discovery.state.value.draft)
             val entity=discovery.state.value.results!!.entities.last();val details=discovery.details(view,entity)!!
             val catalog=CatalogRepository(api);val actions=CatalogActions(catalog){it()}
             assertTrue(actions.discover(details));assertEquals(CatalogContractTest.G,catalog.state.value.group!!.id.value)
@@ -55,7 +55,7 @@ class DiscoverCatalogContinuationTest {
             actions.close()
             discovery.refine(view,entity);assertFalse(details.valid())
             assertTrue(discovery.back(view));assertFalse("Returning to the same page must not revive a retired Details capability",details.valid())
-            discovery.edit(view,"seed");f.reply(DiscoveryGroupedJourneyTest.grouped());discovery.search(view,discovery.state.value.draft)
+            discovery.edit(view,"seed");f.reply(DiscoveryGroupedJourneyTest.grouped());discovery.searchBlocking(view,discovery.state.value.draft)
             val malformed=discovery.state.value.results!!.entities.first()
             assertNull(discovery.details(view,malformed));assertEquals("Exact Artist",discovery.refine(view,malformed)!!.text)
         }
@@ -64,7 +64,7 @@ class DiscoverCatalogContinuationTest {
         HttpsFixture().use {f->
             val session=AccountSession(f.endpoint,MemoryStore()).apply {accept(beginIntent(),SecretTokens("a","r","A"))}
             val api=SoundQApi(session,f.client);val discovery=DiscoveryRepository(session,api);val view=discovery.open()!!
-            f.reply(grouped());discovery.edit(view,"seed");discovery.search(view,discovery.state.value.draft)
+            discovery.selectType(view,DiscoveryResultType.Artist);f.reply(grouped());discovery.edit(view,"seed");discovery.searchBlocking(view,discovery.state.value.draft)
             val entity=discovery.state.value.results!!.entities.first();val details=discovery.details(view,entity)!!
             val catalog=CatalogRepository(api);val jobs=mutableListOf<()->Unit>();val actions=CatalogActions(catalog){jobs.add(it)}
             assertTrue(actions.discover(details));assertEquals(1,jobs.size)
@@ -85,7 +85,7 @@ class DiscoverCatalogContinuationTest {
             val repo=DiscoveryRepository(session,SoundQApi(session,f.client));val view=repo.open()!!
             repo.edit(view,"not submitted");assertTrue(repo.state.value.recent.isEmpty())
             for(q in listOf(" seed ","Other","SEED")) {
-                repo.edit(view,q);f.reply(DiscoveryBoundaryTest.search(q.trim()));repo.search(view,repo.state.value.draft)
+                repo.edit(view,q);f.replySong(DiscoveryBoundaryTest.search(q.trim()));repo.searchBlocking(view,repo.state.value.draft)
             }
             assertEquals(listOf("SEED","Other"),repo.state.value.recent)
             repo.edit(view,"");repo.close(view)
@@ -94,7 +94,7 @@ class DiscoverCatalogContinuationTest {
             repo.clearRecent(reopened);assertTrue(repo.state.value.recent.isEmpty())
             assertNull(repo.recent(reopened,"Other"));repo.clearRecent(view)
             session.accept(session.beginIntent(),SecretTokens("b","rr","B"));repo.open()
-            assertTrue(repo.state.value.recent.isEmpty());assertEquals(3,f.server.requestCount)
+            assertTrue(repo.state.value.recent.isEmpty());assertEquals(6,f.server.requestCount)
         }
     }
     companion object {

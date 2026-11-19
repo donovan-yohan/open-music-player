@@ -70,14 +70,14 @@ import com.soundq.android.data.discovery.*
 class LibraryCollection
 class SoundQApi(val session:AccountSession,val client:OkHttpClient) {
  // Host-only authorized transport boundary; the releaseRadar method below is unmodified production.
- private fun authorized(scope:AccountScope,path:String,valid:()->Boolean,expectedStatus:Int,headers:Map<String,String> = emptyMap()):JsonObject {
+ private fun authorized(scope:AccountScope,path:String,valid:()->Boolean,expectedStatus:Int,headers:Map<String,String> = emptyMap(),calls:DiscoveryCalls?=null):JsonObject {
   check(session.remoteCurrent(scope)&&valid())
   val req=Request.Builder().url(session.endpoint.identity+path).header("Authorization","Bearer "+session.access(scope))
   headers.forEach {(k,v)->req.header(k,v)}
   return client.newCall(req.build()).execute().use {response->check(response.code==expectedStatus&&session.remoteCurrent(scope)&&valid());Json.parseToJsonElement(response.body.string()).jsonObject}
  }
 '''+api[api.index('    fun releaseRadar('):api.index('    fun createSourceDecision(')]+'''
- fun resolveSource(scope:AccountScope,s:com.soundq.android.data.imports.ImportSource,valid:()->Boolean):SourceResults=error("unrelated resolve boundary")
+ internal fun resolveSource(scope:AccountScope,s:com.soundq.android.data.imports.ImportSource,calls:DiscoveryCalls?=null,valid:()->Boolean):SourceResults=error("unrelated resolve boundary")
  companion object {
 '''+policy+'\n}\n}\n')
  for name in ['data/Contracts.kt','data/AccountSession.kt','data/discovery/Discovery.kt','data/discovery/DiscoveryJson.kt','data/discovery/DiscoveryRepository.kt','data/discovery/DiscoveryHistory.kt','data/imports/Imports.kt']:copy(main/name)
@@ -90,6 +90,7 @@ internal class RadarViewModel(val graph:RadarGraph,val viewModelScope:CoroutineS
 '''+block(vm.read_text(),'    fun findReleaseSources(')+'\n}\n')
  (out/'OwnerBoundary.kt').unlink();(out/'FailureBoundary.kt').unlink()
  scope=(test/'data/ScopeRaceTest.kt').read_text();start=scope.index('internal class HttpsFixture');end=scope.index('\nclass ',start)
+ copy(test/'data/DiscoveryWireFixture.kt')
  emit('HttpsFixture.kt','package com.soundq.android.data\nimport okhttp3.*\nimport okhttp3.tls.*\nimport mockwebserver3.*\n'+scope[start:end])
 dependency_manifest=[];private_jars=[]
 (out/'dependencies').mkdir()

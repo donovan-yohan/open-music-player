@@ -225,7 +225,11 @@ class ProductViewModel(app:Application):AndroidViewModel(app) {
     }
     fun searchSources(view:com.soundq.android.data.discovery.DiscoveryView,draft:com.soundq.android.data.discovery.DiscoveryDraft) {
         val request=graph.discovery.claimSearch(view,draft) ?: return
-        viewModelScope.launch(Dispatchers.IO){graph.discovery.search(request)}
+        viewModelScope.launch(Dispatchers.IO){graph.discovery.search(request)}.invokeOnCompletion {graph.discovery.abandonSearch(request)}
+    }
+    fun selectDiscoveryType(view:com.soundq.android.data.discovery.DiscoveryView,type:com.soundq.android.data.discovery.DiscoveryResultType) {
+        val request=graph.discovery.selectType(view,type) ?: return
+        viewModelScope.launch(Dispatchers.IO){graph.discovery.search(request)}.invokeOnCompletion {graph.discovery.abandonSearch(request)}
     }
     fun loadReleaseRadar(view:com.soundq.android.data.discovery.DiscoveryView,refresh:Boolean=false,automatic:Boolean=false) {
         val request=graph.discovery.claimRadar(view,refresh,automatic)?:return
@@ -235,7 +239,7 @@ class ProductViewModel(app:Application):AndroidViewModel(app) {
     }
     fun findReleaseSources(view:com.soundq.android.data.discovery.DiscoveryView,page:com.soundq.android.data.discovery.RadarPage,song:com.soundq.android.data.discovery.RadarSong,draft:com.soundq.android.data.discovery.DiscoveryDraft) {
         val request=graph.discovery.claimFindSources(view,page,song,draft)?:return
-        viewModelScope.launch(Dispatchers.IO){graph.discovery.findSources(request)?.let(graph.discovery::search)}
+        viewModelScope.launch(Dispatchers.IO){graph.discovery.findSources(request)?.let {graph.discovery.search(it)}}
     }
     fun submitSourceImport(view:ImportView,choice:com.soundq.android.data.discovery.SourceChoice) {
         graph.imports.prepareSource(view,choice)

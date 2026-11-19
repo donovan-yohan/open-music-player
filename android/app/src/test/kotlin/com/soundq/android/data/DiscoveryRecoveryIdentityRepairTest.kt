@@ -27,7 +27,7 @@ class DiscoveryRecoveryIdentityRepairTest {
             val route = discovery.open()!!
             val view = imports.open()!!
             discovery.edit(route, "海 & music")
-            f.reply(DiscoveryBoundaryTest.search()); discovery.search(route, discovery.state.value.draft)
+            f.replySong(DiscoveryBoundaryTest.search()); discovery.searchBlocking(route, discovery.state.value.draft)
             val choice = discovery.inspect(route, discovery.state.value.results!!.rows.single())!!
             val post = imports.claimSource(view, choice)!!
             f.reply(DiscoveryOwnershipTest.decision(), 201); f.reply("{}", 500); imports.submit(post)
@@ -50,7 +50,7 @@ class DiscoveryRecoveryIdentityRepairTest {
                 assertTrue(imports.state.value.consumed)
                 assertEquals(decisionId, imports.state.value.sourceReceipt!!.decision!!.id)
                 val before = f.server.requestCount
-                assertEquals(6, before)
+                assertEquals(7, before)
                 // This reply is a trap: stale admission would consume it and restore job B.
                 f.reply(if (open) """{"tracks":[{"id":99,"title":"Wrong sibling","is_liked":false}],"total":1,"limit":20,"offset":0}""" else sibling())
                 release.countDown()
@@ -86,7 +86,7 @@ class DiscoveryRecoveryIdentityRepairTest {
                 assertFalse(imports.state.value.loading)
                 assertFalse(library.state.value.loading)
                 imports.submit(post)
-                val expectedCount = if (published) 8 else 9
+                val expectedCount = if (published) 9 else 10
                 assertEquals(expectedCount, f.server.requestCount)
                 val requests = (1..expectedCount).map { f.server.takeRequest(2, TimeUnit.SECONDS)!! }
                 assertEquals(1, requests.count { it.method == "POST" && it.url.encodedPath == "/api/v1/source-selections" })

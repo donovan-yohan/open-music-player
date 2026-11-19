@@ -117,6 +117,7 @@ class FirstEightLaterPageJourneyTest {
         server.dispatcher=object:Dispatcher(){override fun dispatch(request:RecordedRequest):MockResponse {
             val path=request.url.encodedPath;paths.add(request.method+" "+path)
             fun reply(body:String,code:Int=200)=MockResponse.Builder().code(code).body(body).build()
+            if(path=="/api/v1/discovery/search"&&request.url.queryParameter("providers")=="soundcloud")return reply(emptyDiscoveryProvider("Captured source","soundcloud"))
             if(path=="/api/v1/discovery/search")return reply("""{"query":"Captured source","results":[$candidate],"providers":[{"provider":"youtube","status":"ok"}],"selectionRequired":true,"selectionSessionId":"$selection","selectionExpiresAt":"2030-01-01T00:00:00Z"}""")
             if(path=="/api/v1/playlists") {
                 val offset=request.url.queryParameter("offset")!!.toInt();offsets.add(offset);check(offset==0||offset==20)
@@ -146,7 +147,7 @@ class FirstEightLaterPageJourneyTest {
             val model=signIn();val before=model.playback.value
             compose.onAllNodesWithText("Discover").filterToOne(hasClickAction()).performClick()
             compose.onNodeWithContentDescription("Music search query").performTextInput("Captured source")
-            compose.onNodeWithContentDescription("Search music",useUnmergedTree=true).performClick()
+
             compose.waitUntil(10000){compose.onAllNodesWithText("Captured source 21").fetchSemanticsNodes().isNotEmpty()}
             compose.onNodeWithText("Captured source 21").performScrollTo().performClick()
             click("Import source")

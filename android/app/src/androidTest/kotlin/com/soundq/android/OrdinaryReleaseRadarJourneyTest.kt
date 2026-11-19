@@ -109,6 +109,7 @@ class OrdinaryReleaseRadarJourneyTest {
             return when {
                 path=="/api/v1/me/discovery/releases"&&imported.get()->reply(after)
                 path.endsWith("/membership")->reply("""{"recordingMbid":"$recording","inLibrary":false}""")
+                path=="/api/v1/discovery/search"&&request.url.queryParameter("providers")=="soundcloud"->reply(emptyDiscoveryProvider(request.url.queryParameter("q")!!,"soundcloud"))
                 path=="/api/v1/discovery/search"->reply(JSONObject().put("query",request.url.queryParameter("q")).put("results",org.json.JSONArray("[$candidate]")).put("providers",org.json.JSONArray("""[{"provider":"youtube","status":"ok"}]""")).put("selectionSessionId",selection).put("selectionExpiresAt","2030-01-01T00:00:00Z").toString())
                 path=="/api/v1/playlists"->reply("""{"data":[{"id":7,"name":"Synthetic radar playlist","isPublic":false,"trackCount":0,"durationMs":0}],"total":1,"limit":20,"offset":0}""")
                 path=="/api/v1/source-selections"->{check(request.method=="POST");reply("""{"id":"$decision","sessionId":"$selection","selectedCandidateId":"ordinary-radar-source","action":"selected","selectedCandidate":$candidate}""",201)}

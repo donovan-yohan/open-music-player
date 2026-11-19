@@ -6,6 +6,20 @@ import org.junit.Test
 import java.util.concurrent.TimeUnit
 
 class DiscoveryBoundaryTest {
+    @Test fun providerWaitCanOutlastOrdinaryReadTimeoutWithoutRelaxingOtherRoutes() {
+        HttpsFixture().use { f ->
+            val session=AccountSession(f.endpoint,MemoryStore())
+            session.accept(session.beginIntent(),SecretTokens("a","r","A"))
+            val scope=session.capture()!!
+            val api=SoundQApi(session,f.client.newBuilder().readTimeout(1,TimeUnit.SECONDS).build())
+            f.server.enqueue(mockwebserver3.MockResponse.Builder().headersDelay(2,TimeUnit.SECONDS).body(search()).build())
+            assertEquals("candidate-1",api.discoverySearch(scope,"海 & music").rows.single().id)
+            f.server.enqueue(mockwebserver3.MockResponse.Builder().headersDelay(2,TimeUnit.SECONDS).body("{}").build())
+            val failure=runCatching {api.releaseRadar(scope){true}}.exceptionOrNull() as? SafeFailure
+            assertEquals(SafeFailure.Reason.Network,failure?.reason)
+            assertEquals(2,f.server.requestCount)
+        }
+    }
     @Test fun explicitSourceSearchUsesAuthenticatedTlsAndPreservesCapturedSelection() {
         HttpsFixture().use {f ->
             val session=AccountSession(f.endpoint,MemoryStore());session.accept(session.beginIntent(),SecretTokens("a","r","A"))

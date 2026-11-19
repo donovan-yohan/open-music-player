@@ -28,6 +28,7 @@ class DiscoveryRootAdmissionTest {
         val candidate="""{"candidateId":"candidate-1","provider":"youtube","sourceUrl":"https://youtu.be/fixture","title":"Admission source","downloadable":true}"""
         server.dispatcher=object:Dispatcher(){override fun dispatch(request:RecordedRequest):MockResponse {
             val path=request.url.encodedPath
+            if(path=="/api/v1/discovery/search"&&request.url.queryParameter("providers")=="soundcloud")return reply(emptyDiscoveryProvider("admission","soundcloud"))
             if(path=="/api/v1/discovery/search")return reply("""{"query":"admission","results":[$candidate],"providers":[{"provider":"youtube","status":"ok"}],"selectionSessionId":"123e4567-e89b-12d3-a456-426614174010","selectionExpiresAt":"2030-01-01T00:00:00Z"}""")
             if(path=="/api/v1/source-selections"&&request.method=="POST") {
                 decisions.incrementAndGet();entered.countDown();check(release.await(5,TimeUnit.SECONDS))
@@ -42,7 +43,7 @@ class DiscoveryRootAdmissionTest {
             compose.waitUntil(10000){graph.library.state.value.rows.isNotEmpty()}
             compose.onAllNodesWithText("Discover").filterToOne(hasClickAction()).performClick()
             compose.onNodeWithContentDescription("Music search query").performTextInput("admission")
-            compose.onNodeWithContentDescription("Search music",useUnmergedTree=true).performClick()
+
             compose.waitUntil(10000){graph.discovery.state.value.results?.rows?.size==1}
             val rootNode=if(openImports)compose.onNodeWithContentDescription("Imports",useUnmergedTree=true) else compose.onAllNodesWithText("Library").filterToOne(hasClickAction())
             val action=rootNode.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!

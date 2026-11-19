@@ -25,7 +25,7 @@ class DiscoverSourceContinuityTest {
             val session=AccountSession(f.endpoint,MemoryStore()).apply {accept(beginIntent(),SecretTokens("a","r","A"))}
             val repo=DiscoveryRepository(session,SoundQApi(session,f.client));val view=repo.open()!!
             f.reply(DiscoveryBoundaryTest.search("seed").replace("https://youtu.be/fixture","https://youtu.be:8443/fixture"))
-            repo.edit(view,"seed");repo.search(view,repo.state.value.draft)
+            repo.selectType(view,DiscoveryResultType.Artist);repo.edit(view,"seed");repo.searchBlocking(view,repo.state.value.draft)
             val accepted=repo.state.value.results!!;val choice=repo.inspect(view,accepted.rows.single())!!
             var launched=false
             assertFalse(repo.preview(view,choice){launched=true})

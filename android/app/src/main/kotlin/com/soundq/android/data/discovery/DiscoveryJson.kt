@@ -15,7 +15,7 @@ object DiscoveryJson {
     private fun bool(o:JsonObject,key:String)=o.getValue(key).jsonPrimitive.let {require(!it.isString);it.boolean}
     private fun uuid(value:String):String {ImportJobId(value);return value}
     private inline fun <T> parse(block:()->T):T=try {block()}catch(_:Exception){throw SafeFailure(SafeFailure.Reason.InvalidResponse)}
-    fun search(o:JsonObject,query:String):SourceResults=parse {
+    fun search(o:JsonObject,query:String,provider:SourceProvider?=null):SourceResults=parse {
         require(text(o,"query")==query)
         val top=o.getValue("results").jsonArray.map {candidate(it.jsonObject)}
         val entities=mutableListOf<DiscoveryEntity>()
@@ -39,6 +39,13 @@ object DiscoveryJson {
         require(providers.isNotEmpty() && providers.map {it.provider}.distinct().size==providers.size)
         val selection=if(o.containsKey("selectionSessionId"))SourceSession(uuid(text(o,"selectionSessionId")),Instant.parse(text(o,"selectionExpiresAt"))) else null
         require(rows.isEmpty() || selection!=null)
+        if(provider!=null) {
+            val observation=providers.single()
+            val limit=SEARCH_SURFACE_LIMIT * if(provider==SourceProvider.YouTube)2 else 1
+            require(observation.provider.wire==provider.wire&&entities.isEmpty()&&rows.all {it.provider==provider})
+            // The server persists only the flat candidates in the selection session.
+            require(rows.size==top.size&&top.size<=limit&&(top.isEmpty()||observation.status=="ok"))
+        }
         SourceResults(query,rows,selection,providers,entities)
     }
     fun resolved(o:JsonObject,query:String):SourceResults=parse {
