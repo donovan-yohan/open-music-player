@@ -194,6 +194,55 @@ paths:
           description: Lookup failed; never interpret as missing.
         '503':
           description: Resolver not wired; capability unavailable, not missing.
+  /catalog/recordings/{mb_id}/source:
+    get:
+      tags: [Browse]
+      operationId: getCatalogRecordingSource
+      summary: Look up a source URL for exactly one MusicBrainz recording
+      description: |
+        Read-only metadata for temporary preview. No query parameters. Returns a
+        URL only when the exact non-video recording has one distinct supported
+        audio source in its direct free-streaming URL relationships. No related
+        recording or search fallback. The server does not open the source URL,
+        acquire media, change the Library, or verify playback availability.
+      parameters:
+        - in: path
+          name: mb_id
+          required: true
+          description: Canonical lowercase non-nil MusicBrainz recording UUID; no percent encoding.
+          schema:
+            type: string
+            format: uuid
+            pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      responses:
+        '200':
+          description: Exact recording lookup succeeded; missing or ambiguous qualified URLs return null.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: ['private, no-store']
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [recordingMbid, sourceUrl]
+                properties:
+                  recordingMbid:
+                    type: string
+                    format: uuid
+                    description: Same recording UUID as the path.
+                  sourceUrl:
+                    type: string
+                    format: uri
+                    nullable: true
+        '400':
+          description: Invalid recording UUID or query present; no lookup performed.
+        '401':
+          description: Authentication required.
+        '503':
+          description: RECORDING_SOURCE_UNAVAILABLE; exact lookup could not be completed or verified.
   # ============================================================================
   # Auth Endpoints
   # ============================================================================
@@ -449,6 +498,60 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/Unavailable' }
+
+  /discovery/preview:
+    post:
+      tags: [Browse]
+      operationId: streamDiscoveryPreview
+      summary: Stream an operator-cleared temporary preview without adding it to Library
+      description: |
+        Looks up the exact canonical import source in a local allowlist, without
+        URL normalization, provider requests, downloads, or Library writes. No
+        query parameters. The JSON request is capped at 8192 bytes and must
+        contain exactly one case-sensitive url field. A 200 is identity-encoded
+        (no Content-Encoding) and streams the verified MP3 with a fixed length.
+        Treat an incomplete body as a failed preview.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [url]
+              properties:
+                url: { type: string, format: uri, minLength: 1, maxLength: 4096 }
+      responses:
+        '200':
+          description: Exact cleared MP3 clip
+          headers:
+            Content-Length:
+              schema: { type: integer, minimum: 1, maximum: 2097152 }
+            Cache-Control:
+              schema: { type: string, enum: ['private, no-store'] }
+            X-SoundQ-Preview-Sample-Rate:
+              schema: { type: integer, enum: [44100, 48000] }
+            X-SoundQ-Preview-Frames:
+              description: Exact gapless source-rate frame count, at most 30 times the sample rate.
+              schema: { type: integer, minimum: 1, maximum: 1440000 }
+          content:
+            audio/mpeg:
+              schema: { type: string, format: binary }
+        '400':
+          description: Invalid request body or query parameters
+          content:
+            text/plain:
+              schema: { type: string }
+        '401':
+          description: Missing, invalid, or expired bearer access token
+          content:
+            text/plain:
+              schema: { type: string }
+        '404':
+          description: Preview unavailable, including unconfigured, not cleared, invalid media, or at capacity
+          content:
+            text/plain:
+              schema: { type: string }
 
   /discovery/resolve-url:
     post:

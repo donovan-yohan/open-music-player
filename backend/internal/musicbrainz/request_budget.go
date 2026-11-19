@@ -25,6 +25,11 @@ type requestBudget struct {
 // Admission is per RoundTrip so automatic canonical-ID redirects are paced too.
 func (c *Client) doPacedRequest(req *http.Request) (*http.Response, error) {
 	client := *c.httpClient
+	if recordingSourceRead(req.Context()) {
+		// A merge redirect is not exact recording evidence, and no redirect
+		// destination may receive a second request for this endpoint.
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
 	transport := client.Transport
 	if transport == nil {
 		transport = http.DefaultTransport

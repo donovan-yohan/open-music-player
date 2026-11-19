@@ -685,8 +685,14 @@ func (c *Client) releaseGroupCoverArtURL(groupID releaseGroupID) string {
 func (c *Client) requestWithRetry(ctx context.Context, reqURL string) ([]byte, error) {
 	log := logger.Default().WithComponent("musicbrainz")
 	cfg := apperrors.MusicBrainzRetryConfig()
+	var maxBody int64
 	if radarReadBounded(ctx) {
 		cfg.MaxRetries = 1
+		maxBody = 1048576
+	}
+	if recordingSourceRead(ctx) {
+		cfg.MaxRetries = 0
+		maxBody = recordingSourceMaxBytes
 	}
 
 	var result []byte
@@ -738,15 +744,15 @@ func (c *Client) requestWithRetry(ctx context.Context, reqURL string) ([]byte, e
 		}
 
 		var reader io.Reader = resp.Body
-		if radarReadBounded(ctx) {
-			reader = io.LimitReader(resp.Body, 1048577)
+		if maxBody > 0 {
+			reader = io.LimitReader(resp.Body, maxBody+1)
 		}
 		body, err := io.ReadAll(reader)
 		if err != nil {
 			return fmt.Errorf("failed to read response body: %w", err)
 		}
-		if radarReadBounded(ctx) && len(body) > 1048576 {
-			return fmt.Errorf("radar provider response exceeds budget")
+		if maxBody > 0 && int64(len(body)) > maxBody {
+			return fmt.Errorf("MusicBrainz provider response exceeds budget")
 		}
 
 		result = body

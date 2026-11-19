@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"regexp"
 
+	"github.com/google/uuid"
+
+	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 )
 
@@ -107,6 +110,41 @@ func (h *BrowseHandlers) GetTrack(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(track)
+}
+
+// GetRecordingSource reads public source metadata, not a playback grant or a
+// Library mutation. Authentication precedes all provider/cache work.
+func (h *BrowseHandlers) GetRecordingSource(w http.ResponseWriter, r *http.Request) {
+	user := auth.GetUserFromContext(r.Context())
+	if user == nil || user.UserID == uuid.Nil {
+		writeErrorResponse(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+		return
+	}
+	if r.Method != http.MethodGet { // ServeMux's GET patterns also match HEAD.
+		w.Header().Set("Allow", http.MethodGet)
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET is required")
+		return
+	}
+	raw := r.PathValue("mb_id")
+	id, err := uuid.Parse(raw)
+	if err != nil || id == uuid.Nil || id.String() != raw || r.URL.RawPath != "" || r.URL.RawQuery != "" || r.URL.ForceQuery {
+		writeErrorResponse(w, http.StatusBadRequest, "VALIDATION_ERROR", "a canonical non-nil recording MBID and no query parameters are required")
+		return
+	}
+	if h.mbClient == nil {
+		writeErrorResponse(w, http.StatusServiceUnavailable, "RECORDING_SOURCE_UNAVAILABLE", "recording source lookup is unavailable")
+		return
+	}
+	source, err := h.mbClient.GetRecordingSource(r.Context(), id)
+	if err != nil {
+		writeErrorResponse(w, http.StatusServiceUnavailable, "RECORDING_SOURCE_UNAVAILABLE", "recording source lookup is unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct {
+		RecordingMBID string  `json:"recordingMbid"`
+		SourceURL     *string `json:"sourceUrl"`
+	}{raw, source})
 }
 
 func writeErrorResponse(w http.ResponseWriter, status int, code, message string) {

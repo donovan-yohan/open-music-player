@@ -23,6 +23,10 @@ import (
 // Finite loopback RESP fixture exercises the existing concrete Redis cache.
 // It is not a real service, account or shared local Redis instance.
 func fixturePublicCache(t *testing.T) *cache.Cache {
+	return fixturePublicCacheWithCommand(t, nil)
+}
+
+func fixturePublicCacheWithCommand(t *testing.T, before func(string)) *cache.Cache {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -69,6 +73,9 @@ func fixturePublicCache(t *testing.T) *cache.Cache {
 							return
 						}
 						args[i] = string(b[:size])
+					}
+					if before != nil {
+						before(strings.ToLower(args[0]))
 					}
 					mu.Lock()
 					response := "+OK\r\n"
