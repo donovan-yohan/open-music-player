@@ -240,8 +240,11 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
                 items(results.rows,key={it.id}) {row->
                     SoundQMediaRow(title=row.title,subtitle=row.artist.ifBlank {row.uploader},current=false,
                         onActivate={view?.let {repository.inspect(it,row)}},onMore={view?.let {repository.inspect(it,row)}},
-                        artwork={DiscoveryArtwork(model.graph.mediaClient,row.thumbnailUrl,results to view) {view?.let(repository::current)==true&&repository.state.value.results===results}},
-                        supporting="${row.provider.label} · ${duration(row.durationMs)}"+(if(row.downloadable)"" else " · Import unavailable"),enabled=view!=null)
+                        artwork={Box(Modifier.fillMaxSize()) {
+                            DiscoveryArtwork(model.graph.mediaClient,row.thumbnailUrl,results to view) {view?.let(repository::current)==true&&repository.state.value.results===results}
+                            DiscoveryProviderMark(row.provider,Modifier.align(Alignment.BottomEnd).padding(3.dp))
+                        }},
+                        supporting=duration(row.durationMs)+(if(row.downloadable)"" else " · Import unavailable"),enabled=view!=null)
                 }
             } else {
                 if(entities.isEmpty())discoverHeader {SoundQFeedback("No ${state.resultType.label.lowercase()} matches",FeedbackKind.Empty)}

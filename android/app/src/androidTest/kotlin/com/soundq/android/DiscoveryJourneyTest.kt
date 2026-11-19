@@ -15,6 +15,47 @@ import java.util.concurrent.atomic.AtomicInteger
 /** Parent executes on its reserved runtime. Uses real mounted route and TLS fixture. */
 class DiscoveryJourneyTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
+
+    @Test fun songArtworkShowsTheExactProviderWithoutAddingAnotherAction() {
+        val instrumentation=InstrumentationRegistry.getInstrumentation()
+        val app=instrumentation.targetContext.applicationContext as SoundQApplication
+        val server=ProductTransportFixture.server
+        val fallback=server.dispatcher
+        val query="Badge fixture"
+        server.dispatcher=object:Dispatcher() {
+            override fun dispatch(request:RecordedRequest):MockResponse {
+                if(request.url.encodedPath!="/api/v1/discovery/search")return fallback.dispatch(request)
+                check(request.url.queryParameter("q")==query)
+                return MockResponse.Builder().body("""{"query":"$query","results":[
+                    {"candidateId":"badge-cloud","provider":"soundcloud","sourceUrl":"https://soundcloud.com/fixture/badge","title":"Cloud song","artist":"Fixture Artist","downloadable":true,"durationMs":155000},
+                    {"candidateId":"badge-video","provider":"youtube","sourceUrl":"https://youtu.be/fixture","title":"Video song","artist":"Fixture Artist","downloadable":true,"durationMs":180000}
+                ],"providers":[{"provider":"soundcloud","status":"ok"},{"provider":"youtube","status":"ok"}],"selectionSessionId":"123e4567-e89b-12d3-a456-426614174010","selectionExpiresAt":"2030-01-01T00:00:00Z"}""").build()
+            }
+        }
+        try {
+            compose.signInThroughSettings("provider-badge@example.test","fixture-only-password"){app.graph.session.capture()!=null}
+            compose.onAllNodesWithText("Discover").filterToOne(hasClickAction()).performClick()
+            compose.onNodeWithContentDescription("Music search query").performTextInput(query)
+            compose.onNodeWithContentDescription("Search music",useUnmergedTree=true).performClick()
+            compose.waitUntil(8000){compose.onAllNodesWithText("Cloud song").fetchSemanticsNodes().isNotEmpty()}
+            listOf("Cloud song" to "SoundCloud", "Video song" to "YouTube").forEach { (title,provider) ->
+                val mark=hasContentDescription("Source: $provider")
+                compose.onNode(mark and hasAnyAncestor(hasTestTag("media-artwork")),useUnmergedTree=true)
+                    .assertIsDisplayed().assertHasNoClickAction()
+                compose.onNode(hasText(title) and mark and hasClickAction()).assertIsDisplayed()
+                compose.onNodeWithContentDescription("More for $title").assertIsDisplayed().assertIsEnabled().assertHasClickAction()
+            }
+            if(InstrumentationRegistry.getArguments().getString("discoverCaptures")=="true") {
+                val frame=checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+                try {
+                    java.io.File(instrumentation.targetContext.filesDir,"discover-results.png").outputStream().use {
+                        check(frame.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it))
+                    }
+                } finally { frame.recycle() }
+            }
+        } finally { server.dispatcher=fallback;app.graph.session.retire() }
+    }
+
     @Test fun searchInspectExplicitDecisionImportJobLibraryAndNoImplicitPlayback() {
         val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SoundQApplication
         val server=ProductTransportFixture.server;val original=server.dispatcher;val fixture=DiscoveryDispatcher(original);server.dispatcher=fixture
