@@ -319,6 +319,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Go for preview proxy smoke
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+
+      - name: Run bundled preview proxy smoke
+        run: |
+          docker pull nginx:1.28-alpine
+          scripts/smoke preview-proxy
+
       - name: Start isolated low-memory stack
         run: scripts/dev isolated
 
