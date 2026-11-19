@@ -29,6 +29,7 @@ class ReleaseRadarContentTest {
      val body=when {
       path=="/api/v1/me/discovery/releases"->wire
       path.endsWith("/membership")->"""{"recordingMbid":"33333333-3333-4333-8333-333333333333","inLibrary":false}"""
+      path=="/api/v1/discovery/search"&&request.url.queryParameter("providers")=="soundcloud"->emptyDiscoveryProvider(request.url.queryParameter("q")!!,"soundcloud")
       path=="/api/v1/discovery/search"->{val q=request.url.queryParameter("q")!!;"""{"query":"$q","results":[{"candidateId":"radar-native-source","provider":"youtube","sourceUrl":"https://youtu.be/synthetic","title":"Synthetic source","artist":"Synthetic listened artist","downloadable":true,"playable":false}],"providers":[{"provider":"youtube","status":"ok"}],"selectionSessionId":"123e4567-e89b-12d3-a456-426614174010","selectionExpiresAt":"2030-01-01T00:00:00Z"}"""}
       else->return old.dispatch(request)
      }

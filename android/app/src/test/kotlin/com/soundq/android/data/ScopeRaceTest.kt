@@ -12,7 +12,7 @@ internal class HttpsFixture : AutoCloseable {
     private val cert=HeldCertificate.Builder().addSubjectAlternativeName("localhost").build()
     private val trust=HandshakeCertificates.Builder().addTrustedCertificate(cert.certificate).build()
     val client:OkHttpClient=OkHttpClient.Builder().sslSocketFactory(trust.sslSocketFactory(),trust.trustManager).build()
-    init {server.useHttps(HandshakeCertificates.Builder().heldCertificate(cert).build().sslSocketFactory());server.start()}
+    init {server.dispatcher=DiscoveryFixtureQueue();server.useHttps(HandshakeCertificates.Builder().heldCertificate(cert).build().sslSocketFactory());server.start()}
     val endpoint get()=ApiEndpoint.parse(server.url("/api/v1").toString())
     fun reply(body:String,code:Int=200) {val response=MockResponse.Builder().code(code);if(code!=204)response.body(body);server.enqueue(response.build())}
     fun auth(account:String="fixture",access:String="a") = """{"accessToken":"$access","refreshToken":"r-$access","user":{"id":"$account"}}"""

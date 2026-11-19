@@ -376,26 +376,28 @@ class RadarLookaheadTest {
         assertNotSame(preview.owner, owner)
         fresh.open(song)()
         assertNotNull(f.route().evidence)
-        assertEquals(3, f.metadata.server.requestCount)
+        assertEquals(4, f.metadata.server.requestCount)
     }
 
     private fun enqueueFind(f: Fixture, song: RadarSong) {
         val query = JsonPrimitive("${song.title} ${song.artist}")
         f.metadata.reply("""{"recordingMbid":"${song.recording.value}","inLibrary":false}""")
-        f.metadata.reply("""{"query":$query,"results":[],"providers":[{"provider":"youtube","status":"ok"}]}""")
+        f.metadata.replySong("""{"query":$query,"results":[],"providers":[{"provider":"youtube","status":"ok"}]}""")
     }
 
     private fun verifyFind(f: Fixture, song: RadarSong) {
         f.settleActions()
         val membership = checkNotNull(f.metadata.server.takeRequest(2, TimeUnit.SECONDS))
         assertEquals("/api/v1/me/discovery/releases/${song.recording.value}/membership", membership.url.encodedPath)
-        val search = checkNotNull(f.metadata.server.takeRequest(2, TimeUnit.SECONDS))
-        assertEquals("/api/v1/discovery/search", search.url.encodedPath)
-        assertEquals("${song.title} ${song.artist}", search.url.queryParameter("q"))
-        assertEquals("youtube,soundcloud,musicbrainz", search.url.queryParameter("providers"))
+        val searches = f.metadata.takeSongRequests()
+        searches.forEach { search ->
+            assertEquals("/api/v1/discovery/search", search.url.encodedPath)
+            assertEquals("${song.title} ${song.artist}", search.url.queryParameter("q"))
+        }
+        val search=searches.first()
         assertEquals(DiscoveryPhase.Ready, f.repository.state.value.phase)
         assertEquals(search.url.queryParameter("q"), f.repository.state.value.results?.query)
-        assertEquals(3, f.metadata.server.requestCount)
+        assertEquals(4, f.metadata.server.requestCount)
     }
 
     private fun fixture(test: (Fixture) -> Unit) = HttpsFixture().use { metadata ->

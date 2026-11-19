@@ -12,13 +12,13 @@ class DiscoveryPurgeRepairTest {
             val api=SoundQApi(session,f.client);val library=LibraryRepository(session,api::library,api::like)
             val imports=ImportRepository(session,api,library);val discovery=DiscoveryRepository(session,api)
             val route=discovery.open()!!;val view=imports.open()!!
-            discovery.edit(route,"海 & music");f.reply(DiscoveryBoundaryTest.search());discovery.search(route,discovery.state.value.draft)
+            discovery.edit(route,"海 & music");f.replySong(DiscoveryBoundaryTest.search());discovery.searchBlocking(route,discovery.state.value.draft)
             val choice=discovery.inspect(route,discovery.state.value.results!!.rows.single())!!
             f.reply(DiscoveryOwnershipTest.decision(),201);f.reply("{}",500);imports.submit(imports.claimSource(view,choice)!!)
             f.reply(purged());f.reply(DiscoveryPublicationRepairTest.job());imports.recoverSource(view,imports.state.value.sourceReceipt!!)
             assertEquals("exact acknowledged decision remains readable after canonical session purge",SourceImportPhase.Accepted,imports.state.value.sourceReceipt!!.phase)
             assertEquals("123e4567-e89b-12d3-a456-426614174010",imports.state.value.sourceReceipt!!.decision!!.sessionId)
-            assertEquals(5,f.server.requestCount)
+            assertEquals(6,f.server.requestCount)
         }
     }
     @Test fun knownReadRejectsWrongDecisionCandidateActionAndConflictingPresentSession() {
@@ -35,13 +35,13 @@ class DiscoveryPurgeRepairTest {
         HttpsFixture().use {f ->
             val session=AccountSession(f.endpoint,MemoryStore()).apply {accept(beginIntent(),SecretTokens("a","r","A"))};val api=SoundQApi(session,f.client)
             val repository=DiscoveryRepository(session,api);val route=repository.open()!!
-            repository.edit(route,"海 & music");f.reply(DiscoveryBoundaryTest.search());repository.search(route,repository.state.value.draft)
+            repository.edit(route,"海 & music");f.replySong(DiscoveryBoundaryTest.search());repository.searchBlocking(route,repository.state.value.draft)
             val choice=repository.inspect(route,repository.state.value.results!!.rows.single())!!
             f.reply("""{"items":[${purged()}],"limit":100,"offset":0}""")
             assertNull(api.findSourceDecision(session.capture()!!,choice){true})
             f.reply(purged(),201)
             assertEquals(SafeFailure.Reason.InvalidResponse,(runCatching {api.createSourceDecision(session.capture()!!,choice,{true},{true})}.exceptionOrNull() as SafeFailure).reason)
-            assertEquals(3,f.server.requestCount)
+            assertEquals(4,f.server.requestCount)
         }
     }
     companion object {fun purged()=DiscoveryOwnershipTest.decision(",\"downloadJobId\":\"123e4567-e89b-12d3-a456-426614174071\"").replace("\"sessionId\":\"123e4567-e89b-12d3-a456-426614174010\",","")}

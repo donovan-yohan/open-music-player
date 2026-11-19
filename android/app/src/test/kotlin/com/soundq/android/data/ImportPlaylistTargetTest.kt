@@ -19,7 +19,7 @@ class ImportPlaylistTargetTest {
             val imports=ImportRepository(session,api,LibraryRepository(session,api::library,api::like))
             val discovery=com.soundq.android.data.discovery.DiscoveryRepository(session,api)
             val route=discovery.open()!!
-            discovery.edit(route,"海 & music");f.reply(DiscoveryBoundaryTest.search());discovery.search(route,discovery.state.value.draft)
+            discovery.edit(route,"海 & music");f.replySong(DiscoveryBoundaryTest.search());discovery.searchBlocking(route,discovery.state.value.draft)
             val choice=discovery.inspect(route,discovery.state.value.results!!.rows.single())!!
             val view=imports.open()!!
             assertTrue(imports.prepareSource(view,choice))
@@ -32,10 +32,10 @@ class ImportPlaylistTargetTest {
             assertEquals(21,imports.state.value.playlistChoices.size)
             assertTrue(imports.chooseSourcePlaylist(view,plan,row))
             assertFalse(imports.chooseSourcePlaylist(view,plan,row.copy()))
-            assertEquals(3,f.server.requestCount)
+            assertEquals(4,f.server.requestCount)
             discovery.edit(route,"different source")
             assertNull(imports.claimPlannedSource(view,plan))
-            assertEquals(3,f.server.requestCount)
+            assertEquals(4,f.server.requestCount)
         }
     }
 
@@ -53,7 +53,7 @@ class ImportPlaylistTargetTest {
                 val imports=ImportRepository(session,api,library)
                 val discover=com.soundq.android.data.discovery.DiscoveryRepository(session,api)
                 val route=discover.open()!!
-                discover.edit(route,"海 & music");f.reply(DiscoveryBoundaryTest.search());discover.search(route,discover.state.value.draft)
+                discover.edit(route,"海 & music");f.replySong(DiscoveryBoundaryTest.search());discover.searchBlocking(route,discover.state.value.draft)
                 val choice=discover.inspect(route,discover.state.value.results!!.rows.single())!!
                 val view=imports.open()!!
                 assertTrue(imports.prepareSource(view,choice));val plan=imports.state.value.sourcePlan!!
@@ -121,7 +121,7 @@ class ImportPlaylistTargetTest {
                 assertEquals(ImportPlaylistPhase.Confirmed,confirmation.phase)
                 assertEquals(job,confirmation.job.value);assertEquals(TrackId(71),confirmation.track)
                 assertEquals(com.soundq.android.data.playlists.PlaylistId(41),confirmation.playlist)
-                f.server.takeRequest(3,TimeUnit.SECONDS)!! // original search
+                f.takeSongRequests() // original search
                 f.server.takeRequest(3,TimeUnit.SECONDS)!! // destination read
                 assertEquals(listOf("POST /api/v1/source-selections","POST /api/v1/queue/items","POST /api/v1/queue/items"),paths.filter {it.startsWith("POST")})
                 assertFalse(paths.any {it.endsWith("/tracks")})
@@ -154,7 +154,7 @@ class ImportPlaylistTargetTest {
                 val imports=ImportRepository(session,api,LibraryRepository(session,api::library,api::like))
                 val discovery=com.soundq.android.data.discovery.DiscoveryRepository(session,api)
                 val route=discovery.open()!!
-                discovery.edit(route,"海 & music");f.reply(DiscoveryBoundaryTest.search());discovery.search(route,discovery.state.value.draft)
+                discovery.edit(route,"海 & music");f.replySong(DiscoveryBoundaryTest.search());discovery.searchBlocking(route,discovery.state.value.draft)
                 val choice=discovery.inspect(route,discovery.state.value.results!!.rows.single())!!
                 val view=imports.open()!!
                 val post=imports.claimSource(view,choice,com.soundq.android.data.playlists.PlaylistId(41))!!
@@ -170,7 +170,7 @@ class ImportPlaylistTargetTest {
                 assertNull(restored.state.value.selected)
                 assertEquals(decision,restored.state.value.durableReceipt?.decisionId)
                 assertNull(restored.state.value.durableReceipt?.job)
-                assertEquals(3,f.server.requestCount)
+                assertEquals(4,f.server.requestCount)
                 f.reply("""{"queue":{"items":[]},"downloadJobId":"$job","idempotent":false}""",202)
                 restored.retryDurablePublication(current,restored.state.value.durableReceipt!!)
                 f.reply(jobBody().replace("\"complete\"","\"queued\"").replace("\"track_id\":71","\"track_id\":null").replace("\"progress\":100","\"progress\":0"))
@@ -178,18 +178,18 @@ class ImportPlaylistTargetTest {
                 assertEquals(job,restored.state.value.selected?.id?.value)
                 assertEquals(ImportPlaylistPhase.AwaitingImport,restored.state.value.playlistConfirmation?.phase)
                 assertEquals(41L,IntakeReceipts(file).entries(f.endpoint.identity,"A").single().playlistId)
-                val requests=(1..5).map {f.server.takeRequest(3,TimeUnit.SECONDS)!!}
+                val requests=(1..6).map {f.server.takeRequest(3,TimeUnit.SECONDS)!!}
                 assertEquals(1,requests.count {it.method=="POST"&&it.url.encodedPath=="/api/v1/source-selections"})
                 assertEquals(1,requests.count {it.method=="POST"&&it.url.encodedPath=="/api/v1/queue/items"})
-                assertEquals("/api/v1/source-selections",requests[2].url.encodedPath)
-                assertEquals(41L,Json.parseToJsonElement(requests[3].body!!.utf8()).jsonObject.getValue("playlistId").jsonPrimitive.long)
-                assertEquals("/api/v1/downloads/$job",requests[4].url.encodedPath)
+                assertEquals("/api/v1/source-selections",requests[3].url.encodedPath)
+                assertEquals(41L,Json.parseToJsonElement(requests[4].body!!.utf8()).jsonObject.getValue("playlistId").jsonPrimitive.long)
+                assertEquals("/api/v1/downloads/$job",requests[5].url.encodedPath)
                 val old=restored.state.value.durableReceipt!!
                 session.accept(session.beginIntent(),SecretTokens("b","br","B"))
                 val other=restored.open()!!
                 restored.recoverDurable(other,old);restored.retryDurablePublication(other,old)
                 assertNull(restored.state.value.durableReceipt)
-                assertEquals(5,f.server.requestCount)
+                assertEquals(6,f.server.requestCount)
             } finally {dir.deleteRecursively()}
         }
     }
@@ -204,7 +204,7 @@ class ImportPlaylistTargetTest {
             val imports=ImportRepository(session,api,LibraryRepository(session,api::library,api::like))
             val discovery=com.soundq.android.data.discovery.DiscoveryRepository(session,api)
             val route=discovery.open()!!
-            discovery.edit(route,"海 & music");f.reply(DiscoveryBoundaryTest.search());discovery.search(route,discovery.state.value.draft)
+            discovery.edit(route,"海 & music");f.replySong(DiscoveryBoundaryTest.search());discovery.searchBlocking(route,discovery.state.value.draft)
             val choice=discovery.inspect(route,discovery.state.value.results!!.rows.single())!!
             val view=imports.open()!!
             imports.another(view)

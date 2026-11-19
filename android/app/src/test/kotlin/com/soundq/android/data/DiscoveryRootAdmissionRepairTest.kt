@@ -22,7 +22,7 @@ class DiscoveryRootAdmissionRepairTest {
             if(openImports)mounted.openImports() else mounted.navigate("Library")
             // No child disposal has run; the old callback and request are deliberately retained.
             r.imports.submit(post)
-            assertEquals("accepted root exit must revoke first POST synchronously",1,f.server.requestCount)
+            assertEquals("accepted root exit must revoke first POST synchronously",2,f.server.requestCount)
             assertFalse(r.choice.valid());assertFalse(r.imports.state.value.pending)
             assertEquals(SourceImportPhase.DecisionRefused,r.imports.state.value.sourceReceipt!!.phase)
             mounted.disposeChild();assertFalse(r.choice.valid())
@@ -42,7 +42,7 @@ class DiscoveryRootAdmissionRepairTest {
                 val work=pool.submit {r.imports.submit(post)};assertTrue(entered.await(3,TimeUnit.SECONDS))
                 if(openImports)mounted.openImports() else mounted.navigate("Library")
                 release.countDown();work.get(5,TimeUnit.SECONDS)
-                assertEquals("entered decision evidence survives, but root exit cannot grant a new queue POST",2,f.server.requestCount)
+                assertEquals("entered decision evidence survives, but root exit cannot grant a new queue POST",3,f.server.requestCount)
                 assertEquals("123e4567-e89b-12d3-a456-426614174020",r.imports.state.value.sourceReceipt!!.decision!!.id)
                 assertEquals(SourceImportPhase.QueueRefused,r.imports.state.value.sourceReceipt!!.phase)
                 assertNull(r.imports.state.value.acknowledgement);mounted.disposeChild()
@@ -55,6 +55,6 @@ class DiscoveryRootAdmissionRepairTest {
         val imports=ImportRepository(session,api,library);val discovery=DiscoveryRepository(session,api)
         val route=discovery.open()!!;val view=imports.open()!!
         val choice:SourceChoice
-        init {discovery.edit(route,"海 & music");f.reply(DiscoveryBoundaryTest.search());discovery.search(route,discovery.state.value.draft);choice=discovery.inspect(route,discovery.state.value.results!!.rows.single())!!}
+        init {discovery.edit(route,"海 & music");f.replySong(DiscoveryBoundaryTest.search());discovery.searchBlocking(route,discovery.state.value.draft);choice=discovery.inspect(route,discovery.state.value.results!!.rows.single())!!}
     }
 }

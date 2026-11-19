@@ -199,7 +199,6 @@ prelude = prelude.replace('contentAlignment:Int,body:()->Unit)', 'contentAlignme
 prelude = prelude.replace('padding(horizontal:Int,vertical:Int)', 'padding(horizontal:Int,vertical:Int=0)')
 prelude = prelude.replace('UI.editor=Editor(value,onValueChange,keyboardActions);', 'UIExtra.editorEnabled=enabled;UI.editor=Editor(value,onValueChange,keyboardActions);')
 prelude += r'''
-fun Modifier.size(size:Int)=this
 fun Modifier.fillMaxSize()=this
 object R {object drawable {val soundq_logo=1}}
 fun painterResource(id:Int)=id
@@ -223,7 +222,7 @@ fun <T> State<T>.collectAsStateWithLifecycle()=this
 class DiscoveryView(val id:Int)
 class DiscoveryEntity
 class DiscoveryDetails
-class SourceResults
+class SourceResults(val identity:Any=Any())
 class LazyListState
 fun radarFullListState()=LazyListState() // Artwork window behavior is covered by test-radar-artwork.py.
 class Draft(val text:String)
@@ -317,15 +316,13 @@ fun main(){
   D.start();D.edit(TextFieldValue("old"));D.route=null;D.model.graph.discovery.current=null;D.render();Memory.advance(350)
   check(D.model.sent.none{it=="old"})
  }
- case("discover_explicit_submit_captures_before_focus_callback_and_no_duplicate_timer") {
+ case("discover_has_no_explicit_dispatch_and_does_not_clear_focus_when_searching") {
   D.start();D.edit(TextFieldValue("visible",TextRange(3),TextRange(0,7)))
-  Focus.duringClear={UI.editor.edit(TextFieldValue("new native value",TextRange(1),TextRange(0,3)))}
-  D.click();check(D.model.sent==listOf("visible"));check(UI.editor.value.text=="new native value")
-  // A focus callback publishing NEW text deliberately creates a NEW debounce intent.
-  Focus.duringClear={};Memory.advance(350);check(D.model.sent==listOf("visible","new native value"))
-  D.start();D.edit(TextFieldValue("visible",TextRange(3),TextRange(0,7)))
-  UI.editor.keyboard.onSearch();D.render();Memory.advance(350)
-  check(D.model.sent==listOf("visible"));check(Focus.clears==1)
+  check("Search music" !in UI.actions)
+  UI.editor.keyboard.onSearch();D.render();check(D.model.sent.isEmpty())
+  Memory.advance(350);check(D.model.sent==listOf("visible"));check(Focus.clears==0)
+  check(UI.editor.value.composition==TextRange(0,7))
+  Memory.advance(350);check(D.model.sent==listOf("visible"))
  }
  case("discover_clear_focus_attachment_authoritative_refinement_and_loading_gate") {
   D.start();D.edit(TextFieldValue("x"));UIExtra.focusChanged!!(FocusState(true));D.click("Clear search")
@@ -333,7 +330,7 @@ fun main(){
   Memory.advance(350);check(D.model.sent.isEmpty())
   D.model.graph.discovery.state.value=DiscoveryState(Draft("refined"));D.render();D.render();check(UI.editor.value.text=="refined")
   D.model.graph.discovery.state.value=D.model.graph.discovery.state.value.copy(phase=DiscoveryPhase.Loading);D.render()
-  check(!UI.actions.getValue("Search music").enabled);UI.editor.keyboard.onSearch();check(D.model.sent.isEmpty())
+  check("Search music" !in UI.actions);UI.editor.keyboard.onSearch();check(D.model.sent.isEmpty())
  }
  case("playlist_native_selection_and_composition_stay_local_until_explicit_ime") {
   P.start();val value=TextFieldValue("  café 東京  ",TextRange(2,5),TextRange(7,9));P.edit(value)

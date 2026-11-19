@@ -1,6 +1,8 @@
 package com.soundq.android.data
 
 import kotlinx.serialization.json.*
+import com.soundq.android.data.discovery.DiscoveryCalls
+import com.soundq.android.data.discovery.SourceProvider
 import com.soundq.android.data.imports.*
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -14,6 +16,14 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
     private class WireGuard(val valid: () -> Boolean)
     private val http = client.newBuilder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
         .callTimeout(20, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            val r=chain.request()
+            // Grouped Discover can wait up to 16 s before sending headers.
+            // Keep the total call bounded without cutting it off at the ordinary 10 s read timeout.
+            val readChain=if(r.method=="GET"&&r.url.encodedPath=="/api/v1/discovery/search")
+                chain.withReadTimeout(20,TimeUnit.SECONDS) else chain
+            readChain.proceed(r)
+        }
         .addNetworkInterceptor { chain ->
             val r = chain.request()
             if (r.tag(WireGuard::class.java)?.valid?.invoke() != true) throw SafeFailure(SafeFailure.Reason.Retired)
@@ -27,7 +37,7 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         SecretTokens(body.getValue("accessToken").jsonPrimitive.content,body.getValue("refreshToken").jsonPrimitive.content,body.getValue("user").jsonObject.getValue("id").jsonPrimitive.content)
     } catch (_: Exception) { throw SafeFailure(SafeFailure.Reason.InvalidResponse) }
     private class Reply(val code: Int, val body: JsonObject, val text: String = "")
-    private fun wire(path: String, method: String = "GET", body: JsonObject? = null, access: String? = null, dispatchValid: (() -> Boolean)? = null, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, rawJson:String?=null, valid: () -> Boolean): Reply {
+    private fun wire(path: String, method: String = "GET", body: JsonObject? = null, access: String? = null, dispatchValid: (() -> Boolean)? = null, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, rawJson:String?=null, calls:DiscoveryCalls?=null, responseValid:(()->Boolean)?=null, valid: () -> Boolean): Reply {
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
         val pathOnly=path.substringBefore('?')
         require(path.startsWith("/") && !path.startsWith("//") && '#' !in path && '\\' !in pathOnly)
@@ -44,9 +54,12 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         }
         require(rawJson==null || path=="/mix-plans/import" && method=="POST" && body==null && !emptyBody)
         request.method(method, if (method in listOf("GET","HEAD")) null else (rawJson ?: if(emptyBody)"" else body?.toString() ?: "{}").toRequestBody("application/json".toMediaType()))
+        val call=http.newCall(request.build())
+        val cancel=call::cancel
+        if(calls!=null&&!calls.track(cancel))throw SafeFailure(SafeFailure.Reason.Retired)
         try {
-            http.newCall(request.build()).execute().use { response ->
-                if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
+            call.execute().use { response ->
+                if (!(responseValid?.invoke() ?: valid())) throw SafeFailure(SafeFailure.Reason.Retired)
                 if (response.code in 300..399) throw SafeFailure(SafeFailure.Reason.Endpoint)
                 // Never parse/display server error text, which can echo sensitive input.
                 if (response.code !in 200..299) {
@@ -74,13 +87,14 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
                 if (source.request(responseLimit + 1)) throw SafeFailure(SafeFailure.Reason.InvalidResponse)
                 val text = source.readUtf8()
                 val parsed = if (text.isBlank()) buildJsonObject {} else json.parseToJsonElement(text).jsonObject
-                if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
+                if (!(responseValid?.invoke() ?: valid())) throw SafeFailure(SafeFailure.Reason.Retired)
                 return Reply(response.code, parsed, text)
             }
         } catch (e: SafeFailure) { throw e }
         catch (_: java.net.UnknownHostException) { throw SafeFailure(SafeFailure.Reason.Network) }
         catch (_: java.io.IOException) { throw SafeFailure(if (method == "GET") SafeFailure.Reason.Network else SafeFailure.Reason.Uncertain) }
         catch (_: Exception) { throw SafeFailure(SafeFailure.Reason.InvalidResponse) }
+        finally {calls?.untrack(cancel)}
     }
     fun authenticate(email: String, password: String, username: String? = null): Boolean {
         if (session.state.value is AuthState.SaveRequired) return session.retrySave()
@@ -94,7 +108,7 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
     }
     fun restore(): Boolean = session.restore { refresh(it) }
     fun restoreOnline(ticket:AccountSession.OnlineRestoreTicket):Boolean = session.restoreOnline(ticket) {refresh(it)}
-    private fun refresh(scope: AccountScope, access: String? = null, routeValid: () -> Boolean = { true }): Boolean = session.refreshExchange(scope,access) { token ->
+    private fun refresh(scope: AccountScope, access: String? = null, routeValid: () -> Boolean = { true }, joinDiscoverySave:Boolean=false): Boolean = session.refreshExchange(scope,access,joinDiscoverySave) { token ->
         var dispatched = false
         try {
             // A dispatched rotation must still persist on route exit; only admission is route-owned.
@@ -108,17 +122,26 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
             else throw error
         }
     }
-    private fun authorized(scope: AccountScope, path: String, method: String = "GET", body: JsonObject? = null, readOnly: Boolean = method == "GET", valid: () -> Boolean = { true }, expectedStatus: Int? = null, acceptedStatuses:Set<Int>? = null, dispatchValid: (() -> Boolean)? = null, allowMissing: Boolean = false, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, privateFeature: Boolean = false, rawJson:String?=null, received:((String)->Unit)?=null): JsonObject {
+    private fun authorized(scope: AccountScope, path: String, method: String = "GET", body: JsonObject? = null, readOnly: Boolean = method == "GET", valid: () -> Boolean = { true }, expectedStatus: Int? = null, acceptedStatuses:Set<Int>? = null, dispatchValid: (() -> Boolean)? = null, allowMissing: Boolean = false, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, privateFeature: Boolean = false, rawJson:String?=null, calls:DiscoveryCalls?=null, received:((String)->Unit)?=null): JsonObject {
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
         val access = session.access(scope)
-        var result = wire(path,method,body,access,dispatchValid,headers,emptyBody,rawJson) {session.remoteCurrent(scope) && valid()}
+        val discoveryRead=method=="GET"&&path.startsWith("/discovery/search?")
+        fun exchange(bearer:String, admit:(()->Boolean)?):Reply = if(discoveryRead) {
+            // Only Discover search GETs use this split. wire calls responseValid only
+            // after the network guard admitted the exact still-usable bearer.
+            wire(path,access=bearer,calls=calls,dispatchValid={session.discoveryDispatchCurrent(scope,bearer)},
+                responseValid={valid()&&session.awaitDiscoveryRead(scope)&&valid()},valid=valid)
+        } else wire(path,method,body,bearer,admit,headers,emptyBody,rawJson,calls) {session.remoteCurrent(scope) && valid()}
+        var result = exchange(access,dispatchValid)
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
-        if (result.code == 401 && readOnly && refresh(scope,access,valid)) {
+        if (result.code == 401 && readOnly && refresh(scope,access,valid,joinDiscoverySave=discoveryRead)) {
             if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
-            result = wire(path,method,body,session.access(scope),headers=headers,emptyBody=emptyBody,rawJson=rawJson) {session.remoteCurrent(scope) && valid()}
+            result = exchange(session.access(scope),null)
         }
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
-        session.checkScope(scope)
+        if(discoveryRead) {
+            if(!session.awaitDiscoveryRead(scope)||!valid())throw SafeFailure(SafeFailure.Reason.Retired)
+        } else session.checkScope(scope)
         if (privateFeature && result.code !in 200..299) throw com.soundq.android.data.connect.FeatureFailure(result.code)
         if (allowMissing && result.code == 404) throw PlaylistMissing()
         if (result.code !in 200..299) {
@@ -358,18 +381,20 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         ImportJson.job(authorized(scope,"/downloads/${id.value}",valid=current,expectedStatus=200),id)
     fun recentImports(scope: AccountScope, current: () -> Boolean = {true}): List<ImportJob> =
         ImportJson.recent(authorized(scope,"/downloads",valid=current,expectedStatus=200))
-    fun resolveSource(scope:AccountScope,source:ImportSource,valid:()->Boolean):com.soundq.android.data.discovery.SourceResults {
-        val body=authorized(scope,"/discovery/resolve-url","POST",payload("url" to source.url),readOnly=false,valid=valid,expectedStatus=200)
+    internal fun resolveSource(scope:AccountScope,source:ImportSource,calls:DiscoveryCalls?=null,valid:()->Boolean):com.soundq.android.data.discovery.SourceResults {
+        val body=authorized(scope,"/discovery/resolve-url","POST",payload("url" to source.url),readOnly=false,valid=valid,expectedStatus=200,calls=calls)
         return com.soundq.android.data.discovery.DiscoveryJson.resolved(body,source.url)
     }
     fun releaseRadar(scope:AccountScope,valid:()->Boolean):com.soundq.android.data.discovery.RadarPage =
         com.soundq.android.data.discovery.RadarJson.page(authorized(scope,"/me/discovery/releases",valid=valid,expectedStatus=200,headers=mapOf("X-SoundQ-Radar-Policy" to "recording-radar-v2")))
     fun radarMembership(scope:AccountScope,recording:com.soundq.android.data.catalog.RecordingMbid,valid:()->Boolean):Boolean =
         com.soundq.android.data.discovery.RadarJson.membership(authorized(scope,"/me/discovery/releases/${recording.value}/membership",valid=valid,expectedStatus=200),recording)
-    fun discoverySearch(scope: AccountScope, query:String, valid:()->Boolean = {true},grouped:Boolean=false): com.soundq.android.data.discovery.SourceResults {
+    internal fun discoverySearch(scope: AccountScope, query:String, valid:()->Boolean = {true},grouped:Boolean=false,provider:SourceProvider?=null,calls:DiscoveryCalls?=null): com.soundq.android.data.discovery.SourceResults {
         require(query.isNotBlank() && query.toByteArray(Charsets.UTF_8).size<=512)
-        val url=session.endpoint.base.newBuilder().addQueryParameter("q",query).addQueryParameter("limit",com.soundq.android.data.discovery.DiscoveryJson.SEARCH_SURFACE_LIMIT.toString()).addQueryParameter("providers",if(grouped)"youtube,soundcloud,musicbrainz" else "youtube,soundcloud").build()
-        return com.soundq.android.data.discovery.DiscoveryJson.search(authorized(scope,"/discovery/search?"+url.encodedQuery,valid=valid,expectedStatus=200),query)
+        require(provider==null||!grouped)
+        val providers=provider?.wire ?: if(grouped)"youtube,soundcloud,musicbrainz" else "youtube,soundcloud"
+        val url=session.endpoint.base.newBuilder().addQueryParameter("q",query).addQueryParameter("limit",com.soundq.android.data.discovery.DiscoveryJson.SEARCH_SURFACE_LIMIT.toString()).addQueryParameter("providers",providers).build()
+        return com.soundq.android.data.discovery.DiscoveryJson.search(authorized(scope,"/discovery/search?"+url.encodedQuery,valid=valid,expectedStatus=200,calls=calls),query,provider)
     }
     fun createSourceDecision(scope:AccountScope,choice:com.soundq.android.data.discovery.SourceChoice,valid:()->Boolean,admit:()->Boolean,playlistId:com.soundq.android.data.playlists.PlaylistId?=null):com.soundq.android.data.discovery.SourceDecision {
         val receipt=try {intakeReceipts.begin(session.endpoint.identity,scope.accountId,"source",choice.selection.id,choice.candidate.id,playlistId=playlistId?.value)}catch(_:Exception){throw SafeFailure(SafeFailure.Reason.StoreRejected)}

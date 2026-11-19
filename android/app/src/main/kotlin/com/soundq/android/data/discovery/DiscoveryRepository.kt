@@ -1,8 +1,16 @@
 package com.soundq.android.data.discovery
 
 import com.soundq.android.data.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.time.Instant
 
 /** Owns source reads and disposable inspection capabilities, never an intake/player. */
@@ -28,47 +36,206 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
     val state:StateFlow<DiscoveryState> = mutable
     private var view:DiscoveryView?=null
     private var owner:AccountScope?=null
-    private var read:Any?=null
+    // One draft incarnation owns up to two independent search lanes (or one link
+    // resolution). The rendered StateFlow is only the selected lane's projection.
+    private data class SearchLane(
+        val request:DiscoverySearchRequest?=null,
+        val phase:DiscoveryPhase=DiscoveryPhase.Idle,
+        val results:DiscoveryResults?=null,
+        val error:SafeFailure.Reason?=null,
+        val pendingProviders:Boolean=false,
+        val providerFailure:SafeFailure.Reason?=null
+    ) {
+        fun afterCancellation()=if(phase==DiscoveryPhase.Ready)copy(request=null,pendingProviders=false) else SearchLane()
+    }
+    private class PriorSearch(val state:DiscoveryState,val lanes:Map<SearchFamily,SearchLane>)
+    private val lanes=mutableMapOf<SearchFamily,SearchLane>()
     private var detailsIncarnation=Any()
-    private val history=mutableListOf<DiscoveryState>()
+    private val history=mutableListOf<PriorSearch>()
     private val recentHistory=DiscoveryHistory(historyDirectory)
+    private fun selected(state:DiscoveryState=mutable.value)=state.draft.family(state.resultType)
+    private fun project(state:DiscoveryState=mutable.value) {
+        val lane=lanes[selected(state)] ?: SearchLane()
+        mutable.value=state.copy(phase=lane.phase,results=lane.results,error=lane.error,pendingProviders=lane.pendingProviders)
+    }
+    private fun put(family:SearchFamily,lane:SearchLane) {
+        lanes[family]=lane
+        if(family==selected())project()
+    }
+    private fun cancelSearches() {lanes.values.forEach {it.request?.calls?.cancel()};lanes.clear()}
+    private fun suspendSearches() {
+        val retained=lanes.mapValues {(_,lane)->lane.afterCancellation()}.filterValues {it.phase!=DiscoveryPhase.Idle}
+        cancelSearches();lanes.putAll(retained)
+        project(mutable.value.copy(inspected=null))
+    }
     @Synchronized fun open():DiscoveryView? {
         val scope=session.capture() ?: run {retire();return null}
-        if(owner?.let(session::current)!=true)retire()
-        owner=scope;read=null;detailsIncarnation=Any();cancelRadar();radarLanding=null;radarVisitRead=null
+        if(owner?.let(session::discoveryCurrent)!=true)retire()
+        owner=scope;detailsIncarnation=Any();cancelRadar();radarLanding=null;radarVisitRead=null
         radarMutable.value=radarMutable.value.copy(visibleCount=5)
+        suspendSearches()
         mutable.value=mutable.value.copy(recent=recentHistory.load(session.endpoint.identity,scope.accountId))
-        mutable.value=mutable.value.copy(phase=if(mutable.value.results!=null)DiscoveryPhase.Ready else DiscoveryPhase.Idle,inspected=null)
         return DiscoveryView(scope).also {view=it}
     }
-    @Synchronized fun current(candidate:DiscoveryView)=view===candidate&&session.current(candidate.scope)
-    @Synchronized fun close(candidate:DiscoveryView) {if(view===candidate){view=null;read=null;detailsIncarnation=Any();cancelRadar();radarLanding=null;mutable.value=mutable.value.copy(phase=if(mutable.value.results!=null)DiscoveryPhase.Ready else DiscoveryPhase.Idle,inspected=null)}}
-    @Synchronized fun retire() {view=null;owner=null;read=null;detailsIncarnation=Any();history.clear();mutable.value=DiscoveryState();radarRead=null;radarLanding=null;radarVisitRead=null;radarAction=null;radarMutable.value=RadarState(if(radarAdmitted)RadarPhase.Idle else RadarPhase.Held)}
+    @Synchronized fun current(candidate:DiscoveryView)=view===candidate&&session.discoveryCurrent(candidate.scope)
+    @Synchronized fun close(candidate:DiscoveryView) {if(view===candidate){view=null;detailsIncarnation=Any();cancelRadar();radarLanding=null;suspendSearches()}}
+    @Synchronized fun retire() {view=null;owner=null;cancelSearches();detailsIncarnation=Any();history.clear();mutable.value=DiscoveryState();radarRead=null;radarLanding=null;radarVisitRead=null;radarAction=null;radarMutable.value=RadarState(if(radarAdmitted)RadarPhase.Idle else RadarPhase.Held)}
+    private fun ownsSearch(request:DiscoverySearchRequest)=
+        view===request.view&&mutable.value.draft===request.draft&&lanes[request.family]?.request===request
+    @Synchronized internal fun abandonSearch(request:DiscoverySearchRequest) {
+        if(!ownsSearch(request))return
+        request.calls.cancel()
+        val retained=lanes.getValue(request.family).afterCancellation()
+        if(request.family==selected()) {
+            lanes[request.family]=retained
+            project(mutable.value.copy(inspected=null))
+        } else lanes[request.family]=retained
+    }
     @Synchronized fun edit(candidate:DiscoveryView,text:String) {
         if(!current(candidate))return
-        cancelRadar();read=null;detailsIncarnation=Any();mutable.value=DiscoveryState(draft=DiscoveryDraft(text),resultType=mutable.value.resultType,canBack=history.isNotEmpty(),recent=mutable.value.recent)
+        cancelRadar();cancelSearches();detailsIncarnation=Any();mutable.value=DiscoveryState(draft=DiscoveryDraft(text),resultType=mutable.value.resultType,canBack=history.isNotEmpty(),recent=mutable.value.recent)
     }
     @Synchronized fun claimSearch(candidate:DiscoveryView,expected:DiscoveryDraft):DiscoverySearchRequest? {
         if(!current(candidate)||mutable.value.draft!==expected||mutable.value.phase==DiscoveryPhase.Loading)return null
         val q=expected.text.trim()
         if(q.isEmpty()||q.toByteArray(Charsets.UTF_8).size>512){mutable.value=mutable.value.copy(invalidQuery=true);return null}
-        val token=Any();read=token;detailsIncarnation=Any()
         val recent=recentHistory.add(session.endpoint.identity,candidate.scope.accountId,q)
-        mutable.value=mutable.value.copy(phase=DiscoveryPhase.Loading,results=null,inspected=null,error=null,expired=false,invalidQuery=false,recent=recent)
-        return DiscoverySearchRequest(candidate,expected,token)
+        return startSearch(candidate,mutable.value.copy(recent=recent))
     }
-    fun search(candidate:DiscoveryView,expected:DiscoveryDraft) {claimSearch(candidate,expected)?.let(::search)}
-    fun search(request:DiscoverySearchRequest) {
-        val candidate=request.view;val expected=request.draft;val token=request.token
-        fun valid()=synchronized(this){current(candidate)&&read===token&&mutable.value.draft===expected}
-        synchronized(this){if(!valid()||request.dispatched)return;request.dispatched=true}
+    private fun startSearch(candidate:DiscoveryView,state:DiscoveryState):DiscoverySearchRequest {
+        val family=selected(state)
+        val request=DiscoverySearchRequest(candidate,state.draft,family)
+        lanes[family]?.request?.calls?.cancel()
+        lanes[family]=SearchLane(request,DiscoveryPhase.Loading,pendingProviders=family==SearchFamily.Song)
+        detailsIncarnation=Any()
+        project(state.copy(inspected=null,expired=false,invalidQuery=false))
+        return request
+    }
+    suspend fun search(candidate:DiscoveryView,expected:DiscoveryDraft) {claimSearch(candidate,expected)?.let {search(it)}}
+    suspend fun search(request:DiscoverySearchRequest) {
+        val job=currentCoroutineContext()[Job]!!
+        val candidate=request.view;val scope=candidate.scope
+        // Route/request custody does not depend on a bearer being momentarily
+        // withdrawn. The API independently guards actual network admission.
+        fun valid()=synchronized(this){job.isActive&&ownsSearch(request)}
+        synchronized(this){
+            if(!ownsSearch(request)||request.dispatched)return
+            if(!job.isActive){abandonSearch(request);return}
+            request.dispatched=true
+        }
         try {
-            val source=com.soundq.android.data.imports.ImportSource.parse(expected.text)
-            val result=if(source!=null)api.resolveSource(candidate.scope,source,::valid) else api.discoverySearch(candidate.scope,expected.text.trim(),::valid,grouped=true)
-            synchronized(this){if(valid()){read=null;mutable.value=mutable.value.copy(phase=DiscoveryPhase.Ready,results=result)}}
-        }catch(e:Exception){synchronized(this){if(valid()){read=null;mutable.value=mutable.value.copy(phase=DiscoveryPhase.Failed,error=(e as? SafeFailure)?.reason ?: SafeFailure.Reason.Network)}}}
+            val query=request.draft.text.trim()
+            when(request.family) {
+                SearchFamily.Link,SearchFamily.Grouped -> {
+                    val response=searchResult {
+                        searchCall(request) {
+                            val source=request.draft.source
+                            if(source!=null)api.resolveSource(scope,source,calls=request.calls,valid=::valid)
+                            else api.discoverySearch(scope,query,::valid,grouped=true,calls=request.calls)
+                        }
+                    }
+                    settleSearch(request,job,response) {
+                        response.fold(
+                            onSuccess={SearchLane(phase=DiscoveryPhase.Ready,results=DiscoveryResults(listOf(it)))},
+                            onFailure={SearchLane(phase=DiscoveryPhase.Failed,error=searchFailure(it))}
+                        )
+                    }
+                }
+                SearchFamily.Song -> coroutineScope {
+                    for(provider in SourceProvider.entries)launch(Dispatchers.IO) {
+                        val worker=currentCoroutineContext()[Job]!!
+                        val response=searchResult {
+                            searchCall(request) {api.discoverySearch(scope,query,::valid,provider=provider,calls=request.calls)}
+                        }
+                        settleSearch(request,worker,response) {lane->
+                            val previous=lane.results
+                            val received=response.getOrNull()
+                            val duplicateSession=received?.selection?.id?.let {id->previous?.batches?.any {it.selection?.id==id}}==true
+                            val batch=if(received!=null&&!duplicateSession)received else
+                                SourceResults(query,emptyList(),null,listOf(ProviderObservation(provider,"failed")))
+                            val results=DiscoveryResults(previous?.batches.orEmpty()+batch,previous?.identity ?: Any())
+                            val pending=results.batches.size<SourceProvider.entries.size
+                            val unavailable=!pending&&results.providers.none {it.status=="ok"}
+                            val failure=lane.providerFailure ?: response.exceptionOrNull()?.let(::searchFailure)
+                                ?: if(duplicateSession)SafeFailure.Reason.InvalidResponse else null
+                            SearchLane(if(pending)request else null,when {
+                                unavailable->DiscoveryPhase.Failed
+                                !pending||results.rows.isNotEmpty()->DiscoveryPhase.Ready
+                                else->DiscoveryPhase.Loading
+                            },results,if(unavailable)failure ?: SafeFailure.Reason.ServiceUnavailable else null,pending,failure)
+                        }
+                    }
+                }
+            }
+        } finally {abandonSearch(request)}
     }
-    @Synchronized fun selectType(candidate:DiscoveryView,type:DiscoveryResultType) {if(current(candidate)){if(type!=mutable.value.resultType)detailsIncarnation=Any();mutable.value=mutable.value.copy(resultType=type)}}
+    private inline fun searchResult(load:()->SourceResults):Result<SourceResults> = try {Result.success(load())}
+        catch(e:CancellationException){throw e}
+        catch(e:Exception){Result.failure(e)}
+    private fun searchFailure(error:Throwable)=(error as? SafeFailure)?.reason ?: SafeFailure.Reason.Network
+
+    private fun settleSearch(request:DiscoverySearchRequest,job:Job,response:Result<SourceResults>,prepare:(SearchLane)->SearchLane) {
+        val scope=request.view.scope
+        job.ensureActive()
+        request.beforePublication?.invoke(response)
+        while(true) {
+            val saving=synchronized(this) {
+                job.ensureActive()
+                if(!ownsSearch(request))return
+                // Preparation is local: even a hidden lane can later be projected or saved by Back.
+                val lane=prepare(lanes.getValue(request.family))
+                val account=synchronized(session) {
+                    // Repository -> session. Order the lane AND its visible projection
+                    // against revocation and bearer withdrawal, not just the scope read.
+                    val authority=session.discoveryReadState(scope)
+                    job.ensureActive()
+                    if(authority==DiscoveryReadState.Current) {
+                        // DiscoverScreen's lifecycle collector only writes Compose state;
+                        // actions/effects don't run in the StateFlow setter.
+                        put(request.family,lane)
+                        return
+                    }
+                    authority
+                }
+                // A resolve POST cannot borrow GET custody. Call cancellation and
+                // retirement feedback stay outside the account monitor.
+                if(account !is DiscoveryReadState.Saving||request.family==SearchFamily.Link) {
+                    failRetiredSearch(request,job)
+                    return
+                }
+                account.completion
+            }
+            // Never wait for secure persistence under either monitor.
+            if(!saving.get()) {
+                synchronized(this) {
+                    if(ownsSearch(request))failRetiredSearch(request,job)
+                }
+                return
+            }
+        }
+    }
+    private fun failRetiredSearch(request:DiscoverySearchRequest,job:Job) {
+        job.ensureActive()
+        request.calls.cancel()
+        job.ensureActive()
+        lanes[request.family]=SearchLane(phase=DiscoveryPhase.Failed,error=SafeFailure.Reason.Retired)
+        if(request.family==selected())project(mutable.value.copy(inspected=null,expired=false))
+    }
+    // Blocking wire/refresh code stays on IO; cancellation closes the registered Call rather than
+    // merely discarding its reply. An already-entered auth rotation keeps its existing custody.
+    private suspend fun <T> searchCall(request:DiscoverySearchRequest,load:()->T):T = suspendCancellableCoroutine {continuation->
+        continuation.invokeOnCancellation {request.calls.cancel()}
+        if(continuation.isActive)continuation.resumeWith(runCatching(load))
+    }
+    @Synchronized fun selectType(candidate:DiscoveryView,type:DiscoveryResultType):DiscoverySearchRequest? {
+        if(!current(candidate)||type==mutable.value.resultType)return null
+        val next=mutable.value.copy(resultType=type,inspected=null,expired=false)
+        detailsIncarnation=Any()
+        // A tab change neither re-records the query nor replaces another lane's work.
+        if(lanes.isNotEmpty()&&selected(next) !in lanes)return startSearch(candidate,next)
+        project(next)
+        return null
+    }
     @Synchronized fun clearRecent(candidate:DiscoveryView) {
         if(current(candidate))mutable.value=mutable.value.copy(recent=recentHistory.clear(session.endpoint.identity,candidate.scope.accountId))
     }
@@ -85,13 +252,22 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
     }
     @Synchronized fun refine(candidate:DiscoveryView,entity:DiscoveryEntity):DiscoveryDraft? {
         if(!current(candidate)||mutable.value.results?.entities?.none {it===entity}!=false)return null
-        history+=mutable.value.copy(inspected=null)
+        rememberSearch()
         edit(candidate,entity.title)
         return mutable.value.draft
     }
+    private fun rememberSearch() {
+        history+=PriorSearch(mutable.value.copy(inspected=null),lanes.mapValues {(_,lane)->
+            if(lane.request!=null)lane.afterCancellation() else lane
+        })
+    }
     @Synchronized fun back(candidate:DiscoveryView):Boolean {
         if(!current(candidate)||history.isEmpty())return false
-        cancelRadar();read=null;detailsIncarnation=Any();mutable.value=history.removeAt(history.lastIndex).copy(inspected=null,canBack=history.isNotEmpty(),recent=mutable.value.recent);return true
+        cancelRadar();cancelSearches();detailsIncarnation=Any()
+        val prior=history.removeAt(history.lastIndex)
+        lanes.putAll(prior.lanes)
+        project(prior.state.copy(canBack=history.isNotEmpty(),recent=mutable.value.recent))
+        return true
     }
     @Synchronized fun showRadar(candidate:DiscoveryView,visible:()->Boolean):RadarLanding? {
         if(!radarAdmitted||!current(candidate)||!session.remoteCurrent(candidate.scope)||session.state.value !is AuthState.SignedIn||!visible())return null
@@ -144,7 +320,7 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
                 if(!valid())return null
                 radarAction=null;radarMutable.value=radarMutable.value.copy(finding=false)
                 if(owned){libraryChanged();return null}
-                history+=mutable.value.copy(inspected=null)
+                rememberSearch()
                 edit(request.view,request.song.title+" "+request.song.artist)
                 mutable.value=mutable.value.copy(resultType=DiscoveryResultType.Song)
                 return claimSearch(request.view,mutable.value.draft)
@@ -174,12 +350,11 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
     }
     @Synchronized fun inspect(candidate:DiscoveryView,row:SourceCandidate):SourceChoice? {
         if(!current(candidate)||mutable.value.phase!=DiscoveryPhase.Ready)return null
-        val results=mutable.value.results ?: return null
-        val selection=results.selection ?: return null
-        if(results.rows.none {it===row})return null
-        if(!selection.expires.isAfter(now())) {mutable.value=mutable.value.copy(expired=true,inspected=null);return null}
+        val batch=mutable.value.results?.batches?.firstOrNull {batch->batch.rows.any {it===row}} ?: return null
+        val selection=batch.selection ?: return null
+        if(!selection.expires.isAfter(now())) {mutable.value=mutable.value.copy(expired=true);return null}
         lateinit var choice:SourceChoice
-        choice=SourceChoice(candidate.scope,row,selection) {synchronized(this){current(candidate)&&mutable.value.results===results&&mutable.value.inspected===choice&&selection.expires.isAfter(now())}}
+        choice=SourceChoice(candidate.scope,row,selection) {synchronized(this){current(candidate)&&mutable.value.results?.batches?.any {it===batch}==true&&mutable.value.inspected===choice&&selection.expires.isAfter(now())}}
         mutable.value=mutable.value.copy(inspected=choice,expired=false)
         return choice
     }

@@ -34,10 +34,17 @@ class DiscoveryTypedJourneyTest {
             override fun dispatch(request:RecordedRequest):MockResponse {
                 if(request.url.encodedPath=="/api/v1/discovery/search") {
                     reads.incrementAndGet()
-                    check(request.url.queryParameter("providers")=="youtube,soundcloud,musicbrainz")
                     val q=request.url.queryParameter("q")!!
                     val c="""{"candidateId":"typed-source","provider":"youtube","sourceUrl":"https://youtu.be/fixture","title":"Typed source","artist":"Artist","uploader":"Uploader","durationMs":123000,"downloadable":true,"playable":false}"""
-                    return MockResponse.Builder().code(200).body("""{"query":"$q","results":[$c],"sections":[{"kind":"artists","title":"Artists","items":[{"kind":"artist","id":"$artistId","title":"Exact Artist","subtitle":"Group"}]},{"kind":"albums","title":"Albums","items":[{"kind":"album","id":"$groupId","title":"Exact Album","subtitle":"Artist"}]}],"providers":[{"provider":"youtube","status":"ok","resultCount":1},{"provider":"soundcloud","status":"timeout","resultCount":0},{"provider":"musicbrainz","status":"ok","resultCount":2}],"selectionSessionId":"123e4567-e89b-12d3-a456-426614174010","selectionExpiresAt":"2030-01-01T00:00:00Z"}""").build()
+                    val grouped=when(request.url.queryParameter("providers")) {
+                        "youtube,soundcloud,musicbrainz"->true
+                        "youtube"->false
+                        "soundcloud"->return MockResponse.Builder().body(emptyDiscoveryProvider(q,"soundcloud")).build()
+                        else->error("Unexpected search scope")
+                    }
+                    val sections=if(grouped)""", "sections":[{"kind":"artists","title":"Artists","items":[{"kind":"artist","id":"$artistId","title":"Exact Artist","subtitle":"Group"}]},{"kind":"albums","title":"Albums","items":[{"kind":"album","id":"$groupId","title":"Exact Album","subtitle":"Artist"}]}]""" else ""
+                    val catalogStatus=if(grouped)""",{"provider":"soundcloud","status":"timeout","resultCount":0},{"provider":"musicbrainz","status":"ok","resultCount":2}""" else ""
+                    return MockResponse.Builder().code(200).body("""{"query":"$q","results":[$c],"providers":[{"provider":"youtube","status":"ok","resultCount":1}$catalogStatus],"selectionSessionId":"123e4567-e89b-12d3-a456-426614174010","selectionExpiresAt":"2030-01-01T00:00:00Z"$sections}""").build()
                 }
                 val path=request.url.encodedPath
                 val body=when(path) {
@@ -59,7 +66,7 @@ class DiscoveryTypedJourneyTest {
             compose.onAllNodesWithText("Discover").filterToOne(hasClickAction()).performClick()
             compose.onNodeWithContentDescription("Music search query").performTextInput("seed")
             try {
-                compose.waitUntil(10000){app.graph.discovery.state.value.results?.query=="seed"}
+                compose.waitUntil(10000){app.graph.discovery.state.value.let {it.results?.query=="seed"&&!it.pendingProviders}}
             } catch(original:Throwable) {
                 fun observation():String {
                     val s=app.graph.discovery.state.value
@@ -70,7 +77,7 @@ class DiscoveryTypedJourneyTest {
                 captureListeningStage("discover-query-failure")
                 compose.mainClock.advanceTimeBy(400)
                 compose.waitForIdle()
-                runCatching {compose.waitUntil(5000){app.graph.discovery.state.value.results?.query=="seed"}}
+                runCatching {compose.waitUntil(5000){app.graph.discovery.state.value.let {it.results?.query=="seed"&&!it.pendingProviders}}}
                 captureListeningStage("discover-query-clock-control")
                 throw AssertionError("Ordinary query failed before=$before; after explicit clock advance=${observation()}",original)
             }
@@ -91,6 +98,7 @@ class DiscoveryTypedJourneyTest {
             captureListeningStage("discover-typed-song")
             checkOptions("discover-options-song")
             compose.onNode(hasText("Artist") and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role,androidx.compose.ui.semantics.Role.Tab)).performClick()
+            compose.waitUntil(10000){app.graph.discovery.state.value.results?.entities?.isNotEmpty()==true}
             compose.onNodeWithText("Exact Artist").performScrollTo().performClick()
             compose.waitUntil(10000){app.graph.discovery.state.value.results?.query=="Exact Artist"}
             compose.waitForIdle()
@@ -98,7 +106,7 @@ class DiscoveryTypedJourneyTest {
             checkOptions("discover-options-artist")
             assertEquals("Artist",app.graph.discovery.state.value.resultType.label)
             compose.onNodeWithContentDescription("Back to previous search").performClick()
-            compose.waitUntil(10000){app.graph.discovery.state.value.results?.query=="seed"}
+            compose.waitUntil(10000){app.graph.discovery.state.value.let {it.results?.query=="seed"&&!it.pendingProviders}}
             compose.onNode(hasText("Album") and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role,androidx.compose.ui.semantics.Role.Tab)).performClick()
             compose.onNodeWithText("Exact Album").assertExists()
             compose.onNode(hasText("Song") and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role,androidx.compose.ui.semantics.Role.Tab)).performClick()
@@ -112,13 +120,14 @@ class DiscoveryTypedJourneyTest {
             assertEquals("seed",app.graph.discovery.state.value.results!!.query)
             assertEquals(0,writes.get());assertEquals(queue,model.playback.value.queue)
             assertEquals(selected,model.playback.value.selectedOccurrence);assertFalse(model.playback.value.isPlaying)
-            assertEquals(2,reads.get())
+            assertEquals(4,reads.get())
             instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
             compose.onNodeWithContentDescription("Clear search").assertIsDisplayed().performClick()
             compose.onNodeWithText("Recent searches").assertIsDisplayed()
             compose.onNode(hasText("seed") and hasClickAction()).performClick()
-            compose.waitUntil(10000){app.graph.discovery.state.value.results?.query=="seed"}
-            compose.onNode(hasText("Artist") and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role,androidx.compose.ui.semantics.Role.Tab)).performScrollTo().performClick()
+            compose.waitUntil(10000){app.graph.discovery.state.value.let {it.results?.query=="seed"&&!it.pendingProviders}}
+            compose.onNode(hasText("Artist") and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role,androidx.compose.ui.semantics.Role.Tab)).assertIsDisplayed().performClick()
+            compose.waitUntil(10000){app.graph.discovery.state.value.results?.entities?.isNotEmpty()==true}
             val accepted=app.graph.discovery.state.value.results
             compose.onNodeWithContentDescription("More for Exact Artist").performScrollTo().performClick()
             compose.onNodeWithText("Artist details").assertIsDisplayed()
@@ -136,7 +145,7 @@ class DiscoveryTypedJourneyTest {
             assertTrue(compose.onAllNodesWithText("Discover").fetchSemanticsNodes().isNotEmpty())
             assertSame(accepted,app.graph.discovery.state.value.results)
             assertEquals(listOf("/api/v1/artists/$artistId","/api/v1/search/releases","/api/v1/albums/$releaseId"),catalogReads.toList())
-            assertEquals(3,reads.get());assertEquals(0,writes.get())
+            assertEquals(7,reads.get());assertEquals(0,writes.get())
             assertEquals(queue,model.playback.value.queue);assertEquals(selected,model.playback.value.selectedOccurrence);assertFalse(model.playback.value.isPlaying)
         } finally {instrumentation.removeMonitor(monitor);server.dispatcher=old;app.graph.session.retire()}
     }

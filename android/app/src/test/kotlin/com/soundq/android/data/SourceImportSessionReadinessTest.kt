@@ -17,8 +17,8 @@ class SourceImportSessionReadinessTest {
             val discovery=DiscoveryRepository(session,api)
             val route=discovery.open()!!
             discovery.edit(route,"海 & music")
-            fixture.reply(DiscoveryBoundaryTest.search())
-            discovery.search(route,discovery.state.value.draft)
+            fixture.replySong(DiscoveryBoundaryTest.search())
+            discovery.searchBlocking(route,discovery.state.value.draft)
             val first=discovery.inspect(route,discovery.state.value.results!!.rows.single())!!
             val view=imports.open()!!
             val submission=imports.claimSource(view,first)!!
@@ -40,8 +40,8 @@ class SourceImportSessionReadinessTest {
             assertEquals(before,fixture.server.requestCount)
             val freshSession="123e4567-e89b-12d3-a456-426614174099"
             discovery.dismiss(route,sameSession)
-            fixture.reply(DiscoveryBoundaryTest.search().replace("123e4567-e89b-12d3-a456-426614174010",freshSession))
-            discovery.search(route,discovery.state.value.draft)
+            fixture.replySong(DiscoveryBoundaryTest.search().replace("123e4567-e89b-12d3-a456-426614174010",freshSession))
+            discovery.searchBlocking(route,discovery.state.value.draft)
             val fresh=discovery.inspect(route,discovery.state.value.results!!.rows.single())!!
             assertEquals(freshSession,fresh.selection.id)
             assertTrue(imports.prepareSource(view,fresh))

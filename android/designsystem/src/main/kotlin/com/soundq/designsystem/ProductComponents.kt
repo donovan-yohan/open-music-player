@@ -75,18 +75,20 @@ enum class FeedbackKind {Loading,Empty,Error,Notice}
 
 /** One editor lane; no draft synchronization, focus changes or network policy. */
 @Composable fun SoundQSearchStrip(value:TextFieldValue,onValueChange:(TextFieldValue)->Unit,placeholder:String,
-    queryLabel:String,searchLabel:String,clearLabel:String,onSubmit:()->Unit,onClear:()->Unit,
+    queryLabel:String,searchLabel:String,clearLabel:String,onSubmit:(()->Unit)?,onClear:()->Unit,
     modifier:Modifier=Modifier,editorModifier:Modifier=Modifier,enabled:Boolean=true,submitEnabled:Boolean=enabled,
     clearEnabled:Boolean=enabled&&value.text.isNotEmpty(),trailing:(@Composable RowScope.()->Unit)?=null) {
     val colors=SoundQ.colors
     Column(modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().heightIn(min=64.dp),verticalAlignment=Alignment.CenterVertically) {
-            SoundQIconButton(SoundQIcon.Search,searchLabel,onSubmit,Modifier.heightIn(min=64.dp),enabled=submitEnabled,outlined=false)
+            if(onSubmit!=null)SoundQIconButton(SoundQIcon.Search,searchLabel,onSubmit,Modifier.heightIn(min=64.dp),enabled=submitEnabled,outlined=false)
+            else Box(Modifier.size(48.dp),contentAlignment=Alignment.Center) {SoundQIcon(SoundQIcon.Search,null,tint=colors.muted)}
             BasicTextField(value,onValueChange,
                 editorModifier.weight(1f).heightIn(min=64.dp).semantics {contentDescription=queryLabel},
                 enabled=enabled,singleLine=true,textStyle=SoundQ.typography.body.copy(color=colors.text),
                 cursorBrush=androidx.compose.ui.graphics.SolidColor(colors.focus),
-                keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search),keyboardActions=KeyboardActions(onSearch={if(submitEnabled)onSubmit()}),
+                keyboardOptions=KeyboardOptions(imeAction=if(onSubmit==null)ImeAction.Done else ImeAction.Search),
+                keyboardActions=KeyboardActions(onSearch={if(submitEnabled)onSubmit?.invoke()}),
                 decorationBox={editor->Box(Modifier.fillMaxWidth().heightIn(min=64.dp)
                     .padding(horizontal=SoundQ.spacing.gutter,vertical=SoundQ.spacing.small),contentAlignment=Alignment.CenterStart) {
                     if(value.text.isEmpty())Text(placeholder,Modifier.clearAndSetSemantics {testTag="search-placeholder:$queryLabel"},style=SoundQ.typography.body,color=colors.muted)
@@ -176,6 +178,22 @@ private val LocalMediaRowBottomRule=staticCompositionLocalOf {true}
 @Composable fun mediaRowBackground(current:Boolean):Color = if(current)SoundQ.colors.surface else SoundQ.colors.background
 
 val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
+
+/** Static placeholders retain the media row grid without exposing fake result controls. */
+@Composable fun SoundQMediaRowSkeleton(modifier:Modifier=Modifier,showSupporting:Boolean=true) {
+    val height=SoundQ.sizes.mediaRow
+    val colors=SoundQ.colors
+    Row(modifier.fillMaxWidth().height(height).background(mediaRowBackground(false)).mediaRowBottomRule(),
+        verticalAlignment=Alignment.CenterVertically) {
+        Box(Modifier.size(height).background(colors.surface))
+        Column(Modifier.weight(1f).padding(horizontal=8.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+            Box(Modifier.fillMaxWidth(.64f).height(12.dp).background(colors.raised))
+            Box(Modifier.fillMaxWidth(.42f).height(8.dp).background(colors.surface))
+            if(showSupporting)Box(Modifier.fillMaxWidth(.29f).height(8.dp).background(colors.surface))
+        }
+        Spacer(Modifier.width(48.dp))
+    }
+}
 
 /** compactSupporting retains dense facts; supportingMaxLines > 1 opts into natural-height event facts. */
 @Composable fun SoundQMediaRow(title:String,subtitle:String,current:Boolean,onActivate:()->Unit,onMore:()->Unit,modifier:Modifier=Modifier,artwork:(@Composable ()->Unit)?=null,supporting:String?=null,metadata:(@Composable ()->Unit)?=null,enabled:Boolean=true,compactSupporting:String?=supporting,supportingMaxLines:Int=1) {

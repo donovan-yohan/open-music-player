@@ -33,6 +33,7 @@ import com.soundq.android.product.ProductViewModel
 import com.soundq.android.product.MainPageHeader
 import com.soundq.designsystem.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private fun LazyListScope.discoverHeader(content:@Composable ()->Unit) {
     item {Column(Modifier.fillMaxWidth().padding(horizontal=SoundQ.spacing.gutter,vertical=SoundQ.spacing.small)) {content()}}
@@ -65,8 +66,9 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
     var catalogDetails by remember(view) {mutableStateOf<DiscoveryDetails?>(null)}
     var radarDetails by remember(view) {mutableStateOf<Triple<RadarPage,RadarSong,DiscoveryDraft>?>(null)}
     // Keep the same accepted page and native list state while external Preview or Catalog is open.
-    val scrolls=remember(view) {mutableMapOf<Pair<SourceResults?,DiscoveryResultType>,LazyListState>()}
-    val searchScroll=remember(view,state.results,state.resultType) {scrolls.getOrPut(state.results to state.resultType){LazyListState()}}
+    val scrolls=remember(view) {mutableMapOf<Pair<Any?,DiscoveryResultType>,LazyListState>()}
+    val pageIdentity=state.results?.identity
+    val searchScroll=remember(view,pageIdentity,state.resultType) {scrolls.getOrPut(pageIdentity to state.resultType){LazyListState()}}
     val radarScroll=remember(view,radar.page) {LazyListState()}
     val fullRadarScroll=remember(view,radar.page) {radarFullListState()}
     val scroll=if(showRadarCollection)fullRadarScroll else if(state.draft.text.isBlank())radarScroll else searchScroll
@@ -181,12 +183,25 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
         }
         if(!showRadarCollection) {
         SoundQSearchStrip(editor,{next->val changed=next.text!=editor.text;editor=next;if(changed)view?.let {repository.edit(it,next.text)}},
-            "Search music","Music search query","Search music","Clear search",onSubmit={search()},
+            "Search music","Music search query","Search music","Clear search",onSubmit=null,
             onClear={editor=TextFieldValue("");view?.let {repository.edit(it,"")};queryFocus.requestFocus()},
             editorModifier=Modifier.focusRequester(queryFocus).onFocusChanged {queryFocused=it.hasFocus},
-            submitEnabled=view!=null&&state.phase!=DiscoveryPhase.Loading,clearEnabled=view!=null&&editor.text.isNotEmpty())
-        SoundQTabs(DiscoveryResultType.entries.map {it.label},state.resultType.ordinal,Modifier.fillMaxWidth(),SoundQTabsTreatment.MainPageCells) {index->view?.let {repository.selectType(it,DiscoveryResultType.entries[index])}}
+            clearEnabled=view!=null&&editor.text.isNotEmpty())
+        SoundQTabs(DiscoveryResultType.entries.map {it.label},state.resultType.ordinal,Modifier.fillMaxWidth(),SoundQTabsTreatment.MainPageCells) {index->view?.let {model.selectDiscoveryType(it,DiscoveryResultType.entries[index])}}
+        val sourceBatches=state.results?.batches.orEmpty().filter {it.rows.isNotEmpty()}
+        if(state.resultType==DiscoveryResultType.Song&&sourceBatches.size==2) {
+            val scope=rememberCoroutineScope()
+            val late=sourceBatches.last().rows.first()
+            SoundQListActionRow("View ${late.provider.label} results",{
+                val latest=repository.state.value
+                if(latest.results?.identity===pageIdentity&&latest.resultType==DiscoveryResultType.Song) {
+                    focus.clearFocus()
+                    scope.launch {searchScroll.animateScrollToItem(sourceBatches.first().rows.size)}
+                }
+            })
         }
+        }
+        if(state.expired)SoundQFeedback("Source choice expired",FeedbackKind.Notice,"Search again to import.","Search again",{search()})
         LazyColumn(Modifier.fillMaxWidth().weight(1f),state=scroll) {
         if(state.invalidQuery)discoverHeader {SoundQFeedback("Enter a query up to 512 UTF-8 bytes.",FeedbackKind.Error)}
         if(!showRadarCollection&&queryFocused&&editor.text.isBlank()&&state.recent.isNotEmpty()) {
@@ -199,7 +214,14 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
             })}
         }
 
-        if(state.phase==DiscoveryPhase.Loading)discoverHeader {SoundQFeedback("Searching",FeedbackKind.Loading)}
+        if(state.phase==DiscoveryPhase.Loading)items(6,key={"search-skeleton:$it"}) {index->
+            val status=if(index==0)Modifier.semantics {
+                contentDescription="Loading search results"
+                liveRegion=LiveRegionMode.Polite
+                progressBarRangeInfo=ProgressBarRangeInfo.Indeterminate
+            } else Modifier
+            SoundQMediaRowSkeleton(status,showSupporting=state.resultType==DiscoveryResultType.Song)
+        }
         if(state.draft.text.isBlank()) {
             if(!showRadarCollection)discoverHeader {Text("New releases",style=SoundQ.typography.title,modifier=Modifier
                 .fillMaxWidth().heightIn(min=48.dp).clickable(enabled=visibleRadarPage!=null&&!radar.stale&&radar.phase==RadarPhase.Ready) {
@@ -228,33 +250,34 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
             }
         }
         state.error?.let {discoverHeader {SoundQFeedback("Search unavailable",FeedbackKind.Error,it.message,"Search again",{search()})}}
-        if(state.expired)discoverHeader {SoundQFeedback("Source choice expired",FeedbackKind.Notice,"Search again to import.","Search again",{search()})}
         state.results?.let {results->
             val entities=results.entities.filter {it.type==state.resultType}
-            results.providers.filter {it.status!="ok"}.forEach {provider->discoverHeader {
-                Text("${provider.provider.label}: ${when(provider.status){"timeout"->"Taking too long";"disabled"->"Unavailable";"unsupported"->"Unavailable";else->"Could not search"}}",style=SoundQ.typography.caption)
-            }}
-            if(results.providers.none {it.status=="ok"})discoverHeader {SoundQFeedback("Sources unavailable",FeedbackKind.Error,action="Search again",onAction={search()})}
             if(state.resultType==DiscoveryResultType.Song) {
-                if(results.rows.isEmpty())discoverHeader {SoundQFeedback("No song sources",FeedbackKind.Empty)}
-                items(results.rows,key={it.id}) {row->
+                if(state.phase==DiscoveryPhase.Ready&&results.rows.isEmpty())discoverHeader {SoundQFeedback("No song sources",FeedbackKind.Empty)}
+                items(results.rows,key={"source:${it.provider.wire}:${it.id}"}) {row->
                     SoundQMediaRow(title=row.title,subtitle=row.artist.ifBlank {row.uploader},current=false,
                         onActivate={view?.let {repository.inspect(it,row)}},onMore={view?.let {repository.inspect(it,row)}},
                         artwork={Box(Modifier.fillMaxSize()) {
-                            DiscoveryArtwork(model.graph.mediaClient,row.thumbnailUrl,results to view) {view?.let(repository::current)==true&&repository.state.value.results===results}
+                            DiscoveryArtwork(model.graph.mediaClient,row.thumbnailUrl,results.identity to view) {view?.let(repository::current)==true&&repository.state.value.results?.identity===results.identity}
                             DiscoveryProviderMark(row.provider,Modifier.align(Alignment.BottomEnd).padding(3.dp))
                         }},
                         supporting=duration(row.durationMs)+(if(row.downloadable)"" else " · Import unavailable"),enabled=view!=null)
                 }
             } else {
-                if(entities.isEmpty())discoverHeader {SoundQFeedback("No ${state.resultType.label.lowercase()} matches",FeedbackKind.Empty)}
+                if(entities.isEmpty()&&results.providers.any {it.provider==DiscoveryProvider.MusicBrainz&&it.status=="ok"})discoverHeader {SoundQFeedback("No ${state.resultType.label.lowercase()} matches",FeedbackKind.Empty)}
                 items(entities) {entity->
                     val refine:()->Unit={view?.let {route->repository.refine(route,entity)?.let {draft->model.searchSources(route,draft)}}}
                     SoundQMediaRow(entity.title,entity.subtitle,false,refine,{entityDetails=entity},supporting=entity.type.label,enabled=view!=null)
                 }
             }
+            if(!state.pendingProviders)results.providers.filter {it.status!="ok"}.forEach {provider->discoverHeader {
+                val status=when(provider.status){"timeout"->"Taking too long";"disabled","unsupported"->"Unavailable";else->"Could not search"}
+                Text("${provider.provider.label}: $status",style=SoundQ.typography.caption)
+            }}
+            if(!state.pendingProviders&&state.phase==DiscoveryPhase.Ready&&results.providers.any {it.status!="ok"})discoverHeader {
+                SoundQButton("Search again",{search()},variant=SoundQButtonVariant.Secondary)
+            }
         }
-
         }
     }
 

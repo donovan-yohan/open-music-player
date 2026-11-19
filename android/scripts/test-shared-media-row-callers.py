@@ -169,7 +169,7 @@ class SharedMediaRowCallersContract(unittest.TestCase):
                       'the row must show the mark for its actual source provider')
         self.assertIn('duration(row.durationMs)', rows)
         self.assertIn('DiscoveryArtwork(model.graph.mediaClient,row.thumbnailUrl', rows)
-        self.assertIn('repository.state.value.results===results', rows)
+        self.assertIn('repository.state.value.results?.identity===results.identity', rows)
         self.assertIn('SoundQSearchStrip(editor,', text)
         self.assertIn('LazyColumn(Modifier.fillMaxWidth().weight(1f),state=scroll)', text)
         self.assertLess(text.index('SoundQSearchStrip('), text.index('LazyColumn('))

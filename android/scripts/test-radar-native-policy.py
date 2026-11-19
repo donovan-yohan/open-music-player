@@ -176,8 +176,11 @@ class SoundQApi(val session:AccountSession) {
  var results:SourceResults?=null
  fun releaseRadar(scope:AccountScope,valid:()->Boolean):RadarPage {check(session.remoteCurrent(scope)&&valid());reads++;return feed(valid)}
  fun radarMembership(scope:AccountScope,id:com.soundq.android.data.catalog.RecordingMbid,valid:()->Boolean):Boolean {check(session.remoteCurrent(scope)&&valid());memberships++;return membership(valid)}
- fun discoverySearch(scope:AccountScope,q:String,valid:()->Boolean,grouped:Boolean):SourceResults {check(session.remoteCurrent(scope)&&valid());searches++;return results!!}
- fun resolveSource(scope:AccountScope,s:ImportSource,valid:()->Boolean):SourceResults {check(session.remoteCurrent(scope)&&valid());resolves++;return results!!}
+ internal fun discoverySearch(scope:AccountScope,q:String,valid:()->Boolean,grouped:Boolean=false,provider:SourceProvider?=null,calls:DiscoveryCalls?=null):SourceResults {
+  check(session.remoteCurrent(scope)&&valid());synchronized(this){searches++};val result=results!!
+  return if(provider==null)result else SourceResults(q,result.rows.filter {it.provider==provider},result.selection.takeIf {result.rows.any {row->row.provider==provider}},listOf(ProviderObservation(provider,"ok")))
+ }
+ internal fun resolveSource(scope:AccountScope,s:ImportSource,calls:DiscoveryCalls?=null,valid:()->Boolean):SourceResults {check(session.remoteCurrent(scope)&&valid());resolves++;return results!!}
 }
 ''')
 emit('Lifecycle.kt', '''package androidx.lifecycle
@@ -413,12 +416,14 @@ fun main(){
   val selection=SourceSession("selection",Instant.parse("2030-01-01T00:00:00Z"))
   val artist=DiscoveryEntity(DiscoveryResultType.Artist,"11111111-1111-4111-8111-111111111111","Exact artist","")
   val album=DiscoveryEntity(DiscoveryResultType.Album,"22222222-2222-4222-8222-222222222222","Exact album","")
-  val results=SourceResults(request.draft.text,listOf(candidate),selection,emptyList(),listOf(artist,album));f.api.results=results
-  r.search(request);val choice=r.inspect(v,candidate)!!;check(r.preview(v,choice){})
-  r.selectType(v,DiscoveryResultType.Artist);check(r.details(v,artist)!!.valid())
+  f.api.results=SourceResults(request.draft.text,listOf(candidate),selection,emptyList())
+  kotlinx.coroutines.runBlocking {r.search(request)};val choice=r.inspect(v,candidate)!!;check(r.preview(v,choice){})
+  val grouped=r.selectType(v,DiscoveryResultType.Artist)!!
+  f.api.results=SourceResults(request.draft.text,listOf(candidate),selection,emptyList(),listOf(artist,album))
+  kotlinx.coroutines.runBlocking {r.search(grouped)};check(r.details(v,artist)!!.valid())
   val refined=r.refine(v,artist)!!;check(refined.text=="Exact artist"&&!choice.valid());check(r.back(v))
   r.selectType(v,DiscoveryResultType.Album);check(r.details(v,album)!=null)
-  r.edit(v,"https://youtu.be/synthetic");r.search(v,r.state.value.draft);check(f.api.resolves==1)
+  r.edit(v,"https://youtu.be/synthetic");kotlinx.coroutines.runBlocking {r.search(v,r.state.value.draft)};check(f.api.resolves==1)
   check(r.back(v));check(r.radar.value.page===p)
   f.close();println("canonical hidden-row Find/search/inspect/Preview/Artist/Album/refine/URL owners PASS")
  }
