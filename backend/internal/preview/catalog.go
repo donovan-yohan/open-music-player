@@ -135,7 +135,7 @@ func canonicalSource(raw string) bool {
 	case "music.youtube.com":
 		return result.MediaType == "video" && raw == strings.Replace(result.Canonical, "www.youtube.com", "music.youtube.com", 1)
 	case "soundcloud.com":
-		return result.MediaType == "track" && raw == result.Canonical
+		return validators.IsSoundCloudTrackPermalinkPath(u.Path) && result.MediaType == "track" && raw == result.Canonical
 	case "api.soundcloud.com":
 		return result.MediaType == "track" && !u.ForceQuery && u.RawQuery == "" && u.RawPath == "" && apiTrack.MatchString(u.Path)
 	default:

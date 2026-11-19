@@ -41,9 +41,13 @@ shasum -a 256 approved.mp3
 Before each 200, the server verifies the file's length, SHA-256, packet layout,
 sample rate, and gapless extent, then sends a flushed prefix and the remaining
 verified bytes. This is not full audio decoding; the offline check is required.
-The route never writes a clip or a Library entry. Configure any reverse proxy
-not to buffer, compress or cache this route. Missing, expired or invalid clips
-return 404. To revoke, remove the mounted clip for subsequent requests and
+The route never writes a clip or a Library entry. The bundled Nginx `/api/`
+location buffers by default. Before enabling previews behind it, disable
+response buffering for `/api/v1/discovery/preview`. Every receiving proxy must
+also avoid compression and caching on that path. In a controlled test with the
+tail held, confirm the client receives the prefix before releasing the tail;
+leave the mount unset until that check passes. Missing, expired or invalid
+clips return 404. To revoke, remove the mounted clip for subsequent requests and
 restart with the row removed (or restart with the variable unset). Manifest
 edits are not hot-reloaded; already-admitted transfers can finish from memory.
 Provider metadata, a provider account, or a playable provider URL does not grant

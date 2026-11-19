@@ -78,13 +78,13 @@ func selectRecordingSource(body []byte, mbID string) (*string, error) {
 	if recording.ID != mbID {
 		return nil, fmt.Errorf("recording source response did not match the requested ID")
 	}
+	if recording.Relations == nil {
+		return nil, fmt.Errorf("recording source response did not contain URL relationships")
+	}
 	// Video recordings are distinct MusicBrainz entities, even when their
 	// audio sounds the same. Missing video metadata cannot attest audio.
 	if recording.Video == nil || *recording.Video {
 		return nil, nil
-	}
-	if recording.Relations == nil {
-		return nil, fmt.Errorf("recording source response did not contain URL relationships")
 	}
 
 	var source string
@@ -128,16 +128,8 @@ func canonicalRecordingSourceURL(raw string) string {
 	var mediaType string
 	switch strings.ToLower(u.Host) {
 	case "soundcloud.com", "www.soundcloud.com", "m.soundcloud.com":
-		user, track, ok := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), "/"), "/")
-		if !ok || user == "" || track == "" || strings.Contains(track, "/") || query.Has("secret_token") {
+		if !validators.IsSoundCloudTrackPermalinkPath(u.Path) || query.Has("secret_token") {
 			return ""
-		}
-		switch strings.ToLower(user) {
-		case "pages", "settings": // provider pages, not user profiles
-			return ""
-		}
-		if strings.EqualFold(track, "popular-tracks") {
-			return "" // profile subpage, not a recording
 		}
 		sourceType, mediaType = validators.SourceSoundCloud, "track"
 	case "music.youtube.com":

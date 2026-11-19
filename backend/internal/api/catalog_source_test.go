@@ -93,6 +93,7 @@ func TestCatalogRecordingSourceAuthenticated(t *testing.T) {
 		{"explicit empty relations", 200, `{"id":"` + sourceTestMBID + `","video":false,"relations":[]}`, `{"recordingMbid":"` + sourceTestMBID + `","sourceUrl":null}` + "\n", 200},
 		{"missing relations are unavailable", 200, `{"id":"` + sourceTestMBID + `","video":false}`, "", 503},
 		{"null relations are unavailable", 200, `{"id":"` + sourceTestMBID + `","video":false,"relations":null}`, "", 503},
+		{"missing video and relations are unavailable", 200, `{"id":"` + sourceTestMBID + `"}`, "", 503},
 		{"ID mismatch with qualified link", 200, strings.Replace(body, sourceTestMBID, "cccccccc-cccc-4ccc-8ccc-cccccccccccc", 1), "", 503},
 		{"provider failure", 503, `{"message":"do not expose this fixture detail"}`, "", 503},
 	} {
