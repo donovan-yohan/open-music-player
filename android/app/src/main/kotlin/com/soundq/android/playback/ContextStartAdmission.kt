@@ -3,6 +3,18 @@ package com.soundq.android.playback
 import java.io.File
 import java.util.UUID
 
+internal const val DISCOVERY_PREVIEW_PREFIX = "discovery-preview:"
+
+internal class PreviewLifetime(private val mainCurrent: () -> Boolean, val wireCurrent: () -> Boolean) : () -> Boolean {
+    override fun invoke() = mainCurrent()
+}
+
+/** In-process only: no preview capability crosses MediaSession IPC. */
+internal fun interface DiscoveryPreviewHandoff {
+    suspend fun prepare(scope: com.soundq.android.data.AccountScope, source: com.soundq.android.data.imports.ImportSource,
+        title: String, artist: String, current: PreviewLifetime): Boolean
+}
+
 /** A one-shot local command capability. The frozen source guard is revoked monotonically.
  * This owns admission/staging only. The service Player remains the sole live queue owner. */
 internal class ContextStartAdmission(private val directory:File) {
@@ -20,6 +32,18 @@ internal class ContextStartAdmission(private val directory:File) {
     }
     @Volatile private var active:Capture?=null
     @Volatile private var generation=0L
+    // Service attach, detach and preview handoff are all confined to the main looper.
+    @Volatile internal var discoveryPreview: DiscoveryPreviewHandoff? = null
+    internal suspend fun startDiscoveryPreview(scope: com.soundq.android.data.AccountScope,
+        source: com.soundq.android.data.imports.ImportSource, title: String, artist: String, valid: () -> Boolean,
+        wireValid: () -> Boolean = { true }): Boolean {
+        val target = discoveryPreview ?: return false
+        val revision = generation
+        fun wireCurrent() = discoveryPreview === target && generation == revision && wireValid()
+        fun current() = wireCurrent() && valid()
+        if (!current()) return false
+        return target.prepare(scope, source, title, artist, PreviewLifetime(::current, ::wireCurrent)).also { if (it && current()) retire() }
+    }
     /** Reserve before asynchronous metadata IO. Retirement is remembered even
      * without a staged ticket. This guard ends at the synchronous ticket handoff;
      * do not retain it as that ticket's source guard, since capture supersedes it. */

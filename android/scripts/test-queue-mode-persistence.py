@@ -97,6 +97,9 @@ private class Continuation {fun repeatChanged(){};fun shuffleChanged(){}}
 '''
 fixture='''
 private class ExtractedService(val graph:Graph,val jobs:CoroutineScope) {
+ val parkedQueue:Any?=null
+ fun previewQueueTransient()=false // Ordinary/guest fixtures never install a Discovery preview.
+ var pendingQueueRestore:AccountScope?=null
  var clockRevision=0L;var guestRestoredVersion=-1L;var guestRejectedQueue=false;var guestRestoresPending=0;var guestSaveDeferred=false
  fun localAccess()=account==null
 

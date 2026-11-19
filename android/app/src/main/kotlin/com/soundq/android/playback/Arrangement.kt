@@ -39,7 +39,7 @@ fun PlaybackProjection.timelineSources():List<TimelineSource>? {
     if(connection!=PlaybackProjection.Connection.Connected)return null
     val sources=when(source) {
         PlaybackSource.Arrangement -> arrangement?.sources ?: return null
-        PlaybackSource.SavedMix -> return null
+        PlaybackSource.SavedMix, PlaybackSource.DiscoveryPreview -> return null
         PlaybackSource.Queue -> queue
     }
     if(sources.any {it.trackId<=0 || it.durationMs<=0})return null

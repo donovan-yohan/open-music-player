@@ -71,6 +71,9 @@ class Service(val graph:Graph) {fun renewPhoneGrants(){};fun localAccess()=false
  val liveQualifications=mutableMapOf<String,Any>();val retiringLiveQualifications=mutableSetOf<String>()
  val player=PlayerFacade();val transport=TransportFacade(player);val serviceIncarnation=UUID.randomUUID().toString();var sourceQueueIncarnation="ordinary-1";var selectionEpoch=0L;var transportGeneration=0L;var account=graph.session.capture();val interruptions=Interruption();var saveJob:SaveJob?=null;var undo:Any?=null;var undoScope:AccountScope?=null;var undoIndex=0;var undoPosition=0L
  internal val mixGrants=java.util.concurrent.ConcurrentHashMap<String,MixGrant>()
+ fun ordinaryItems()=(0 until player.mediaItemCount).map(player::getMediaItemAt)
+ fun ordinaryIndex()=player.currentMediaItemIndex
+ fun ordinaryPosition()=player.currentPosition
  var tempoCaller:Any?=null
  var acceptedArrangement:AcceptedArrangement?=null;var arrangementItems:List<MediaItem>?=null;var pendingArrangement:Pair<AcceptedArrangement,Long>?=null
  val APPLY_ARRANGEMENT="soundq.arrangement.apply"

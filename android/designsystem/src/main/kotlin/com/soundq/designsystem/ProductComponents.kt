@@ -195,8 +195,10 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
     }
 }
 
+class SoundQMediaPreviewActions(val pending:Boolean,val addEnabled:Boolean,val onAdd:()->Unit)
+
 /** compactSupporting retains dense facts; supportingMaxLines > 1 opts into natural-height event facts. */
-@Composable fun SoundQMediaRow(title:String,subtitle:String,current:Boolean,onActivate:()->Unit,onMore:()->Unit,modifier:Modifier=Modifier,artwork:(@Composable ()->Unit)?=null,supporting:String?=null,metadata:(@Composable ()->Unit)?=null,enabled:Boolean=true,compactSupporting:String?=supporting,supportingMaxLines:Int=1) {
+@Composable fun SoundQMediaRow(title:String,subtitle:String,current:Boolean,onActivate:()->Unit,onMore:(()->Unit)?,modifier:Modifier=Modifier,artwork:(@Composable ()->Unit)?=null,supporting:String?=null,metadata:(@Composable ()->Unit)?=null,enabled:Boolean=true,compactSupporting:String?=supporting,supportingMaxLines:Int=1,preview:SoundQMediaPreviewActions?=null) {
     require(supportingMaxLines>0)
     val colors=SoundQ.colors
     val multiline=supportingMaxLines>1
@@ -216,7 +218,7 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
             // A metadata content description must not eclipse the song's accessible identity.
             contentDescription=listOfNotNull(title,subtitle,supporting ?: compactFact).joinToString(", ")
         }
-        .clickable(enabled=enabled,role=Role.Button,onClick=onActivate)) {
+        .clickable(enabled=enabled&&preview?.pending!=true,role=Role.Button,onClickLabel=if(preview!=null)"Play preview" else null,onClick=onActivate)) {
         Row(if(multiline)Modifier.fillMaxWidth().height(IntrinsicSize.Min).heightIn(min=SoundQ.sizes.mediaRow)else Modifier.fillMaxSize(),verticalAlignment=Alignment.CenterVertically) {
             SoundQArtworkSlot(Modifier.testTag("media-artwork"),size=if(multiline)SoundQ.sizes.mediaRow else rowHeight,artwork=artwork)
             Column(Modifier.weight(1f).then(if(multiline)Modifier else Modifier.fillMaxHeight()).padding(horizontal=if(enlarged&&metadata!=null&&!multiline)4.dp else 8.dp),verticalArrangement=Arrangement.Center) {
@@ -254,7 +256,15 @@ val LocalMediaRowCompactMetadata=staticCompositionLocalOf {false}
                     }
                 }
             }
-            CellIcon(SoundQIcon.More,"More for $title",onMore,Modifier.width(48.dp).fillMaxHeight())
+            if(preview!=null) {
+                if(preview.pending)Box(Modifier.width(48.dp).fillMaxHeight(),contentAlignment=Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(20.dp).semantics {
+                        contentDescription="Loading preview for $title"
+                        liveRegion=LiveRegionMode.Polite
+                    },color=colors.primary,strokeWidth=2.dp)
+                } else CellIcon(SoundQIcon.Play,"Play preview for $title",onActivate,Modifier.width(48.dp).fillMaxHeight(),enabled=enabled)
+                CellIcon(SoundQIcon.Plus,"Add to Library: $title",preview.onAdd,Modifier.width(48.dp).fillMaxHeight(),enabled=preview.addEnabled)
+            } else if(onMore!=null)CellIcon(SoundQIcon.More,"More for $title",onMore,Modifier.width(48.dp).fillMaxHeight())
         }
     }
 }

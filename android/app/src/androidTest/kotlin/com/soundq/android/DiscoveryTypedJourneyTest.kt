@@ -1,11 +1,10 @@
 package com.soundq.android
 
-import android.app.Activity
-import android.app.Instrumentation
-import android.content.Intent
-import android.content.IntentFilter
+
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import com.soundq.android.product.ProductViewModel
@@ -15,27 +14,26 @@ import org.junit.Rule
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
 
-/** Mounted ordinary typing/refinement/external dispatch. Parent compiles and executes. */
+/** Mounted ordinary typing/refinement and preview failure. */
 class DiscoveryTypedJourneyTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
     @Test fun ordinaryTypingGroupedRefinementBackAndPreviewLeaveImportAndPlaybackUntouched() {
         val instrumentation=InstrumentationRegistry.getInstrumentation()
         val app=instrumentation.targetContext.applicationContext as SoundQApplication
         val server=ProductTransportFixture.server;val old=server.dispatcher
-        val reads=AtomicInteger();val writes=AtomicInteger()
+        val reads=AtomicInteger();val writes=AtomicInteger();val previews=AtomicInteger()
         val artistId="123e4567-e89b-12d3-a456-426614174001"
         val groupId="123e4567-e89b-12d3-a456-426614174002"
         val releaseId="123e4567-e89b-12d3-a456-426614174003"
         val recordingId="123e4567-e89b-12d3-a456-426614174004"
         val catalogReads=java.util.concurrent.CopyOnWriteArrayList<String>()
-        val filter=IntentFilter(Intent.ACTION_VIEW).apply {addDataScheme("https")}
-        val monitor=instrumentation.addMonitor(filter,Instrumentation.ActivityResult(Activity.RESULT_CANCELED,null),true)
+
         server.dispatcher=object:Dispatcher() {
             override fun dispatch(request:RecordedRequest):MockResponse {
                 if(request.url.encodedPath=="/api/v1/discovery/search") {
                     reads.incrementAndGet()
                     val q=request.url.queryParameter("q")!!
-                    val c="""{"candidateId":"typed-source","provider":"youtube","sourceUrl":"https://youtu.be/fixture","title":"Typed source","artist":"Artist","uploader":"Uploader","durationMs":123000,"downloadable":true,"playable":false}"""
+                    val c="""{"candidateId":"typed-source","provider":"youtube","sourceUrl":"https://youtu.be/fixture","previewSourceUrl":"https://www.youtube.com/watch?v=SQPreview01","title":"Typed source","artist":"Artist","uploader":"Uploader","durationMs":123000,"downloadable":true,"playable":false}"""
                     val grouped=when(request.url.queryParameter("providers")) {
                         "youtube,soundcloud,musicbrainz"->true
                         "youtube"->false
@@ -47,6 +45,11 @@ class DiscoveryTypedJourneyTest {
                     return MockResponse.Builder().code(200).body("""{"query":"$q","results":[$c],"providers":[{"provider":"youtube","status":"ok","resultCount":1}$catalogStatus],"selectionSessionId":"123e4567-e89b-12d3-a456-426614174010","selectionExpiresAt":"2030-01-01T00:00:00Z"$sections}""").build()
                 }
                 val path=request.url.encodedPath
+                if(path=="/api/v1/discovery/preview") {
+                    check(request.method=="POST"&&org.json.JSONObject(request.body!!.utf8()).getString("url")=="https://www.youtube.com/watch?v=SQPreview01")
+                    previews.incrementAndGet()
+                    return MockResponse.Builder().code(503).build()
+                }
                 val body=when(path) {
                     "/api/v1/artists/$artistId"->"""{"id":"$artistId","name":"Exact Artist","releases":[{"id":"$groupId","title":"Exact Album","date":"2026"}]}"""
                     "/api/v1/search/releases"->"""{"data":[{"id":8,"name":"Concrete 2026 edition","artist":"Exact Artist","mbReleaseId":"$releaseId","trackCount":1}],"total":1,"limit":20,"offset":0}"""
@@ -110,18 +113,41 @@ class DiscoveryTypedJourneyTest {
             compose.onNode(hasText("Album") and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role,androidx.compose.ui.semantics.Role.Tab)).performClick()
             compose.onNodeWithText("Exact Album").assertExists()
             compose.onNode(hasText("Song") and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role,androidx.compose.ui.semantics.Role.Tab)).performClick()
+            compose.onNode(hasContentDescription("Source: YouTube") and !hasClickAction(),useUnmergedTree=true).assertExists()
+            compose.onNode(hasText("2:03") and !hasClickAction(),useUnmergedTree=true).assertExists()
             compose.onNodeWithText("Typed source").performScrollTo().performClick()
-            compose.onNodeWithText("Source details").assertExists()
-            compose.onNode(hasText("YouTube · 2:03") and !hasClickAction()).assertExists()
-            captureListeningStage("discover-source-details")
-            compose.onNodeWithText("Preview source").performScrollTo().performClick()
-            compose.waitUntil(5000){monitor.hits>0}
-            compose.onNodeWithText("Source details").assertExists()
+            compose.waitUntil(5000){previews.get()==1&&compose.onAllNodesWithContentDescription("Play preview for Typed source").fetchSemanticsNodes().isNotEmpty()}
+            compose.onNodeWithText("Source details").assertDoesNotExist()
+            compose.onNodeWithContentDescription("Add to Library: Typed source").assertIsEnabled()
+            captureListeningStage("discover-song-preview-actions")
             assertEquals("seed",app.graph.discovery.state.value.results!!.query)
             assertEquals(0,writes.get());assertEquals(queue,model.playback.value.queue)
             assertEquals(selected,model.playback.value.selectedOccurrence);assertFalse(model.playback.value.isPlaying)
             assertEquals(4,reads.get())
-            instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+            val acceptedSong=app.graph.discovery.state.value.results
+            val editor=compose.onNodeWithContentDescription("Music search query")
+            fun imeVisible()=compose.runOnUiThread {
+                ViewCompat.getRootWindowInsets(compose.activity.window.decorView)?.isVisible(WindowInsetsCompat.Type.ime())==true
+            }
+            // After preview refusal the editor need not own Back. Start the
+            // keyboard-dismissal leg with a real focused editor and visible IME.
+            editor.performTouchInput {click()}
+            compose.waitUntil(5000){imeVisible()}
+            editor.assertIsFocused()
+            try {
+                instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+                compose.waitUntil(5000){!imeVisible()}
+                editor.assertIsDisplayed().assertIsNotFocused()
+                compose.onNodeWithContentDescription("Clear search").assertIsDisplayed()
+                assertEquals("seed",app.graph.discovery.state.value.draft.text)
+                assertSame(acceptedSong,app.graph.discovery.state.value.results)
+                assertEquals(4,reads.get());assertEquals(0,writes.get());assertEquals(1,previews.get())
+                captureListeningStage("discover-post-back")
+                android.util.Log.i("MountDiag","native Back dismissed focused IME; Discover query=seed; reads=4 writes=0 previews=1")
+            } catch(failure:Throwable) {
+                runCatching {captureListeningStage("discover-post-back-failure")}
+                throw failure
+            }
             compose.onNodeWithContentDescription("Clear search").assertIsDisplayed().performClick()
             compose.onNodeWithText("Recent searches").assertIsDisplayed()
             compose.onNode(hasText("seed") and hasClickAction()).performClick()
@@ -147,6 +173,6 @@ class DiscoveryTypedJourneyTest {
             assertEquals(listOf("/api/v1/artists/$artistId","/api/v1/search/releases","/api/v1/albums/$releaseId"),catalogReads.toList())
             assertEquals(7,reads.get());assertEquals(0,writes.get())
             assertEquals(queue,model.playback.value.queue);assertEquals(selected,model.playback.value.selectedOccurrence);assertFalse(model.playback.value.isPlaying)
-        } finally {instrumentation.removeMonitor(monitor);server.dispatcher=old;app.graph.session.retire()}
+        } finally {server.dispatcher=old;app.graph.session.retire()}
     }
 }

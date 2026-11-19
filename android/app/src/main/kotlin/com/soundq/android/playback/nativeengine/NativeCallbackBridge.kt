@@ -1,5 +1,7 @@
 package com.soundq.android.playback.nativeengine
 
+import com.soundq.android.data.DiscoveryPreviewInput
+
 /** JNI is private to the dedicated control owner. Never call this object from UI/IO workers. */
 internal object NativeCallbackBridge {
     init { System.loadLibrary("soundq_callback_android") }
@@ -9,6 +11,7 @@ internal object NativeCallbackBridge {
     // Same assignment prepared and applied at an ordinary listening speed from its first window.
     @JvmStatic external fun loadSpeed(handle: Long, deck: Int, path: String, identity: Long, generation: Long, positionMs: Long, speed: Double): Boolean
     @JvmStatic external fun loadReader(handle: Long, deck: Int, reader: NativePcmReader, identity: Long, generation: Long, positionMs: Long, speed: Double): Boolean
+    @JvmStatic external fun loadPreview(handle: Long, deck: Int, input: DiscoveryPreviewInput, generation: Long): Boolean
     // Operation 10 sets an assigned ordinary deck's listening speed (admission only).
     // Operation 9 is explicit paused output recovery, not Play or source release.
     @JvmStatic external fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long): Boolean
@@ -36,6 +39,7 @@ internal interface NativeCallbackCalls {
     fun load(handle: Long, deck: Int, path: String, identity: Long, generation: Long, positionMs: Long): Boolean
     fun loadSpeed(handle: Long, deck: Int, path: String, identity: Long, generation: Long, positionMs: Long, speed: Double): Boolean = false
     fun loadReader(handle: Long, deck: Int, reader: NativePcmReader, identity: Long, generation: Long, positionMs: Long, speed: Double): Boolean = false
+    fun loadPreview(handle: Long, deck: Int, input: DiscoveryPreviewInput, generation: Long): Boolean = false
     fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long): Boolean
     fun prepareSchedule(handle: Long, revision: Long, paths: Array<String>, values: LongArray): Boolean = false
     fun prepareScheduleV2(handle: Long, revision: Long, paths: Array<String>, values: LongArray, tempo: DoubleArray): Boolean = false
@@ -59,6 +63,8 @@ internal object JniNativeCallbackCalls : NativeCallbackCalls {
         NativeCallbackBridge.loadSpeed(handle, deck, path, identity, generation, positionMs, speed)
     override fun loadReader(handle: Long, deck: Int, reader: NativePcmReader, identity: Long, generation: Long, positionMs: Long, speed: Double) =
         NativeCallbackBridge.loadReader(handle, deck, reader, identity, generation, positionMs, speed)
+    override fun loadPreview(handle: Long, deck: Int, input: DiscoveryPreviewInput, generation: Long) =
+        NativeCallbackBridge.loadPreview(handle, deck, input, generation)
     override fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long) =
         NativeCallbackBridge.control(handle, operation, deck, value, eventNanos)
     override fun prepareSchedule(handle: Long, revision: Long, paths: Array<String>, values: LongArray) = NativeCallbackBridge.prepareSchedule(handle, revision, paths, values)

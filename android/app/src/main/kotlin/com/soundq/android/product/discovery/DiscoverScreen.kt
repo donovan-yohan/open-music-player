@@ -1,7 +1,5 @@
 package com.soundq.android.product.discovery
 
-import android.content.Intent
-import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.clickable
@@ -17,7 +15,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
 
@@ -51,7 +48,6 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
     LaunchedEffect(state.draft){if(editor.text!=state.draft.text)editor=TextFieldValue(state.draft.text)}
     val focus=LocalFocusManager.current
     val queryFocus=remember {FocusRequester()}
-    val context=LocalContext.current
     var options by remember(view) {mutableStateOf(false)}
     var queryFocused by remember(view) {mutableStateOf(false)}
     var radarCollection by rememberSaveable(view) {mutableStateOf(false)}
@@ -64,8 +60,7 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
     val showRadarCollection=radarCollection&&state.draft.text.isBlank()
     var entityDetails by remember(view) {mutableStateOf<DiscoveryEntity?>(null)}
     var catalogDetails by remember(view) {mutableStateOf<DiscoveryDetails?>(null)}
-    var radarDetails by remember(view) {mutableStateOf<Triple<RadarPage,RadarSong,DiscoveryDraft>?>(null)}
-    // Keep the same accepted page and native list state while external Preview or Catalog is open.
+    // Keep the same accepted page and native list state while Catalog is open.
     val scrolls=remember(view) {mutableMapOf<Pair<Any?,DiscoveryResultType>,LazyListState>()}
     val pageIdentity=state.results?.identity
     val searchScroll=remember(view,pageIdentity,state.resultType) {scrolls.getOrPut(pageIdentity to state.resultType){LazyListState()}}
@@ -76,20 +71,17 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
     // The observer retires synchronously through STOP/RESUME even without recomposition.
     val radarLifecycle=LocalLifecycleOwner.current
     val radarShown=radarVisible()
+    val rows=rememberDiscoveryRowActions(model,view,radarArtworkRoot,radarShown&&catalogDetails==null)
+    val rowSurface=rows.surface
     var radarActive by remember(view,radarLifecycle) {mutableStateOf(false)}
     var radarSurfaceVisit by remember(view,radarLifecycle) {mutableStateOf<RadarArtworkRoute?>(null)}
     fun renewRadarArtwork() {
         // Retire before layout/coverage changes, not when the retained lazy slots are disposed.
         radarSurfaceVisit?.let {old->old.retire();radarSurfaceVisit=RadarArtworkRoute()}
     }
-    fun changeRadarDetails(next:Triple<RadarPage,RadarSong,DiscoveryDraft>?) {
-        if(radarDetails===next)return
-        // Only artwork loses admission. Find sources still needs the accepted Radar landing.
-        renewRadarArtwork()
-        radarDetails=next
-    }
     fun changeRadarCollection(full:Boolean) {
         if(radarCollection==full)return
+        rows.renew()
         renewRadarArtwork()
         radarCollection=full
     }
@@ -106,13 +98,13 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
                 if(landing!=null)view?.let {model.loadReleaseRadar(it,automatic=true)}
             } else if(!active) {
                 radarSurfaceVisit?.retire();radarSurfaceVisit=null
-                landing?.let(repository::hideRadar);landing=null;changeRadarDetails(null)
+                landing?.let(repository::hideRadar);landing=null
             }
             radarActive=active
         }
         val observer=LifecycleEventObserver {_,_->sync()}
         radarLifecycle.lifecycle.addObserver(observer);sync()
-        onDispose {radarSurfaceVisit?.retire();radarSurfaceVisit=null;active=false;landing?.let(repository::hideRadar);changeRadarDetails(null);radarActive=false;radarLifecycle.lifecycle.removeObserver(observer)}
+        onDispose {radarSurfaceVisit?.retire();radarSurfaceVisit=null;active=false;landing?.let(repository::hideRadar);radarActive=false;radarLifecycle.lifecycle.removeObserver(observer)}
     }
     // Retry invalidated reads only at eligible transitions, never on playback ticks.
     // The revision also witnesses repeated invalidations if Loading is conflated away.
@@ -123,11 +115,9 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
             if(radar.page==null&&radar.phase==RadarPhase.Idle)view?.let {model.loadReleaseRadar(it,automatic=true)}
         }
     }
-    LaunchedEffect(view,state.draft,radar.page,radar.stale,radar.phase) {
-        radarDetails?.let {(page,song,draft)->if(view==null||!repository.radarCurrent(view,page,song,draft))changeRadarDetails(null)}
-    }
     fun search() {
         val route=view ?: return
+        rows.renew()
         // Capture and claim before IME/focus can deliver a composition-ending callback.
         val submitted=editor.text
         if(repository.state.value.draft.text!=submitted)repository.edit(route,submitted)
@@ -156,21 +146,22 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
         return
     }
     // The slot binds the exact root and layout captures, not a predicate that looks up their successors.
-    val radarSurfaceOwner=if(radarActive&&radarShown&&state.draft.text.isBlank()&&radarDetails==null) {
+    val radarSurfaceOwner=if(radarActive&&radarShown&&state.draft.text.isBlank()) {
         radarSurfaceVisit?.let {visit->
             remember(view,visibleRadarPage,state.draft,showRadarCollection,visit,radarArtworkRoot) {
                 RadarArtworkRoute(visit,radarArtworkRoot)
             }
         }
     } else null
-    BackHandler(state.canBack&&state.inspected==null&&entityDetails==null&&radarDetails==null) {view?.let(repository::back)}
-    BackHandler(showRadarCollection&&radarDetails==null) {changeRadarCollection(false)}
-    BackHandler(queryFocused&&state.inspected==null&&entityDetails==null&&radarDetails==null) {focus.clearFocus()}
+    fun back() {rows.renew();view?.let(repository::back)}
+    BackHandler(state.canBack&&entityDetails==null) {back()}
+    BackHandler(showRadarCollection) {changeRadarCollection(false)}
+    BackHandler(queryFocused&&entityDetails==null) {focus.clearFocus()}
     Column(Modifier.fillMaxSize()) {
         MainPageHeader(if(showRadarCollection)"New releases" else "Discover",navigation=if(showRadarCollection) ({
             SoundQIconButton(SoundQIcon.Back,"Back to Discover",{changeRadarCollection(false)},Modifier.heightIn(min=56.dp),outlined=false)
         }) else if(state.canBack) ({
-            SoundQIconButton(SoundQIcon.Back,"Back to previous search",{view?.let(repository::back)},Modifier.heightIn(min=56.dp),outlined=false)
+            SoundQIconButton(SoundQIcon.Back,"Back to previous search",{back()},Modifier.heightIn(min=56.dp),outlined=false)
         }) else null) {
             SoundQIconButton(SoundQIcon.Download,"Imports",onImports,Modifier.heightIn(min=56.dp),outlined=false)
             Box {
@@ -182,12 +173,15 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
             }
         }
         if(!showRadarCollection) {
-        SoundQSearchStrip(editor,{next->val changed=next.text!=editor.text;editor=next;if(changed)view?.let {repository.edit(it,next.text)}},
+        SoundQSearchStrip(editor,{next->val changed=next.text!=editor.text;editor=next;if(changed){rows.renew();view?.let {repository.edit(it,next.text)}}},
             "Search music","Music search query","Search music","Clear search",onSubmit=null,
-            onClear={editor=TextFieldValue("");view?.let {repository.edit(it,"")};queryFocus.requestFocus()},
+            onClear={rows.renew();editor=TextFieldValue("");view?.let {repository.edit(it,"")};queryFocus.requestFocus()},
             editorModifier=Modifier.focusRequester(queryFocus).onFocusChanged {queryFocused=it.hasFocus},
             clearEnabled=view!=null&&editor.text.isNotEmpty())
-        SoundQTabs(DiscoveryResultType.entries.map {it.label},state.resultType.ordinal,Modifier.fillMaxWidth(),SoundQTabsTreatment.MainPageCells) {index->view?.let {model.selectDiscoveryType(it,DiscoveryResultType.entries[index])}}
+        SoundQTabs(DiscoveryResultType.entries.map {it.label},state.resultType.ordinal,Modifier.fillMaxWidth(),SoundQTabsTreatment.MainPageCells) {index->
+            val type=DiscoveryResultType.entries[index]
+            view?.let {if(repository.state.value.resultType!=type){rows.renew();model.selectDiscoveryType(it,type)}}
+        }
         val sourceBatches=state.results?.batches.orEmpty().filter {it.rows.isNotEmpty()}
         if(state.resultType==DiscoveryResultType.Song&&sourceBatches.size==2) {
             val scope=rememberCoroutineScope()
@@ -210,7 +204,7 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
                 SoundQIconButton(SoundQIcon.Close,"Clear search history",{view?.let(repository::clearRecent)},outlined=false)
             }}
             items(state.recent,key={"recent:$it"}) {query->SoundQRow(query,"",false,{
-                view?.let {route->repository.recent(route,query)?.let {draft->editor=TextFieldValue(draft.text);model.searchSources(route,draft);focus.clearFocus()}}
+                view?.let {route->repository.recent(route,query)?.let {draft->rows.renew();editor=TextFieldValue(draft.text);model.searchSources(route,draft);focus.clearFocus()}}
             })}
         }
 
@@ -239,10 +233,17 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
                 if(page.coverage.providerStatus in setOf("unavailable","timeout"))discoverHeader {SoundQFeedback("Could not update new releases",FeedbackKind.Error)}
                 if(page.songs.isEmpty()&&radar.phase==RadarPhase.Ready)discoverHeader {SoundQFeedback(radarEmptyMessage(page.coverage),FeedbackKind.Empty)}
                 items(page.songs.take(if(showRadarCollection)20 else 5),key={"radar:${it.recording.value}"}) {song->
-                    val open:()->Unit={view?.let {route->if(radarDetails==null&&repository.radarCurrent(route,page,song,draft)&&radarSurfaceOwner?.current()==true)changeRadarDetails(Triple(page,song,draft))}}
-                    SoundQMediaRow(song.title,song.artist,false,open,open,
+                    val current={view!=null&&rowSurface?.current()==true&&radarSurfaceOwner?.current()==true&&repository.radarCurrent(view,page,song,draft)}
+                    val enabled=view!=null&&rowSurface!=null&&!radar.stale&&radar.phase==RadarPhase.Ready
+                    SoundQMediaRow(song.title,song.artist,false,onActivate={
+                        if(view!=null)rows.preview(view,song,song.title,song.artist,{rowSurface?.current()==true&&radarSurfaceOwner?.current()==true&&
+                            repository.radarCurrent(view,page,song,draft,preview=true)}) {valid->model.graph.api.recordingPreviewSource(view.scope,song.recording,valid)}
+                    },onMore=null,
                         artwork={if(view!=null&&radarSurfaceOwner!=null)RadarArtwork(model.graph.mediaClient,repository,view,page,song,draft,radarSurfaceOwner,fullList=fullRadarScroll.takeIf {showRadarCollection})},
-                        supporting="First released · ${song.firstRelease.raw}",enabled=view!=null&&!radar.stale&&radar.phase==RadarPhase.Ready)
+                        supporting="First released · ${song.firstRelease.raw}",enabled=enabled,
+                        preview=SoundQMediaPreviewActions(rows.pending(song),enabled&&intake!=null&&!imports.pending&&!rows.adding) {
+                            if(view!=null&&intake!=null)rows.addRecording(view,intake,song,current)
+                        })
                 }
                 if(!showRadarCollection&&page.songs.isNotEmpty())item {
                     SoundQListActionRow("View all",{changeRadarCollection(true);focus.clearFocus()},enabled=view!=null&&!radar.stale&&radar.phase==RadarPhase.Ready,description="View all New releases")
@@ -254,14 +255,28 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
             val entities=results.entities.filter {it.type==state.resultType}
             if(state.resultType==DiscoveryResultType.Song) {
                 if(state.phase==DiscoveryPhase.Ready&&results.rows.isEmpty())discoverHeader {SoundQFeedback("No song sources",FeedbackKind.Empty)}
+                val selectable=results.batches.mapNotNull {it.selection}
+                val exhausted=selectable.isNotEmpty()&&selectable.all(model.graph.imports::sourceSessionConsumed)
+                if(exhausted&&!imports.pending&&!state.expired&&results.providers.all {it.status=="ok"})discoverHeader {
+                    SoundQButton("Search again",{search()},variant=SoundQButtonVariant.Secondary)
+                }
                 items(results.rows,key={"source:${it.provider.wire}:${it.id}"}) {row->
+                    val batch=results.batches.first {it.rows.any {candidate->candidate===row}}
+                    val exact=view?.let {repository.sourceRowGuard(it,batch,row)}
+                    val previewExact=view?.let {repository.sourceRowGuard(it,batch,row,preview=true)}
+                    val current={rowSurface?.current()==true&&exact?.invoke()==true}
+                    val consumed=batch.selection?.let(model.graph.imports::sourceSessionConsumed)==true
                     SoundQMediaRow(title=row.title,subtitle=row.artist.ifBlank {row.uploader},current=false,
-                        onActivate={view?.let {repository.inspect(it,row)}},onMore={view?.let {repository.inspect(it,row)}},
+                        onActivate={if(view!=null)rows.preview(view,row,row.title,row.artist.ifBlank {row.uploader},
+                            {rowSurface?.current()==true&&previewExact?.invoke()==true}) {row.previewSource}},onMore=null,
                         artwork={Box(Modifier.fillMaxSize()) {
                             DiscoveryArtwork(model.graph.mediaClient,row.thumbnailUrl,results.identity to view) {view?.let(repository::current)==true&&repository.state.value.results?.identity===results.identity}
                             DiscoveryProviderMark(row.provider,Modifier.align(Alignment.BottomEnd).padding(3.dp))
                         }},
-                        supporting=duration(row.durationMs)+(if(row.downloadable)"" else " · Import unavailable"),enabled=view!=null)
+                        supporting=duration(row.durationMs)+(if(row.downloadable)"" else " · Import unavailable"),enabled=rowSurface!=null,
+                        preview=SoundQMediaPreviewActions(rows.pending(row),rowSurface!=null&&intake!=null&&batch.selection!=null&&row.downloadable&&!imports.pending&&!consumed) {
+                            if(view!=null&&intake!=null)rows.addSource(view,intake,batch,row,current)
+                        })
                 }
             } else {
                 if(entities.isEmpty()&&results.providers.any {it.provider==DiscoveryProvider.MusicBrainz&&it.status=="ok"})discoverHeader {SoundQFeedback("No ${state.resultType.label.lowercase()} matches",FeedbackKind.Empty)}
@@ -288,56 +303,4 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
         if(entity.catalogTarget!=null)SoundQButton("Details",{view?.let {route->repository.details(route,entity)?.let {catalogDetails=it;entityDetails=null}}},variant=SoundQButtonVariant.Secondary)
         SoundQButton("Refine search",{view?.let {route->repository.refine(route,entity)?.let {draft->entityDetails=null;model.searchSources(route,draft)}}},variant=SoundQButtonVariant.Secondary)
     }}
-    state.inspected?.let {choice->
-        var previewError by remember(choice) {mutableStateOf(false)}
-        SoundQSheet("Source details",{view?.let {repository.dismiss(it,choice)}}) {
-            val row=choice.candidate
-            Text(row.title,style=SoundQ.typography.title)
-            if(row.artist.isNotBlank())Text(row.artist)
-            if(row.uploader.isNotBlank()&&row.uploader!=row.artist)Text("Uploader · ${row.uploader}")
-            if(row.album.isNotBlank())Text("Album · ${row.album}")
-            Text("${row.provider.label} · ${duration(row.durationMs)}")
-            if(row.sourceId.isNotBlank())Text("Source ID · ${row.sourceId}",style=SoundQ.typography.mono)
-            row.explicit?.let {Text(if(it)"Explicit" else "Not explicit",style=SoundQ.typography.caption)}
-            androidx.compose.foundation.text.selection.SelectionContainer {Text(row.source.url,style=SoundQ.typography.mono)}
-            SoundQButton("Preview source",{
-                previewError=view?.let {route->!repository.preview(route,choice) {url->context.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(url)))}} ?: true
-            },variant=SoundQButtonVariant.Secondary)
-            if(previewError)SoundQFeedback("Could not open source",FeedbackKind.Error)
-            val terminalSource=imports.sourceReceipt?.phase in setOf(SourceImportPhase.Accepted,SourceImportPhase.DecisionRefused)
-            if(imports.consumed&&!terminalSource)SoundQButton("Open imports",onImports,variant=SoundQButtonVariant.Secondary)
-            else if(choice.consumed||model.graph.imports.sourceSessionConsumed(choice))SoundQButton("Search again",{
-                view?.let {route->
-                    intake?.let(model.graph.imports::another)
-                    repository.dismiss(route,choice)
-                    search()
-                }
-            },variant=SoundQButtonVariant.Secondary)
-            else SoundQButton("Import source",{
-                if(!choice.valid())view?.let {repository.reportExpired(it,choice)}
-                else intake?.let {
-                    if(terminalSource)model.graph.imports.another(it)
-                    model.submitSourceImport(it,choice)
-                }
-            },enabled=row.downloadable&&!imports.pending)
-            if(!row.downloadable)SoundQFeedback("Source unavailable for import",FeedbackKind.Notice)
-        }
-    }
-    radarDetails?.takeIf {(page,song,draft)->view?.let {repository.radarCurrent(it,page,song,draft)}==true}?.let {evidence->
-        val (page,song,draft)=evidence
-        // An equal-song reopen must not reuse a modal's asynchronous hide coroutine.
-        key(radarSurfaceVisit) {
-            SoundQSheet("Song evidence",{if(radarDetails===evidence)changeRadarDetails(null)}) {
-                Text(song.title,style=SoundQ.typography.title)
-                Text(song.artist)
-                Text("First released · ${song.firstRelease.raw} (${song.firstRelease.precision})")
-                Text("Recording MusicBrainz ID: ${song.recording.value}",style=SoundQ.typography.mono)
-                Text("Credited listened-to artist IDs: ${song.creditedSeeds.joinToString {it.value}}",style=SoundQ.typography.mono)
-                Text("Source search is not proof of a recording match. Inspect the source before importing.",style=SoundQ.typography.caption)
-                SoundQButton("Find sources",{if(radarDetails===evidence)view?.let {model.findReleaseSources(it,page,song,draft)}},enabled=!radar.finding&&view?.let {repository.radarCurrent(it,page,song,draft)}==true)
-                if(radar.finding)SoundQFeedback("Checking library",FeedbackKind.Loading)
-                radar.error?.let {SoundQFeedback("Could not check library",FeedbackKind.Error)}
-            }
-        }
-    }
 }

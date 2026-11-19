@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 namespace soundq::nativeengine {
+inline constexpr uint32_t previewPageFrames = 8192;
 // Worker-only source-rate stereo float reader. A zero end is UNKNOWN, never EOF
 // or buffered coverage. Positive end is exact and immutable after decoded EOS.
 // Short successful reads are legal only when endFrames() seals that exact end.

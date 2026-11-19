@@ -37,7 +37,7 @@ public:
     bool replace(const std::string& path, uint64_t identity, uint64_t generation,
                  uint64_t startMs, double speed = 1);
     bool replaceReader(std::shared_ptr<const PcmReaderFactory> factory, uint64_t identity, uint64_t generation,
-                       uint64_t startMs, double speed = 1);
+                       uint64_t startMs, double speed = 1, bool progressive = false);
     // Ordinary listening speed. Pages for speed != 1 are the source pitch-shifted
     // by 1/speed in ORIGINAL source coordinates; the engine consumes them at
     // `speed`, so position/seek/EOF stay source-time and pitch is preserved.

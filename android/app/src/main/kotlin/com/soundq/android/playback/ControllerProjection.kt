@@ -16,7 +16,7 @@ import kotlinx.serialization.json.Json
 import java.util.concurrent.Executor
 
 @kotlinx.serialization.Serializable data class QueueOccurrence(val occurrenceId:String,val trackId:Long,val title:String,val artist:String,val manual:Boolean,val durationMs:Long=0,val origin:QueueOrigin=if(manual)QueueOrigin.Manual else QueueOrigin.Context,val ref:PlaybackRef?=null)
-enum class PlaybackSource {Queue,Arrangement,SavedMix}
+enum class PlaybackSource {Queue,Arrangement,SavedMix,DiscoveryPreview}
 data class PlaybackProjection(val connection:Connection=Connection.Connecting,val title:String?=null,val isPlaying:Boolean=false,val canPlay:Boolean=false,
     val artist:String="",val queue:List<QueueOccurrence> = emptyList(),val selectedOccurrence:String?=null,val positionMs:Long=0,val durationMs:Long=0,
     val canNext:Boolean=false,val canPrevious:Boolean=false,val shuffle:Boolean=false,val repeat:Int=Player.REPEAT_MODE_OFF,val error:String?=null,val preparing:Boolean=false,val canUndo:Boolean=false,val queueRevision:Long=0,val localOnly:Boolean=false,val sessionIdentity:String="redacted",internal val accountEpoch:Long=-1,val source:PlaybackSource=PlaybackSource.Queue,val arrangement:AcceptedArrangement?=null,val arrangementService:String="",val sourceQueueIncarnation:String="",val selectionIncarnation:Long=0,
@@ -40,11 +40,12 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
     private var closed=false
     private var queueRevision=0L
     private val failureEvents=PlaybackFailureEvents()
+    @Volatile
     private var selectionIncarnation=0L
     private var observedSelection:List<Any?>?=null
     private var observedSelectionMediaId:String?=null
     /** Synchronous publication prevents StateFlow conflation from reviving A-B-A captures. */
-    private fun retireSelection() {retireScratch();selectionIncarnation++;mutable.value=mutable.value.copy(selectionIncarnation=selectionIncarnation)}
+    private fun retireSelection() {retireScratch(observedSelection=true);selectionIncarnation++;mutable.value=mutable.value.copy(selectionIncarnation=selectionIncarnation)}
 
     private var projectedQueue:List<QueueOccurrence> = emptyList()
     private var projectedRevision=-1L
@@ -86,7 +87,7 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
             }).buildAsync()
         val next=ControllerConnection(future,Executor {handler.post(it)},{it.isConnected},
             {c -> controller=c;c.addListener(listener);handler.post(tick);retries=0;projectedRevision=-1},
-            {c -> retireSelection();observedSelection=null;observedSelectionMediaId=null;failureEvents.audio(null,null);c.removeListener(listener);controller=null;handler.removeCallbacks(tick)},
+            {c -> contextIntent++;retireSelection();observedSelection=null;observedSelectionMediaId=null;failureEvents.audio(null,null);c.removeListener(listener);controller=null;handler.removeCallbacks(tick)},
             {MediaController.releaseFuture(future)},
             {status -> if(status==PlaybackProjection.Connection.Connected)publish() else {
                 mutable.value=PlaybackProjection(status)
@@ -99,17 +100,34 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
     @Volatile private var contextIntent=0L
     private var contextError:String?=null
     private fun refuseContext(message:String) {contextError=message;failureEvents.contextRefused();mutable.value=mutable.value.copy(error=message,failureRevision=failureEvents.revision)}
-    internal fun captureContextRead():()->Boolean {
+    internal fun captureContextRead(preview: Boolean = false):()->Boolean {
         contextError=null
         val revision=++contextIntent
+        val selection=selectionIncarnation
         val c=controller ?: return {false}
         val owner=connection
         val graph=(appContext as com.soundq.android.SoundQApplication).graph
         val scope=graph.session.capture() ?: return {false}
         val command=graph.contextStarts.captureRead()
-        return {!closed&&contextIntent==revision&&connection===owner&&owner.accepts(c)&&graph.session.current(scope)&&command()}
+        return {!closed&&contextIntent==revision&&connection===owner&&owner.accepts(c)&&command()&&
+            (if(preview) graph.session.previewOwnerCurrent(scope) else selectionIncarnation==selection&&graph.session.current(scope))}
     }
     internal fun contextReadRefused(current:()->Boolean) {if(current())refuseContext("Playback context could not be loaded. The existing queue is unchanged.")}
+    /** Main only. Waits for acknowledged native window admission, not just an HTTP response. */
+    @androidx.annotation.MainThread
+    internal suspend fun startDiscoveryPreview(scope:com.soundq.android.data.AccountScope,
+        source:com.soundq.android.data.imports.ImportSource,title:String,artist:String,wireValid:()->Boolean={true},valid:()->Boolean):Boolean {
+        check(Looper.myLooper()==Looper.getMainLooper())
+        val c=controller ?: return false
+        val graph=(appContext as com.soundq.android.SoundQApplication).graph
+        if (!graph.session.remoteCurrent(scope)) return false
+        // Local Pause/seek revokes the pending wire lease synchronously, even
+        // if MediaSession cannot admit ordinary transport during secure save.
+        val revision = contextIntent
+        return graph.contextStarts.startDiscoveryPreview(scope,source,title,artist, valid = {
+            !closed && connection.accepts(c) && graph.session.previewOwnerCurrent(scope) && valid()
+        }, wireValid = { contextIntent == revision && wireValid() })
+    }
     fun playContext(tracks:List<Track>,index:Int,localOnly:Boolean=false,valid:(()->Boolean)?=null) {
         contextIntent++;contextError=null
         val c=controller ?: return
@@ -125,10 +143,12 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
         val graph=(appContext as com.soundq.android.SoundQApplication).graph
         val scope=graph.session.capture() ?: return
         val intent=contextIntent
+        val selection=selectionIncarnation
+        fun currentIntent() = !closed && contextIntent==intent && selectionIncarnation==selection && connection.accepts(c)
         val command=SessionCommand(SoundQLibraryService.START_CONTEXT,Bundle.EMPTY)
         if(!connection.accepts(c)||!c.isSessionCommandAvailable(command)){refuseContext("Playback context is unavailable. The existing queue is unchanged.");return}
         val capture=graph.contextStarts.capture(graph.endpoint.identity,scope.accountId) {
-            !closed && intent==contextIntent && connection.accepts(c) && graph.session.current(scope) && valid()
+            currentIntent() && graph.session.current(scope) && valid()
         }
         val saved=QueueSnapshot(graph.endpoint.identity,scope.accountId,tracks.map {track->
             SavedOccurrence(java.util.UUID.randomUUID().toString(),track.id.value,track.title,track.artist,false,localOnly,track.durationMs)
@@ -141,13 +161,13 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
                     val result=c.sendCustomCommand(command,Bundle().apply {putString("ticket",capture.ticket)})
                     result.addListener({
                         if(runCatching {result.get().resultCode==SessionResult.RESULT_SUCCESS}.getOrDefault(false))return@addListener
-                        if(!closed&&contextIntent==intent&&valid()&&connection.accepts(c))refuseContext("Playback context was refused. The existing queue is unchanged.")
+                        if(currentIntent()&&valid())refuseContext("Playback context was refused. The existing queue is unchanged.")
                         graph.io.launch {graph.contextStarts.finish(capture)}
                     },Executor {handler.post(it)})
                 }
             }catch(_:Exception){
                 graph.contextStarts.finish(capture)
-                handler.post {if(!closed&&contextIntent==intent&&valid()&&connection.accepts(c))refuseContext(QueuePolicy.CONTEXT_LIMIT_MESSAGE)}
+                handler.post {if(currentIntent()&&valid())refuseContext(QueuePolicy.CONTEXT_LIMIT_MESSAGE)}
             }
         }
     }
@@ -182,7 +202,7 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
         val result=c.sendCustomCommand(SessionCommand(SoundQLibraryService.JAM_ADMIT,Bundle.EMPTY),Bundle().apply {putString("ticket",ticket)})
         result.addListener({try {if(result.get().resultCode!=SessionResult.RESULT_SUCCESS)onRefused()}catch(_:Exception){onRefused()}},Executor {handler.post(it)})
     }}
-    fun toggle(){retireScratch();controller?.let {
+    fun toggle(){contextIntent++;retireScratch();controller?.let {
         // Media3 retains playWhenReady at natural end. The visible Play action is
         // replay, not Pause, and play() alone can be a no-op for that retained intent.
         if(it.playbackState==Player.STATE_ENDED){it.seekTo(0);it.play()}
@@ -190,7 +210,7 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
         else {if(it.playbackState==Player.STATE_IDLE || it.playerError!=null)it.prepare();it.play()}
     }}
     fun pause(){contextIntent++;retireScratch();controller?.pause()}
-    fun seek(position:Long){retireScratch();controller?.let {it.seekTo(position.coerceIn(0,it.duration.coerceAtLeast(0)))}}
+    fun seek(position:Long){contextIntent++;retireScratch();controller?.let {it.seekTo(position.coerceIn(0,it.duration.coerceAtLeast(0)))}}
     private var clockRequest=0L
     fun seekClock(captured:PlaybackProjection,mode:PlayerClockMode,positionMs:Long,valid:()->Boolean,done:(Boolean)->Unit) {
         val c=controller ?: return done(false)
@@ -261,7 +281,7 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
     fun move(occurrence:String,delta:Int){contextIntent++;controller?.let {c -> val i=(0 until c.mediaItemCount).firstOrNull {c.getMediaItemAt(it).mediaId==occurrence} ?: return;val to=i+delta;if(to in 0 until c.mediaItemCount)c.moveMediaItem(i,to)}}
     fun moveTo(occurrence:String,to:Int){contextIntent++;controller?.let {c -> val i=(0 until c.mediaItemCount).firstOrNull {c.getMediaItemAt(it).mediaId==occurrence} ?: return;if(to in 0 until c.mediaItemCount)c.moveMediaItem(i,to)}}
     fun remove(occurrence:String){contextIntent++;controller?.let {c -> val i=(0 until c.mediaItemCount).firstOrNull {c.getMediaItemAt(it).mediaId==occurrence} ?: return;c.removeMediaItem(i)}}
-    fun clear(){retireScratch();controller?.clearMediaItems()}
+    fun clear(){contextIntent++;retireScratch();controller?.clearMediaItems()}
     fun playMix(plan:com.soundq.android.data.mix.SavedMix,startOccurrence:String?=null,playlistStart:String?=null,done:(Boolean)->Unit) {
         contextIntent++
         val c=controller ?: return done(false)
@@ -420,8 +440,10 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
         val c=controller ?: return
         if(connection.accepts(c))sendPerformance(c,if(cancel)PerformanceCommands.CANCEL else PerformanceCommands.END,PerformanceCommands.lease(lease,terminalEvent))
     }
-    private fun retireScratch() {
-        contextIntent++
+    private fun retireScratch(observedSelection:Boolean=false) {
+        // A's natural EOF restores the ordinary timeline while B may have
+        // a newer preview read. Observing that restore is not a user command.
+        if(!observedSelection)contextIntent++
         scratchRequest++;latestScratchMove=null
         val lease=scratchLease ?: return
         finishScratch(lease,maxOf(android.os.SystemClock.uptimeMillis()*1_000_000L,lastScratchInput+1),true)
@@ -481,14 +503,21 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
         val c=controller ?: return
         if(!connection.accepts(c)) return
         if(projectedRevision!=queueRevision) {
-            projectedQueue=(0 until c.mediaItemCount).map {i -> val m=c.getMediaItemAt(i);QueueOccurrence(m.mediaId,m.mediaMetadata.extras?.getLong("trackId") ?: 0,m.mediaMetadata.title?.toString().orEmpty(),m.mediaMetadata.artist?.toString().orEmpty(),m.mediaMetadata.extras?.getBoolean("manual")==true,m.mediaMetadata.extras?.getLong("durationMs") ?: 0,QueueOrigin.read(m.mediaMetadata.extras?.getString("origin"),m.mediaMetadata.extras?.getBoolean("manual")==true),PlaybackRef.read(m.mediaMetadata.extras?.getString("playbackRef")))}
+            projectedQueue=(0 until c.mediaItemCount).mapNotNull {i -> val m=c.getMediaItemAt(i)
+                if(m.mediaId.startsWith(DISCOVERY_PREVIEW_PREFIX))return@mapNotNull null
+                QueueOccurrence(m.mediaId,m.mediaMetadata.extras?.getLong("trackId") ?: 0,m.mediaMetadata.title?.toString().orEmpty(),m.mediaMetadata.artist?.toString().orEmpty(),m.mediaMetadata.extras?.getBoolean("manual")==true,m.mediaMetadata.extras?.getLong("durationMs") ?: 0,QueueOrigin.read(m.mediaMetadata.extras?.getString("origin"),m.mediaMetadata.extras?.getBoolean("manual")==true),PlaybackRef.read(m.mediaMetadata.extras?.getString("playbackRef")))}
             projectedRevision=queueRevision
         }
         val accepted=c.sessionExtras.getString("acceptedArrangement")?.let {runCatching {Json.decodeFromString<AcceptedArrangement>(it).withProjectedDocument()}.getOrNull()}?.takeIf {
             it.identity.install==c.currentMediaItem?.mediaId && it.identity.accountEpoch==c.sessionExtras.getLong("accountEpoch",-1)
         }
-        val source=if(accepted!=null)PlaybackSource.Arrangement else if(c.currentMediaItem?.mediaId?.startsWith("mix:")==true || c.currentMediaItem?.localConfiguration?.uri?.scheme=="soundqmix")PlaybackSource.SavedMix else PlaybackSource.Queue
-        val queue=accepted?.sources ?: if(source==PlaybackSource.SavedMix)emptyList() else projectedQueue
+        val source=when {
+            c.currentMediaItem?.mediaId?.startsWith(DISCOVERY_PREVIEW_PREFIX)==true -> PlaybackSource.DiscoveryPreview
+            accepted!=null -> PlaybackSource.Arrangement
+            c.currentMediaItem?.mediaId?.startsWith("mix:")==true || c.currentMediaItem?.localConfiguration?.uri?.scheme=="soundqmix" -> PlaybackSource.SavedMix
+            else -> PlaybackSource.Queue
+        }
+        val queue=accepted?.sources ?: if(source==PlaybackSource.Queue)projectedQueue else emptyList()
         val deviceOwner=c.sessionExtras.getString("selectedDeviceOwner")?.takeIf {it.length<=4096}
             ?.let {runCatching {Json.decodeFromString<SelectedDevicePlaybackOwner>(it)}.getOrNull()}?.takeIf {
                 source==PlaybackSource.Queue&&c.currentMediaItem?.mediaMetadata?.extras?.getBoolean("localOnly")==true&&
@@ -504,10 +533,10 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
         }
         mutable.value=PlaybackProjection(PlaybackProjection.Connection.Connected,c.mediaMetadata.title?.toString(),c.isPlaying,c.isCommandAvailable(Player.COMMAND_PLAY_PAUSE)&&c.mediaItemCount>0,
             c.mediaMetadata.artist?.toString().orEmpty(),queue,c.currentMediaItem?.mediaId,c.currentPosition.coerceAtLeast(0),c.duration.coerceAtLeast(0),
-            c.hasNextMediaItem(),c.hasPreviousMediaItem()||c.currentPosition>0,c.shuffleModeEnabled,c.repeatMode,
+            c.hasNextMediaItem(),source!=PlaybackSource.DiscoveryPreview&&(c.hasPreviousMediaItem()||c.currentPosition>0),c.shuffleModeEnabled,c.repeatMode,
             if(c.playerError!=null) "Audio could not be played. Retry playback." else contextError,c.playbackState==Player.STATE_BUFFERING,c.sessionExtras.getBoolean("canUndo"),queueRevision,c.currentMediaItem?.mediaMetadata?.extras?.getBoolean("localOnly")==true,c.sessionExtras.getString("incarnation") ?: "redacted",c.sessionExtras.getLong("accountEpoch",-1),source,accepted,c.sessionExtras.getString("arrangementService").orEmpty(),c.sessionExtras.getString("sourceQueueIncarnation").orEmpty(),selectionIncarnation,
             canPlayMix=c.isSessionCommandAvailable(SessionCommand(SoundQLibraryService.PLAY_MIX,Bundle.EMPTY)),
-            canAuditionArrangement=c.isSessionCommandAvailable(SessionCommand(SoundQLibraryService.APPLY_ARRANGEMENT,Bundle.EMPTY)),
+            canAuditionArrangement=source!=PlaybackSource.DiscoveryPreview&&c.isSessionCommandAvailable(SessionCommand(SoundQLibraryService.APPLY_ARRANGEMENT,Bundle.EMPTY)),
             tempoPreview=PerformanceCommands.read<TempoPreviewState>(c.sessionExtras,PerformanceCommands.TEMPO_STATE),
             clockAuthority=c.sessionExtras.getString("playbackClock")?.takeIf {it.length<=96*1024}?.let {runCatching {Json.decodeFromString<PlaybackClockAuthority>(it)}.getOrNull()},
             performanceDecks=decks,

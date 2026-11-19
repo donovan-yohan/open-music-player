@@ -25,7 +25,46 @@ struct Generated final:PcmReader {
         return 0;
     }
 };
-int main(int argc,char**) {
+struct FailingPreview final:PcmReader {
+    uint32_t sampleRate()const override{return 48000;}
+    uint64_t endFrames()const override{return 0;}
+    int read(uint64_t first,uint32_t count,float* out,size_t,uint32_t& n)override {
+        if(first!=0)return -1; // deterministic next-window failure
+        n=count;std::fill_n(out,size_t{count}*2,.125f);return 0;
+    }
+};
+static int previewHandoff() {
+    Engine engine(48000);uint64_t seq=0;Snapshot s{};
+    WorkerDeck old(0,engine,seq),preview(2,engine,seq);
+    assert(old.replaceReader(std::make_shared<const PcmReaderFactory>([]{return std::make_unique<Generated>();}),7,1,0));
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    float out[256]{};
+    auto step=[&]{engine.render(out,128);assert(engine.snapshot(s));old.pump(s);preview.pump(s);std::this_thread::sleep_for(std::chrono::milliseconds(1));};
+    while(!old.ready(s)){assert(std::chrono::steady_clock::now()<deadline);step();}
+    assert(engine.submit({Operation::Play,0,++seq,1}));step();
+    assert(preview.replaceReader(std::make_shared<const PcmReaderFactory>([]{return std::make_unique<FailingPreview>();}),11,3,0,1,true));
+    while(!preview.ready(s)){assert(std::chrono::steady_clock::now()<deadline);step();}
+    const auto atReady=s.decks[0].sourceFrame;
+    for(int i=0;i<24;++i) {
+        step();
+        if(!preview.ready(s)||preview.stats().error||preview.stats().decodeCalls!=1) {
+            std::cerr<<"FAIL paused ready preview reached its failing refill before handoff\n";
+            return 1;
+        }
+        assert(s.decks[0].playing && s.decks[0].sourceFrame==atReady+(i+1)*128);
+    }
+    const auto finalOld=s.decks[0].sourceFrame;
+    assert(engine.submit({Operation::Pause,0,++seq,1}));step();
+    assert(!s.decks[0].playing && s.decks[0].sourceFrame==finalOld && finalOld>atReady);
+    assert(engine.submit({Operation::Play,2,++seq,3}));step();
+    assert(s.decks[2].playing && s.decks[2].sourceFrame==128 && out[0]==.125f);
+    while(!preview.stats().error){assert(std::chrono::steady_clock::now()<deadline);step();}
+    assert(!s.decks[0].playing && s.decks[0].sourceFrame==finalOld);
+    std::cout<<"PASS preview refill withheld until Play; outgoing rendered through ready-to-pause and exact pause cursor retained\n";
+    return 0;
+}
+int main(int argc,char** argv) {
+    if(argc>1&&std::string(argv[1])=="--preview-handoff")return previewHandoff();
     const bool fast=argc>1;
     Engine engine(48000);uint64_t seq=0;
     WorkerDeck worker(0,engine,seq);

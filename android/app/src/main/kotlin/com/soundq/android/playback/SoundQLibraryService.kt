@@ -11,6 +11,7 @@ import com.google.common.util.concurrent.*
 import com.soundq.android.*
 import com.soundq.android.data.*
 import com.soundq.android.playback.system.*
+import com.soundq.android.playback.nativeengine.NativeCallbackPlayer
 import com.soundq.android.data.timeline.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -67,6 +68,7 @@ class SoundQLibraryService : MediaLibraryService() {
     private var restoring=false
     private var rejectedQueue=false
     private var restoredIdentity:String?=null
+    private var pendingQueueRestore:AccountScope?=null
     private var saveJob:Job?=null
     private val queueFileLock=Any()
     @Volatile private var queueSaveEpoch=0L
@@ -75,6 +77,30 @@ class SoundQLibraryService : MediaLibraryService() {
     private lateinit var recorder:ServicePlayRecorder
     private lateinit var continuation:ServiceLibraryContinuation
     private var playbackWakeLock: android.os.PowerManager.WakeLock? = null
+    private val previewHandoff = DiscoveryPreviewHandoff(::startDiscoveryPreview)
+    private val parkedQueue get() = (player as? NativeCallbackPlayer)?.parkedQueue
+    private fun ordinaryItems() = parkedQueue?.items ?: (0 until player.mediaItemCount).map(player::getMediaItemAt)
+    private fun ordinaryIndex() = parkedQueue?.index ?: player.currentMediaItemIndex
+    private fun ordinaryPosition() = parkedQueue?.position ?: player.currentPosition
+
+    private suspend fun startDiscoveryPreview(scope: AccountScope, source: com.soundq.android.data.imports.ImportSource,
+        title: String, artist: String, current: PreviewLifetime): Boolean {
+        val native = player as? NativeCallbackPlayer ?: return false
+        fun admitted() = current() && account?.let(graph.session::previewOwnerCurrent) == true && graph.session.previewOwnerCurrent(scope) && !transport.resolving &&
+            acceptedArrangement == null && player.currentMediaItem?.localConfiguration?.uri?.scheme !in setOf("soundqmix", "soundqarrangement") &&
+            !(player.mediaItemCount == 0 && pendingQueueRestore != null)
+        if (!admitted()) return false
+        val id = DISCOVERY_PREVIEW_PREFIX + UUID.randomUUID()
+        val item = MediaItem.Builder().setMediaId(id).setUri(Uri.parse("soundqpreview://play/" + id.substringAfter(':')))
+            .setMimeType("audio/mpeg").setMediaMetadata(MediaMetadata.Builder().setTitle(title.take(512)).setArtist(artist.take(512))
+                .setIsBrowsable(false).setIsPlayable(true).build()).build()
+        val input = graph.api.discoveryPreview(scope, source, current.wireCurrent)
+        if (!native.prepareDiscoveryPreview(item, input, scope, ::admitted)) return false
+        selectionEpoch++; pendingArrangement=null; graph.timeline.cancelAudition(); interruptions.command()
+        transport.selectionCommitted()
+        player.play()
+        return true
+    }
 
     private fun updatePlaybackWakeLock() {
         val lock = playbackWakeLock ?: return
@@ -182,6 +208,7 @@ class SoundQLibraryService : MediaLibraryService() {
         artwork=ScopedArtworkLoader(graph)
         val activity=android.app.PendingIntent.getActivity(this,0,android.content.Intent(this,MainActivity::class.java),android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT)
         session=MediaLibrarySession.Builder(this,transport,Callback()).setBitmapLoader(artwork).setSessionActivity(activity).build()
+        graph.contextStarts.discoveryPreview = previewHandoff
         (player as? com.soundq.android.playback.nativeengine.NativeCallbackPlayer)?.onPerformanceChanged={validateLiveQualifications();publishSessionExtras()}
         (player as? com.soundq.android.playback.nativeengine.NativeCallbackPlayer)?.onSpeedChanged={publishSessionExtras()}
         publishSessionExtras()
@@ -207,7 +234,8 @@ class SoundQLibraryService : MediaLibraryService() {
                 graph.jamAdmission.replaceOwner();publishSessionExtras();refreshLikeButton()
                 val retained=(0 until player.mediaItemCount).mapNotNull {player.getMediaItemAt(it).localConfiguration?.uri?.toString()}.toSet()
                 val sourceRetained=arrangementItems.orEmpty().mapNotNull {it.localConfiguration?.uri?.toString()}.toSet()
-                grants.keys.retainAll(retained+sourceRetained);mixGrants.entries.toList().filter {it.key !in retained}.forEach {(uri,grant)->if(mixGrants.remove(uri,grant))grant.close()}
+                val parked = parkedQueue?.items.orEmpty().mapNotNull {it.localConfiguration?.uri?.toString()}
+                grants.keys.retainAll(retained+sourceRetained+parked);mixGrants.entries.toList().filter {it.key !in retained}.forEach {(uri,grant)->if(mixGrants.remove(uri,grant))grant.close()}
                 scheduleSave()
             }
             override fun onIsPlayingChanged(isPlaying:Boolean) {continuation.playingChanged(isPlaying);scheduleSave()}
@@ -359,6 +387,7 @@ class SoundQLibraryService : MediaLibraryService() {
     override fun onGetSession(controllerInfo:MediaSession.ControllerInfo):MediaLibrarySession? = session.takeIf {admitted(controllerInfo)}
     override fun onDestroy() {
         continuation.close()
+        if (graph.contextStarts.discoveryPreview === previewHandoff) graph.contextStarts.discoveryPreview = null
         graph.contextStarts.retire()
         graph.jamAdmission.detachOwner()
         selectionEpoch++;transport.retire();jobs.cancel();mixGrants.values.forEach {it.close()};mixGrants.clear();grants.clear();undo=null
@@ -371,6 +400,7 @@ class SoundQLibraryService : MediaLibraryService() {
         return java.io.File(graph.directory,"queue-$hash.json")
     }
     private fun queueObservation(scope:AccountScope):QueueSnapshot {
+        check(parkedQueue == null) // A transient decoder selection cannot be serialized as a Library queue.
         return QueueSnapshot(graph.endpoint.identity,scope.accountId,(0 until player.mediaItemCount).map {i ->
         val m=player.getMediaItemAt(i);val e=m.mediaMetadata.extras!!
         SavedOccurrence(m.mediaId,e.getLong("trackId"),m.mediaMetadata.title?.toString().orEmpty(),m.mediaMetadata.artist?.toString().orEmpty(),e.getBoolean("manual"),e.getBoolean("localOnly"),e.getLong("durationMs"),QueueOrigin.read(e.getString("origin"),e.getBoolean("manual")),com.soundq.android.data.jam.JamOccurrence.decode(e.getString("soundqJam")),PlaybackRef.read(e.getString("playbackRef")))
@@ -392,7 +422,9 @@ class SoundQLibraryService : MediaLibraryService() {
         saveJob?.cancel();val stamp=++queueSaveEpoch;val observed=queueObservation(scope)
         synchronized(queueFileLock){require(stamp==queueSaveEpoch);writeQueueObservation(scope,observed)}
     }
+    private fun previewQueueTransient() = (player as? NativeCallbackPlayer)?.previewQueueTransient == true
     private fun scheduleSave() {
+        if (previewQueueTransient()) return
         if(account==null){scheduleGuestSave();return}
         if(restoring||rejectedQueue || (0 until player.mediaItemCount).any {player.getMediaItemAt(it).localConfiguration?.uri?.scheme in setOf("soundqmix","soundqarrangement")})return
         val scope=account ?: return
@@ -401,7 +433,7 @@ class SoundQLibraryService : MediaLibraryService() {
         val stamp=++queueSaveEpoch
         saveJob=jobs.launch {
             delay(300)
-            if(restoring||rejectedQueue||!graph.session.current(scope) || (0 until player.mediaItemCount).any {player.getMediaItemAt(it).localConfiguration?.uri?.scheme in setOf("soundqmix","soundqarrangement")})return@launch
+            if(restoring||rejectedQueue||!graph.session.current(scope) || (previewQueueTransient() || (0 until player.mediaItemCount).any {player.getMediaItemAt(it).localConfiguration?.uri?.scheme in setOf("soundqmix","soundqarrangement")}))return@launch
             val observed=queueObservation(scope)
             withContext(Dispatchers.IO) {
                 synchronized(queueFileLock) {
@@ -414,8 +446,11 @@ class SoundQLibraryService : MediaLibraryService() {
     private fun restoreQueue(scope:AccountScope) {
         val revision=transport.revision
         val selection=selectionEpoch
+        pendingQueueRestore=scope
         jobs.launch {
-            val saved=try {readSavedQueue(scope)}catch(_:Exception){null} ?: return@launch
+            val saved=try {readSavedQueue(scope)}catch(_:Exception){null} finally {
+                if (pendingQueueRestore === scope) pendingQueueRestore=null
+            } ?: return@launch
             if(!graph.session.current(scope)||player.mediaItemCount>0||transport.revision!=revision||selectionEpoch!=selection)return@launch
             restoring=true
             val prior=grants.keys.toSet()
@@ -592,6 +627,7 @@ class SoundQLibraryService : MediaLibraryService() {
     private var guestSaveDeferred=false
     private fun guestFile()=java.io.File(graph.directory,"phone-queue-guest.json")
     private fun scheduleGuestSave() {
+        if (parkedQueue != null) return
         if(restoring||guestRejectedQueue||!localAccess())return
         if(guestRestoresPending>0){guestSaveDeferred=true;saveJob?.cancel();queueSaveEpoch++;return}
         val version=graph.session.version()
@@ -814,19 +850,19 @@ class SoundQLibraryService : MediaLibraryService() {
                 require(current())
                 val saved=withContext(Dispatchers.IO){requireNotNull(graph.contextStarts.read(capture))}
                 require(current() && QueuePolicy.acceptsContext(saved.items.size) && saved.selected in saved.items.indices)
-                val old=(0 until player.mediaItemCount).map(player::getMediaItemAt)
-                val manual=QueuePolicy.carriedManual(old.map {it.mediaMetadata.extras?.getBoolean("manual")==true},player.currentMediaItemIndex,graph.queueSettings.state.value.keepQueued).map(old::get)
+                val old=ordinaryItems()
+                val manual=QueuePolicy.carriedManual(old.map {it.mediaMetadata.extras?.getBoolean("manual")==true},ordinaryIndex(),graph.queueSettings.state.value.keepQueued).map(old::get)
                 require(QueuePolicy.acceptsAppend(saved.items.size,manual.size))
                 val items=savedItems(scope,saved).toMutableList().apply {addAll(saved.selected+1,manual)}
                 native.validateQueueMetadata(items)
                 require(current())
                 undo=old.takeIf {rows->rows.none {it.localConfiguration?.uri?.scheme in setOf("soundqmix","soundqarrangement")}}
-                undoScope=scope;undoIndex=player.currentMediaItemIndex;undoPosition=player.currentPosition
+                undoScope=scope;undoIndex=ordinaryIndex();undoPosition=ordinaryPosition()
                 // Same canonical owner and exact occurrence IDs. No separately queued Play can
                 // escape a refused replacement. Native metadata admission above is side-effect free.
                 pendingArrangement=null;graph.timeline.cancelAudition();continuation.command();interruptions.command()
                 transport.retire();player.pause();retireArrangement()
-                player.restoringShuffle(player.shuffleModeEnabled) {player.setMediaItems(items,saved.selected,0)}
+                player.restoringShuffle(native.queueShuffleEnabled) {player.setMediaItems(items,saved.selected,0)}
                 installed=true;rejectedQueue=false;transport.selectionCommitted();publishSessionExtras()
                 player.prepare();player.play()
                 SessionResult(SessionResult.RESULT_SUCCESS)
@@ -905,7 +941,7 @@ class SoundQLibraryService : MediaLibraryService() {
             if(acceptedArrangement!=null && playerCommand==Player.COMMAND_CHANGE_MEDIA_ITEMS)return SessionError.ERROR_INVALID_STATE
             if(playerCommand==Player.COMMAND_CHANGE_MEDIA_ITEMS) {
                 undoScope=scope;undoVersion=graph.session.version()
-                undo=(0 until player.mediaItemCount).map(player::getMediaItemAt).takeIf {items->items.none {it.localConfiguration?.uri?.scheme in setOf("soundqmix","soundqarrangement")}};undoIndex=player.currentMediaItemIndex;undoPosition=player.currentPosition
+                undo=ordinaryItems().takeIf {items->items.none {it.localConfiguration?.uri?.scheme in setOf("soundqmix","soundqarrangement")}};undoIndex=ordinaryIndex();undoPosition=ordinaryPosition()
                 publishSessionExtras()
                 // Retained-source edits preserve transport intent. Replacement callbacks
                 // pause at onSetMediaItems; stale pending reads were retired above.
@@ -913,7 +949,8 @@ class SoundQLibraryService : MediaLibraryService() {
             return SessionResult.RESULT_SUCCESS
         }
         override fun onAddMediaItems(mediaSession:MediaSession,controller:MediaSession.ControllerInfo,mediaItems:List<MediaItem>):ListenableFuture<List<MediaItem>> =
-            try {Futures.immediateFuture(resolve(browserRequests(controller,mediaItems),compose={next->validateInsertion(next);next}))}catch(_:Exception){transport.rejectSelection();Futures.immediateFailedFuture(SafeFailure(SafeFailure.Reason.AudioUnavailable))}
+            if (parkedQueue != null) Futures.immediateFailedFuture(SafeFailure(SafeFailure.Reason.AudioUnavailable)) else
+                try {Futures.immediateFuture(resolve(browserRequests(controller,mediaItems),compose={next->validateInsertion(next);next}))}catch(_:Exception){transport.rejectSelection();Futures.immediateFailedFuture(SafeFailure(SafeFailure.Reason.AudioUnavailable))}
         override fun onSetMediaItems(mediaSession:MediaSession,controller:MediaSession.ControllerInfo,mediaItems:List<MediaItem>,startIndex:Int,startPositionMs:Long):ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
             transport.pause()
             return try {
@@ -931,8 +968,8 @@ class SoundQLibraryService : MediaLibraryService() {
                             graph.session.checkScope(scope)
                             val requests=found.tracks.map(::request)
                             require(requests.isNotEmpty())
-                            val old=(0 until player.mediaItemCount).map(player::getMediaItemAt)
-                            val manual=QueuePolicy.carriedManual(old.map {it.mediaMetadata.extras?.getBoolean("manual")==true},player.currentMediaItemIndex,graph.queueSettings.state.value.keepQueued).map(old::get)
+                            val old=ordinaryItems()
+                            val manual=QueuePolicy.carriedManual(old.map {it.mediaMetadata.extras?.getBoolean("manual")==true},ordinaryIndex(),graph.queueSettings.state.value.keepQueued).map(old::get)
                             val prior=grants.keys.toSet()
                             val items=resolve(requests,0,0){next->next.toMutableList().apply {addAll(1,manual)}}
                             staged=grants.keys.filter {it !in prior}.toSet()
@@ -942,8 +979,8 @@ class SoundQLibraryService : MediaLibraryService() {
                     // Never hold the controller FIFO behind IO: a later Pause must execute.
                     return Futures.immediateFuture(MediaSession.MediaItemsWithStartPosition(transport.handoff(),C.INDEX_UNSET,C.TIME_UNSET))
                 }
-                val old=(0 until player.mediaItemCount).map(player::getMediaItemAt)
-                val manual=QueuePolicy.carriedManual(old.map {it.mediaMetadata.extras?.getBoolean("manual")==true},player.currentMediaItemIndex,graph.queueSettings.state.value.keepQueued).map(old::get)
+                val old=ordinaryItems()
+                val manual=QueuePolicy.carriedManual(old.map {it.mediaMetadata.extras?.getBoolean("manual")==true},ordinaryIndex(),graph.queueSettings.state.value.keepQueued).map(old::get)
                 val start=if(startIndex==C.INDEX_UNSET) 0 else startIndex
                 val resolved=resolve(browserRequests(controller,mediaItems),start,startPositionMs) {next->
                     require(start in next.indices)
@@ -1002,6 +1039,8 @@ class SoundQLibraryService : MediaLibraryService() {
             }
             graph.contextStarts.retire()
             if(customCommand.customAction in PerformanceCommands.all)return performanceCommand(controller,customCommand.customAction,args)
+            if (parkedQueue != null && customCommand.customAction in setOf(APPLY_ARRANGEMENT, RETURN_SOURCES))
+                return Futures.immediateFuture(SessionResult(SessionError.ERROR_INVALID_STATE))
             // Preflight before any preparation, grant creation or queue mutation.
             if ((!supportsMixActions() && customCommand.customAction == PLAY_MIX) || (!supportsArrangementActions() && customCommand.customAction in setOf(APPLY_ARRANGEMENT, RETURN_SOURCES))) return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
             if (!supportsSourceActions() && customCommand.customAction == JAM_ADMIT) return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
@@ -1156,7 +1195,7 @@ class SoundQLibraryService : MediaLibraryService() {
                 result.addListener({if(result.isCancelled)job.cancel()},MoreExecutors.directExecutor())
                 return result
             }
-            if(customCommand.customAction==JAM_ADMIT && acceptedArrangement!=null) {
+            if(customCommand.customAction==JAM_ADMIT && (acceptedArrangement!=null || parkedQueue!=null)) {
                 args.getString("ticket")?.let(graph.jamAdmission::refused)
                 return Futures.immediateFuture(SessionResult(SessionError.ERROR_INVALID_STATE))
             }
