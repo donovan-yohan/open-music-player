@@ -66,7 +66,7 @@ internal class NativeCallbackPlayer(
     }
     private class Preview(val input: DiscoveryPreviewInput, val scope: AccountScope,
         val queue: ParkedQueue, val order: List<Int>, val durations: Map<String, Long>)
-    private class PreviewPreparation(val input: DiscoveryPreviewInput) {
+    private class PreviewPreparation(val input: DiscoveryPreviewInput, val scope: AccountScope) {
         val drained = CompletableDeferred<Boolean>()
     }
     private var previewPreparation: PreviewPreparation? = null
@@ -89,7 +89,7 @@ internal class NativeCallbackPlayer(
             previous.input.cancel()
             if (!previous.drained.await()) return false
         }
-        val request = PreviewPreparation(input)
+        val request = PreviewPreparation(input, scope)
         previewPreparation = request
         val deck = if (ordinaryDeck == 2) 3 else 2
         val generation = maxOf(epoch, sourceSequence) + 2
@@ -449,6 +449,10 @@ internal class NativeCallbackPlayer(
             val scope = queueScope
             if(items.isNotEmpty()&&scope==null&&!graph.phoneAudio.current(queueVersion)){clearQueue();invalidateState()}
             if (items.isNotEmpty() && scope != null && !graph.session.current(scope)) {
+                // A same-account secure save can withdraw ordinary authority while
+                // the already-admitted preview still owns its pending handoff.
+                if (previewPreparation?.let { !it.input.canceled && graph.session.previewOwnerCurrent(it.scope) } == true &&
+                    graph.session.previewOwnerCurrent(scope)) return@collect
                 if (auth is AuthState.LocalLocked || graph.session.resumesLocal(scope)) {
                     retireSelection()
                     intent = false

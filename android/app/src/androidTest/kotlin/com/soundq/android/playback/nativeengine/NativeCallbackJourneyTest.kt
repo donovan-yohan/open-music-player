@@ -42,6 +42,8 @@ class NativeCallbackJourneyTest {
         @Volatile var allowUnload = true
         @Volatile var allowClose = true
         @Volatile var endedCount = 0L
+        @Volatile var previewEndedCount = 0L
+        @Volatile var previewPosition = 0L
         private var position = 0L
         private var identity = 0L
         private var generation = 0L
@@ -55,7 +57,7 @@ class NativeCallbackJourneyTest {
             thread(); this.identity = identity; this.generation = generation; position = positionMs; playing = false; handoffPaused = false; return true
         }
         override fun loadPreview(handle: Long, deck: Int, input: com.soundq.android.data.DiscoveryPreviewInput, generation: Long): Boolean {
-            thread(); check(deck == 2); previewIdentity = generation; return true
+            thread(); check(deck == 2); previewIdentity = generation; previewEndedCount = 0; previewPosition = 0; return true
         }
         override fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long): Boolean {
             thread(); operations.add(operation)
@@ -73,13 +75,18 @@ class NativeCallbackJourneyTest {
         }
         override fun state(handle: Long): String {
             thread()
+            // Read the preview cursor before ordinary EOF: the cursor change
+            // acknowledges consumption of the wrong-deck control snapshot.
+            val preview = JSONObject().put("identity",previewIdentity).put("generation",previewIdentity)
+                .put("positionMs",previewPosition).put("durationMs",3000).put("sourceRate",48000).put("sourceFrames",144000)
+                .put("ready",previewIdentity != 0L).put("preparing",false).put("playing",previewPlaying)
+                .put("eofCount",if (previewIdentity == 0L) 0L else previewEndedCount)
+                .put("openDecoders",if (previewIdentity == 0L) 0 else 1).put("error",0)
             val d = JSONObject().put("identity", identity).put("generation", generation).put("positionMs", position)
                 .put("durationMs", 3000).put("sourceRate", 48000).put("sourceFrames", 144000)
                 .put("ready", identity != 0L).put("preparing", false).put("playing", playing).put("handoffPaused", identity != 0L && handoffPaused)
                 .put("eofCount", endedCount).put("openDecoders", if (identity == 0L) 0 else 1).put("error", 0)
-            return JSONObject().put("error", 0).put("coherent", true).put("decks", JSONArray().put(d).put(d).put(JSONObject(d.toString()).put("identity",previewIdentity)
-                .put("generation",previewIdentity).put("ready",previewIdentity != 0L).put("playing",previewPlaying)
-                .put("openDecoders",if (previewIdentity == 0L) 0 else 1))).toString()
+            return JSONObject().put("error", 0).put("coherent", true).put("decks", JSONArray().put(d).put(d).put(preview)).toString()
         }
         override fun close(handle: Long): Boolean { thread(); if (!allowClose) return false; identity = 0; return true }
     }
@@ -172,7 +179,13 @@ class NativeCallbackJourneyTest {
             f.await { f.player.isPlaying && f.player.currentMediaItem?.mediaId == "discovery-preview:test" }
             assertTrue(ready.get(5,TimeUnit.SECONDS))
             assertEquals("preview must not enter ordinary source acquisition",1L,f.entered.count)
+            // An ordinary-only EOF must leave preview selected after that
+            // snapshot is consumed. Its distinct preview cursor is the ACK.
             f.hardware.endedCount = 1L
+            f.hardware.previewPosition = 123L
+            f.await { f.player.currentMediaItem?.mediaId == "discovery-preview:test" && f.player.currentPosition == 123L }
+            // Only a new EOF on the exact preview deck may restore the queue.
+            f.hardware.previewEndedCount = 1L
             f.await { f.player.currentMediaItem?.mediaId == "old" }
             main {
                 assertEquals(listOf("old","queued"),(0 until f.player.mediaItemCount).map { f.player.getMediaItemAt(it).mediaId })
@@ -181,6 +194,7 @@ class NativeCallbackJourneyTest {
                 assertTrue(f.player.shuffleModeEnabled)
                 assertEquals(Player.REPEAT_MODE_ONE,f.player.repeatMode)
                 assertTrue(completed.isEmpty())
+                assertNull(f.player.playerError)
             }
         }
     }

@@ -3,7 +3,9 @@ package com.soundq.android.data
 import androidx.annotation.Keep
 import okhttp3.Call
 import okhttp3.Response
+import okio.AsyncTimeout
 import java.io.InputStream
+import java.util.concurrent.TimeUnit
 
 /** Single-use HTTP body, read and closed by the native page worker. Only cancel crosses threads. */
 @Keep
@@ -34,12 +36,20 @@ internal class DiscoveryPreviewInput(private val createCall: () -> Call, private
     private fun execute(): Response {
         checkCurrent()
         val call=createCall()
+        // OkHttp's call timer runs until the body closes. Budget for up to 20 s
+        // to open, the 30 s demand-driven clip, and 10 s of headroom.
+        call.timeout().timeout(60, TimeUnit.SECONDS)
         synchronized(ownership) {
             if(retired)throw SafeFailure(SafeFailure.Reason.Retired)
             check(activeCall==null)
             activeCall=call
         }
-        return call.execute().also {response=it}
+        // Keep the original wall-clock deadline to headers, independently of
+        // the unchanged socket read timeout and the longer preview call cap.
+        val headers = object : AsyncTimeout() {
+            override fun timedOut() = call.cancel()
+        }.apply { timeout(20, TimeUnit.SECONDS) }
+        return headers.withTimeout { call.execute().also { response = it } }
     }
 
     fun open(): LongArray = guarded {

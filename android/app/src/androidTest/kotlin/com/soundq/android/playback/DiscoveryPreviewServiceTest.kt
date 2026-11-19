@@ -7,6 +7,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
+import com.google.common.util.concurrent.ListenableFuture
 import com.soundq.android.*
 import com.soundq.android.data.imports.ImportSource
 import com.soundq.android.data.deviceaudio.*
@@ -21,6 +22,36 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
+
+/** The native counter measures mixed output, not an individual deck. */
+private class ExclusivePreviewSamples {
+    private data class Baseline(val itemId: String, val generation: Long, val callbacks: Long)
+    private var baseline: Baseline? = null
+
+    fun observe(itemId: String, snapshot: JSONObject): Boolean {
+        val decks = snapshot.getJSONArray("decks")
+        val preview = decks.getJSONObject(2)
+        val generation = preview.getLong("generation")
+        if (!snapshot.getBoolean("coherent") || snapshot.getInt("error") != 0 ||
+            generation <= 0 || preview.getLong("identity") != generation || !preview.getBoolean("playing") ||
+            preview.getInt("error") != 0 || preview.getLong("sourceFrames") != 0L ||
+            snapshot.getLong("scheduleRevision") != 0L || listOf(0, 1, 3).any { slot ->
+                val other = decks.getJSONObject(slot)
+                other.getLong("identity") != 0L || other.getInt("openDecoders") != 0 || other.getBoolean("playing") ||
+                    other.getBoolean("ready") || other.getBoolean("preparing")
+            }) return false
+
+        val callbacks = snapshot.getLong("nonSilentCallbacks")
+        val first = baseline ?: run {
+            baseline = Baseline(itemId, generation, callbacks)
+            return false
+        }
+        // The callback can publish a deck snapshot before it counts its mixed
+        // samples. Discard a possible single in-flight callback at the baseline.
+        return first.itemId == itemId && first.generation == generation && callbacks - first.callbacks > 1 &&
+            preview.getDouble("sourceFrame") >= 800
+    }
+}
 
 /** CallbackFrontendFixtureRunner: actual TLS, native worker and sole renderer. */
 class DiscoveryPreviewServiceTest {
@@ -73,7 +104,7 @@ class DiscoveryPreviewServiceTest {
                 bytes[at]=0 // corrupt a real packet after the held prefix
             }
             val writes=java.util.concurrent.atomic.AtomicInteger()
-            server.dispatcher=object:Dispatcher() {
+            val dispatcher=object:Dispatcher() {
                 override fun dispatch(request:RecordedRequest):MockResponse {
                     val path=request.url.encodedPath
                     if(wav!=null&&path=="/api/v1/playback/urls"&&JSONObject(request.body!!.utf8()).getJSONArray("trackIds").optLong(0)==trackId) {
@@ -99,12 +130,22 @@ class DiscoveryPreviewServiceTest {
                     return original.dispatch(request)
                 }
             }
-            val other=main {
-                graph.session.accept(graph.session.beginIntent(),SecretTokens("synthetic-fixture-access","synthetic-fixture-refresh","fixture-account"))
-                MediaController.Builder(app,SessionToken(app,ComponentName(app,SoundQLibraryService::class.java))).buildAsync()
-            }
-            try {
-                val c=other.get(8,TimeUnit.SECONDS)
+            var other: ListenableFuture<MediaController>? = null
+            AutoCloseable {
+                AutoCloseable { server.dispatcher=original }.use {
+                    AutoCloseable { main {graph.session.retire()} }.use {
+                        tail.release.countDown()
+                        secondTail.release.countDown()
+                        other?.let { main {MediaController.releaseFuture(it)} }
+                    }
+                }
+            }.use {
+                server.dispatcher=dispatcher
+                val c=main {
+                    graph.session.accept(graph.session.beginIntent(),SecretTokens("synthetic-fixture-access","synthetic-fixture-refresh","fixture-account"))
+                    MediaController.Builder(app,SessionToken(app,ComponentName(app,SoundQLibraryService::class.java)))
+                        .buildAsync().also { other=it }
+                }.get(8,TimeUnit.SECONDS)
                 val projection=main {graph.controller}
                 val scope=checkNotNull(graph.session.capture())
                 await("authenticated controller") {projection.state.value.accountEpoch>=0}
@@ -152,7 +193,7 @@ class DiscoveryPreviewServiceTest {
                 val before=projection.state.value
                 val cursor=main {native.currentPosition}
                 val beforeWrites=writes.get()
-                val beforeSamples=state().getLong("nonSilentCallbacks")
+                val beforeSamples=if (!moving) state().getLong("nonSilentCallbacks") else 0L
                 val source=checkNotNull(ImportSource.parse("https://www.youtube.com/watch?v=SQPreview01"))
                 if (!moving) {
                     val stale=main {projection.captureContextRead()}
@@ -165,13 +206,23 @@ class DiscoveryPreviewServiceTest {
                     assertEquals(bookmark,readBookmark())
                     android.util.Log.i("MountDiag","zero before preview: fresh ordinary restore >= $bookmark; acknowledged seek wrote 0; native/controller/projection=0, bookmark=$bookmark")
                 }
+                val exclusiveSamples=if (moving) ExclusivePreviewSamples() else null
+                val previewStarted=SystemClock.elapsedRealtime()
                 val accepted=async(Dispatchers.Main) {
                     val guard=projection.captureContextRead(preview=true)
                     projection.startDiscoveryPreview(scope,source,"Ephemeral preview","Synthetic",valid=guard)
                 }
                 assertTrue(tail.prefixSent.await(5,TimeUnit.SECONDS))
+                val previewTransportBound=minOf(app.fixtureClient.readTimeoutMillis.toLong(),20_000L,15_000L)
                 await("preview did not render non-silence while tail was held") {
                     val snapshot=state()
+                    if (exclusiveSamples != null) {
+                        val item=native.currentMediaItem
+                        return@await item!=null && item.mediaId.startsWith(DISCOVERY_PREVIEW_PREFIX) &&
+                            item.mediaMetadata.title=="Ephemeral preview" && native.playWhenReady && native.playerError==null &&
+                            tail.release.count==1L && tail.tailSent.count==1L &&
+                            SystemClock.elapsedRealtime()-previewStarted<previewTransportBound && exclusiveSamples.observe(item.mediaId,snapshot)
+                    }
                     val deck=snapshot.getJSONArray("decks").getJSONObject(2)
                     native.currentMediaItem?.mediaId?.startsWith(DISCOVERY_PREVIEW_PREFIX)==true &&
                         deck.getDouble("sourceFrame")>=800 && deck.getLong("sourceFrames")==0L &&
@@ -281,15 +332,15 @@ class DiscoveryPreviewServiceTest {
                             if(!id.startsWith(DISCOVERY_PREVIEW_PREFIX))returns.add(Triple(id,player.currentMediaItemIndex,player.currentPosition))
                         }
                     }
-                    main {
-                        // Rejection control on the real live preview before sending Stop.
-                        assertTrue(secondTailHeld())
-                        assertFalse("held preview must not satisfy the Stop oracle without Stop",stoppedWhileHeld())
-                        assertTrue(c.isCommandAvailable(Player.COMMAND_STOP))
-                        native.addListener(observer)
-                        c.stop()
-                    }
-                    try {
+                    AutoCloseable {main {native.removeListener(observer)}}.use {
+                        main {
+                            // Rejection control on the real live preview before sending Stop.
+                            assertTrue(secondTailHeld())
+                            assertFalse("held preview must not satisfy the Stop oracle without Stop",stoppedWhileHeld())
+                            assertTrue(c.isCommandAvailable(Player.COMMAND_STOP))
+                            native.addListener(observer)
+                            c.stop()
+                        }
                         await("second Stop drains preview and restores edited queue while TLS tail is held") {stoppedWhileHeld()}
                         assertEquals(durableEdit,readQueue())
                         assertArrayEquals(rootBytes,file.readBytes())
@@ -298,7 +349,7 @@ class DiscoveryPreviewServiceTest {
                             assertFalse("preview errored during Stop",stopError)
                             assertTrue("wrong ordinary publication at second Stop: $returns",returns.isNotEmpty() && returns.all {it==Triple(keep,0,parkedCursor)})
                         }
-                    } finally {main {native.removeListener(observer)}}
+                    }
                     android.util.Log.i("MountDiag","second Stop: deck $secondDeck drained, no error, tail held ${secondTail.release.count}/${secondTail.tailSent.count}, elapsed=${SystemClock.elapsedRealtime()-secondStarted}ms/$transportBound ms, durable queue/index 0/cursor $parkedCursor unchanged")
                     assertEquals(beforeWrites,writes.get())
                 }
@@ -336,11 +387,6 @@ class DiscoveryPreviewServiceTest {
                         (!removeBeforeSecondPreview || editedQueue())}
                     if(removeBeforeSecondPreview)android.util.Log.i("MountDiag","one-occurrence queue/index 0 retained at paused Prepare and advancing Play")
                 }
-            } finally {
-                tail.release.countDown()
-                secondTail.release.countDown()
-                main {MediaController.releaseFuture(other);graph.session.retire()}
-                server.dispatcher=original
             }
         }
     }

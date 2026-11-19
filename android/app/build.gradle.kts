@@ -380,6 +380,7 @@ dependencies {
     androidTestImplementation(libs.mockwebserver)
     androidTestImplementation(libs.okhttp.tls)
     testImplementation(libs.junit)
+    testImplementation("org.robolectric:robolectric:4.16")
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.test)
     androidTestImplementation(libs.androidx.junit)

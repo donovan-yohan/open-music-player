@@ -16,8 +16,16 @@ import java.util.concurrent.atomic.AtomicInteger
 class DiscoveryJourneyTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
 
+    private fun callbackFixtureApp(): CallbackFrontendFixtureApplication {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+        check(app is CallbackFrontendFixtureApplication) {
+            "Select registered CallbackFrontendFixtureRunner, not ProductFixtureRunner"
+        }
+        return app
+    }
+
     @Test fun mountedRowKeepsSpinnerThroughSameAccountSaveAndReopensOnlyExactPreview() {
-        val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as CallbackFrontendFixtureApplication
+        val app=callbackFixtureApp()
         val server=ProductTransportFixture.server
         val fallback=server.dispatcher
         val enteredSave=CountDownLatch(1);val releaseSave=CountDownLatch(1)
@@ -322,8 +330,7 @@ class DiscoveryJourneyTest {
 
     /** Run with CallbackFrontendFixtureRunner to exercise the shipping playback engine. */
     @Test fun onlyNewestPendingSearchPreviewCanTakeOverPlayingAudio() {
-        val instrumentation=InstrumentationRegistry.getInstrumentation()
-        val app=instrumentation.targetContext.applicationContext as CallbackFrontendFixtureApplication
+        val app=callbackFixtureApp()
         val server=ProductTransportFixture.server;val fallback=server.dispatcher
         val audio=previewFixtureBytes()
         val first=HeldPreviewTail(3);val second=CountDownLatch(1);val releaseSecond=CountDownLatch(1)
