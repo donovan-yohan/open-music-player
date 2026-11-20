@@ -83,7 +83,7 @@ func TestCatalogRecordingSourceAuthenticated(t *testing.T) {
 		t.Fatalf("exact source: status=%d headers=%v body=%q calls=%d", w.Code, w.Header(), w.Body.String(), calls)
 	}
 
-	for i, tc := range []struct {
+	for _, tc := range []struct {
 		name       string
 		status     int
 		body, want string
@@ -105,9 +105,10 @@ func TestCatalogRecordingSourceAuthenticated(t *testing.T) {
 			if tc.wantStatus == http.StatusServiceUnavailable {
 				want = `{"code":"RECORDING_SOURCE_UNAVAILABLE","message":"recording source lookup is unavailable"}` + "\n"
 			}
+			before := calls
 			w := request(http.MethodGet, sourceTestPath, token)
-			if w.Code != tc.wantStatus || w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("Content-Type") != "application/json" || w.Body.String() != want || calls != i+2 {
-				t.Fatalf("status=%d headers=%v body=%q calls=%d", w.Code, w.Header(), w.Body.String(), calls)
+			if w.Code != tc.wantStatus || w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("Content-Type") != "application/json" || w.Body.String() != want || calls-before != 1 {
+				t.Fatalf("status=%d headers=%v body=%q request calls=%d", w.Code, w.Header(), w.Body.String(), calls-before)
 			}
 		})
 	}
