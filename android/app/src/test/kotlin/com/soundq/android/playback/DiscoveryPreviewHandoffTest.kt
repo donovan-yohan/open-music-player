@@ -306,6 +306,11 @@ class DiscoveryPreviewHandoffTest {
                 f.player.pause()
                 f.drain("ordinary Pause acknowledged") { !f.player.isPlaying && !f.player.playWhenReady && !f.hw.isPlaying(0) }
             }
+            // Selecting the ordinary row launches a system Like readback on IO.
+            // Settle it before preview admission, not by assuming its wire order.
+            f.drain("ordinary Like readback acknowledged") {
+                f.graph.library.likeView(f.scope, TrackId(2))?.track?.liked == false
+            }
             val before = f.topology()
             assertEquals(rows, before.rows)
             assertEquals(1, before.index)
@@ -350,7 +355,7 @@ class DiscoveryPreviewHandoffTest {
                 f.projection.startDiscoveryPreview(foreignScope, checkNotNull(ImportSource.parse(previewUrl("B"))), "B", "Fixture") { true }
             })
             assertEquals(listOf(f.app.expectedPreview("A", "a")), f.app.previewRequests.toList())
-            assertEquals(listOf("/api/v1/discovery/preview", "/api/v1/auth/refresh"), f.app.wirePaths.dropWhile { it == "/api/v1/library" })
+            assertEquals(listOf("/api/v1/library", "/api/v1/discovery/preview", "/api/v1/auth/refresh"), f.app.wirePaths.toList())
 
             val polls = f.hw.polls
             f.drain("ordinary readiness observer crossed the held save before the account collector") { f.hw.polls >= polls + 4 }
@@ -375,8 +380,8 @@ class DiscoveryPreviewHandoffTest {
             assertEquals(load.generation, f.hw.identity(load.deck))
             assertEquals(before, f.topology())
             assertEquals(listOf(f.app.expectedPreview("A", "a"), f.app.expectedPreview("A", "b")), f.app.previewRequests.toList())
-            assertEquals(listOf("/api/v1/discovery/preview", "/api/v1/auth/refresh", "/api/v1/discovery/preview"),
-                f.app.wirePaths.dropWhile { it == "/api/v1/library" })
+            assertEquals(listOf("/api/v1/library", "/api/v1/discovery/preview", "/api/v1/auth/refresh", "/api/v1/discovery/preview"),
+                f.app.wirePaths.toList())
             f.hw.holdPreview = false
             assertTrue(f.await(work))
             f.drain("exact reopened preview active") { f.player.isPlaying && f.projection.state.value.title == "A" }
@@ -870,7 +875,6 @@ class DiscoveryPreviewHandoffTest {
             val failedSamples = f.hw.failedSamples
             val samples = f.hw.polls
             val revision = f.revision
-            val lifetime = f.playerField("lifetime") as CoroutineScope
             val owner = Handler(f.ownerLooper)
             val main = Handler.createAsync(Looper.getMainLooper())
             val ownerReturned = CountDownLatch(1)
@@ -879,10 +883,8 @@ class DiscoveryPreviewHandoffTest {
             TransportGate().use { held ->
                 assertTrue(owner.post(held::hold))
                 assertTrue(held.entered.await(8, TimeUnit.SECONDS))
-                val children = lifetime.coroutineContext[Job]!!.children.toSet()
-                f.player.prepare()
+                prepare = admitLoadedPrepare(f)
                 f.main.idle()
-                prepare = (lifetime.coroutineContext[Job]!!.children.toSet() - children).single()
                 assertTrue(owner.post {
                     main.post { mainSettledA = true }
                     ownerReturned.countDown()
@@ -1041,17 +1043,14 @@ class DiscoveryPreviewHandoffTest {
             val main = Handler.createAsync(Looper.getMainLooper())
             val passed = CountDownLatch(1)
             val settled = mutableListOf<Int>()
-            val lifetime = f.playerField("lifetime") as CoroutineScope
             f.hw.reopenResults.addAll(outcomes)
             f.hw.faultBeforeRecovery = true
             TransportGate().use { hold ->
                 assertTrue(owner.post(hold::hold))
                 assertTrue(hold.entered.await(8, TimeUnit.SECONDS))
                 repeat(2) { request ->
-                    val children = lifetime.coroutineContext[Job]!!.children.toSet()
-                    f.player.prepare()
+                    val admitted = admitLoadedPrepare(f)
                     f.main.idle()
-                    val admitted = (lifetime.coroutineContext[Job]!!.children.toSet() - children).single()
                     assertEquals(revision, f.revision)
                     if (cancelSibling && request == 1) admitted.cancel()
                     assertTrue(owner.post {
@@ -1089,6 +1088,21 @@ class DiscoveryPreviewHandoffTest {
             assertEquals(prior.identity, f.hw.identity(prior.deck))
             assertEquals(1, f.hw.acceptedLoads.size)
         }
+    }
+
+    private fun admitLoadedPrepare(f: Fixture): Job {
+        fun pendingRecoveries(): Int = f.playerField("outputRecovery")?.let { batch ->
+            batch.javaClass.getDeclaredField("pending").apply { isAccessible = true }.getInt(batch)
+        } ?: 0
+        val lifetime = f.playerField("lifetime") as CoroutineScope
+        val jobs = lifetime.coroutineContext[Job]!!
+        val pending = pendingRecoveries()
+        val children = jobs.children.toSet()
+        // Loaded Prepare admits recovery inline, then yields. Capture its job before
+        // idling Main can deliver a queued poll and launch unrelated journal work.
+        f.player.prepare()
+        assertEquals("one loaded Prepare admitted", pending + 1, pendingRecoveries())
+        return (jobs.children.toSet() - children).single()
     }
 
     @Test fun revokedLoadedPrepareIsRefusedBeforeNativeRecovery() {
@@ -1448,7 +1462,7 @@ class PreviewHandoffApplication : SoundQApplication() {
     internal val hardware = ProjectionPreviewHardware()
     internal val saveEntered = CountDownLatch(1)
     internal val saveRelease = CountDownLatch(1)
-    internal var accountCollector: HeldAccountCollector? = null
+    @Volatile internal var accountCollector: HeldAccountCollector? = null
     internal val previewRequests = CopyOnWriteArrayList<PreviewRequest>()
     internal val wirePaths = CopyOnWriteArrayList<String>()
     internal fun expectedPreview(name: String, generation: String) = PreviewRequest(
@@ -1471,6 +1485,9 @@ class PreviewHandoffApplication : SoundQApplication() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 wirePaths += request.url.encodedPath
                 return when (request.url.encodedPath) {
+                    "/api/v1/library" -> if (accountCollector != null && request.method == "GET") {
+                        MockResponse.Builder().body("""{"tracks":[{"id":2,"title":"Next","artist":"Fixture","duration_ms":6000,"is_liked":false}],"total":1,"limit":20,"offset":0}""").build()
+                    } else MockResponse.Builder().code(404).build()
                     "/api/v1/auth/refresh" -> MockResponse.Builder().body(fixture.auth(access = "b")).build()
                     "/api/v1/discovery/preview" -> {
                         check(request.method == "POST" && request.headers["Accept"] == "audio/mpeg")
