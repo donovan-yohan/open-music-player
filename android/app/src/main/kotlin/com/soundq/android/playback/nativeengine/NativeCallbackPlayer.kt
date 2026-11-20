@@ -310,6 +310,8 @@ internal class NativeCallbackPlayer(
     @Volatile private var epoch = 1L
     @Volatile private var released = false
     @Volatile private var transportRevision = 0L
+    private data class OrdinaryPlay(val identity: Long, val transport: Long, val traversal: Long)
+    private var submittedOrdinaryPlay: OrdinaryPlay? = null
     private var pending: Job? = null
     private var tail: Job? = null
     private val preparing = AtomicInteger()
@@ -1335,7 +1337,17 @@ internal class NativeCallbackPlayer(
                 if (desiredSeek != null) { seekNative(requireNotNull(desiredSeek)); return@launch }
                 if (arrangement != null && intent && playback != Player.STATE_READY) return@launch
                 val accepted = if (arrangement != null) owner.arrangement(if (playing) 1 else 2, current = current)
-                    else owner.controlDeck(ordinaryDeck, if (playing) 1 else 2, current = current)
+                else {
+                    if (playing && preview == null) {
+                        // Preparation, explicit transport and seek ACK can converge here.
+                        // Claim the ordinary Play before yielding to the native lane.
+                        // A natural repeat can start a new traversal without a transport edit.
+                        val play = OrdinaryPlay(ordinaryIdentity, revision, seekRevision)
+                        if (submittedOrdinaryPlay == play) return@launch
+                        submittedOrdinaryPlay = play
+                    }
+                    owner.controlDeck(ordinaryDeck, if (playing) 1 else 2, current = current)
+                }
                 if (!accepted) {
                     if (generation == epoch && revision == transportRevision) {
                         val state = owner.snapshot { !released && generation == epoch && revision == transportRevision }
