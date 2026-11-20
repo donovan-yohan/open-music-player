@@ -147,6 +147,7 @@ type analyzerInfoClient interface {
 
 type analyzerVersionStore interface {
 	MarkStaleByAnalyzerVersion(ctx context.Context, analyzerName, analyzerVersion string) (int64, error)
+	MarkStaleByAnalyzerVersionAtStartup(ctx context.Context, analyzerName, analyzerVersion string) (int64, error)
 }
 
 type analyzerMaintenanceTrackStore interface {
@@ -397,12 +398,16 @@ func reconcileAnalyzerVersion(
 	report.Analyzer = info.Analyzer
 	report.AnalyzerVersion = info.AnalyzerVersion
 	repairs.SetAnalyzerIdentity(info.Analyzer, info.AnalyzerVersion)
+	// Only the first pass may reconcile private fences. The public scan can
+	// keep running with this sample while another process observes a new identity.
 	markNewlyStale := func() (int64, error) {
 		marked, markErr := analysisStore.MarkStaleByAnalyzerVersion(ctx, info.Analyzer, info.AnalyzerVersion)
 		report.MarkedStale += marked
 		return marked, markErr
 	}
-	if _, err := markNewlyStale(); err != nil {
+	marked, err := analysisStore.MarkStaleByAnalyzerVersionAtStartup(ctx, info.Analyzer, info.AnalyzerVersion)
+	report.MarkedStale += marked
+	if err != nil {
 		return report, err
 	}
 	for {
@@ -797,8 +802,9 @@ func runServer() int {
 						log.Error(ctx, "Analyzer version reconciliation will retry", nil, err)
 					}
 				}
-				// Reuse this maintenance owner for one bounded batch at readiness
-				// and on its existing cadence. No per-upload jobs or retry loops.
+				// Reuse this cadence for private intents. Their workers read live
+				// identity at claim time; don't rerun global version reconciliation
+				// just because a health endpoint changed during a rolling deploy.
 				if _, err := jobProcessor.DrainPrivateImportAnalysis(maintenanceCtx); err != nil && maintenanceCtx.Err() == nil {
 					log.Error(ctx, "Private import analysis drain will retry", nil, err)
 				}

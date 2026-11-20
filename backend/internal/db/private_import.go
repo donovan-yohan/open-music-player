@@ -232,21 +232,21 @@ func (r *TrackRepository) CommitVerifiedPrivateImport(ctx context.Context, inten
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO user_library(user_id, track_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, in.OwnerID, trackID); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("insert canonical private membership: %w", err)
 	}
 	// 'stale' is the existing reclaimable/unclaimed state; 'pending' means a
-	// dispatcher already owns a lease. Successful replays never reset it.
+	// worker already owns a lease. Successful replays never reset it.
 	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO track_analysis (track_id,status,provenance_json)
 		VALUES ($1,'stale','{"trigger":"post_library_upload"}') ON CONFLICT (track_id) DO NOTHING
 	`, trackID); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("insert canonical private analysis obligation: %w", err)
 	}
 	receipt := &PrivateImportReceipt{OwnerID: in.OwnerID, OperationID: in.OperationID, TrackID: trackID, SHA256: in.SHA256, ByteLength: in.ByteLength}
 	if err = tx.QueryRowContext(ctx, `
 		INSERT INTO private_import_receipts (owner_id,operation_id,track_id,intent_hash) VALUES ($1,$2,$3,$4) RETURNING committed_at
 	`, receipt.OwnerID, receipt.OperationID, receipt.TrackID, fingerprint).Scan(&receipt.CommittedAt); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("insert canonical private receipt: %w", err)
 	}
 	if err = sealPrivateImportStage(ctx, tx, in, stagePhase, verified.Key == in.ObjectKey()); err != nil {
 		return nil, err
@@ -257,18 +257,32 @@ func (r *TrackRepository) CommitVerifiedPrivateImport(ctx context.Context, inten
 	return receipt, nil
 }
 
-// Use the same eligibility predicate for selection and the contested UPDATE.
-// Failed rows back off, while an abandoned claim cannot be taken over during a
-// healthy worker's two-minute analysis window.
-const privateImportRepairable = `(
-	track_analysis.status = 'stale'
-	OR (track_analysis.status = 'failed' AND track_analysis.updated_at <= NOW() - INTERVAL '30 seconds')
-	OR (track_analysis.status IN ('pending','analyzing') AND track_analysis.updated_at <= NOW() - INTERVAL '30 minutes')
+// Mutable override/readback timestamps do not renew claims. A phase timestamp
+// can be absent on an older row; requested_at is the non-null last claim time.
+const privateImportClaimTime = `(CASE track_analysis.status
+	WHEN 'analyzing' THEN COALESCE(track_analysis.started_at, track_analysis.requested_at)
+	WHEN 'failed' THEN COALESCE(track_analysis.completed_at, track_analysis.started_at, track_analysis.requested_at)
+	ELSE track_analysis.requested_at
+END)`
+
+// $1 and $2 are the live name and version in both queries. Analyzer identities
+// are opaque, not ordered. Private admission can fill an empty fence but must
+// not replace a conflicting one; that transition belongs to reconciliation.
+const privateImportIdentityMatches = `(
+	COALESCE(track_analysis.provenance_json->>'expected_analyzer', '') IN ('', $1)
+	AND COALESCE(track_analysis.provenance_json->>'expected_analyzer_version', '') IN ('', $2)
 )`
 
-func (r *TrackRepository) GetPrivateImportAnalysisCandidates(ctx context.Context, limit int) ([]PrivateImportSource, error) {
-	if limit < 1 || limit > 50 {
-		return nil, errors.New("invalid private analysis batch limit")
+// Use the same eligibility predicate for selection and the contested UPDATE.
+const privateImportRepairable = `(` + privateImportIdentityMatches + ` AND (
+	track_analysis.status = 'stale'
+	OR (track_analysis.status = 'failed' AND ` + privateImportClaimTime + ` <= NOW() - INTERVAL '30 seconds')
+	OR (track_analysis.status IN ('pending','analyzing') AND ` + privateImportClaimTime + ` <= NOW() - INTERVAL '30 minutes')
+))`
+
+func (r *TrackRepository) GetPrivateImportAnalysisCandidates(ctx context.Context, name, version string, limit int) ([]PrivateImportSource, error) {
+	if name == "" || version == "" || limit < 1 || limit > 50 {
+		return nil, errors.New("invalid private analysis candidate query")
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT t.id, t.private_owner_id, t.storage_key, t.source_file_hash, t.file_size_bytes, COALESCE(t.duration_ms, 0)
@@ -276,8 +290,8 @@ func (r *TrackRepository) GetPrivateImportAnalysisCandidates(ctx context.Context
 		WHERE t.private_owner_id IS NOT NULL
 		  AND EXISTS (SELECT 1 FROM private_import_receipts r WHERE r.track_id = t.id)
 		  AND (track_analysis.track_id IS NULL OR `+privateImportRepairable+`)
-		ORDER BY COALESCE(track_analysis.updated_at, t.created_at), t.id LIMIT $1
-	`, limit)
+		ORDER BY COALESCE(`+privateImportClaimTime+`, t.created_at), t.id LIMIT $3
+	`, name, version, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -306,16 +320,16 @@ func (r *AnalysisRepository) ClaimPrivateImportAnalysis(ctx context.Context, sou
 	}
 	result, err := r.db.ExecContext(ctx, `
 		INSERT INTO track_analysis (track_id,status,dispatch_token,provenance_json)
-		SELECT t.id, 'pending', $6::uuid, jsonb_build_object('trigger','post_library_upload',
-			'expected_analyzer',$7::text,'expected_analyzer_version',$8::text)
-		FROM tracks t WHERE t.id = $1 AND t.private_owner_id IS NOT NULL
-		  AND t.storage_key = $2 AND t.source_file_hash = $3 AND t.file_size_bytes = $4 AND t.duration_ms = $5
+		SELECT t.id, 'pending', $8::uuid, jsonb_build_object('trigger','post_library_upload',
+			'expected_analyzer',$1::text,'expected_analyzer_version',$2::text)
+		FROM tracks t WHERE t.id = $3 AND t.private_owner_id IS NOT NULL
+		  AND t.storage_key = $4 AND t.source_file_hash = $5 AND t.file_size_bytes = $6 AND t.duration_ms = $7
 		  AND EXISTS (SELECT 1 FROM private_import_receipts r WHERE r.track_id = t.id)
 		ON CONFLICT (track_id) DO UPDATE SET status = EXCLUDED.status, dispatch_token = EXCLUDED.dispatch_token,
 			provenance_json = track_analysis.provenance_json || EXCLUDED.provenance_json,
 			error = NULL, requested_at = NOW(), started_at = NULL, completed_at = NULL, updated_at = NOW()
 		WHERE `+privateImportRepairable,
-		source.TrackID, source.Key, source.SHA256, source.ByteLength, source.DurationMs, claim.String(), name, version)
+		name, version, source.TrackID, source.Key, source.SHA256, source.ByteLength, source.DurationMs, claim.String())
 	if err != nil {
 		return false, err
 	}

@@ -29,6 +29,8 @@ import (
 var privateFenceDSNPattern = regexp.MustCompile(`^postgres://(pif_[0-9a-f]{24}):[0-9a-f]{64}@127\.0\.0\.1:([1-9][0-9]{0,4})/(pif_[0-9a-f]{24})\?sslmode=disable&connect_timeout=3$`)
 var privateFenceMarkerPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+const privateFenceSQLTimeout = 8 * time.Second
+
 func privateFenceTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	dsn := os.Getenv("OMP_PRIVATE_FENCE_TEST_DSN")
@@ -53,7 +55,7 @@ func privateFenceTestDB(t *testing.T) *db.DB {
 	}
 	t.Cleanup(func() { _ = raw.Close() })
 	database := &db.DB{DB: raw}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), privateFenceSQLTimeout)
 	defer cancel()
 	if err := database.CheckDatabaseNotProtected(ctx); err != nil {
 		t.Fatal(err)
@@ -62,10 +64,13 @@ func privateFenceTestDB(t *testing.T) *db.DB {
 	if err := database.QueryRowContext(ctx, `SELECT current_database(), current_user, COALESCE(shobj_description(oid,'pg_database'),'') FROM pg_database WHERE datname=current_database()`).Scan(&name, &role, &marker); err != nil || name != parts[3] || role != parts[1] || marker != "private-fence-fixture:"+attestation {
 		t.Fatal("private-fence fixture attestation missing or mismatched")
 	}
+	cancel()
 	if err := database.Migrate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.CheckDatabaseNotProtected(ctx); err != nil {
+	postMigrationCtx, cancelPostMigration := context.WithTimeout(t.Context(), privateFenceSQLTimeout)
+	defer cancelPostMigration()
+	if err := database.CheckDatabaseNotProtected(postMigrationCtx); err != nil {
 		t.Fatal(err)
 	}
 	return database
@@ -75,33 +80,44 @@ func TestLibraryPrivateFence(t *testing.T) {
 	database := privateFenceTestDB(t)
 	exec := func(t *testing.T, query string, args ...any) {
 		t.Helper()
-		if _, err := database.Exec(query, args...); err != nil {
+		ctx, cancel := context.WithTimeout(t.Context(), privateFenceSQLTimeout)
+		defer cancel()
+		if _, err := database.ExecContext(ctx, query, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
 	refuse := func(t *testing.T, code string, constraint string, query string, args ...any) {
 		t.Helper()
-		_, err := database.Exec(query, args...)
+		ctx, cancel := context.WithTimeout(t.Context(), privateFenceSQLTimeout)
+		defer cancel()
+		_, err := database.ExecContext(ctx, query, args...)
 		var pgErr *pq.Error
 		if !errors.As(err, &pgErr) || string(pgErr.Code) != code || pgErr.Constraint != constraint {
 			t.Fatalf("%s: expected SQLSTATE %s / %s, got %v", query, code, constraint, err)
 		}
 	}
-	owner := seedMixUser(t, database, uuid.NewString()+"@example.test")
-	other := seedMixUser(t, database, uuid.NewString()+"@example.test")
+	seedUser := func(t *testing.T) uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		exec(t, `INSERT INTO users (id, email, username, password_hash) VALUES ($1, $2, 'user', 'x')`, id, uuid.NewString()+"@example.test")
+		return id
+	}
+	owner, other := seedUser(t), seedUser(t)
 	sharedHash := "sha256:" + strings.Repeat("a", 64)
 	// Exercise the existing producer, which must still create a shared row.
 	// Give its row and both private rows the same exact-byte evidence.
 	tracks := db.NewTrackRepository(database)
 	public := &db.Track{IdentityHash: uuid.NewString(), Title: "Public fixture"}
-	if err := tracks.Create(context.Background(), public); err != nil {
+	setupCtx, cancelSetup := context.WithTimeout(t.Context(), privateFenceSQLTimeout)
+	defer cancelSetup()
+	if err := tracks.Create(setupCtx, public); err != nil {
 		t.Fatal(err)
 	}
 	publicID := public.ID
 	exec(t, `UPDATE tracks SET source_file_hash=$1,file_size_bytes=42 WHERE id=$2`, sharedHash, publicID)
 	var ownerID, otherID int64
 	var publicOwner uuid.NullUUID
-	if err := database.QueryRow(`SELECT private_owner_id FROM tracks WHERE id=$1`, publicID).Scan(&publicOwner); err != nil || publicOwner.Valid {
+	if err := database.QueryRowContext(setupCtx, `SELECT private_owner_id FROM tracks WHERE id=$1`, publicID).Scan(&publicOwner); err != nil || publicOwner.Valid {
 		t.Fatalf("legacy shared insert: owner=%v err=%v", publicOwner, err)
 	}
 	privateInsert := `INSERT INTO tracks(identity_hash,title,private_owner_id,source_file_hash,file_size_bytes,storage_key) VALUES($1,'Private fixture',$2,$3,$4,$5)`
@@ -111,10 +127,11 @@ func TestLibraryPrivateFence(t *testing.T) {
 	}{
 		{owner, &ownerID}, {other, &otherID},
 	} {
-		if err := database.QueryRow(privateInsert+` RETURNING id`, uuid.NewString(), p.account, sharedHash, 42, uuid.NewString()).Scan(p.id); err != nil {
+		if err := database.QueryRowContext(setupCtx, privateInsert+` RETURNING id`, uuid.NewString(), p.account, sharedHash, 42, uuid.NewString()).Scan(p.id); err != nil {
 			t.Fatal(err)
 		}
 	}
+	cancelSetup()
 	if publicID == ownerID || ownerID == otherID || publicID == otherID {
 		t.Fatal("cross-account/public identities were coalesced")
 	}
@@ -133,7 +150,7 @@ func TestLibraryPrivateFence(t *testing.T) {
 		}
 		a, b := token(owner), token(other)
 		request := func(credential string, id int64) *httptest.ResponseRecorder {
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), privateFenceSQLTimeout)
 			defer cancel()
 			r := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/library/tracks/%d", id), nil).WithContext(ctx)
 			if credential != "" {
@@ -206,13 +223,19 @@ func TestLibraryPrivateFence(t *testing.T) {
 			}
 			var before, after time.Time
 			var count int
-			if err := database.QueryRow(`SELECT count(*),min(added_at) FROM user_library WHERE user_id=$1 AND track_id=$2`, req.account, req.id).Scan(&count, &before); err != nil || count != 1 || before.UTC().Format("2006-01-02T15:04:05Z") != ack.AddedAt {
+			readCtx, cancelRead := context.WithTimeout(t.Context(), privateFenceSQLTimeout)
+			err := database.QueryRowContext(readCtx, `SELECT count(*),min(added_at) FROM user_library WHERE user_id=$1 AND track_id=$2`, req.account, req.id).Scan(&count, &before)
+			cancelRead()
+			if err != nil || count != 1 || before.UTC().Format("2006-01-02T15:04:05Z") != ack.AddedAt {
 				t.Fatalf("membership readback count=%d added_at=%v ack=%+v err=%v", count, before, ack, err)
 			}
 			if w := request(req.token, req.id); w.Code != http.StatusConflict {
 				t.Fatalf("replay: %d %s", w.Code, w.Body)
 			}
-			if err := database.QueryRow(`SELECT added_at FROM user_library WHERE user_id=$1 AND track_id=$2`, req.account, req.id).Scan(&after); err != nil || !after.Equal(before) {
+			replayCtx, cancelReplay := context.WithTimeout(t.Context(), privateFenceSQLTimeout)
+			err = database.QueryRowContext(replayCtx, `SELECT added_at FROM user_library WHERE user_id=$1 AND track_id=$2`, req.account, req.id).Scan(&after)
+			cancelReplay()
+			if err != nil || !after.Equal(before) {
 				t.Fatalf("replay changed existing timestamp: %v -> %v (%v)", before, after, err)
 			}
 		}
@@ -228,24 +251,28 @@ func TestLibraryPrivateFence(t *testing.T) {
 		refuse(t, "23503", denial, `UPDATE user_library SET track_id=$1 WHERE user_id=$2 AND track_id=$3`, ownerID, other, publicID)
 		refuse(t, "23503", denial, `INSERT INTO user_library(user_id,track_id) VALUES($1,$2) ON CONFLICT (user_id,track_id) DO UPDATE SET track_id=$3`, other, publicID, ownerID)
 		var foreign int
-		if err := database.QueryRow(`SELECT count(*) FROM user_library ul JOIN tracks t ON t.id=ul.track_id WHERE t.private_owner_id IS NOT NULL AND t.private_owner_id<>ul.user_id`).Scan(&foreign); err != nil || foreign != 0 {
+		ctx, cancel := context.WithTimeout(t.Context(), privateFenceSQLTimeout)
+		defer cancel()
+		if err := database.QueryRowContext(ctx, `SELECT count(*) FROM user_library ul JOIN tracks t ON t.id=ul.track_id WHERE t.private_owner_id IS NOT NULL AND t.private_owner_id<>ul.user_id`).Scan(&foreign); err != nil || foreign != 0 {
 			t.Fatalf("foreign memberships=%d error=%v", foreign, err)
 		}
 	})
 
 	t.Run("membership_uses_own_schema", func(t *testing.T) {
-		tx, err := database.Begin()
+		ctx, cancel := context.WithTimeout(t.Context(), privateFenceSQLTimeout)
+		defer cancel()
+		tx, err := database.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback()
-		if _, err := tx.Exec(`CREATE TEMP TABLE tracks(id bigint, private_owner_id uuid)`); err != nil {
+		if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE tracks(id bigint, private_owner_id uuid)`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(`INSERT INTO pg_temp.tracks (id) VALUES ($1)`, ownerID); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO pg_temp.tracks (id) VALUES ($1)`, ownerID); err != nil {
 			t.Fatal(err)
 		}
-		_, err = tx.Exec(`INSERT INTO public.user_library(user_id,track_id) VALUES($1,$2)`, other, ownerID)
+		_, err = tx.ExecContext(ctx, `INSERT INTO public.user_library(user_id,track_id) VALUES($1,$2)`, other, ownerID)
 		var pgErr *pq.Error
 		if !errors.As(err, &pgErr) || pgErr.Code != "23503" || pgErr.Constraint != "user_library_visible_track" {
 			t.Fatalf("same-session shadow bypassed membership scope: %v", err)
@@ -283,15 +310,17 @@ func TestLibraryPrivateFence(t *testing.T) {
 			t.Fatal(err)
 		}
 		var kept uuid.UUID
-		if err := database.QueryRow(`SELECT private_owner_id FROM tracks WHERE id=$1`, ownerID).Scan(&kept); err != nil || kept != owner {
+		ctx, cancel := context.WithTimeout(t.Context(), privateFenceSQLTimeout)
+		defer cancel()
+		if err := database.QueryRowContext(ctx, `SELECT private_owner_id FROM tracks WHERE id=$1`, ownerID).Scan(&kept); err != nil || kept != owner {
 			t.Fatalf("startup changed private custody: %v %v", kept, err)
 		}
 		refuse(t, "23503", "tracks_private_owner_id_fkey", `DELETE FROM users WHERE id=$1`, owner)
-		legacy := seedMixUser(t, database, uuid.NewString()+"@example.test")
+		legacy := seedUser(t)
 		exec(t, `INSERT INTO user_library(user_id,track_id) VALUES($1,$2)`, legacy, publicID)
 		exec(t, `DELETE FROM users WHERE id=$1`, legacy)
 		var libraryCount, trackCount int
-		if err := database.QueryRow(`SELECT (SELECT count(*) FROM user_library WHERE user_id=$1), (SELECT count(*) FROM tracks WHERE id=$2 AND private_owner_id IS NULL)`, legacy, publicID).Scan(&libraryCount, &trackCount); err != nil || libraryCount != 0 || trackCount != 1 {
+		if err := database.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM user_library WHERE user_id=$1), (SELECT count(*) FROM tracks WHERE id=$2 AND private_owner_id IS NULL)`, legacy, publicID).Scan(&libraryCount, &trackCount); err != nil || libraryCount != 0 || trackCount != 1 {
 			t.Fatalf("legacy account delete: memberships=%d public track=%d error=%v", libraryCount, trackCount, err)
 		}
 	})

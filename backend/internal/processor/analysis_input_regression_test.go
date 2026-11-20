@@ -271,3 +271,56 @@ func TestProcessLibraryInsertionFailureIsNotSuccessfulCompletion(t *testing.T) {
 		t.Fatalf("download temporary file not cleaned: %v", err)
 	}
 }
+
+func TestPrivateAnalysisLocalIntentDeduplicationAndCapacity(t *testing.T) {
+	newQueue := func(capacity int) *Processor {
+		return &Processor{
+			analysisQueue:          make(chan analysisTask, capacity),
+			analysisOutstanding:    make(map[uint64]analyzer.Request),
+			privateAnalysisPending: make(map[int64]uint64),
+		}
+	}
+	check := func(t *testing.T, p *Processor, ctx context.Context, id int64, want bool, wantErr error) {
+		t.Helper()
+		admitted, err := p.schedulePrivateAnalysis(ctx, db.PrivateImportSource{TrackID: id})
+		if admitted != want || !errors.Is(err, wantErr) {
+			t.Fatalf("local intent %d admitted=%t want=%t error=%v want=%v", id, admitted, want, err, wantErr)
+		}
+	}
+	ctx := context.Background()
+	t.Run("QueuedAndStarting", func(t *testing.T) {
+		p := newQueue(privateImportAnalysisBatchLimit + 2)
+		check(t, p, ctx, 1, true, nil)
+		check(t, p, ctx, 1, false, nil)
+		starting := <-p.analysisQueue
+		check(t, p, ctx, 1, false, nil)
+		for id := int64(2); id <= privateImportAnalysisBatchLimit; id++ {
+			check(t, p, ctx, id, true, nil)
+		}
+		check(t, p, ctx, privateImportAnalysisBatchLimit+1, false, nil)
+		if len(p.analysisOutstanding) != 0 {
+			t.Fatalf("waiting hints entered durable shutdown recovery: %v", p.analysisOutstanding)
+		}
+		p.finishAnalysisTask(starting)
+		check(t, p, ctx, privateImportAnalysisBatchLimit+1, true, nil)
+		p.drainAnalysisQueue(ctx)
+		if len(p.privateAnalysisPending) != 0 {
+			t.Fatalf("retired queue retained local hints: %v", p.privateAnalysisPending)
+		}
+		check(t, p, ctx, 1, true, nil)
+		p.drainAnalysisQueue(ctx)
+	})
+	t.Run("SharedQueueFull", func(t *testing.T) {
+		p := newQueue(1)
+		p.analysisQueue <- analysisTask{request: analyzer.Request{TrackID: 99}}
+		check(t, p, ctx, 1, false, nil)
+		if shared := <-p.analysisQueue; shared.request.TrackID != 99 || len(p.privateAnalysisPending) != 0 {
+			t.Fatal("saturated shared queue replaced its work or retained an unqueued hint")
+		}
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		check(t, p, canceled, 1, false, context.Canceled)
+		check(t, p, ctx, 1, true, nil)
+		p.drainAnalysisQueue(ctx)
+	})
+}

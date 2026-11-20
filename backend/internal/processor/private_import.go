@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,53 +71,124 @@ type privateImportAnalysisClaimer interface {
 	ClaimPrivateImportAnalysis(ctx context.Context, source db.PrivateImportSource, claim uuid.UUID, name, version string) (bool, error)
 }
 
-// DrainPrivateImportAnalysis performs one bounded pass. It never waits for
-// results or retries the same row in a loop, and shares the ordinary worker
-// queue, terminal writes and result path. The persisted claim arbitrates
-// different process instances; the local queue itself is not durable.
+type privateAnalyzerInfoClient interface {
+	Info(context.Context) (analyzer.Info, error)
+}
+
+const privateImportAnalysisBatchLimit = 16
+
+// DrainPrivateImportAnalysis queues a bounded batch of unclaimed intents on
+// the ordinary FIFO. The committed obligation remains recoverable on a full
+// queue, under shutdown, or after process loss before a worker starts.
 func (p *Processor) DrainPrivateImportAnalysis(ctx context.Context) (int, error) {
-	claimer, ok := p.analysisRepo.(privateImportAnalysisClaimer)
-	if !ok || p.trackRepo == nil || p.analyzerClient == nil || p.storage == nil {
+	_, canClaim := p.analysisRepo.(privateImportAnalysisClaimer)
+	client, canReadIdentity := p.analyzerClient.(privateAnalyzerInfoClient)
+	if !canClaim || !canReadIdentity || p.trackRepo == nil || p.storage == nil {
 		return 0, nil
 	}
-	name, version := p.analyzerIdentity()
-	if name == "" || version == "" {
+	// The cached identity is only a startup readiness gate, never a private
+	// request's identity. In particular, don't reuse it when health is down.
+	if name, version := p.analyzerIdentity(); name == "" || version == "" {
 		return 0, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, postStoreDispatchTimeout)
 	defer cancel()
-	const batchLimit = 16
-	candidates, err := p.trackRepo.GetPrivateImportAnalysisCandidates(ctx, batchLimit)
+	name, version, err := readPrivateAnalyzerIdentity(ctx, client)
+	if err != nil {
+		return 0, err
+	}
+	candidates, err := p.trackRepo.GetPrivateImportAnalysisCandidates(ctx, name, version, privateImportAnalysisBatchLimit)
 	if err != nil {
 		return 0, fmt.Errorf("select private analysis obligations: %w", err)
 	}
 	var queued int
-	var failed error
 	for _, source := range candidates {
-		if err := ctx.Err(); err != nil {
-			return queued, errors.Join(failed, err)
-		}
-		claim := uuid.New()
-		admitted, err := claimer.ClaimPrivateImportAnalysis(ctx, source, claim, name, version)
+		admitted, err := p.schedulePrivateAnalysis(ctx, source)
 		if err != nil {
-			failed = errors.Join(failed, fmt.Errorf("claim private analysis: %w", err))
-			continue
+			return queued, fmt.Errorf("schedule private analysis: %w", err)
 		}
-		if !admitted {
-			continue
+		if admitted {
+			queued++
 		}
-		req := analyzer.Request{
-			TrackID: source.TrackID, StorageKey: source.Key, DurationMs: int(source.DurationMs), SchemaVersion: analyzer.SchemaVersion,
-			ExpectedAnalyzer: name, ExpectedAnalyzerVersion: version,
-			PrivateSource: &analyzer.PrivateSourceProof{SHA256: source.SHA256, ByteLength: source.ByteLength, Claim: claim.String()},
-		}
-		if err := p.scheduleAnalysis(ctx, req); err != nil {
-			p.markAnalysisSchedulingFailed(req, err)
-			return queued, errors.Join(failed, fmt.Errorf("schedule private analysis: %w", err))
-		}
-		queued++
 	}
-	return queued, failed
+	return queued, nil
+}
+
+func readPrivateAnalyzerIdentity(ctx context.Context, client privateAnalyzerInfoClient) (string, string, error) {
+	info, err := client.Info(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("read live private analyzer identity: %w", err)
+	}
+	name, version := strings.TrimSpace(info.Analyzer), strings.TrimSpace(info.AnalyzerVersion)
+	if name == "" || version == "" {
+		return "", "", errors.New("private analyzer identity is incomplete")
+	}
+	return name, version, nil
+}
+
+func (p *Processor) schedulePrivateAnalysis(ctx context.Context, source db.PrivateImportSource) (bool, error) {
+	p.analysisMu.Lock()
+	defer p.analysisMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if p.analysisQueue == nil || p.analysisStopping {
+		return false, errors.New("audio analysis queue is unavailable")
+	}
+	if _, pending := p.privateAnalysisPending[source.TrackID]; pending || len(p.privateAnalysisPending) >= privateImportAnalysisBatchLimit {
+		return false, nil
+	}
+	task := analysisTask{id: p.analysisNextTaskID + 1, privateSource: &source}
+	select {
+	case p.analysisQueue <- task:
+		p.analysisNextTaskID = task.id
+		p.analysisTasks.Add(1)
+		p.privateAnalysisPending[source.TrackID] = task.id
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+func (p *Processor) runPrivateImportAnalysis(task analysisTask) {
+	ctx, cancel := context.WithTimeout(p.analysisCtx, postStoreDispatchTimeout)
+	req, admitted, err := p.claimPrivateAnalysisAtStart(ctx, task)
+	cancel()
+	if err != nil && p.analysisCtx.Err() == nil {
+		log.Printf("Warning: private import analysis admission: %v", err)
+	}
+	if admitted {
+		p.runAnalysis(req)
+	}
+}
+
+func (p *Processor) claimPrivateAnalysisAtStart(ctx context.Context, task analysisTask) (analyzer.Request, bool, error) {
+	// Only DrainPrivateImportAnalysis creates this variant, after checking both
+	// immutable processor collaborators implement the private capabilities.
+	name, version, err := readPrivateAnalyzerIdentity(ctx, p.analyzerClient.(privateAnalyzerInfoClient))
+	if err != nil {
+		return analyzer.Request{}, false, err
+	}
+	source, claim := *task.privateSource, uuid.New()
+	req := analyzer.Request{
+		TrackID: source.TrackID, StorageKey: source.Key, DurationMs: int(source.DurationMs), SchemaVersion: analyzer.SchemaVersion,
+		ExpectedAnalyzer: name, ExpectedAnalyzerVersion: version,
+		PrivateSource: &analyzer.PrivateSourceProof{SHA256: source.SHA256, ByteLength: source.ByteLength, Claim: claim.String()},
+	}
+	// Publish the exact possible claim before the SQL call so shutdown can
+	// retire it by token. Queued hints never participate in terminal writes.
+	p.analysisMu.Lock()
+	if err := ctx.Err(); err != nil {
+		p.analysisMu.Unlock()
+		return analyzer.Request{}, false, err
+	}
+	p.analysisOutstanding[task.id] = req
+	p.analysisMu.Unlock()
+	admitted, err := p.analysisRepo.(privateImportAnalysisClaimer).ClaimPrivateImportAnalysis(ctx, source, claim, name, version)
+	if err != nil {
+		return analyzer.Request{}, false, fmt.Errorf("claim private analysis: %w", err)
+	}
+	return req, admitted, nil
 }
 
 func analysisWorkProvenance(req analyzer.Request, trigger string) map[string]any {

@@ -638,7 +638,21 @@ func (r *AnalysisRepository) markTerminal(ctx context.Context, trackID int64, st
 	return nil
 }
 
+// MarkStaleByAnalyzerVersion is the ordinary public scan. It can run again
+// after a bounded batch using an older startup sample, so it must not move a
+// private fence that another worker may already have acquired.
 func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, analyzerName, analyzerVersion string) (int64, error) {
+	return r.markStaleByAnalyzerVersion(ctx, analyzerName, analyzerVersion, false)
+}
+
+// MarkStaleByAnalyzerVersionAtStartup also refreshes existing private fences.
+// Do this once per startup pass, not inside the stale-work drain loop: two
+// overlapping startup processes must not keep re-pinning the same stale row.
+func (r *AnalysisRepository) MarkStaleByAnalyzerVersionAtStartup(ctx context.Context, analyzerName, analyzerVersion string) (int64, error) {
+	return r.markStaleByAnalyzerVersion(ctx, analyzerName, analyzerVersion, true)
+}
+
+func (r *AnalysisRepository) markStaleByAnalyzerVersion(ctx context.Context, analyzerName, analyzerVersion string, refreshPrivateFences bool) (int64, error) {
 	query := `
 		UPDATE track_analysis
 		SET status = $3,
@@ -657,6 +671,7 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 			),
 			updated_at = NOW()
 		WHERE status IN ($4, $5, $6, $7)
+		  AND ($8::boolean OR NOT EXISTS (SELECT 1 FROM tracks t WHERE t.id = track_analysis.track_id AND t.private_owner_id IS NOT NULL))
 		  AND (
 			(
 				status = $4
@@ -688,6 +703,11 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 				)
 			)
 		  )
+		  OR (
+			$8::boolean AND status = $3 AND NULLIF($1, '') IS NOT NULL AND NULLIF($2, '') IS NOT NULL
+			AND EXISTS (SELECT 1 FROM tracks t WHERE t.id = track_analysis.track_id AND t.private_owner_id IS NOT NULL)
+			AND NOT ` + privateImportIdentityMatches + `
+		  )
 	`
 	result, err := r.db.ExecContext(
 		ctx,
@@ -699,6 +719,7 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 		AnalysisStatusPending,
 		AnalysisStatusAnalyzing,
 		AnalysisStatusFailed,
+		refreshPrivateFences,
 	)
 	if err != nil {
 		return 0, err

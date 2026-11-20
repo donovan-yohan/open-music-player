@@ -31,6 +31,7 @@ type privateIntakeObjects interface {
 	ObjectStorage
 	PutPrivateImportObject(context.Context, string, io.Reader, int64) error
 	StatObject(context.Context, string) (*storage.ObjectInfo, error)
+	VerifyPrivateImportObjectAbsent(context.Context, string) bool
 	DeleteObject(context.Context, string) error
 }
 
@@ -69,10 +70,11 @@ func (s *PrivateImportIntake) Import(ctx context.Context, m db.PrivateImportMani
 	}
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	in, receipt, err := s.tracks.ReservePrivateImportStage(ctx, m)
+	reservation, receipt, err := s.tracks.ReservePrivateImportStage(ctx, m)
 	if err != nil || receipt != nil {
 		return receipt, err
 	}
+	in := reservation.Intent()
 	spool, err := privateIntakeSpool(ctx, s.scratchRoot, audio, in)
 	if err == nil {
 		defer spool.Close()
@@ -85,7 +87,8 @@ func (s *PrivateImportIntake) Import(ctx context.Context, m db.PrivateImportMani
 		defer cancel()
 		return nil, errors.Join(err, s.tracks.RefusePrivateImportStage(settle, in))
 	}
-	if err := s.tracks.AuthorizePrivateImportPut(ctx, in); err != nil {
+	in, err = reservation.AuthorizePut(ctx, in.DurationMs)
+	if err != nil {
 		return nil, err
 	}
 	if err := s.objects.PutPrivateImportObject(ctx, in.ObjectKey(), spool, in.ByteLength); err != nil {
@@ -110,9 +113,24 @@ func (s *PrivateImportIntake) Recover(ctx context.Context, owner, operation uuid
 	if err != nil || receipt != nil {
 		return receipt, err
 	}
+	receipt, err = s.recoverStage(ctx, stage)
+	if err == nil {
+		return receipt, nil
+	}
+	// Another recovery can seal a receipt and remove the deduped losing
+	// key after Load but before Stat/GET (or before this attempt updates
+	// its phase). Only the exact canonical historical receipt beats the
+	// original error; do not retry object IO or return a different receipt.
+	if historical, readErr := s.tracks.ReadPrivateImportStageReceipt(ctx, stage.Intent); readErr == nil && historical != nil {
+		return historical, nil
+	}
+	return nil, err
+}
+
+func (s *PrivateImportIntake) recoverStage(ctx context.Context, stage db.PrivateImportStage) (*db.PrivateImportReceipt, error) {
 	in := stage.Intent
 	info, err := s.objects.StatObject(ctx, in.ObjectKey())
-	if stage.NeedsReadback && storage.IsObjectNotFound(err) {
+	if stage.NeedsReadback && storage.IsObjectNotFound(err) && s.objects.VerifyPrivateImportObjectAbsent(ctx, in.ObjectKey()) {
 		return nil, db.ErrPrivateImportStagePending
 	}
 	if err != nil || info == nil || info.ContentType != privateMP3ContentType || info.Size != in.ByteLength {
@@ -123,11 +141,6 @@ func (s *PrivateImportIntake) Recover(ctx context.Context, owner, operation uuid
 			return nil, err
 		}
 		if err := s.tracks.ObservePrivateImportPut(ctx, in); err != nil {
-			if errors.Is(err, db.ErrPrivateImportStageClosed) {
-				if receipt, readErr := s.tracks.GetPrivateImportReceipt(ctx, owner, operation); readErr == nil {
-					return receipt, nil
-				}
-			}
 			return nil, err
 		}
 	}
@@ -166,7 +179,7 @@ func (s *PrivateImportIntake) deleteExact(ctx context.Context, key string) error
 	if err := s.objects.DeleteObject(ctx, key); err != nil {
 		return errors.New("private intake delete not acknowledged")
 	}
-	if _, err := s.objects.StatObject(ctx, key); !storage.IsObjectNotFound(err) {
+	if !s.objects.VerifyPrivateImportObjectAbsent(ctx, key) {
 		return errors.New("private intake object absence not verified")
 	}
 	return nil

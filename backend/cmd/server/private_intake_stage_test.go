@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"os"
 	"os/exec"
-	"strings"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/minio/minio-go/v7"
 
 	"github.com/openmusicplayer/backend/internal/db"
@@ -23,6 +26,22 @@ type stagedFixtureStore struct {
 	put    func(context.Context, string, io.Reader, int64) error
 	delete func(context.Context, string) error
 	get    func(context.Context, string) (io.ReadCloser, *storage.ObjectInfo, error)
+	stat   func(context.Context, string) (*storage.ObjectInfo, error)
+	absent func(context.Context, string) bool
+}
+
+func (s stagedFixtureStore) VerifyPrivateImportObjectAbsent(ctx context.Context, key string) bool {
+	if s.absent != nil {
+		return s.absent(ctx, key)
+	}
+	return s.Client.VerifyPrivateImportObjectAbsent(ctx, key)
+}
+
+func (s stagedFixtureStore) StatObject(ctx context.Context, key string) (*storage.ObjectInfo, error) {
+	if s.stat != nil {
+		return s.stat(ctx, key)
+	}
+	return s.Client.StatObject(ctx, key)
 }
 
 func (s stagedFixtureStore) GetObject(ctx context.Context, key string) (io.ReadCloser, *storage.ObjectInfo, error) {
@@ -46,7 +65,7 @@ func (s stagedFixtureStore) DeleteObject(ctx context.Context, key string) error 
 	return s.Client.DeleteObject(ctx, key)
 }
 
-func privateIntakeEnv(t *testing.T) (context.Context, *db.DB, uuid.UUID, *storage.Client, string) {
+func privateIntakeEnv(t *testing.T) (context.Context, *db.DB, *storage.Client, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
@@ -59,7 +78,32 @@ func privateIntakeEnv(t *testing.T) (context.Context, *db.DB, uuid.UUID, *storag
 	if err != nil {
 		t.Fatal("requires fixture ffmpeg")
 	}
-	return ctx, pg, seedPrivateImportUser(t, pg, ctx), store, ffmpeg
+	return ctx, pg, store, ffmpeg
+}
+
+func seedPrivateStageUser(t *testing.T, pg *db.DB, ctx context.Context) uuid.UUID {
+	t.Helper()
+	owner := seedPrivateImportUser(t, pg, ctx)
+	t.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		// The pool already passed DSN and exact fixture marker attestation.
+		// Forget only the generated owner's test rows so permanent charge
+		// cannot leak between scenarios; never reset a table or touch S3 here.
+		if err := pg.CheckDatabaseNotProtected(cleanup); err != nil {
+			t.Error(err)
+			return
+		}
+		var marked bool
+		if err := pg.QueryRowContext(cleanup, `SELECT current_user=current_database() AND shobj_description(oid,'pg_database')=$1 FROM pg_database WHERE datname=current_database()`, "private-fence-fixture:"+os.Getenv("OMP_PRIVATE_FENCE_TEST_MARKER")).Scan(&marked); err != nil || !marked {
+			t.Error("stage scenario cleanup refused: fixture marker did not match")
+			return
+		}
+		if _, err := pg.ExecContext(cleanup, `DELETE FROM private_import_attempts WHERE owner_id=$1`, owner); err != nil {
+			t.Error("could not release only this scenario's generated fixture rows")
+		}
+	})
+	return owner
 }
 
 func stageManifest(owner uuid.UUID, data []byte) db.PrivateImportManifest {
@@ -99,27 +143,50 @@ func requireIntakeObject(t *testing.T, ctx context.Context, store *storage.Clien
 }
 
 func TestPrivateIntakeStage(t *testing.T) {
-	ctx, pg, owner, store, ffmpeg := privateIntakeEnv(t)
-	t.Run("AdmissionProbeAndReceipt", func(t *testing.T) {
-		privateIntakeStageAdmission(t, ctx, pg, owner, store, ffmpeg)
-	})
-	t.Run("PutBeforeCommitRecoveryAndCleanup", func(t *testing.T) {
-		privateIntakeStageRecovery(t, ctx, pg, owner, store, ffmpeg)
-	})
-	t.Run("ExpiredCommitCannotRaceCleanup", func(t *testing.T) {
-		privateIntakeStageExpiredCommit(t, ctx, pg, owner, store, ffmpeg)
-	})
-	t.Run("LateAcknowledgementAndCleanupRetry", func(t *testing.T) {
-		privateIntakeStageLateAck(t, ctx, pg, owner, store, ffmpeg)
-	})
-	t.Run("ObservedPutRecoveryDoesNotReplay", func(t *testing.T) {
-		privateIntakeStageUnacknowledged(t, ctx, pg, owner, store, ffmpeg)
-	})
-	t.Run("PermanentlyUncertainWriteStaysQuarantined", func(t *testing.T) {
-		privateIntakeStageQuarantine(t, ctx, pg, owner, store, ffmpeg)
-	})
+	ctx, pg, store, ffmpeg := privateIntakeEnv(t)
+	// SeaweedFS's pinned disposable fixture supports this one bucket per
+	// run. SQL capacity stays global, with per-scenario generated owners.
+	for _, sc := range []struct {
+		name string
+		run  func(*testing.T, context.Context, *db.DB, uuid.UUID, *storage.Client, string)
+	}{
+		{"PermanentlyUncertainWriteStaysQuarantined", privateIntakeStageQuarantine},
+		{"GlobalCapacity", privateIntakeStageGlobalCapacity},
+		{"AdmissionProbeAndReceipt", privateIntakeStageAdmission},
+		{"PutBeforeCommitRecoveryAndCleanup", privateIntakeStageRecovery},
+		{"ExpiredCommitCannotRaceCleanup", privateIntakeStageExpiredCommit},
+		{"LateAcknowledgementAndCleanupRetry", privateIntakeStageLateAck},
+		{"ObservedPutRecoveryDoesNotReplay", privateIntakeStageUnacknowledged},
+		{"CopiedGrantCannotCancelDispatchedPut", privateIntakeStageReservationOnce},
+		{"ExpiryRecheckedAtSeal", privateIntakeStageAtSealExpiry},
+		{"LostAuthorizeAckWithoutPut", privateIntakeStageLostAuthorizeAck},
+		{"ConcurrentDedupeReceiptRecovery", privateIntakeStageReceiptRace},
+	} {
+		t.Run(sc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			t.Cleanup(cancel)
+			sc.run(t, ctx, pg, seedPrivateStageUser(t, pg, ctx), store, ffmpeg)
+		})
+	}
 }
 
+func privateIntakeStageGlobalCapacity(t *testing.T, ctx context.Context, pg *db.DB, owner uuid.UUID, store *storage.Client, ffmpeg string) {
+	a := privateImportMP3(t, ctx, 839)
+	for i := 0; i < 4; i++ {
+		if i != 0 {
+			owner = seedPrivateStageUser(t, pg, ctx)
+		}
+		m := stageManifest(owner, a.data)
+		if _, _, err := db.NewTrackRepository(pg).ReservePrivateImportStage(ctx, m); err != nil {
+			t.Fatalf("global slot %d unexpectedly charged, or rejected: %v", i+1, err)
+		}
+		requireIntakeAttempt(t, ctx, pg, m, "reserved")
+	}
+	svc := newPrivateIntake(t, pg, stagedFixtureStore{Client: store}, ffmpeg)
+	if r, err := svc.Import(ctx, stageManifest(seedPrivateStageUser(t, pg, ctx), a.data), neverReadPrivateIntake{t}); r != nil || !errors.Is(err, db.ErrPrivateImportStageCapacity) {
+		t.Fatalf("fifth owner passed the global capacity fence: %v %v", r, err)
+	}
+}
 func privateIntakeStageAdmission(t *testing.T, ctx context.Context, pg *db.DB, owner uuid.UUID, store *storage.Client, ffmpeg string) {
 	a, b := privateImportMP3(t, ctx, 541), privateImportMP3(t, ctx, 911)
 	if len(a.data) != len(b.data) || a.hash == b.hash {
@@ -194,7 +261,8 @@ func privateIntakeStageAdmission(t *testing.T, ctx context.Context, pg *db.DB, o
 	}
 	key := requireIntakeAttempt(t, ctx, pg, good, "winner")
 	requireIntakeObject(t, ctx, store, key, a.data)
-	if err := store.PutPrivateImportObject(ctx, key, bytes.NewReader(b.data), int64(len(b.data))); minio.ToErrorResponse(err).StatusCode != 412 {
+	var response minio.ErrorResponse
+	if err := store.PutPrivateImportObject(ctx, key, bytes.NewReader(b.data), int64(len(b.data))); !errors.As(err, &response) || response.StatusCode != http.StatusPreconditionFailed {
 		t.Fatal("real S3 did not enforce create-only write against the fixture winner")
 	}
 	requireIntakeObject(t, ctx, store, key, a.data)
@@ -233,7 +301,7 @@ func privateIntakeStageRecovery(t *testing.T, ctx context.Context, pg *db.DB, ow
 	svc := newPrivateIntake(t, pg, stagedFixtureStore{Client: store}, ffmpeg)
 	// Fail the real receipt transaction after storage and after the attempted
 	// track, membership and analysis writes. Its DB effects must roll back.
-	if _, err := pg.ExecContext(ctx, `CREATE FUNCTION fixture_stage_receipt_fault() RETURNS TRIGGER LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'fixture stage receipt fault'; END$$;
+	if _, err := pg.ExecContext(ctx, `CREATE FUNCTION fixture_stage_receipt_fault() RETURNS TRIGGER LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'fixture stage receipt fault' USING DETAIL=NEW.track_id::text; END$$;
 		CREATE TRIGGER fixture_stage_receipt_fault BEFORE INSERT ON private_import_receipts FOR EACH ROW EXECUTE FUNCTION fixture_stage_receipt_fault()`); err != nil {
 		t.Fatal(err)
 	}
@@ -246,9 +314,16 @@ func privateIntakeStageRecovery(t *testing.T, ctx context.Context, pg *db.DB, ow
 	t.Cleanup(removeFault)
 	failed := []db.PrivateImportManifest{stageManifest(owner, a.data), stageManifest(owner, b.data)}
 	// Only one live upload per owner. Recover the first before admitting the second.
-	if r, err := svc.Import(ctx, failed[0], bytes.NewReader(a.data)); r != nil || err == nil || !strings.Contains(err.Error(), "fixture stage receipt fault") {
+	r, err := svc.Import(ctx, failed[0], bytes.NewReader(a.data))
+	var driverErr *pq.Error
+	if r != nil || !errors.As(err, &driverErr) || driverErr.Message != "fixture stage receipt fault" {
 		t.Fatalf("missing post-Put SQL fault: %v %v", r, err)
 	}
+	trackID, err := strconv.ParseInt(driverErr.Detail, 10, 64)
+	if err != nil || trackID <= 0 {
+		t.Fatal("receipt fault did not witness the attempted canonical track")
+	}
+	requireNoStagePublication(t, ctx, pg, failed[0], trackID)
 	winnerKey := requireIntakeAttempt(t, ctx, pg, failed[0], "stored")
 	requireIntakeObject(t, ctx, store, winnerKey, a.data)
 	if r, err := db.NewTrackRepository(pg).GetPrivateImportReceipt(ctx, owner, failed[0].OperationID); r != nil || !errors.Is(err, db.ErrPrivateImportNotFound) {
@@ -265,7 +340,7 @@ func privateIntakeStageRecovery(t *testing.T, ctx context.Context, pg *db.DB, ow
 		t.Fatalf("fresh service did not recover stored attempt: %v %v", winner, err)
 	}
 	dup := stageManifest(owner, a.data)
-	r, err := fresh.Import(ctx, dup, bytes.NewReader(a.data))
+	r, err = fresh.Import(ctx, dup, bytes.NewReader(a.data))
 	if err != nil || r == nil || r.TrackID != winner.TrackID {
 		t.Fatalf("canonical dedupe: %v %v", r, err)
 	}
@@ -274,11 +349,17 @@ func privateIntakeStageRecovery(t *testing.T, ctx context.Context, pg *db.DB, ow
 		t.Fatal("dedupe reused the winner's key for Put")
 	}
 	requireIntakeObject(t, ctx, store, loserKey, a.data)
+	if store.VerifyPrivateImportObjectAbsent(ctx, loserKey) {
+		t.Fatal("owned S3 reported absence of present loser bytes")
+	}
 	if n, err := fresh.Collect(ctx, 8); err != nil || n != 1 {
 		t.Fatalf("exact losing attempt collection: %d %v", n, err)
 	}
 	if _, err := store.StatObject(ctx, loserKey); !storage.IsObjectNotFound(err) {
 		t.Fatal("losing key survived")
+	}
+	if !store.VerifyPrivateImportObjectAbsent(ctx, loserKey) {
+		t.Fatal("owned S3 did not give an authoritative exact-key response")
 	}
 	requireIntakeObject(t, ctx, store, winnerKey, a.data)
 }
@@ -444,6 +525,21 @@ func privateIntakeStageLateAck(t *testing.T, ctx context.Context, pg *db.DB, own
 	}
 	if n, err := collector.Collect(ctx, 8); n != 0 || err != nil || deletes != 1 {
 		t.Fatalf("failed Delete ignored backoff: %d %v %d", n, err, deletes)
+	}
+	requireIntakeAttempt(t, ctx, pg, m, "retiring")
+	if _, err := pg.ExecContext(ctx, `UPDATE private_import_attempts SET cleanup_after=clock_timestamp()-INTERVAL '1 second' WHERE owner_id=$1 AND operation_id=$2`, owner, m.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	probes := 0
+	ambiguous := newPrivateIntake(t, pg, stagedFixtureStore{Client: store, absent: func(_ context.Context, probed string) bool {
+		probes++
+		if probed != key {
+			t.Fatal("absence proof did not address the exact retired object")
+		}
+		return false
+	}}, ffmpeg)
+	if n, err := ambiguous.Collect(ctx, 8); n != 0 || err == nil || probes != 1 {
+		t.Fatalf("an acknowledged Delete without absence evidence released custody: %d %v %d", n, err, probes)
 	}
 	requireIntakeAttempt(t, ctx, pg, m, "retiring")
 	if _, err := pg.ExecContext(ctx, `UPDATE private_import_attempts SET cleanup_after=clock_timestamp()-INTERVAL '1 second' WHERE owner_id=$1 AND operation_id=$2`, owner, m.OperationID); err != nil {

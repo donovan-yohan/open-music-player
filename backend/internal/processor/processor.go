@@ -68,8 +68,9 @@ const (
 )
 
 type analysisTask struct {
-	id      uint64
-	request analyzer.Request
+	id            uint64
+	request       analyzer.Request
+	privateSource *db.PrivateImportSource
 }
 
 // Processor handles the full download and matching pipeline
@@ -91,6 +92,7 @@ type Processor struct {
 	analysisTasks           sync.WaitGroup
 	analysisWorkers         sync.WaitGroup
 	analysisOutstanding     map[uint64]analyzer.Request
+	privateAnalysisPending  map[int64]uint64
 	analysisNextTaskID      uint64
 	analysisStopping        bool
 	requireAnalyzerIdentity bool
@@ -144,6 +146,7 @@ func New(config *ProcessorConfig) *Processor {
 		processor.analysisQueue = make(chan analysisTask, analysisQueueSize)
 		processor.analysisStop = make(chan struct{})
 		processor.analysisOutstanding = make(map[uint64]analyzer.Request)
+		processor.privateAnalysisPending = make(map[int64]uint64)
 		for range analysisConcurrency {
 			processor.analysisWorkers.Add(1)
 			go func() {
@@ -1237,10 +1240,10 @@ func (p *Processor) scheduleAnalysis(ctx context.Context, req analyzer.Request) 
 	case queue <- task:
 		return nil
 	case <-ctx.Done():
-		p.finishAnalysisTask(task.id)
+		p.finishAnalysisTask(task)
 		return ctx.Err()
 	case <-stop:
-		p.finishAnalysisTask(task.id)
+		p.finishAnalysisTask(task)
 		return errors.New("audio analysis queue is shutting down")
 	}
 }
@@ -1250,9 +1253,13 @@ func (p *Processor) analysisWorker() {
 		select {
 		case task := <-p.analysisQueue:
 			if p.analysisCtx.Err() == nil {
-				p.runAnalysis(task.request)
+				if task.privateSource != nil {
+					p.runPrivateImportAnalysis(task)
+				} else {
+					p.runAnalysis(task.request)
+				}
 			}
-			p.finishAnalysisTask(task.id)
+			p.finishAnalysisTask(task)
 		case <-p.analysisCtx.Done():
 			return
 		}
@@ -1295,8 +1302,7 @@ func (p *Processor) Shutdown(ctx context.Context) error {
 		shutdownErr = context.DeadlineExceeded
 	}
 
-	outstanding := p.outstandingAnalysisRequests()
-	p.analysisCancel()
+	outstanding := p.cancelAndSnapshotAnalysisRequests()
 	recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), analysisShutdownRecoveryTimeout)
 	defer recoveryCancel()
 	p.recoverAnalysisRows(recoveryCtx, outstanding, fmt.Errorf("analysis canceled during shutdown: %w", shutdownErr))
@@ -1322,9 +1328,12 @@ func analysisRecoveryTimer(ctx context.Context) (*time.Timer, <-chan time.Time) 
 	return timer, timer.C
 }
 
-func (p *Processor) outstandingAnalysisRequests() []analyzer.Request {
+func (p *Processor) cancelAndSnapshotAnalysisRequests() []analyzer.Request {
 	p.analysisMu.Lock()
 	defer p.analysisMu.Unlock()
+	// Stop new private claims while keeping active workers in the snapshot,
+	// even when cancellation lets them finish immediately.
+	p.analysisCancel()
 	latest := make(map[int64]struct {
 		id      uint64
 		request analyzer.Request
@@ -1349,7 +1358,7 @@ func (p *Processor) drainAnalysisQueue(ctx context.Context) {
 	for {
 		select {
 		case task := <-p.analysisQueue:
-			p.finishAnalysisTask(task.id)
+			p.finishAnalysisTask(task)
 		case <-ctx.Done():
 			return
 		default:
@@ -1358,11 +1367,18 @@ func (p *Processor) drainAnalysisQueue(ctx context.Context) {
 	}
 }
 
-func (p *Processor) finishAnalysisTask(taskID uint64) {
+func (p *Processor) finishAnalysisTask(task analysisTask) {
 	p.analysisMu.Lock()
-	_, outstanding := p.analysisOutstanding[taskID]
+	_, outstanding := p.analysisOutstanding[task.id]
+	if task.privateSource != nil {
+		trackID := task.privateSource.TrackID
+		outstanding = p.privateAnalysisPending[trackID] == task.id
+		if outstanding {
+			delete(p.privateAnalysisPending, trackID)
+		}
+	}
 	if outstanding {
-		delete(p.analysisOutstanding, taskID)
+		delete(p.analysisOutstanding, task.id)
 	}
 	p.analysisMu.Unlock()
 	if outstanding {

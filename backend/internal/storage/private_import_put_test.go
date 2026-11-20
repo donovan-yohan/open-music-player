@@ -112,6 +112,21 @@ func putFixtureNoCredentialError(t *testing.T, err error) {
 	}
 }
 
+func TestPrivateImportPutErrorContextDoesNotDisplayTransportDetails(t *testing.T) {
+	payload := []byte("fixture")
+	client := newPutFixture(t, func(req *http.Request) (*http.Response, error) {
+		putFixtureRequest(t, req, int64(len(payload)), true)
+		reply := putFixtureReply(req, http.StatusPreconditionFailed, "PreconditionFailed")
+		reply.Body = io.NopCloser(strings.NewReader(`<Error><Code>PreconditionFailed</Code><Message>` + putFixtureKey + `</Message></Error>`))
+		return reply, nil
+	})
+	err := client.PutPrivateImportObject(putFixtureContext(t), putFixtureKey, bytes.NewReader(payload), int64(len(payload)))
+	var response minio.ErrorResponse
+	if !errors.As(err, &response) || response.StatusCode != http.StatusPreconditionFailed || err.Error() != "private intake object Put failed" {
+		t.Fatalf("want static Put context and typed 412, got %v", err)
+	}
+}
+
 func putFixtureContext(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -166,8 +181,16 @@ func TestPrivateImportPutDoesNotReplay(t *testing.T) {
 			if calls != 1 || err == nil {
 				t.Fatalf("private Put must dispatch once without a positive ACK: requests=%d acknowledged=%t first_body_bytes=%d", calls, err == nil, consumedOnFirst)
 			}
-			if code := minio.ToErrorResponse(err).Code; code != scenario.code {
-				t.Fatal("private Put did not preserve the initial failure shape")
+			var response minio.ErrorResponse
+			if scenario.code == "" {
+				// The pinned SDK rewrites transport EOF to a new url.Error;
+				// retain that transport cause, not a fabricated S3 code.
+				var transportErr *url.Error
+				if !errors.As(err, &transportErr) || errors.As(err, &response) {
+					t.Fatal("private Put did not preserve the transport failure")
+				}
+			} else if !errors.As(err, &response) || response.Code != scenario.code {
+				t.Fatal("private Put did not preserve the initial service failure")
 			}
 			t.Logf("requests=%d acknowledged=false first_body_bytes=%d", calls, consumedOnFirst)
 		})
@@ -191,7 +214,8 @@ func TestPrivateImportPutExactSinglePartAndOverwriteRefusal(t *testing.T) {
 	if err := client.PutPrivateImportObject(ctx, putFixtureKey, bytes.NewReader(payload), int64(len(payload))); err != nil || calls != 1 {
 		t.Fatalf("private single-part Put did not acknowledge exactly one request: requests=%d", calls)
 	}
-	if err := client.PutPrivateImportObject(ctx, putFixtureKey, bytes.NewReader(payload), int64(len(payload))); minio.ToErrorResponse(err).StatusCode != http.StatusPreconditionFailed || calls != 2 {
+	var response minio.ErrorResponse
+	if err := client.PutPrivateImportObject(ctx, putFixtureKey, bytes.NewReader(payload), int64(len(payload))); !errors.As(err, &response) || response.StatusCode != http.StatusPreconditionFailed || calls != 2 {
 		t.Fatalf("conditional overwrite was not refused once: requests=%d", calls)
 	} else {
 		putFixtureNoCredentialError(t, err)

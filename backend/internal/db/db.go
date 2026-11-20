@@ -67,7 +67,6 @@ func (db *DB) Migrate() error {
 		updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 	);
 	CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-	ALTER TABLE users ADD COLUMN IF NOT EXISTS connect_auth_generation BIGINT NOT NULL DEFAULT 0;
 
 	-- Weekly current state has one transactional owner per account. Quota survives
 	-- profile resets within this separately retained state. No tap ledger.
@@ -148,11 +147,6 @@ func (db *DB) Migrate() error {
 		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 	);
-	CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_identity_hash ON tracks(identity_hash);
-	CREATE INDEX IF NOT EXISTS idx_tracks_mb_recording_id ON tracks(mb_recording_id) WHERE mb_recording_id IS NOT NULL;
-	CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title);
-	CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
-	CREATE INDEX IF NOT EXISTS idx_tracks_storage_key ON tracks(storage_key) WHERE storage_key IS NOT NULL;
 
 	CREATE TABLE IF NOT EXISTS user_library (
 		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -160,6 +154,60 @@ func (db *DB) Migrate() error {
 		added_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 		PRIMARY KEY (user_id, track_id)
 	);
+
+	-- Install or repair before any conflicting users/tracks DDL: a Library
+	-- reader or writer can already hold user_library and still need those tables.
+	-- The current trigger needs no table DDL. On upgrade the function's dynamic
+	-- SELECT resolves private_owner_id only when fired, after this same schema
+	-- transaction has committed both the column and the fence.
+	DO $library_fence$
+	DECLARE
+		library_relation pg_catalog.regclass := 'user_library'::pg_catalog.regclass;
+		library_schema name;
+	BEGIN
+		SELECT n.nspname INTO STRICT library_schema
+		FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+		WHERE c.oid = library_relation;
+
+		-- Check the final INSERT/UPDATE row for every writer, including upserts.
+		-- Resolve the track in the fired table's schema and lock its key to commit.
+		EXECUTE pg_catalog.format('CREATE OR REPLACE FUNCTION %I.enforce_user_library_visible_track()', library_schema) || $ddl$
+		RETURNS TRIGGER AS $body$
+		DECLARE
+			visible BOOLEAN;
+		BEGIN
+			EXECUTE format('SELECT TRUE FROM %I.tracks WHERE id = $1 AND (private_owner_id IS NULL OR private_owner_id = $2) FOR KEY SHARE', TG_TABLE_SCHEMA)
+				INTO visible USING NEW.track_id, NEW.user_id;
+			IF visible IS DISTINCT FROM TRUE THEN
+				RAISE EXCEPTION 'library track not found' USING
+					ERRCODE = '23503', TABLE = 'user_library', CONSTRAINT = 'user_library_visible_track';
+			END IF;
+			RETURN NULL;
+		END;
+		$body$ LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp
+		$ddl$;
+
+		IF NOT EXISTS (
+			SELECT 1 FROM pg_catalog.pg_trigger
+			WHERE tgrelid = library_relation AND tgname = 'trg_user_library_visible_track'
+				AND tgfoid = pg_catalog.to_regprocedure(pg_catalog.format('%I.enforce_user_library_visible_track()', library_schema))
+				AND tgtype = 21 -- ROW (1) + INSERT (4) + UPDATE (16), neither BEFORE nor INSTEAD OF
+				AND tgenabled = 'O' AND NOT tgisinternal AND tgconstraint = 0
+				AND tgnargs = 0 AND tgattr = '' AND tgqual IS NULL
+				AND tgoldtable IS NULL AND tgnewtable IS NULL
+		) THEN
+			EXECUTE pg_catalog.format('DROP TRIGGER IF EXISTS trg_user_library_visible_track ON %I.user_library', library_schema);
+			EXECUTE pg_catalog.format('CREATE TRIGGER trg_user_library_visible_track AFTER INSERT OR UPDATE ON %I.user_library
+				FOR EACH ROW EXECUTE FUNCTION %I.enforce_user_library_visible_track()', library_schema, library_schema);
+		END IF;
+	END $library_fence$;
+
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS connect_auth_generation BIGINT NOT NULL DEFAULT 0;
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_identity_hash ON tracks(identity_hash);
+	CREATE INDEX IF NOT EXISTS idx_tracks_mb_recording_id ON tracks(mb_recording_id) WHERE mb_recording_id IS NOT NULL;
+	CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title);
+	CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
+	CREATE INDEX IF NOT EXISTS idx_tracks_storage_key ON tracks(storage_key) WHERE storage_key IS NOT NULL;
 	CREATE INDEX IF NOT EXISTS idx_user_library_user_id ON user_library(user_id);
 	CREATE INDEX IF NOT EXISTS idx_user_library_track_id ON user_library(track_id);
 	CREATE INDEX IF NOT EXISTS idx_user_library_added_at ON user_library(user_id, added_at DESC);
@@ -562,25 +610,6 @@ func (db *DB) Migrate() error {
 		WHEN (OLD.private_owner_id IS NOT NULL OR NEW.private_owner_id IS NOT NULL)
 		EXECUTE FUNCTION enforce_tracks_private_custody();
 
-	-- Cover the final INSERT/UPDATE row from every SQL writer, including upserts
-	-- and INSERT ... SELECT. Use the fired table's schema, never a caller's path
-	-- or temporary table. Lock the track against removal/key reuse through commit.
-	CREATE OR REPLACE FUNCTION enforce_user_library_visible_track() RETURNS TRIGGER AS $$
-	DECLARE
-		visible BOOLEAN;
-	BEGIN
-		EXECUTE format('SELECT TRUE FROM %I.tracks WHERE id = $1 AND (private_owner_id IS NULL OR private_owner_id = $2) FOR KEY SHARE', TG_TABLE_SCHEMA)
-			INTO visible USING NEW.track_id, NEW.user_id;
-		IF visible IS DISTINCT FROM TRUE THEN
-			RAISE EXCEPTION 'library track not found' USING
-				ERRCODE = '23503', TABLE = 'user_library', CONSTRAINT = 'user_library_visible_track';
-		END IF;
-		RETURN NULL;
-	END;
-	$$ LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp;
-	DROP TRIGGER IF EXISTS trg_user_library_visible_track ON user_library;
-	CREATE TRIGGER trg_user_library_visible_track AFTER INSERT OR UPDATE ON user_library
-		FOR EACH ROW EXECUTE FUNCTION enforce_user_library_visible_track();
 
 	-- Retain committed operations independently of current Library membership.
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_private_receipt_custody ON tracks(private_owner_id, id);

@@ -357,9 +357,15 @@ func (c startupInfoClient) Info(context.Context) (analyzer.Info, error) {
 }
 
 type startupVersionStore struct {
-	marked      int64
-	markResults []int64
-	calls       int
+	marked       int64
+	markResults  []int64
+	calls        int
+	startupCalls int
+}
+
+func (s *startupVersionStore) MarkStaleByAnalyzerVersionAtStartup(ctx context.Context, analyzerName, analyzerVersion string) (int64, error) {
+	s.startupCalls++
+	return s.MarkStaleByAnalyzerVersion(ctx, analyzerName, analyzerVersion)
 }
 
 func (s *startupVersionStore) MarkStaleByAnalyzerVersion(_ context.Context, analyzerName, analyzerVersion string) (int64, error) {
@@ -489,6 +495,9 @@ func TestReconcileAnalyzerVersionMarksAndQueuesBoundedRepairs(t *testing.T) {
 	}
 	if tracks.limit != startupAnalyzerRepairLimit {
 		t.Fatalf("repair limit = %d, want %d", tracks.limit, startupAnalyzerRepairLimit)
+	}
+	if versions.startupCalls != 1 || versions.calls < 2 {
+		t.Fatalf("expected a single startup refence along with ordinary scans: startup=%d total=%d", versions.startupCalls, versions.calls)
 	}
 	if len(repairs.trackIDs) != 2 || !containsTrackIDs(repairs.trackIDs, 43, 44) {
 		t.Fatalf("queued tracks = %v, want [43 44]", repairs.trackIDs)
