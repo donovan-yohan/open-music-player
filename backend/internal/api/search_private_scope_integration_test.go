@@ -14,6 +14,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
@@ -28,8 +29,47 @@ func TestGlobalSearchPrivateScope(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	owner := seedMixUser(t, database, uuid.NewString()+"@example.test")
-	foreign := seedMixUser(t, database, uuid.NewString()+"@example.test")
+	owner, foreign := uuid.New(), uuid.New()
+	userIDs := pq.Array([]uuid.UUID{owner, foreign})
+	var trackHashes []string
+	// Register before seeding; this runs before the fixture pool closes and
+	// uses its own deadline even if the test fails or its context is canceled.
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), privateFenceSQLTimeout)
+		defer cancel()
+		tx, err := database.BeginTx(cleanupCtx, nil)
+		if err != nil {
+			t.Errorf("begin search fixture cleanup: %v", err)
+			return
+		}
+		defer tx.Rollback()
+		hashes := pq.Array(trackHashes)
+		// Track deletion cascades to memberships and overrides. Private tracks
+		// must be deleted before their users (private_owner_id restricts deletion).
+		if _, err := tx.ExecContext(cleanupCtx, `DELETE FROM tracks WHERE identity_hash = ANY($1)`, hashes); err != nil {
+			t.Errorf("delete search fixture tracks: %v", err)
+			return
+		}
+		if _, err := tx.ExecContext(cleanupCtx, `DELETE FROM users WHERE id = ANY($1)`, userIDs); err != nil {
+			t.Errorf("delete search fixture users: %v", err)
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			t.Errorf("commit search fixture cleanup: %v", err)
+			return
+		}
+		var remaining bool
+		if err := database.QueryRowContext(cleanupCtx, `SELECT EXISTS (SELECT 1 FROM tracks WHERE identity_hash = ANY($1))
+			OR EXISTS (SELECT 1 FROM users WHERE id = ANY($2))`, hashes, userIDs).Scan(&remaining); err != nil || remaining {
+			t.Errorf("verify search fixture cleanup: rows remain=%v, err=%v", remaining, err)
+		}
+	})
+	for _, id := range []uuid.UUID{owner, foreign} {
+		if _, err := database.ExecContext(ctx, `INSERT INTO users (id, email, username, password_hash)
+			VALUES ($1, $2, 'user', 'x')`, id, id.String()+"@example.test"); err != nil {
+			t.Fatalf("seed search fixture user: %v", err)
+		}
+	}
 	secret := uuid.NewString() + uuid.NewString()
 	service := auth.NewService(nil, nil, secret)
 	tracks, library := db.NewTrackRepository(database), db.NewLibraryRepository(database)
@@ -97,11 +137,17 @@ func TestGlobalSearchPrivateScope(t *testing.T) {
 		id   int64
 		name string
 	}
+	newTrackHash := func() string {
+		hash := uuid.NewString()
+		// Remember attempted writes, not just inserts that returned successfully.
+		trackHashes = append(trackHashes, hash)
+		return hash
+	}
 	seedShared := func(t *testing.T, name string) fixtureTrack {
 		t.Helper()
 		var id int64
 		if err := database.QueryRowContext(ctx, `INSERT INTO tracks(identity_hash,title,artist,album,cover_art_url)
-			VALUES($1,$2,$2,$2,$3) RETURNING id`, uuid.NewString(), name, sharedArt).Scan(&id); err != nil {
+			VALUES($1,$2,$2,$2,$3) RETURNING id`, newTrackHash(), name, sharedArt).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		return fixtureTrack{id, name}
@@ -117,7 +163,7 @@ func TestGlobalSearchPrivateScope(t *testing.T) {
 	seedPrivate := func(t *testing.T, id int64, name string) {
 		t.Helper()
 		if _, err := database.ExecContext(ctx, `INSERT INTO tracks(id,identity_hash,title,artist,album,cover_art_url,private_owner_id,storage_key,source_file_hash,file_size_bytes)
-			VALUES($1,$2,$3,$3,$3,$4,$5,$6,$7,128)`, id, uuid.NewString(), name, privateArt, owner, uuid.NewString(), "sha256:"+strings.ReplaceAll(uuid.NewString()+uuid.NewString(), "-", "")); err != nil {
+			VALUES($1,$2,$3,$3,$3,$4,$5,$6,$7,128)`, id, newTrackHash(), name, privateArt, owner, uuid.NewString(), "sha256:"+strings.ReplaceAll(uuid.NewString()+uuid.NewString(), "-", "")); err != nil {
 			t.Fatal(err)
 		}
 	}
