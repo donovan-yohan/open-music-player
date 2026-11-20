@@ -20,11 +20,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/openmusicplayer/backend/internal/validators"
@@ -91,6 +94,92 @@ func TestYTDLPRemovesFailedWork(t *testing.T) {
 	}
 }
 
+func TestYTDLPRequiresAbsoluteInstalledToolsAndPassesLocalRuntimes(t *testing.T) {
+	path := t.TempDir()
+	t.Setenv("PATH", path)
+	if _, err := newYTDLPFetcher(); !errors.Is(err, exec.ErrNotFound) || !strings.Contains(err.Error(), "yt-dlp") {
+		t.Fatalf("missing extractor reason: %v", err)
+	}
+	argsFile := filepath.Join(t.TempDir(), "args")
+	for _, name := range []string{"yt-dlp", "ffmpeg", "deno", "node"} {
+		script := "#!/bin/sh\nexit 1\n"
+		if name == "yt-dlp" {
+			script = "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argsFile + "'\nexit 1\n"
+		}
+		if err := os.WriteFile(filepath.Join(path, name), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if name == "yt-dlp" {
+			if _, err := newYTDLPFetcher(); !errors.Is(err, exec.ErrNotFound) || !strings.Contains(err.Error(), "ffmpeg") {
+				t.Fatalf("missing FFmpeg reason: %v", err)
+			}
+		}
+	}
+	fetch, err := newYTDLPFetcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		key      string
+		runtimes []string
+	}{
+		{"https://www.youtube.com/watch?v=abcdefghijk", []string{"deno:" + filepath.Join(path, "deno"), "node:" + filepath.Join(path, "node")}},
+		{"https://soundcloud.com/artist/track", nil},
+	} {
+		_, err := fetch(context.Background(), tc.key)
+		if !errors.Is(err, errPreviewAcquisition) {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := strings.Split(strings.TrimSpace(string(data)), "\n")
+		var runtimes []string
+		for i, arg := range args[:len(args)-1] {
+			if arg == "--js-runtimes" {
+				runtimes = append(runtimes, args[i+1])
+			}
+		}
+		if !slices.Equal(runtimes, tc.runtimes) || !slices.Contains(args, "--no-remote-components") {
+			t.Fatalf("wrong runtime admission for %s: %v", tc.key, runtimes)
+		}
+	}
+}
+
+func TestYTDLPStopsLeafWhenExtractorExitsFirst(t *testing.T) {
+	for _, code := range []string{"0", "9"} {
+		t.Run(code, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("TMPDIR", root)
+			pidFile := filepath.Join(t.TempDir(), "leaf-pid")
+			tool := previewShim(t, `sleep 20 </dev/null >/dev/null 2>&1 & child=$!; kill -0 "$child" || exit 98; printf '%s\n' "$child" > '`+pidFile+`'
+printf 'owned bytes' > clip.mp3
+printf '{"extractor_key":"Youtube","id":"abcdefghijk"}'
+exit `+code)
+			data, err := (ytdlpPreview{executable: tool, ffmpeg: tool, timeout: acquisitionTimeout}).fetch(context.Background(), "https://www.youtube.com/watch?v=abcdefghijk")
+			raw, readErr := os.ReadFile(pidFile)
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if readErr != nil || parseErr != nil || pid <= 0 {
+				t.Fatalf("missing launched leaf: %v / %v", readErr, parseErr)
+			}
+			t.Cleanup(func() {
+				if !previewLeafStopped(pid, false) {
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+				}
+			})
+			assertPreviewLeafStopped(t, pid)
+			assertNoPreviewWork(t, root)
+			if code == "0" && (err != nil || string(data) != "owned bytes") {
+				t.Fatalf("successful extractor lost its result: %d bytes, %v", len(data), err)
+			}
+			if code != "0" && (data != nil || !errors.Is(err, errPreviewAcquisition)) {
+				t.Fatalf("failed extractor published a result: %d bytes, %v", len(data), err)
+			}
+		})
+	}
+}
+
 func TestYTDLPStopsLeafOnCancellationAndDeadline(t *testing.T) {
 	for _, mode := range []string{"cancel", "deadline"} {
 		t.Run(mode, func(t *testing.T) {
@@ -136,15 +225,35 @@ func TestYTDLPStopsLeafOnCancellationAndDeadline(t *testing.T) {
 			case <-time.After(3 * time.Second):
 				t.Fatal("canceled acquisition did not settle")
 			}
-			for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-				if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
-					assertNoPreviewWork(t, root)
-					return
-				}
-			}
-			t.Fatal("acquisition left a leaf process behind")
+			assertPreviewLeafStopped(t, pid)
+			assertNoPreviewWork(t, root)
 		})
 	}
+}
+
+func assertPreviewLeafStopped(t *testing.T, pid int) {
+	t.Helper()
+	requireReap := os.Getenv("SOUNDQ_TEST_PREVIEW_REQUIRE_REAP") == "1"
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if previewLeafStopped(pid, requireReap) {
+			return
+		}
+	}
+	t.Fatalf("acquisition left a leaf behind (require reaping: %v)", requireReap)
+}
+
+func previewLeafStopped(pid int, requireReap bool) bool {
+	if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		return true
+	}
+	if runtime.GOOS != "linux" || requireReap {
+		return false
+	}
+	// An arbitrary test host may not reap orphans promptly. A stopped zombie
+	// cannot execute; the packaged Tini assay separately requires ESRCH.
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	i := strings.LastIndex(string(data), ") ")
+	return err == nil && i >= 0 && len(data) > i+2 && data[i+2] == 'Z'
 }
 
 func assertNoPreviewWork(t *testing.T, root string) {
@@ -160,7 +269,7 @@ func TestYTDLPEgressByteCeiling(t *testing.T) {
 	defer cancel()
 	originDone := make(chan struct{})
 	const limit = 32 * 1024
-	proxy := &previewEgress{ctx: ctx, cancel: cancel, source: validators.SourceYouTube,
+	proxy := &previewEgress{ctx: ctx, cancel: cancel, source: validators.SourceYouTube, available: limit,
 		dial: func(_ context.Context, host string) (net.Conn, error) {
 			if host != "fixture.googlevideo.com" {
 				return nil, errors.New("wrong origin reached the dial seam")
@@ -174,7 +283,6 @@ func TestYTDLPEgressByteCeiling(t *testing.T) {
 			return proxyConn, nil
 		},
 	}
-	proxy.remaining.Store(limit)
 	listener := httptest.NewServer(proxy)
 	defer listener.Close()
 	client, err := (&net.Dialer{}).DialContext(ctx, "tcp", listener.Listener.Addr().String())
@@ -205,6 +313,71 @@ func TestYTDLPEgressByteCeiling(t *testing.T) {
 	case <-originDone:
 	case <-time.After(time.Second):
 		t.Fatal("budget refusal left origin open")
+	}
+}
+
+type previewReadFunc func([]byte) (int, error)
+
+func (f previewReadFunc) Read(b []byte) (int, error) { return f(b) }
+
+func TestYTDLPEgressWaitsForOutstandingReservations(t *testing.T) {
+	for _, mode := range []string{"refund", "spent", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				p := &previewEgress{ctx: ctx, cancel: cancel, available: 4}
+				settle := make(chan struct{})
+				a := previewBudgetReader{p, previewReadFunc(func(b []byte) (int, error) {
+					<-settle
+					if mode == "spent" {
+						return copy(b, "four"), nil
+					}
+					return copy(b, "a"), io.EOF
+				})}
+				firstDone := make(chan struct{})
+				go func() {
+					defer close(firstDone)
+					_, _ = a.Read(make([]byte, 4))
+				}()
+				synctest.Wait() // first tunnel has reserved the entire remaining budget
+				b := previewBudgetReader{p, strings.NewReader("abc")}
+				type outcome struct {
+					n   int
+					err error
+				}
+				second := make(chan outcome, 1)
+				go func() { n, err := b.Read(make([]byte, 4)); second <- outcome{n, err} }()
+				synctest.Wait()
+				if len(second) != 0 || ctx.Err() != nil || p.refused.Load() {
+					t.Error("an outstanding reservation was treated as consumed")
+				}
+				if mode == "cancel" {
+					cancel()
+					synctest.Wait()
+					if len(second) != 1 {
+						t.Error("pending reader did not retire on cancellation")
+					}
+				}
+				close(settle)
+				<-firstDone
+				result := <-second
+				switch mode {
+				case "refund":
+					if result.n != 3 || result.err != nil || p.refused.Load() {
+						t.Fatalf("refunded bytes not admitted: %+v", result)
+					}
+				case "spent":
+					if result.n != 0 || !errors.Is(result.err, errPreviewAcquisition) || !p.refused.Load() {
+						t.Fatalf("hard ceiling not enforced: %+v", result)
+					}
+				case "cancel":
+					if result.n != 0 || !errors.Is(result.err, context.Canceled) || p.refused.Load() {
+						t.Fatalf("cancellation was mistaken for budget exhaustion: %+v", result)
+					}
+				}
+			})
+		})
 	}
 }
 

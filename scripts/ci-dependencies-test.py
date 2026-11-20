@@ -15,6 +15,11 @@ MODEL_URL = (
 )
 
 
+def compose_fixture_env():
+    # Only CLI/plugin discovery is inherited; service interpolation is test-owned.
+    return {key: os.environ[key] for key in ("PATH", "HOME", "DOCKER_CONFIG") if key in os.environ}
+
+
 class DependencySourcesTest(unittest.TestCase):
     def test_checkpoint_transport_changes_without_changing_model_identity(self):
         """Keep the checkpoint digest and runtime gates when transport changes."""
@@ -36,12 +41,10 @@ class DependencySourcesTest(unittest.TestCase):
         dockerfile = (ROOT / "backend/Dockerfile").read_text()
         for filename in ("docker-compose.yml", "docker-compose.local-low-memory.yml"):
             with self.subTest(compose=filename):
-                env = {key: value for key, value in os.environ.items()
-                       if not key.startswith(("COMPOSE_", "MINIO_"))}
                 config = json.loads(subprocess.check_output([
                     "docker", "compose", "--env-file", "/dev/null", "--profile", "smoke", "-f",
                     str(ROOT / filename), "config", "--format", "json",
-                ], env=env))
+                ], env=compose_fixture_env()))
                 targets = [("minio", "minio-runtime"), ("minio-init", "minio-client")]
                 if filename == "docker-compose.local-low-memory.yml":
                     targets.append(("minio-smoke", "minio-client"))
@@ -70,8 +73,7 @@ class DependencySourcesTest(unittest.TestCase):
 
     def test_compose_on_demand_preview_is_an_explicit_backend_opt_in(self):
         flag = "DISCOVERY_PREVIEW_ON_DEMAND"
-        clean_env = {key: value for key, value in os.environ.items()
-                     if key != flag and not key.startswith("COMPOSE_")}
+        clean_env = compose_fixture_env()
         for filename in ("docker-compose.yml", "docker-compose.local-low-memory.yml"):
             for requested in (None, "true"):
                 with self.subTest(compose=filename, requested=requested):

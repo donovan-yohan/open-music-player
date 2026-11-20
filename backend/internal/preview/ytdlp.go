@@ -32,33 +32,39 @@ var (
 const (
 	previewSectionSeconds = 15
 	previewFilename       = "clip.mp3"
+	previewComplete       = ".acquisition-complete"
 	previewReceiptLimit   = 2*maxURLBytes + 512
 	previewNetworkBytes   = 12 * 1024 * 1024 // Includes extractor metadata and encrypted TLS overhead.
 )
 
 type ytdlpPreview struct {
 	executable, ffmpeg string
-	jsRuntime          string
+	jsRuntimes         []string
 	timeout            time.Duration
 	dial               func(context.Context, string) (net.Conn, error) // nil uses public DNS/IP only
 }
 
 func newYTDLPFetcher() (func(context.Context, string) ([]byte, error), error) {
 	ytdlp, err := exec.LookPath("yt-dlp")
-	if err != nil || !filepath.IsAbs(ytdlp) {
-		return nil, errors.New("preview requires yt-dlp on an absolute PATH")
+	if err != nil {
+		return nil, fmt.Errorf("locate yt-dlp for preview: %w", err)
+	}
+	if !filepath.IsAbs(ytdlp) {
+		return nil, errors.New("preview requires an absolute yt-dlp path")
 	}
 	ffmpeg, err := exec.LookPath("ffmpeg")
-	if err != nil || !filepath.IsAbs(ffmpeg) {
-		return nil, errors.New("preview requires ffmpeg on an absolute PATH")
+	if err != nil {
+		return nil, fmt.Errorf("locate ffmpeg for preview: %w", err)
+	}
+	if !filepath.IsAbs(ffmpeg) {
+		return nil, errors.New("preview requires an absolute ffmpeg path")
 	}
 	p := ytdlpPreview{executable: ytdlp, ffmpeg: ffmpeg, timeout: acquisitionTimeout}
 	// Use only a locally installed signature runtime, never download one or
 	// remote components as part of a request. SoundCloud does not need it.
 	for _, name := range []string{"deno", "node"} {
 		if path, err := exec.LookPath(name); err == nil && filepath.IsAbs(path) {
-			p.jsRuntime = name + ":" + path
-			break
+			p.jsRuntimes = append(p.jsRuntimes, name+":"+path)
 		}
 	}
 	return p.fetch, nil
@@ -86,8 +92,7 @@ func (p ytdlpPreview) fetch(ctx context.Context, key string) ([]byte, error) {
 	if dial == nil {
 		dial = dialPreviewOrigin
 	}
-	egress := previewEgress{ctx: ctx, cancel: cancel, source: source, dial: dial}
-	egress.remaining.Store(previewNetworkBytes)
+	egress := previewEgress{ctx: ctx, cancel: cancel, source: source, dial: dial, available: previewNetworkBytes}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, errPreviewAcquisition
@@ -103,18 +108,25 @@ func (p ytdlpPreview) fetch(ctx context.Context, key string) ([]byte, error) {
 		_ = proxy.Close()
 		egress.active.Wait()
 	}()
-	cmd := exec.CommandContext(ctx, p.executable, p.args(selection, source, key, "http://"+listener.Addr().String())...)
+	// Keep a supervisor as the process-group leader until the group has
+	// been signaled. Never signal a numeric group ID after reaping its leader.
+	// The trusted program and its arguments are positional, not shell source.
+	const supervise = `trap 'kill -KILL 0' TERM EXIT
+umask 077
+"$@" &
+wait "$!" && : > ` + previewComplete
+	args := append([]string{"-c", supervise, "soundq-preview", p.executable}, p.args(selection, source, key, "http://"+listener.Addr().String())...)
+	cmd := exec.CommandContext(ctx, "/bin/sh", args...)
 	cmd.Dir = dir
 	cmd.Env = []string{
 		"HOME=" + dir, "XDG_CONFIG_HOME=" + dir, "XDG_CACHE_HOME=" + dir, "TMPDIR=" + dir,
 		"PATH=" + strings.Join([]string{filepath.Dir(p.executable), filepath.Dir(p.ffmpeg), "/usr/bin", "/bin"}, string(os.PathListSeparator)),
 		"PYTHONNOUSERSITE=1", "PYTHONUTF8=1", "LC_ALL=C",
 	}
-	// yt-dlp starts FFmpeg for the range. Cancel the group, not just the
-	// extractor, before cleaning the private output directory. WaitDelay
-	// also bounds an inherited stdout pipe if a helper outlives its parent.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	// The supervisor waits asynchronously so TERM interrupts its wait and
+	// enters the same group teardown as an ordinary extractor exit.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 250 * time.Millisecond
 	receipt := previewReceipt{cancel: cancel}
 	cmd.Stdout = &receipt // stderr goes to the null device; never surface diagnostics.
@@ -125,7 +137,13 @@ func (p ytdlpPreview) fetch(ctx context.Context, key string) ([]byte, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if runErr != nil || !selection.matches(receipt.data.Bytes()) {
+	var exited *exec.ExitError
+	if !errors.As(runErr, &exited) || !selection.matches(receipt.data.Bytes()) {
+		return nil, errPreviewAcquisition
+	}
+	status, _ := exited.Sys().(syscall.WaitStatus)
+	complete, err := os.Lstat(filepath.Join(dir, previewComplete))
+	if !status.Signaled() || status.Signal() != syscall.SIGKILL || err != nil || !complete.Mode().IsRegular() || complete.Size() != 0 {
 		return nil, errPreviewAcquisition
 	}
 	data, err := readLocal(ctx, dir, previewFilename, maxClipBytes, 0)
@@ -199,8 +217,10 @@ func (p ytdlpPreview) args(s ytdlpSelection, source validators.SourceType, key, 
 		"--downloader-args", ffmpegOut,
 		"--print", "after_move:%(.{extractor_key,id,webpage_url})j", "--output", previewFilename,
 	}
-	if source == validators.SourceYouTube && p.jsRuntime != "" {
-		args = append(args, "--js-runtimes", p.jsRuntime)
+	if source == validators.SourceYouTube {
+		for _, runtime := range p.jsRuntimes {
+			args = append(args, "--js-runtimes", runtime)
+		}
 	}
 	return append(args, "--", key)
 }
@@ -225,16 +245,19 @@ func (b *previewReceipt) Write(p []byte) (int, error) {
 // limits aggregate reads across extractor, redirects, playlists and segments.
 // Format URL matching alone cannot constrain redirects or HLS nested fetches.
 type previewEgress struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	source    validators.SourceType
-	dial      func(context.Context, string) (net.Conn, error)
-	remaining atomic.Int64
-	refused   atomic.Bool
-	mu        sync.Mutex
-	active    sync.WaitGroup
-	count     int  // under mu
-	closing   bool // under mu
+	ctx     context.Context
+	cancel  context.CancelFunc
+	source  validators.SourceType
+	dial    func(context.Context, string) (net.Conn, error)
+	refused atomic.Bool
+	active  sync.WaitGroup
+
+	mu            sync.Mutex
+	count         int
+	closing       bool
+	available     int // bytes neither consumed nor reserved by a live read
+	reserved      int
+	budgetChanged chan struct{}
 }
 
 func (p *previewEgress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -294,18 +317,48 @@ type previewBudgetReader struct {
 }
 
 func (r previewBudgetReader) Read(b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	p := r.budget
 	for {
-		left := r.budget.remaining.Load()
-		if left <= 0 {
-			r.budget.refused.Store(true)
-			r.budget.cancel()
+		p.mu.Lock()
+		if err := p.ctx.Err(); err != nil {
+			p.mu.Unlock()
+			return 0, err
+		}
+		if limit := min(len(b), p.available); limit != 0 {
+			p.available -= limit
+			p.reserved += limit
+			p.mu.Unlock()
+			n, err := r.read.Read(b[:limit])
+			p.mu.Lock()
+			p.reserved -= limit
+			p.available += limit - n
+			if p.budgetChanged != nil && (p.available != 0 || p.reserved == 0) {
+				close(p.budgetChanged)
+				p.budgetChanged = nil
+			}
+			p.mu.Unlock()
+			return n, err
+		}
+		if p.reserved == 0 {
+			p.refused.Store(true)
+			p.mu.Unlock()
+			p.cancel()
 			return 0, errPreviewAcquisition
 		}
-		limit := min(int64(len(b)), left)
-		if r.budget.remaining.CompareAndSwap(left, left-limit) {
-			n, err := r.read.Read(b[:limit])
-			r.budget.remaining.Add(limit - int64(n))
-			return n, err
+		// Another peer owns the last reservation. It may refund unused bytes;
+		// only actual consumption can exhaust the cap.
+		if p.budgetChanged == nil {
+			p.budgetChanged = make(chan struct{})
+		}
+		changed := p.budgetChanged
+		p.mu.Unlock()
+		select {
+		case <-changed:
+		case <-p.ctx.Done():
+			return 0, p.ctx.Err()
 		}
 	}
 }
