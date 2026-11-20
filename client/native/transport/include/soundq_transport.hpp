@@ -46,6 +46,24 @@ struct PcmWindow {
     uint32_t count = 0;
 };
 
+// Internal qualification only: one aligned stereo window on ordinary deck 0,
+// on the same 48 kHz rate-one source clock. The caller has already authorized
+// the member and verified its decoded origin (0), stereo geometry and extent.
+struct PreparedStemKey {
+    uint64_t identity = 0, generation = 0, sourceFrames = 0;
+    uint32_t sourceRate = 0;
+};
+enum class StemResult : uint64_t { None, Bound, GainApplied, Retired, Refused };
+struct StemReceipt {
+    uint64_t sequence = 0, binding = 0, missingFrames = 0;
+    StemResult result = StemResult::None;
+    // Refill has a separate receipt: maintenance must not overwrite the last
+    // explicit bind/gain/retire result. Only a post-block ACK releases storage.
+    uint64_t windowSequence = 0, windowApplied = 0, windowFirst = 0, windowEnd = 0;
+    bool revoked = false;
+    int refillError = 0; // Host worker qualification, not callback state
+};
+
 struct DeckSnapshot {
     uint64_t generation = 0;
     uint64_t identity = 0;
@@ -144,6 +162,7 @@ struct Snapshot {
     std::array<DeckSnapshot, 4> decks{};
     std::array<LatencySample, 64> latency{};
     uint64_t latencyCount = 0, movesCoalesced = 0, syncReschedules = 0;
+    StemReceipt stem{};
 };
 
 enum class Operation : uint32_t {
@@ -224,6 +243,18 @@ public:
     // Keeps generation tombstone, clears source/play/gesture. A newer assignment
     // must use a larger generation. Pending old decoder replies stay inadmissible.
     bool unassign(uint32_t deck, uint64_t sequence, uint64_t generation) noexcept;
+    // Binding token is the bind sequence. Serialize bind/control and observe
+    // snapshot.stem.sequence AND completedStructuralSequence() before reusing
+    // storage. Keep the immutable window alive through Refused bind, Retired,
+    // or output quiescence. A later ordinary motion can revoke it without
+    // changing ordinary playback; explicit retire remains the release receipt.
+    bool bindPreparedStem(uint64_t sequence, const PreparedStemKey& key, const PcmWindow& window) noexcept;
+    // Empty rolling attachment; no gain other than unity until a qualified
+    // window covers the current cursor. Publish at most two contiguous pages.
+    bool bindRollingPreparedStem(uint64_t sequence, const PreparedStemKey& key, uint64_t traversal) noexcept;
+    bool publishPreparedStemWindow(uint64_t sequence, uint64_t binding, uint64_t traversal,
+                                   const PcmWindow& window) noexcept;
+    bool controlPreparedStem(uint64_t sequence, uint64_t binding, double gain, bool retire) noexcept;
     // Release/acquire post-block FIFO receipt, independent of coalesced moves.
     // A replaced window may be reclaimed after its replacing structural receipt
     // ONLY if no later queued/current publication references those same bytes.
@@ -237,6 +268,8 @@ public:
     // Coherent published snapshot. Nonblocking: false if reader falls behind.
     bool snapshot(Snapshot& destination) const noexcept;
 private:
+    bool attachPreparedStem(uint64_t sequence, const PreparedStemKey& key, const PcmWindow& window,
+                            uint64_t traversal) noexcept;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

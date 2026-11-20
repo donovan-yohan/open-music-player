@@ -27,7 +27,9 @@ void barrier(unsigned stage) noexcept {
 namespace {
 constexpr uint64_t queueCapacity = 64;
 constexpr std::size_t deckWords = 30;
-constexpr std::size_t snapshotWords = 5 + 4 * deckWords + 10 + 64 * 3;
+constexpr std::size_t stemAt = 5 + 4 * deckWords + 10 + 64 * 3;
+constexpr std::size_t snapshotWords = stemAt + 9;
+constexpr uint32_t stemRate = 48000, stemRampFrames = 480;
 static_assert(std::atomic<uint64_t>::is_always_lock_free,
               "Transport requires lock-free 64-bit atomics");
 uint64_t bits(double value) noexcept {
@@ -65,15 +67,15 @@ struct Ramp {
     double target = 1;
     double step = 0;
     uint32_t remaining = 0;
-    void set(double next) noexcept {
-        target = next; remaining = 128; step = (target - value) / 128;
+    void set(double next, uint32_t frames = 128) noexcept {
+        target = next; remaining = frames; step = (target - value) / frames;
     }
     void advance() noexcept {
         if (remaining != 0 && --remaining == 0) value = target;
         else if (remaining != 0) value += step;
     }
 };
-enum class EnvelopeKind { Command, AssignPaged, Window, WindowRate, Unassign, ScheduleInstall, ScheduleBind, ScheduleTransport, Scratch, Sync, TempoHandoff, TempoUnchanged, Crossfade };
+enum class EnvelopeKind { Command, AssignPaged, Window, WindowRate, Unassign, ScheduleInstall, ScheduleBind, ScheduleTransport, Scratch, Sync, TempoHandoff, TempoUnchanged, Crossfade, StemBind, StemGain, StemRetire, StemWindow };
 struct Envelope {
     EnvelopeKind kind = EnvelopeKind::Command;
     Command command{};
@@ -175,6 +177,30 @@ struct Engine::Impl {
     alignas(64) std::atomic<uint64_t> tail{0};
     std::array<Deck, 4> decks{};
     std::array<ProducerDeck, 4> producerDecks{}; // serialized control producer only
+    struct Stem {
+        PreparedStemKey key{};
+        uint64_t traversal = 0;
+        PcmWindow window{};
+        Ramp gain{};
+        uint32_t wetFrames = stemRampFrames;
+        bool rolling = false;
+        uint64_t end() const noexcept {
+            if (!window.count) return 0;
+            const auto& last = window.pages[window.count-1];
+            return last.firstFrame + last.frames;
+        }
+        bool covers(double cursor) const noexcept {
+            return window.count && cursor >= window.pages[0].firstFrame && cursor < end();
+        }
+    } stem;
+    // Callback-owned scalars, never borrowed PCM. An explicit retire can free
+    // the window while this short same-clock tail is still audible.
+    struct {
+        double left = 0, right = 0;
+        uint32_t remaining = 0;
+        bool nonzero() const noexcept { return left != 0 || right != 0; }
+    } stemCorrection;
+    StemReceipt stemReceipt{};
     struct Boundary { uint32_t out=0,in=1; uint64_t outGeneration=0,inGeneration=0,length=0,elapsed=0; double start=0; bool begun=false; } boundary;
     bool boundaryCurrent() const noexcept {
         return boundary.length && decks[boundary.out].generation==boundary.outGeneration &&
@@ -279,8 +305,113 @@ struct Engine::Impl {
         data[at+3] = (schedulePlaying?1U:0U)|(scheduleBuffering?2U:0U); data[at+4] = schedule && globalFrame >= schedule->duration;
         data[at+5]=latencyCount; data[at+6]=movesCoalesced.load(); data[at+7]=syncReschedules;
         for(size_t i=0;i<latency.size();++i) {data[at+8+3*i]=latency[i].eventNanos;data[at+9+3*i]=latency[i].appliedNanos;data[at+10+3*i]=latency[i].sequence;}
-        data[snapshotWords-2]=tempoApplied;data[snapshotWords-1]=tempoTerminal;
+        data[stemAt-2]=tempoApplied;data[stemAt-1]=tempoTerminal;
+        data[stemAt]=stemReceipt.sequence;data[stemAt+1]=stemReceipt.binding;
+        data[stemAt+2]=stemReceipt.missingFrames;data[stemAt+3]=static_cast<uint64_t>(stemReceipt.result);
+        data[stemAt+4]=stemReceipt.windowSequence;data[stemAt+5]=stemReceipt.windowApplied;
+        data[stemAt+6]=stem.window.count ? stem.window.pages[0].firstFrame : 0;
+        data[stemAt+7]=stem.end();data[stemAt+8]=stemReceipt.revoked;
         publication.store(data);
+    }
+    bool stemUnitClock() const noexcept {
+        const auto& d = decks[0];
+        return !schedule && d.paged &&
+            !d.scratching && d.listening == 1 && d.rate.target == 1 && d.rate.value == 1 &&
+            d.cursor == std::floor(d.cursor);
+    }
+    bool stemClockMatches(const PreparedStemKey& key) const noexcept {
+        const auto& d = decks[0];
+        return d.source.identity == key.identity && d.generation == key.generation &&
+            d.source.frames == key.sourceFrames && d.source.sourceRate == key.sourceRate && stemUnitClock();
+    }
+    bool stemEligible(const PreparedStemKey& key) const noexcept {
+        return stemClockMatches(key) && !decks[1].source.identity && !decks[2].source.identity && !decks[3].source.identity;
+    }
+    void applyStem(const Envelope& e) noexcept {
+        const auto& c = e.command;
+        const auto& d = decks[0];
+        if (e.kind == EnvelopeKind::StemWindow) {
+            stemReceipt.windowSequence = c.sequence;
+            const auto& last = e.window.pages[e.window.count-1];
+            if (stemReceipt.binding == e.frame && stem.rolling && !stemReceipt.revoked &&
+                stem.traversal == c.gesture && d.traversalRevision == c.gesture && stemEligible(stem.key) &&
+                d.cursor >= e.window.pages[0].firstFrame && d.cursor < last.firstFrame + last.frames) {
+                stem.window = e.window;
+                stemReceipt.windowApplied = c.sequence;
+                appliedSequence = std::max(appliedSequence, c.sequence);
+            } else reject();
+            return;
+        }
+        stemReceipt.sequence = c.sequence;
+        stemReceipt.result = StemResult::Refused;
+        if (e.kind == EnvelopeKind::StemBind) {
+            const PreparedStemKey key{c.source.identity,c.generation,c.source.frames,c.source.sourceRate};
+            if (!stemReceipt.binding && stemEligible(key) && d.cursor < d.source.frames &&
+                (!e.frame || e.frame == d.traversalRevision)) {
+                stem = {key,d.traversalRevision,e.window,{},stemRampFrames,e.frame != 0};
+                stemCorrection = {};
+                stemReceipt.binding = c.sequence;
+                stemReceipt.revoked = false;
+                stemReceipt.result = StemResult::Bound;
+            }
+        } else if (stemReceipt.binding == e.frame) {
+            const auto pageEnd = stem.end();
+            if (e.kind == EnvelopeKind::StemRetire) {
+                // Refuse an audible hard bypass. Pause, revocation or a past
+                // page edge is already dry; otherwise settle gain to unity first.
+                if (!stem.window.count || !d.playing || d.cursor >= pageEnd ||
+                    (stem.gain.target == 1 && stem.gain.value == 1)) {
+                    stem = {};
+                    stemReceipt.binding = 0;
+                    stemReceipt.result = StemResult::Retired;
+                }
+            } else if (!stemReceipt.revoked && ((c.value == 1 && (stem.rolling || stem.window.count)) ||
+                (stem.covers(d.cursor) && d.cursor + stemRampFrames < pageEnd))) {
+                if (stem.gain.target != c.value) stem.gain.set(c.value, stemRampFrames);
+                stemReceipt.result = StemResult::GainApplied;
+            }
+        }
+        if (stemReceipt.result == StemResult::Refused) reject();
+        else appliedSequence = std::max(appliedSequence, c.sequence);
+    }
+    const float* stemTap(uint64_t index, double& delta) noexcept {
+        stem.gain.advance();
+        if (stem.gain.value == 1) return nullptr; // exact original, no stem load or arithmetic
+        delta = stem.gain.value - 1;
+        if (!stem.covers(static_cast<double>(index))) {
+            ++stemReceipt.missingFrames;
+            stem.wetFrames = 0;
+            return nullptr;
+        }
+        // Taper at the acknowledged coverage edge, not at an internal page
+        // seam. If a page arrives late, recover smoothly even during a taper.
+        const auto remaining = stem.end() - 1 - index;
+        const auto wet = std::min<uint64_t>(remaining,stem.rolling ?
+            std::min(stemRampFrames,stem.wetFrames+1) : stemRampFrames);
+        stem.wetFrames = static_cast<uint32_t>(wet);
+        if (!wet) return nullptr;
+        if (wet < stemRampFrames) delta *= double(wet) / stemRampFrames;
+        const auto& page = stem.window.pages[index < stem.window.pages[0].firstFrame + stem.window.pages[0].frames ? 0 : 1];
+        return page.samples + (index - page.firstFrame) * 2;
+    }
+    void sampleStem(uint64_t index, double& left, double& right) noexcept {
+        if (stemCorrection.remaining) {
+            if (--stemCorrection.remaining) {
+                const auto wet = double(stemCorrection.remaining) / stemRampFrames;
+                left += wet * stemCorrection.left;
+                right += wet * stemCorrection.right;
+            } else stemCorrection = {}; // terminal sample is exactly dry
+        } else if (stem.window.count || (stem.rolling && !stemReceipt.revoked)) {
+            double delta;
+            if (const auto* member = stemTap(index,delta)) {
+                const auto l = member[0], r = member[1];
+                stemCorrection = {delta * l,delta * r,0};
+                // Preserve the normal mix's multiply-add rounding; the stored
+                // products are only for a later revocation tail.
+                left += delta * l;
+                right += delta * r;
+            } else stemCorrection = {};
+        }
     }
     void apply(const Command& c) noexcept {
         auto& d = decks[c.deck];
@@ -322,7 +453,11 @@ struct Engine::Impl {
     }
     void apply(const Envelope& envelope) noexcept {
         const auto& c = envelope.command;
-        if(envelope.kind==EnvelopeKind::Crossfade) {
+        const auto originalTraversal = decks[0].traversalRevision;
+        if (envelope.kind == EnvelopeKind::StemBind || envelope.kind == EnvelopeKind::StemGain ||
+            envelope.kind == EnvelopeKind::StemRetire || envelope.kind == EnvelopeKind::StemWindow) {
+            applyStem(envelope);
+        } else if(envelope.kind==EnvelopeKind::Crossfade) {
             const auto out=c.deck,in=envelope.clip;
             if(decks[out].generation==c.generation && decks[in].generation==c.gesture) {
                 if(!envelope.frame) {decks[in].playing=false;boundary={};}
@@ -439,6 +574,29 @@ struct Engine::Impl {
                 d = Deck{}; d.generation = c.generation;
             }
             appliedSequence = std::max(appliedSequence, c.sequence);
+        }
+        // Do this per command, not per block: an away-and-back rate change,
+        // same-frame seek or A/B/A assignment cannot revive a borrowed member.
+        const auto& original = decks[0];
+        if (stemCorrection.nonzero() && (!original.playing || original.traversalRevision != originalTraversal || !stemUnitClock()))
+            stemCorrection = {};
+        if ((stem.window.count || stem.rolling) && !stemReceipt.revoked) {
+            if (!stemEligible(stem.key)) {
+                // Peer admission can revoke coverage without changing deck 0's
+                // clock. Smooth only that case, using the last applied correction.
+                if (stem.window.count && original.traversalRevision == stem.traversal && stemClockMatches(stem.key) &&
+                    stemCorrection.nonzero() && std::isfinite(stemCorrection.left) && std::isfinite(stemCorrection.right))
+                    stemCorrection.remaining = stemRampFrames;
+                else stemCorrection = {};
+                stem.window = {};
+                if (stem.rolling) stemReceipt.revoked = true;
+            } else if (original.traversalRevision != stem.traversal) {
+                stem.window = {};
+                if (stem.rolling) {
+                    stem.traversal = original.traversalRevision;
+                    stem.wetFrames = 0;
+                }
+            }
         }
         consumedStructuralSequence = c.sequence;
     }
@@ -781,6 +939,48 @@ bool Engine::unassign(uint32_t deck, uint64_t sequence, uint64_t generation) noe
     next.generation = generation;
     return p.enqueue(envelope, next);
 }
+bool Engine::bindPreparedStem(uint64_t sequence, const PreparedStemKey& key, const PcmWindow& window) noexcept {
+    return attachPreparedStem(sequence,key,window,0);
+}
+bool Engine::bindRollingPreparedStem(uint64_t sequence, const PreparedStemKey& key, uint64_t traversal) noexcept {
+    return traversal ? attachPreparedStem(sequence,key,{},traversal) : impl_->reject();
+}
+bool Engine::attachPreparedStem(uint64_t sequence, const PreparedStemKey& key, const PcmWindow& window, uint64_t traversal) noexcept {
+    auto& p = *impl_;
+    const auto& current = p.producerDecks[0];
+    if (p.producerSchedule || !sequence || sequence <= p.admittedSequence || !current.paged ||
+        !key.generation || key.generation != current.generation || current.frames != key.sourceFrames ||
+        key.sourceRate != stemRate || p.outputRate != stemRate ||
+        !validExtent(key.sourceFrames,key.sourceRate,key.identity) || window.count != (traversal ? 0U : 1U) || !validWindow(window,key.sourceFrames))
+        return p.reject();
+    Envelope e;
+    e.kind = EnvelopeKind::StemBind;
+    e.command.sequence = sequence; e.command.generation = key.generation;
+    e.command.source = {nullptr,key.sourceFrames,key.sourceRate,key.identity};
+    e.window = window; e.frame = traversal;
+    return p.enqueue(e,current);
+}
+bool Engine::publishPreparedStemWindow(uint64_t sequence, uint64_t binding, uint64_t traversal, const PcmWindow& window) noexcept {
+    auto& p = *impl_;
+    const auto& current = p.producerDecks[0];
+    if (p.producerSchedule || !sequence || sequence <= p.admittedSequence || !binding || binding >= sequence ||
+        !traversal || !current.paged || !current.frames || window.count < 1 || window.count > 2 ||
+        !validWindow(window,current.frames) || (window.count == 2 &&
+        window.pages[0].firstFrame + window.pages[0].frames != window.pages[1].firstFrame)) return p.reject();
+    Envelope e;
+    e.kind = EnvelopeKind::StemWindow;
+    e.command.sequence = sequence; e.command.gesture = traversal; e.frame = binding; e.window = window;
+    return p.enqueue(e,current);
+}
+bool Engine::controlPreparedStem(uint64_t sequence, uint64_t binding, double gain, bool retire) noexcept {
+    auto& p = *impl_;
+    if (!sequence || sequence <= p.admittedSequence || !binding || binding >= sequence ||
+        !std::isfinite(gain) || gain < 0 || gain > 1) return p.reject();
+    Envelope e;
+    e.kind = retire ? EnvelopeKind::StemRetire : EnvelopeKind::StemGain;
+    e.command.sequence = sequence; e.command.value = gain; e.frame = binding;
+    return p.enqueue(e,p.producerDecks[0]);
+}
 std::unique_ptr<Schedule> Schedule::compile(uint64_t revision, uint32_t outputRate, const std::vector<ScheduleClip>& input) {
     if (!revision || !outputRate || input.empty() || input.size()>500) return nullptr;
     auto result=std::make_unique<Schedule>(); result->revision=revision; result->outputRate=outputRate;
@@ -1049,8 +1249,12 @@ void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
         const bool advanceBoundary=!p.schedule && boundaryReady && p.boundaryCurrent() && p.boundary.begun && p.decks[p.boundary.out].playing && p.boundary.elapsed<p.boundary.length;
         if (p.schedule) {if(prepared)p.scheduleSample(left,right,p.renderedFrames+frame);}
         else for (auto& d : p.decks) {
+            const bool stemDeck = &d == &p.decks[0];
             d.rate.advance(); d.gain.advance();
-            if (!d.playing || d.rate.value == 0 || (!boundaryReady && p.boundaryCurrent() && (&d==&p.decks[p.boundary.out] || &d==&p.decks[p.boundary.in]))) continue;
+            if (!d.playing || d.rate.value == 0 || (!boundaryReady && p.boundaryCurrent() && (&d==&p.decks[p.boundary.out] || &d==&p.decks[p.boundary.in]))) {
+                if (stemDeck && p.stemCorrection.nonzero()) p.stemCorrection = {};
+                continue;
+            }
             double position = d.cursor;
             if (d.source.frames && position >= static_cast<double>(d.source.frames)) {
                 if (d.rate.value >= 0) {
@@ -1071,9 +1275,15 @@ void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
             const auto level = d.gain.value * std::min(1.0, slow) * p.boundaryGain(static_cast<uint32_t>(&d-p.decks.data()));
             const auto* firstTap = d.tap(index);
             const auto* nextTap = d.tap(next);
-            if (!firstTap || !nextTap) { ++d.missingPcmFrames; continue; }
-            left += level * (firstTap[0] * (1 - fraction) + nextTap[0] * fraction);
-            right += level * (firstTap[1] * (1 - fraction) + nextTap[1] * fraction);
+            if (!firstTap || !nextTap) {
+                if (stemDeck) p.stemCorrection = {};
+                ++d.missingPcmFrames; continue;
+            }
+            double l = firstTap[0] * (1 - fraction) + nextTap[0] * fraction;
+            double r = firstTap[1] * (1 - fraction) + nextTap[1] * fraction;
+            if (stemDeck) p.sampleStem(index,l,r);
+            left += level * l;
+            right += level * r;
             d.cursor = position + d.rate.value * d.source.sourceRate / p.outputRate;
             if (d.source.frames && d.cursor >= static_cast<double>(d.source.frames)) {
                 d.cursor = static_cast<double>(d.source.frames);
@@ -1107,6 +1317,9 @@ void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
 #endif
     p.renderedFrames += frames;
     p.publish();
+#ifdef SOUNDQ_TRANSPORT_TEST_BARRIERS
+    test::barrier(3); // Snapshot visible; structural retirement is still withheld.
+#endif
     // FIFO capacity release is not PCM retirement. Complete only after every
     // sample read from this block, and never copy the mixed move-lane maximum.
     p.completedStructural.store(p.consumedStructuralSequence, std::memory_order_release);
@@ -1137,7 +1350,10 @@ bool Engine::snapshot(Snapshot& destination) const noexcept {
         d.nominalSourceFrame=number(data[at+10]);d.lastMoveEventNanos=data[at+11];d.lastMoveAppliedNanos=data[at+12];d.lastMoveSequence=data[at+13];d.heldZero=data[at+14]!=0;
         d.syncReference=data[at+15];d.syncBeats=static_cast<uint32_t>(data[at+16]);d.syncState=static_cast<uint32_t>(data[at+17]);d.syncPhaseErrorFrames=number(data[at+18]);d.demandSourceFrame=number(data[at+19]);d.syncBoundaryFrame=data[at+20];d.processingEpoch=data[at+21];d.effectiveBpm=number(data[at+22]);d.tempoGeneration=data[at+23];
     }
-    result.tempoApplied=data[snapshotWords-2];result.tempoTerminal=data[snapshotWords-1];
+    result.tempoApplied=data[stemAt-2];result.tempoTerminal=data[stemAt-1];
+    result.stem={data[stemAt],data[stemAt+1],data[stemAt+2],static_cast<StemResult>(data[stemAt+3])};
+    result.stem.windowSequence=data[stemAt+4];result.stem.windowApplied=data[stemAt+5];
+    result.stem.windowFirst=data[stemAt+6];result.stem.windowEnd=data[stemAt+7];result.stem.revoked=data[stemAt+8]!=0;
     destination = result;
     return true;
 }

@@ -2,6 +2,8 @@
 #include "worker_deck.hpp"
 #include "schedule_worker.hpp"
 #include "decoder_budget.hpp"
+#include "prepared_stem_worker.hpp"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -10,7 +12,9 @@
 #include <limits>
 #include <locale>
 #include <mutex>
+#include <optional>
 #include <sstream>
+#include <system_error>
 #include <utility>
 #include <thread>
 namespace soundq::nativeengine {
@@ -45,6 +49,28 @@ struct Host final : Callbacks {
     std::array<std::unique_ptr<WorkerDeck>, 4> workers;
     std::array<Intent, 4> intents;
     Snapshot last{};
+    // One control-owned copy. Engine only borrows the validated window and
+    // never refcounts, allocates or destroys its backing bytes on callback.
+    std::unique_ptr<const std::vector<float>> stemPcm;
+    uint64_t stemBinding = 0, stemPending = 0;
+    struct RollingStem {
+        using Job = PreparedStemWorker::Job;
+        PreparedStemWorker worker;
+        std::array<Job,2> current{}, submitted{};
+        std::optional<PreparedStemWorker::Reply> ready;
+        uint64_t pending = 0;
+        bool filling = false, retirePending = false;
+        int error = 0;
+        RollingStem(const PreparedStemKey& key,std::shared_ptr<const PcmReaderFactory> factory)
+            : worker(key,std::move(factory)) {}
+        void acknowledge(const StemReceipt& receipt) noexcept {
+            if (pending && receipt.windowSequence == pending) {
+                if (receipt.windowApplied == pending) current = submitted;
+                submitted = {}; pending = 0;
+            }
+        }
+    };
+    std::unique_ptr<RollingStem> rollingStem;
     std::unique_ptr<Schedule> candidate, schedule;
     std::vector<std::string> candidatePaths, schedulePaths;
     std::array<std::unique_ptr<ScheduleWorker>,4> scheduleWorkers;
@@ -83,7 +109,7 @@ struct Host final : Callbacks {
             for (uint64_t i = 0; i < uint64_t{frames} * 2; ++i) stereo[i] = 0;
             return;
         }
-#ifdef SOUNDQ_CALLBACK_TEST_SCHEDULE_DRIVER
+#if defined(SOUNDQ_CALLBACK_TEST_SCHEDULE_DRIVER) || defined(SOUNDQ_CALLBACK_TEST_STEM_DRIVER)
         if(!frames){engine->render(stereo,0);return;}
 #endif
         for(uint32_t at=0;at<frames;) {const auto count=std::min(256U,frames-at);engine->render(stereo+size_t{at}*2,count);at+=count;}
@@ -173,11 +199,13 @@ struct Host final : Callbacks {
         outputQuiesced = true;
         // stopClose is the callback-exit fence. Joins finish decoder destroy before
         // source/page storage can disappear. Never delete Engine before workers.
+        rollingStem.reset();
         for (auto& worker : workers) worker.reset();
         if(retainedPlatformDecoders.load(std::memory_order_acquire)!=0)return false;
         for (auto& worker : scheduleWorkers) worker.reset();
         schedule.reset(); candidate.reset();tempoGraph.reset();
         engine.reset();
+        stemPcm.reset();
         output.reset();
         return true;
     }
@@ -194,12 +222,146 @@ struct Host final : Callbacks {
         for (unsigned i = 0; i < 4; ++i) if (engine->snapshot(snap)) return true;
         return false;
     }
+    bool settleStem(const StemReceipt& observed) {
+        if (engine->completedStructuralSequence() < std::max(observed.sequence,observed.windowSequence)) return false;
+        if (rollingStem) {
+            rollingStem->acknowledge(observed);
+            if (observed.binding == stemBinding && observed.revoked) rollingStem->worker.stop();
+        }
+        if (stemPending && observed.sequence == stemPending) {
+            if (!observed.binding && rollingStem) {
+                rollingStem->worker.stop();
+                if (!rollingStem->worker.done()) return false;
+                rollingStem.reset();
+            }
+            stemPending = 0;
+            if (rollingStem) rollingStem->retirePending = false;
+            if (!observed.binding) { stemPcm.reset(); stemBinding = 0; }
+        }
+        return true;
+    }
+    bool readStem(StemReceipt& receipt) {
+        // Faulted output gates both the callback and maintenance. The receipt
+        // reader is also a serialized producer, but may take over consumption
+        // only via quiesce's concrete callback-exit fence.
+        if (stemPending && error.load(std::memory_order_acquire) != 0 &&
+            (!outputQuiesced || engine->completedStructuralSequence() < stemPending) && !quiesce()) return false;
+        Snapshot snap;
+        if (!capture(snap) || !settleStem(snap.stem)) return false;
+        receipt = snap.stem;
+        if (rollingStem) receipt.refillError = rollingStem->error;
+        return true;
+    }
+    bool stemOwner(const PreparedStemKey& key) const noexcept {
+        const auto& i = intents[0];
+        const auto& w = workers[0];
+        if (schedule || scheduleRetiring || error.load() || !w || i.unloading || i.gesture || i.speed != 1 ||
+            !key.identity || key.identity != i.identity || key.identity != w->identity() ||
+            key.generation != i.generation || key.generation != w->generation() ||
+            !key.sourceFrames || key.sourceFrames != w->sourceFrames() || key.sourceRate != w->sourceRate() || key.sourceRate != sampleRate) return false;
+        for (unsigned peer = 1; peer < 4; ++peer) if (intents[peer].identity) return false;
+        return true;
+    }
+    bool stemAdmission(const PreparedStemKey& key,Snapshot& snap) {
+        if (stemPending) { StemReceipt receipt; readStem(receipt); }
+        return !stemBinding && stemOwner(key) && capture(snap) && workers[0]->ready(snap) &&
+            snap.decks[0].identity == key.identity && snap.decks[0].generation == key.generation &&
+            !snap.decks[0].scratching && snap.decks[0].rate == 1;
+    }
+    uint64_t bindStem(const PreparedStemKey& key,uint64_t first,const std::vector<float>& pcm) {
+        const auto count = pcm.size() / 2;
+        Snapshot snap;
+        if (pcm.size() % 2 || !count || count > maxPcmPageFrames || first > key.sourceFrames ||
+            count > key.sourceFrames - first || !stemAdmission(key,snap)) return 0;
+        auto copy = std::make_unique<const std::vector<float>>(pcm);
+        PcmWindow window;
+        window.count = 1; window.pages[0] = {copy->data(),first,static_cast<uint32_t>(count)};
+        const auto seq = next();
+        if (!engine->bindPreparedStem(seq,key,window)) return 0;
+        stemPcm = std::move(copy);
+        stemBinding = stemPending = seq;
+        return seq;
+    }
+    uint64_t bindRollingStem(const PreparedStemKey& key,std::shared_ptr<const PcmReaderFactory> factory) {
+        Snapshot snap;
+        if (!factory || !*factory || !stemAdmission(key,snap) || key.sourceRate != 48000 ||
+            snap.decks[0].sourceFrame >= key.sourceFrames) return 0;
+        auto rolling = std::make_unique<RollingStem>(key,std::move(factory));
+        const auto seq = next();
+        if (!engine->bindRollingPreparedStem(seq,key,snap.decks[0].traversalRevision)) return 0;
+        rollingStem = std::move(rolling);
+        stemBinding = stemPending = seq;
+        return seq;
+    }
+    uint64_t controlStem(uint64_t binding,double gain,bool retire) {
+        if (stemPending) { StemReceipt receipt; readStem(receipt); }
+        if (stemPending || !binding || binding != stemBinding || (!retire && error.load())) return 0;
+        const auto seq = next();
+        if (!engine->controlPreparedStem(seq,binding,gain,retire)) return 0;
+        stemPending = seq;
+        if (rollingStem) rollingStem->retirePending = retire;
+        return seq;
+    }
+    void pumpRollingStem(const Snapshot& snap) {
+        auto& s = *rollingStem;
+        const auto& d = snap.decks[0];
+        const auto& key = s.worker.key;
+        if (s.retirePending || s.pending || s.error || snap.stem.revoked || snap.stem.binding != stemBinding ||
+            !stemOwner(key) || d.identity != key.identity || d.generation != key.generation || d.rate != 1 ||
+            d.scratching || d.sourceFrame < 0 || d.sourceFrame >= key.sourceFrames ||
+            d.sourceFrame != std::floor(d.sourceFrame)) return;
+        constexpr auto pageFrames = PreparedStemWorker::pageFrames;
+        const auto first = static_cast<uint64_t>(d.sourceFrame) / pageFrames * pageFrames;
+        const auto nextFirst = first + pageFrames;
+        const auto lookup = [&](uint64_t f) {
+            for (const auto& p : s.current)
+                if (p.count && p.traversal == d.traversalRevision && p.first == f) return p;
+            return RollingStem::Job{};
+        };
+        auto head = lookup(first), ahead = lookup(nextFirst);
+        if (s.filling) {
+            s.ready = s.worker.take();
+            if (!s.ready) return;
+            s.filling = false;
+        }
+        if (s.ready) {
+            const auto& r = *s.ready;
+            if (r.job.traversal == d.traversalRevision && (r.job.first == first || (head.count && r.job.first == nextFirst))) {
+                if (r.error) { s.error = r.error; s.worker.stop(); s.ready.reset(); return; }
+                if (r.job.first == first) head = r.job;
+                else ahead = r.job;
+                PcmWindow window;
+                window.pages[window.count++] = s.worker.page(head);
+                if (ahead.count) window.pages[window.count++] = s.worker.page(ahead);
+                const auto seq = next();
+                if (!engine->publishPreparedStemWindow(seq,stemBinding,d.traversalRevision,window)) return;
+                s.submitted = {head,ahead}; s.pending = seq; s.ready.reset();
+                return;
+            }
+            // Changed traversal or cursor already passed this decode. Its
+            // reply proves write exit, but does not grant publication rights.
+            s.ready.reset();
+        }
+        if (head.count && (ahead.count || nextFirst >= key.sourceFrames)) return;
+        const auto wanted = head.count ? nextFirst : first;
+        for (unsigned slot = 0; slot < PreparedStemWorker::slots; ++slot) {
+            const auto borrowed = [&](const auto& p){ return p.count && p.slot == slot; };
+            if (std::any_of(s.current.begin(),s.current.end(),borrowed)) continue;
+            s.worker.request({d.traversalRevision,wanted,
+                static_cast<uint32_t>(std::min<uint64_t>(pageFrames,key.sourceFrames-wanted)),slot});
+            s.filling = true;
+            return;
+        }
+    }
     void pump() {
         // Route failure stops callback consumption. Drain only after the concrete
         // close fence so Unload/retirement receipts remain reachable without Play.
         if (error.load(std::memory_order_acquire) != 0 && !quiesce()) return;
         Snapshot snap = last;
-        if (capture(snap)) last = snap;
+        if (capture(snap)) {
+            last = snap;
+            if ((stemPending || rollingStem) && settleStem(snap.stem) && rollingStem) pumpRollingStem(snap);
+        }
         if(scheduleRetiring) {
             if(engine->completedStructuralSequence()>=retireReceipt) {
                 for(auto& w:scheduleWorkers)w.reset();
@@ -747,6 +909,38 @@ bool Registry::restoreTempo(uint64_t h,uint64_t reservation,uint64_t tag) {
 bool Registry::releaseTempo(uint64_t h,uint64_t reservation) {
     std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->valid(h)&&impl_->host->releaseTempo(reservation);
 }
+uint64_t Registry::bindPreparedStem(uint64_t h,const PreparedStemKey& key,uint64_t first,const std::vector<float>& stereo) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    try { return impl_->valid(h) ? impl_->host->bindStem(key,first,stereo) : 0; }
+    catch (const std::bad_alloc&) { return 0; }
+}
+uint64_t Registry::bindRollingPreparedStem(uint64_t h,const PreparedStemKey& key,std::shared_ptr<const PcmReaderFactory> factory) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    try { return impl_->valid(h) ? impl_->host->bindRollingStem(key,std::move(factory)) : 0; }
+    catch (const std::bad_alloc&) { return 0; }
+    catch (const std::system_error&) { return 0; }
+}
+uint64_t Registry::setPreparedStemGain(uint64_t h,uint64_t binding,double gain) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->valid(h) ? impl_->host->controlStem(binding,gain,false) : 0;
+}
+uint64_t Registry::retirePreparedStem(uint64_t h,uint64_t binding) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->valid(h) ? impl_->host->controlStem(binding,1,true) : 0;
+}
+bool Registry::readPreparedStem(uint64_t h,StemReceipt& receipt) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->valid(h) && impl_->host->readStem(receipt);
+}
+#ifdef SOUNDQ_CALLBACK_TEST_STEM_DRIVER
+uint64_t Registry::testStemRefillPending(uint64_t h) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (!impl_->valid(h)) return 0;
+    auto& host = *impl_->host;
+    host.pump();
+    return host.rollingStem ? host.rollingStem->pending : 0;
+}
+#endif
 bool Registry::liveTempo(uint64_t h,uint64_t revision,uint64_t instance,uint64_t tag,double sourceBpm,double bpm,uint64_t glide,uint64_t reservation) {
     std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->valid(h)&&impl_->host->liveTempo(revision,instance,tag,sourceBpm,bpm,glide,reservation);
 }
