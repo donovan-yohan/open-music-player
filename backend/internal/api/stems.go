@@ -57,6 +57,8 @@ type StemsHandlers struct {
 	libraryRepo stemsLibraryRepository
 }
 
+// NewStemsHandlers accepts an absent queue for read-only service. A non-nil
+// queue must have a consumer before it is wired here.
 func NewStemsHandlers(
 	stemsRepo stemsRepository,
 	queue stemsQueue,
@@ -130,7 +132,7 @@ type StemsStatusResponse struct {
 // calls converge on the single durable track_stems row and the single
 // deterministic queue job.
 func (h *StemsHandlers) RequestStems(w http.ResponseWriter, r *http.Request) {
-	userCtx, trackID, ok := h.authorize(w, r)
+	userCtx, trackID, ok := h.authorize(w, r, true)
 	if !ok {
 		return
 	}
@@ -162,13 +164,11 @@ func (h *StemsHandlers) RequestStems(w http.ResponseWriter, r *http.Request) {
 
 	// The recorded source hash arms the ready-row comparison IN THIS TRIGGER: a
 	// completed separation whose source bytes have since been replaced is
-	// invalidated and re-requested here rather than reported ready. GetStems
-	// below does not repeat the comparison, so a client that only polls status
-	// still sees the old row until it triggers again. An empty hash (a track
-	// downloaded before hashes were recorded, or a read that failed) disables
-	// only that comparison — the worker fills the hash in from the object it
-	// actually separated, so the next trigger is armed. A hash lookup must never
-	// be able to block a separation the user asked for.
+	// invalidated and re-requested here rather than reported ready. A status-only
+	// GET still sees the old row; a GET with member URLs checks the current hash
+	// before signing. An empty hash (not yet recorded or unavailable) disables
+	// only the trigger's comparison. The worker fills the hash in from the object
+	// it separated. A hash lookup must not block a new separation request.
 	sourceFileHash, hashErr := h.trackRepo.GetSourceFileHash(r.Context(), trackID)
 	if hashErr != nil {
 		// Degrade, but not silently: a lookup that keeps failing permanently
@@ -238,7 +238,7 @@ func (h *StemsHandlers) RequestStems(w http.ResponseWriter, r *http.Request) {
 // GetStems returns the durable separation state for a track's channel set.
 func (h *StemsHandlers) GetStems(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	_, trackID, ok := h.authorize(w, r)
+	_, trackID, ok := h.authorize(w, r, false)
 	if !ok {
 		return
 	}
@@ -304,8 +304,10 @@ func (h *StemsHandlers) GetStems(w http.ResponseWriter, r *http.Request) {
 			response.MemberDownloads = append(response.MemberDownloads, StemMemberDownload{Channel: member.Channel, Key: member.Key, SHA256: member.SHA256, Bytes: member.Bytes, URL: url, ExpiresAt: expires})
 		}
 	}
-	if position, posErr := h.queue.QueuePosition(r.Context(), stems.GenerationJobID(trackID, identity.ChannelSet, identity.StemModelVersion, row.Generation)); posErr == nil {
-		response.QueuePosition = position
+	if h.queue != nil {
+		if position, posErr := h.queue.QueuePosition(r.Context(), stems.GenerationJobID(trackID, identity.ChannelSet, identity.StemModelVersion, row.Generation)); posErr == nil {
+			response.QueuePosition = position
+		}
 	}
 	writeLibraryJSON(w, http.StatusOK, response)
 }
@@ -313,14 +315,20 @@ func (h *StemsHandlers) GetStems(w http.ResponseWriter, r *http.Request) {
 // authorize resolves the caller and enforces library ownership, mirroring the
 // analysis/playback handlers: a track outside the caller's library is reported
 // as missing rather than forbidden.
-func (h *StemsHandlers) authorize(w http.ResponseWriter, r *http.Request) (*auth.UserContext, int64, bool) {
+func (h *StemsHandlers) authorize(w http.ResponseWriter, r *http.Request, requireQueue bool) (*auth.UserContext, int64, bool) {
 	userCtx := auth.GetUserFromContext(r.Context())
 	if userCtx == nil {
 		writeLibraryError(w, http.StatusUnauthorized, "UNAUTHORIZED", "user not authenticated")
 		return nil, 0, false
 	}
-	if h == nil || h.stemsRepo == nil || h.queue == nil || h.trackRepo == nil || h.libraryRepo == nil {
+	if h == nil || h.stemsRepo == nil || h.trackRepo == nil || h.libraryRepo == nil {
 		writeLibraryError(w, http.StatusServiceUnavailable, "SERVICE_DISABLED", "stem separation is unavailable")
+		return nil, 0, false
+	}
+	if requireQueue && h.queue == nil {
+		// Preserve the unavailable route's refusal, before reading membership or
+		// creating durable work that has no consumer.
+		writeLibraryError(w, http.StatusServiceUnavailable, "SERVICE_DISABLED", "Stem separation is unavailable")
 		return nil, 0, false
 	}
 	trackID, err := strconv.ParseInt(r.PathValue("track_id"), 10, 64)

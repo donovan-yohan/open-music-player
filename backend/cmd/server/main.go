@@ -803,10 +803,9 @@ func runServer() int {
 	}
 	maintenanceHandlers := api.NewMaintenanceHandlers(trackRepo, jobProcessor, maintenanceConfig)
 
-	// Optional on-demand stem separation. Every failure path here degrades to the
-	// router's unavailable handler: a missing worker, a malformed base URL, or an
-	// unreachable Redis must never block server startup, because separation is an
-	// opt-in enhancement and the rest of the library keeps working without it.
+	// Optional on-demand stem separation. Only a worker pool that starts may
+	// admit new requests. When stems are enabled, worker or stems queue startup
+	// failures still leave existing publications readable.
 	var stemsHandlers *api.StemsHandlers
 	var stemsWorkers *stems.WorkerPool
 	stemsRepo := db.NewTrackStemsRepository(database)
@@ -814,7 +813,7 @@ func runServer() int {
 	case !cfg.StemsEnabled:
 		log.Info(ctx, "Stem separation disabled by configuration", nil)
 	case !cfg.RedisEnabled:
-		log.Info(ctx, "Stem separation disabled: the stems queue class requires Redis", nil)
+		log.Info(ctx, "Stem separation trigger unavailable: the stems queue requires Redis", nil)
 	default:
 		// The service client is constructed at startup so a malformed
 		// STEMS_BASE_URL surfaces here rather than on a user's first trigger. It
@@ -884,6 +883,9 @@ func runServer() int {
 				"queue_max_depth": cfg.StemsQueueMaxDepth,
 			})
 		}
+	}
+	if cfg.StemsEnabled && stemsHandlers == nil {
+		stemsHandlers = api.NewStemsHandlers(stemsRepo, nil, trackRepo, libraryRepo, storageClient)
 	}
 
 	// Initialize Redis-backed download and playback queue services only when enabled.
