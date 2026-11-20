@@ -1,0 +1,233 @@
+package musicbrainz
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+)
+
+const privateDebugTitle = "PrivateTitleCanaryZX"
+const privateDebugArtist = "PrivateArtistCanaryZX"
+const ordinaryDebugTerm = "OrdinaryDebugCanaryZX"
+
+func TestLocalEnrichmentTLSProtocolAndDiagnostics(t *testing.T) {
+	if os.Getenv("ENRICH_TEST_TLS_DIAGNOSTICS") == "1" {
+		testLocalEnrichmentTLSProtocolChild(t)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLocalEnrichmentTLSProtocolAndDiagnostics$", "-test.v")
+	cmd.Env = append(os.Environ(), "ENRICH_TEST_TLS_DIAGNOSTICS=1", "GODEBUG=http2debug=2")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("TLS child did not complete: %v\n%s", err, output)
+	}
+	logs := string(output)
+	ordinaryDiagnostic := false
+	for _, line := range strings.Split(logs, "\n") {
+		isOrdinaryDiagnostic := strings.Contains(line, "http2:") && strings.Contains(line, ordinaryDebugTerm)
+		ordinaryDiagnostic = ordinaryDiagnostic || isOrdinaryDiagnostic
+		if strings.Contains(line, "wire class=") || strings.Contains(line, "private_connection_reused=") || isOrdinaryDiagnostic {
+			t.Log(line)
+		}
+	}
+	if strings.Count(logs, "wire class=ordinary protocol=HTTP/2.0 alpn=h2") != 2 || !ordinaryDiagnostic {
+		t.Fatalf("ordinary HTTP/2 diagnostic control not observed:\n%s", logs)
+	}
+	if strings.Contains(logs, privateDebugTitle) || strings.Contains(logs, privateDebugArtist) {
+		t.Errorf("private title or artist appeared in HTTP/2 diagnostics:\n%s", logs)
+	}
+	if strings.Count(logs, "wire class=private protocol=HTTP/1.1 alpn=http/1.1") != 2 || !strings.Contains(logs, "private_connection_reused=true") {
+		t.Errorf("private TLS must negotiate and reuse HTTP/1.1:\n%s", logs)
+	}
+	if !t.Failed() {
+		t.Logf("TLS child combined stdout/stderr (synthetic only):\n%s", output)
+	}
+}
+
+func testLocalEnrichmentTLSProtocolChild(t *testing.T) {
+	type wireEvent struct{ class, protocol, alpn, connection string }
+	events := make(chan wireEvent, 4)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query().Get("query")
+		class := "ordinary"
+		if query == `recording:"`+privateDebugTitle+`" AND artist:"`+privateDebugArtist+`"` {
+			class = "private"
+		} else if query != ordinaryDebugTerm {
+			t.Errorf("unexpected fixture path/query: %s", r.URL)
+		}
+		if r.URL.Path != "/ws/2/recording" || r.Host != "musicbrainz.org" {
+			t.Errorf("unexpected provider target: %s %s", r.Host, r.URL.Path)
+		}
+		events <- wireEvent{class, r.Proto, r.TLS.NegotiatedProtocol, r.RemoteAddr}
+		_, _ = io.WriteString(w, `{"count":0,"recordings":[]}`)
+	}))
+	server.EnableHTTP2 = true
+	server.TLS = &tls.Config{NextProtos: []string{"h2", "http/1.1"}}
+	server.StartTLS()
+	defer server.Close()
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := server.Client().Transport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.TLSClientConfig.ServerName = u.Hostname()
+	transport.TLSClientConfig.NextProtos = []string{"h2", "http/1.1"}
+	transport.ForceAttemptHTTP2 = true
+	transport.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
+		if addr != "musicbrainz.org:443" {
+			return nil, fmt.Errorf("unexpected dial target: %s", addr)
+		}
+		return (&net.Dialer{}).DialContext(ctx, "tcp", u.Host)
+	}
+	defer transport.CloseIdleConnections()
+	// A fresh child substitutes only the concrete default transport's loopback
+	// dial and trust settings; the client's private/default branch is unmodified.
+	http.DefaultTransport = transport
+	client := NewClient(nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	if _, err := client.SearchTracks(ctx, ordinaryDebugTerm, 10, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := NewClient(nil).SearchLocalEnrichment(ctx, privateDebugTitle, privateDebugArtist); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := client.SearchTracks(ctx, ordinaryDebugTerm, 10, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	var private []string
+	for i := 0; i < 4; i++ {
+		select {
+		case event := <-events:
+			t.Logf("wire class=%s protocol=%s alpn=%s", event.class, event.protocol, event.alpn)
+			if event.class == "private" {
+				private = append(private, event.connection)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	t.Logf("private_connection_reused=%t", len(private) == 2 && private[0] == private[1])
+}
+
+type opaqueEnrichmentTestTransport func(*http.Request) (*http.Response, error)
+
+func (transport opaqueEnrichmentTestTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return transport(r)
+}
+
+func TestLocalEnrichmentRefusesUnconfinedConfiguredTransport(t *testing.T) {
+	called := false
+	opaque := opaqueEnrichmentTestTransport(func(*http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"count":0,"recordings":[]}`))}, nil
+	})
+	client := NewClient(nil)
+	client.httpClient.Transport = opaque
+	if _, err := client.SearchLocalEnrichment(context.Background(), "Paper", ""); err != ErrLocalEnrichmentUnavailable || called {
+		t.Errorf("unknown transport received private input: dispatched=%t err=%v", called, err)
+	}
+	called = false
+	if _, err := client.SearchTracks(context.Background(), "Paper", 10, 0, false); err != nil || !called {
+		t.Errorf("ordinary configured transport was not used: dispatched=%t err=%v", called, err)
+	}
+	called = false
+	client = NewClient(nil)
+	client.httpClient.Transport = &http.Transport{DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
+		called = true
+		return nil, fmt.Errorf("custom TLS dial")
+	}}
+	if _, err := client.SearchLocalEnrichment(context.Background(), "Paper", ""); err != ErrLocalEnrichmentUnavailable || called {
+		t.Errorf("unconfined TLS dial was used: dialed=%t err=%v", called, err)
+	}
+}
+
+func TestLocalEnrichmentTransportDoesNotInheritProxyConnectCustomization(t *testing.T) {
+	var routedURL string
+	ordinary := &http.Transport{
+		Proxy: func(req *http.Request) (*url.URL, error) {
+			routedURL = req.URL.String()
+			return nil, nil
+		},
+		ProxyConnectHeader: http.Header{"X-Fixture-Only": {"ordinary-connect"}},
+		GetProxyConnectHeader: func(context.Context, *url.URL, string) (http.Header, error) {
+			return http.Header{"X-Fixture-Only": {"ordinary-callback"}}, nil
+		},
+		TLSClientConfig:     &tls.Config{NextProtos: []string{"h2"}, MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout: 4 * time.Second,
+		IdleConnTimeout:     15 * time.Second,
+		MaxIdleConnsPerHost: 4,
+	}
+	private := localEnrichmentHTTP1Transport(ordinary)
+	if private == nil || private.ProxyConnectHeader != nil || private.GetProxyConnectHeader != nil {
+		t.Fatal("private transport inherited ordinary proxy CONNECT customization")
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://musicbrainz.org/ws/2/recording?query=fixture", nil)
+	if _, err := private.Proxy(req); err != nil || routedURL != "https://musicbrainz.org" {
+		t.Fatalf("expected origin-only proxy configuration, got %q, %v", routedURL, err)
+	}
+	if private.TLSClientConfig == ordinary.TLSClientConfig || private.TLSClientConfig.MinVersion != tls.VersionTLS12 ||
+		private.TLSHandshakeTimeout != ordinary.TLSHandshakeTimeout || private.IdleConnTimeout != ordinary.IdleConnTimeout ||
+		private.MaxIdleConnsPerHost != ordinary.MaxIdleConnsPerHost {
+		t.Fatal("private transport lost independent connection policy")
+	}
+	if ordinary.ProxyConnectHeader.Get("X-Fixture-Only") != "ordinary-connect" || ordinary.GetProxyConnectHeader == nil ||
+		len(ordinary.TLSClientConfig.NextProtos) != 1 || ordinary.TLSClientConfig.NextProtos[0] != "h2" {
+		t.Fatal("constructing the private pool changed the ordinary transport")
+	}
+}
+
+func TestLocalEnrichmentTransportConcurrentColdStart(t *testing.T) {
+	for range 32 {
+		refused := fmt.Errorf("fixture dial refused")
+		ordinary := &http.Transport{
+			ForceAttemptHTTP2: true,
+			DialContext: func(context.Context, string, string) (net.Conn, error) {
+				return nil, refused
+			},
+		}
+		start := make(chan struct{})
+		ordinaryDone := make(chan error, 1)
+		privateDone := make(chan *http.Transport, 1)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://fixture.invalid/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			<-start
+			resp, err := ordinary.RoundTrip(req)
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			ordinaryDone <- err
+		}()
+		go func() {
+			<-start
+			privateDone <- localEnrichmentHTTP1Transport(ordinary)
+		}()
+		close(start)
+		err, private := <-ordinaryDone, <-privateDone
+		ordinary.CloseIdleConnections()
+		if err == nil || !strings.Contains(err.Error(), refused.Error()) {
+			t.Fatalf("ordinary cold request did not reach the fixture dial: %v", err)
+		}
+		if private == nil || !private.Protocols.HTTP1() || private.Protocols.HTTP2() || private.Protocols.UnencryptedHTTP2() {
+			t.Fatal("private pool did not preserve its explicit HTTP/1 policy")
+		}
+	}
+}

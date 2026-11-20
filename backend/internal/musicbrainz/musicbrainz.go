@@ -32,16 +32,27 @@ const (
 var ErrNotFound = fmt.Errorf("not found")
 
 type Client struct {
-	httpClient *http.Client
-	cache      *cache.Cache
-	requestsMu sync.Mutex
-	requests   map[string]*inflightRequest
+	httpClient         *http.Client
+	cache              *cache.Cache
+	requestsMu         sync.Mutex
+	requests           map[string]*inflightRequest
+	localTransportOnce sync.Once
+	localTransport     http.RoundTripper
 }
 
 func NewClient(cache *cache.Cache) *Client {
+	return NewClientWithTransport(cache, nil)
+}
+
+// NewClientWithTransport configures the ordinary metadata transport. Use nil
+// for the default client. Private Enrich accepts only transports that can be
+// confined to HTTP/1 or that explicitly own the private RoundTrip contract.
+// Configure the transport before first use; do not mutate it concurrently.
+func NewClientWithTransport(cache *cache.Cache, transport http.RoundTripper) *Client {
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: transport,
 		},
 		cache: cache,
 	}

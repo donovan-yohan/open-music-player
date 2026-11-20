@@ -7,6 +7,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/health"
@@ -86,6 +88,7 @@ type RouterConfig struct {
 	SearchHandlers          *search.Handlers
 	MBClient                *musicbrainz.Client
 	MBHandlers              *musicbrainz.Handlers
+	LocalEnrichmentEnabled  bool
 	WSHandler               *websocket.Handler
 	MatcherHandlers         *matcher.Handler
 	LibraryHandlers         *LibraryHandlers
@@ -193,6 +196,10 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		corsAllowedOrigins:      corsAllowedOrigins,
 	}
 	r.setupRoutes()
+	if cfg.LocalEnrichmentEnabled && cfg.AuthService != nil {
+		h := &localEnrichmentHandler{client: cfg.MBClient, active: make(map[uuid.UUID]struct{})}
+		r.mux.HandleFunc("POST "+localEnrichmentPath, h.endpoint(r.withAuth))
+	}
 	telemetry := cfg.Telemetry
 	if telemetry == nil {
 		telemetry, _ = observability.New(context.Background(), observability.DefaultConfig())

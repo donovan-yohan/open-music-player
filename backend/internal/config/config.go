@@ -67,6 +67,9 @@ type Config struct {
 	MetadataLLMModel   string
 	MetadataLLMTimeout time.Duration
 
+	// Explicit, metadata-only local-track lookup. Held off by default.
+	LocalEnrichmentEnabled bool
+
 	// Optional Ollama source-quality judge. Disabled by default; discovery keeps
 	// deterministic ranking when it is disabled or returns an error. APIKey is a
 	// secret and must never be logged or returned to callers.
@@ -248,6 +251,8 @@ func Load() *Config {
 		MetadataLLMBaseURL: metadataLLMBaseURL,
 		MetadataLLMModel:   metadataLLMModel,
 		MetadataLLMTimeout: parseDurationMsEnv("METADATA_LLM_TIMEOUT_MS", 5*time.Second),
+
+		LocalEnrichmentEnabled: parseBoolEnv("LOCAL_ENRICHMENT_ENABLED", false),
 
 		// Source-quality LLM configuration
 		SourceQualityLLMEnabled: parseBoolEnv("SOURCE_QUALITY_LLM_ENABLED", false),
