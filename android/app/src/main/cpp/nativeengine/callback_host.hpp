@@ -7,6 +7,7 @@
 #ifdef SOUNDQ_CALLBACK_TEST_SCHEDULE_DRIVER
 #include "soundq_transport.hpp"
 #endif
+namespace soundq::transport { struct PreparedStemKey; struct StemReceipt; }
 namespace soundq::nativeengine {
 #ifdef SOUNDQ_CALLBACK_TEST_SCHEDULE_DRIVER
 struct TestScheduleSnapshot {
@@ -76,6 +77,23 @@ public:
     uint64_t reserveTempo(uint64_t handle,uint64_t revision,uint64_t instance,double sourceBpm,double originBpm);
     bool restoreTempo(uint64_t handle,uint64_t reservation,uint64_t tag);
     bool releaseTempo(uint64_t handle,uint64_t reservation);
+    // Internal one-deck tracer; not a JNI or product API. Caller passes one
+    // authorized, aligned prepared stereo window; Host copies it off callback.
+    // Nonzero returns are FIFO sequences, not success. Gain 1 ramps to dry;
+    // retire after that transition, before supplying another prepared window.
+    uint64_t bindPreparedStem(uint64_t handle,const transport::PreparedStemKey& key,
+                              uint64_t firstFrame,const std::vector<float>& stereo);
+    // Factory captures an authorized immutable member with origin zero and
+    // synchronously drained reads/destruction. Invoked only on the worker.
+    // Bound is not coverage; window range/ACK and refusal are separate.
+    uint64_t bindRollingPreparedStem(uint64_t handle,const transport::PreparedStemKey& key,
+                                     std::shared_ptr<const PcmReaderFactory> factory);
+    uint64_t setPreparedStemGain(uint64_t handle,uint64_t binding,double gain);
+    uint64_t retirePreparedStem(uint64_t handle,uint64_t binding);
+    bool readPreparedStem(uint64_t handle,transport::StemReceipt& receipt);
+#ifdef SOUNDQ_CALLBACK_TEST_STEM_DRIVER
+    uint64_t testStemRefillPending(uint64_t handle);
+#endif
     std::string state(uint64_t handle);
 #ifdef SOUNDQ_CALLBACK_TEST_SCHEDULE_DRIVER
     // Host-only offline fixture. Pumps real maintenance and observes outstanding

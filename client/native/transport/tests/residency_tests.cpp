@@ -234,7 +234,15 @@ void paged_validation_and_capacity() {
     check(!engine.assignPaged(4, 1, 1, source, {}), "invalid paged deck");
     check(!engine.assignPaged(0, 0, 1, source, {}), "zero sequence");
     check(!engine.assignPaged(0, 1, 0, source, {}), "zero generation");
-    for (const PagedSource invalid : {PagedSource{0, 48000, 19}, PagedSource{1, 0, 19},
+    // Ordinary streaming can start with an unsealed end; zero is not EOF.
+    Engine unsealed(48000);
+    check(unsealed.assignPaged(0, 1, 1, {0, 48000, 19}, {}), "unknown ordinary extent is admitted");
+    check(unsealed.submit(command(Operation::Play, 2)), "play unsealed empty window");
+    unsealed.render(nullptr, 1);
+    const auto waiting = snapshot(unsealed).decks[0];
+    check(waiting.playing && waiting.missingPcmFrames == 1 && waiting.eofCount == 0,
+          "unknown extent with no taps starves, not EOF");
+    for (const PagedSource invalid : {PagedSource{0, 0, 19}, PagedSource{0, 48000, 0}, PagedSource{1, 0, 19},
                                       PagedSource{1, 48000, 0}, PagedSource{UINT64_MAX, 48000, 19}})
         check(!engine.assignPaged(0, 1, 1, invalid, {}), "invalid logical extent metadata");
     PcmWindow invalid;
