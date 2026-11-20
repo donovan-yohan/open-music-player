@@ -23,7 +23,7 @@ type trackQueryRower interface {
 // to be considered a fuzzy match. It is deliberately loose enough that a single-character
 // typo of a stored title/artist still clears it, while filtering out unrelated rows. Exact
 // matches score ~1.0 and therefore always rank first. Only used on the fuzzy fallback path
-// (FTS returned nothing AND pg_trgm is installed); the FTS path is unaffected.
+// (the FTS page is empty and pg_trgm is installed); the FTS path is unaffected.
 const trigramSearchThreshold = 0.3
 
 type Track struct {
@@ -90,7 +90,8 @@ func NewTrackRepository(db *DB) *TrackRepository {
 	return &TrackRepository{db: db}
 }
 
-// SearchRecordings searches tracks by title with optional artist filter using full-text search
+// SearchRecordings searches the shared catalog by title, artist, and album.
+// Private tracks, including the caller's own, belong in Library search instead.
 func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, limit, offset int) ([]Track, int, error) {
 	if limit <= 0 {
 		limit = 20
@@ -117,7 +118,8 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 				   ts_rank(to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(artist, '') || ' ' || COALESCE(album, '')), to_tsquery('english', $1)) as rank,
 				   COUNT(*) OVER() as total_count
 			FROM tracks
-			WHERE to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(artist, '') || ' ' || COALESCE(album, '')) @@ to_tsquery('english', $1)
+			WHERE private_owner_id IS NULL
+				AND to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(artist, '') || ' ' || COALESCE(album, '')) @@ to_tsquery('english', $1)
 		)
 		SELECT sr.id, sr.identity_hash, sr.title, sr.artist, sr.album, sr.duration_ms, sr.version,
 			   sr.mb_recording_id, sr.mb_release_id, sr.mb_artist_id, sr.mb_verified,
@@ -131,7 +133,7 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 			   sr.total_count
 		FROM search_results sr
 		LEFT JOIN track_analysis ta ON ta.track_id = sr.id
-		ORDER BY sr.rank DESC, sr.title ASC
+		ORDER BY sr.rank DESC, sr.title ASC, sr.id ASC
 		LIMIT $2 OFFSET $3
 	`
 
@@ -169,7 +171,7 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 		return nil, 0, err
 	}
 
-	// Fuzzy fallback: when exact prefix FTS matched nothing and pg_trgm is available,
+	// Fuzzy fallback: when the prefix FTS page is empty and pg_trgm is available,
 	// retry with a trigram similarity() match so a typo still surfaces the track. When
 	// the extension is absent we return the (empty) FTS result unchanged.
 	if total == 0 && r.db.TrigramEnabled {
@@ -204,11 +206,12 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 				   ) as rank,
 				   COUNT(*) OVER() as total_count
 			FROM tracks
-			WHERE GREATEST(
-					  similarity(COALESCE(title, ''), $1),
-					  similarity(COALESCE(artist, ''), $1),
-					  similarity(COALESCE(album, ''), $1)
-				  ) >= $4
+			WHERE private_owner_id IS NULL
+				AND GREATEST(
+					similarity(COALESCE(title, ''), $1),
+					similarity(COALESCE(artist, ''), $1),
+					similarity(COALESCE(album, ''), $1)
+				) >= $4
 		)
 		SELECT sr.id, sr.identity_hash, sr.title, sr.artist, sr.album, sr.duration_ms, sr.version,
 			   sr.mb_recording_id, sr.mb_release_id, sr.mb_artist_id, sr.mb_verified,
@@ -222,7 +225,7 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 			   sr.total_count
 		FROM search_results sr
 		LEFT JOIN track_analysis ta ON ta.track_id = sr.id
-		ORDER BY sr.rank DESC, sr.title ASC
+		ORDER BY sr.rank DESC, sr.title ASC, sr.id ASC
 		LIMIT $2 OFFSET $3
 	`
 
@@ -263,7 +266,7 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 	return tracks, total, nil
 }
 
-// SearchArtists searches distinct artists by name using full-text search
+// SearchArtists searches artists by name, grouping and counting shared tracks only.
 func (r *TrackRepository) SearchArtists(ctx context.Context, query string, limit, offset int) ([]Artist, int, error) {
 	if limit <= 0 {
 		limit = 20
@@ -285,13 +288,14 @@ func (r *TrackRepository) SearchArtists(ctx context.Context, query string, limit
 				   ts_rank(to_tsvector('english', artist), to_tsquery('english', $1)) as rank,
 				   COUNT(*) OVER() as total_groups
 			FROM tracks
-			WHERE artist IS NOT NULL
+			WHERE private_owner_id IS NULL
+				AND artist IS NOT NULL
 				AND to_tsvector('english', artist) @@ to_tsquery('english', $1)
 			GROUP BY artist, mb_artist_id
 		)
 		SELECT artist, mb_artist_id, track_count, total_groups
 		FROM artist_results
-		ORDER BY rank DESC, track_count DESC, artist ASC
+		ORDER BY rank DESC, track_count DESC, artist ASC, mb_artist_id ASC
 		LIMIT $2 OFFSET $3
 	`
 
@@ -338,13 +342,14 @@ func (r *TrackRepository) searchArtistsTrigram(ctx context.Context, query string
 				   MAX(similarity(artist, $1)) as rank,
 				   COUNT(*) OVER() as total_groups
 			FROM tracks
-			WHERE artist IS NOT NULL
+			WHERE private_owner_id IS NULL
+				AND artist IS NOT NULL
 				AND similarity(artist, $1) >= $4
 			GROUP BY artist, mb_artist_id
 		)
 		SELECT artist, mb_artist_id, track_count, total_groups
 		FROM artist_results
-		ORDER BY rank DESC, track_count DESC, artist ASC
+		ORDER BY rank DESC, track_count DESC, artist ASC, mb_artist_id ASC
 		LIMIT $2 OFFSET $3
 	`
 
@@ -371,7 +376,7 @@ func (r *TrackRepository) searchArtistsTrigram(ctx context.Context, query string
 	return artists, total, nil
 }
 
-// SearchReleases searches distinct albums/releases by name using full-text search
+// SearchReleases searches albums/releases by name, grouping and counting shared tracks only.
 func (r *TrackRepository) SearchReleases(ctx context.Context, query string, limit, offset int) ([]Release, int, error) {
 	if limit <= 0 {
 		limit = 20
@@ -393,13 +398,14 @@ func (r *TrackRepository) SearchReleases(ctx context.Context, query string, limi
 				   ts_rank(to_tsvector('english', album), to_tsquery('english', $1)) as rank,
 				   COUNT(*) OVER() as total_groups
 			FROM tracks
-			WHERE album IS NOT NULL
+			WHERE private_owner_id IS NULL
+				AND album IS NOT NULL
 				AND to_tsvector('english', album) @@ to_tsquery('english', $1)
 			GROUP BY album, artist, mb_release_id
 		)
 		SELECT id, album, artist, mb_release_id, cover_art_url, track_count, total_groups
 		FROM release_results
-		ORDER BY rank DESC, track_count DESC, album ASC
+		ORDER BY rank DESC, track_count DESC, album ASC, id ASC
 		LIMIT $2 OFFSET $3
 	`
 
@@ -450,13 +456,14 @@ func (r *TrackRepository) searchReleasesTrigram(ctx context.Context, query strin
 				   MAX(similarity(album, $1)) as rank,
 				   COUNT(*) OVER() as total_groups
 			FROM tracks
-			WHERE album IS NOT NULL
+			WHERE private_owner_id IS NULL
+				AND album IS NOT NULL
 				AND similarity(album, $1) >= $4
 			GROUP BY album, artist, mb_release_id
 		)
 		SELECT id, album, artist, mb_release_id, cover_art_url, track_count, total_groups
 		FROM release_results
-		ORDER BY rank DESC, track_count DESC, album ASC
+		ORDER BY rank DESC, track_count DESC, album ASC, id ASC
 		LIMIT $2 OFFSET $3
 	`
 
