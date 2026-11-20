@@ -81,6 +81,10 @@ class DiscoveryPreviewHandoffTest {
         }
         fun playerField(name: String): Any? = NativeCallbackPlayer::class.java.getDeclaredField(name)
             .apply { isAccessible = true }.get(player)
+        val recoveryRevision get() = try { playerField("outputRecoveryRevision") as Long? }
+            catch (_: NoSuchFieldException) { playerField("outputRecovery")?.let { batch ->
+                batch.javaClass.getDeclaredField("revision").apply { isAccessible = true }.getLong(batch)
+            } }
         val loaded get() = playerField("selectedLoaded") == true
         val revision get() = playerField("transportRevision") as Long
         val main get() = Shadows.shadowOf(Looper.getMainLooper())
@@ -497,8 +501,11 @@ class DiscoveryPreviewHandoffTest {
             f.drain("native load admitted before withholding journal IO") { f.hw.acceptedLoads.size == 1 }
             runBlocking { withTimeout(8000) { serial.lock() } }
             held = true
+            f.hw.trackBindReadiness = true
             f.hw.holdOrdinaryReady = false
-            f.drain("real owner sampled the ready deck while journal IO is held") { f.hw.readyAssignment != null }
+            // A healthy poll cannot prove awaitDeckReady took its own snapshot.
+            // Do not inject the output fault until that snapshot has been sampled.
+            f.drain("ready snapshot for bind while journal IO is held") { f.hw.bindReadinessSampled }
             assertFalse(f.loaded)
             assertFalse(f.player.preparationSettled)
             assertEquals(listOf(9), f.hw.transport.map { it.operation })
@@ -635,11 +642,11 @@ class DiscoveryPreviewHandoffTest {
                 assertTrue(owner.entered.await(8, TimeUnit.SECONDS))
                 f.player.play()
                 f.main.idle() // deferred Play queued op 9 on the held owner
-                assertEquals(f.revision, f.playerField("outputRecoveryRevision"))
+                assertEquals(f.revision, f.recoveryRevision)
                 assertEquals(listOf(9, 7, 2), f.hw.transport.map { it.operation })
                 f.player.seekTo(900)
                 f.main.idle()
-                assertTrue(f.playerField("outputRecoveryRevision") != f.revision)
+                assertTrue(f.recoveryRevision != f.revision)
                 assertEquals(900L, f.playerField("desiredSeek"))
                 assertTrue(f.hw.played.isEmpty())
             }
@@ -764,6 +771,349 @@ class DiscoveryPreviewHandoffTest {
         }
     }
 
+    @Test fun resetDoesNotDependOnMissingStateReceipt() = prepareWithUnreadableReceipt(null)
+
+    @Test fun resetDoesNotDependOnInvalidStateReceipt() = prepareWithUnreadableReceipt("invalid")
+
+    private fun prepareWithUnreadableReceipt(receipt: String?) {
+        Fixture().use { f ->
+            val prior = playingOrdinary(f)
+            val start = f.hw.transport.size
+            val revision = f.revision
+            val failedSamples = f.hw.failedSamples
+            f.hw.recoveryStateOverride = if (receipt == null) """{"error":-10001,"decks":[]}"""
+                else """{"outputRecoveryReceipt":"$receipt"}"""
+            f.hw.faultBeforeRecovery = true
+            f.hw.traceRecoveries = true
+            val owner = Handler(f.ownerLooper)
+            TransportGate().use { held ->
+                assertTrue(owner.post(held::hold))
+                assertTrue(held.entered.await(8, TimeUnit.SECONDS))
+                f.player.prepare()
+                f.main.idle()
+            }
+            awaitOwnerMarker(f)
+            assertEquals(1, f.hw.routeResets)
+            assertFalse(f.hw.isPlaying(prior.deck))
+            assertEquals(failedSamples, f.hw.failedSamples)
+            f.settled()
+            assertEquals(listOf(9, 1), f.hw.transport.drop(start).map { it.operation })
+            assertEquals(revision, f.revision)
+            assertEquals(prior.identity, f.hw.identity(prior.deck))
+            assertEquals(1, f.hw.acceptedLoads.size)
+            assertTrue(f.player.isPlaying)
+            assertNull(f.player.playerError)
+        }
+    }
+
+    @Test fun failedPreviewAfterReopenLeavesOrdinaryPlayEligible() {
+        Fixture().use { f ->
+            val prior = playingOrdinary(f)
+            val start = f.hw.transport.size
+            val revision = f.revision
+            val traversal = f.hw.traversal(prior.deck)
+            val loads = f.hw.acceptedLoads.toList()
+            val ordinary = f.player.currentMediaItem
+            val failedSamples = f.hw.failedSamples
+            val input = DiscoveryPreviewInput({ error("preview fixture does not open a network call") }, { false }, { true })
+            f.hw.faultBeforeRecovery = true
+            f.hw.failPreviewReadiness = true
+            val preparation = f.jobs.async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching {
+                    f.player.prepareDiscoveryPreview(MediaItem.fromUri("https://fixture.invalid/preview"), input, f.scope) { true }
+                }
+            }
+            f.drain("preview decode failure and spare retirement", advanceOwner = false) { preparation.isCompleted }
+            assertTrue(runBlocking { preparation.await() }.exceptionOrNull() is SafeFailure)
+            assertEquals(failedSamples, f.hw.failedSamples)
+            assertTrue(input.canceled)
+            assertEquals(1, f.hw.routeResets)
+            assertEquals(0L, f.hw.identity(f.hw.previewLoads.single().deck))
+            assertFalse(f.hw.isPlaying(prior.deck))
+            assertEquals(ordinary, f.player.currentMediaItem)
+            assertNull(f.player.parkedQueue)
+            assertTrue(f.loaded)
+            assertTrue(f.player.playWhenReady)
+            assertEquals(revision, f.revision)
+            assertNull(f.player.playerError)
+            f.player.prepare()
+            f.settled()
+            val commands = f.hw.transport.drop(start)
+            assertEquals(listOf(9, 9, 1), commands.map { it.operation })
+            assertTrue(commands.all { it.identity == prior.identity && it.generation == prior.generation })
+            assertEquals(loads, f.hw.acceptedLoads.toList())
+            assertEquals(traversal, f.hw.traversal(prior.deck))
+            assertEquals(revision, f.revision)
+            assertTrue(f.player.isPlaying)
+            assertTrue(f.app.previewRequests.isEmpty())
+        }
+    }
+
+    @Test fun settledResetSurvivesNewerPlaySkippedByPause() = resetBeforeNewerPlayAndPause(cancelEntered = false)
+
+    @Test fun settledResetSurvivesCancellationAfterNativeEntry() = resetBeforeNewerPlayAndPause(cancelEntered = true)
+
+    private fun resetBeforeNewerPlayAndPause(cancelEntered: Boolean) {
+        Fixture().use { f ->
+            val identity = failedOrdinaryOutput(f)
+            val oldError = checkNotNull(f.player.playerError)
+            val occurrence = f.player.currentMediaItem
+            val nativeTraversal = f.hw.traversal(0)
+            val traversal = f.playerField("seekRevision")
+            val loads = f.hw.acceptedLoads.toList()
+            val start = f.hw.transport.size
+            val attempts = f.hw.recoveryOutcomes.size
+            val failedSamples = f.hw.failedSamples
+            val revision = f.revision
+            val lifetime = f.playerField("lifetime") as CoroutineScope
+            val owner = Handler(f.ownerLooper)
+            val main = Handler.createAsync(Looper.getMainLooper())
+            val ownerReturned = CountDownLatch(1)
+            var mainSettledA = false
+            lateinit var prepare: Job
+            TransportGate().use { held ->
+                assertTrue(owner.post(held::hold))
+                assertTrue(held.entered.await(8, TimeUnit.SECONDS))
+                val children = lifetime.coroutineContext[Job]!!.children.toSet()
+                f.player.prepare()
+                f.main.idle()
+                prepare = (lifetime.coroutineContext[Job]!!.children.toSet() - children).single()
+                assertTrue(owner.post {
+                    main.post { mainSettledA = true }
+                    ownerReturned.countDown()
+                })
+            }
+            assertTrue(ownerReturned.await(8, TimeUnit.SECONDS))
+            assertFalse(mainSettledA)
+            assertEquals(listOf(NativeOutputRecovery.Reset), f.hw.recoveryOutcomes.drop(attempts))
+            assertSame(oldError, f.player.playerError)
+            if (cancelEntered) prepare.cancel()
+            // Admit B and supersede it inline, without letting B's yield or A's result run.
+            f.player.play()
+            assertTrue(f.player.playWhenReady)
+            assertEquals(revision + 1, f.revision)
+            f.player.pause()
+            assertFalse(f.player.playWhenReady)
+            assertEquals(revision + 2, f.revision)
+            assertFalse(mainSettledA)
+            f.drain("Main crossed native recovery continuation", advanceOwner = false) { mainSettledA }
+            crossOwner(f)
+            assertEquals(listOf(NativeOutputRecovery.Reset), f.hw.recoveryOutcomes.drop(attempts))
+            assertEquals(failedSamples, f.hw.failedSamples)
+            assertTrue(f.hw.transport.drop(start).none { it.operation == 1 || it.operation == 8 })
+            assertFalse(f.hw.isPlaying(0))
+            f.settled()
+            println("Reset before skipped Play/Pause (entered cancellation=$cancelEntered): ${f.hw.transport.drop(start)}, state=${f.player.playbackState}, error=${f.player.playerError?.message}")
+            assertNull(f.player.playerError)
+            assertEquals(Player.STATE_READY, f.player.playbackState)
+            assertFalse(f.player.playWhenReady)
+            assertFalse(f.player.isPlaying)
+            assertEquals(occurrence, f.player.currentMediaItem)
+            assertEquals(traversal, f.playerField("seekRevision"))
+            assertEquals(nativeTraversal, f.hw.traversal(0))
+            assertEquals(loads, f.hw.acceptedLoads.toList())
+            assertTrue(f.hw.transport.drop(start).all { it.identity == identity && it.generation == identity })
+            f.player.play()
+            f.drain("fresh Play after paused recovery") { f.player.isPlaying }
+            f.settled()
+            assertEquals(listOf(NativeOutputRecovery.Reset, NativeOutputRecovery.Healthy), f.hw.recoveryOutcomes.drop(attempts))
+            assertEquals(identity, f.hw.identity(0))
+            assertEquals(loads, f.hw.acceptedLoads.toList())
+            assertEquals(listOf(0), f.hw.played.toList())
+        }
+    }
+
+    @Test fun previewResetSupersedesEarlierPrepareFailureWithoutPlaying() = previewAndLoadedPrepareCross(previewFirst = false)
+
+    @Test fun previewResetCannotMaskLaterPrepareFailure() = previewAndLoadedPrepareCross(previewFirst = true)
+
+    private fun previewAndLoadedPrepareCross(previewFirst: Boolean) {
+        Fixture().use { f ->
+            val prior = playingOrdinary(f)
+            val occurrence = f.player.currentMediaItem
+            val loads = f.hw.acceptedLoads.toList()
+            val revision = f.revision
+            val traversal = f.hw.traversal(prior.deck)
+            val start = f.hw.transport.size
+            val attempts = f.hw.recoveryOutcomes.size
+            val failedSamples = f.hw.failedSamples
+            val failedPolls = f.hw.failedPolls
+            val owner = Handler(f.ownerLooper)
+            val main = Handler.createAsync(Looper.getMainLooper())
+            val ownerReturned = CountDownLatch(1)
+            data class Settlement(val request: Int, val failedPolls: Int, val error: String?, val intent: Boolean)
+            val settlements = mutableListOf<Settlement>()
+            val input = DiscoveryPreviewInput({ error("preview fixture does not open a network call") }, { false }, { true })
+            f.hw.reopenResults.addAll(listOf(previewFirst, !previewFirst))
+            f.hw.faultBeforeRecovery = true
+            f.hw.failPreviewReadiness = true
+            lateinit var preview: Deferred<Result<Boolean>>
+            TransportGate().use { held ->
+                assertTrue(owner.post(held::hold))
+                assertTrue(held.entered.await(8, TimeUnit.SECONDS))
+                repeat(2) { request ->
+                    if ((request == 0) == previewFirst) preview = f.jobs.async(start = CoroutineStart.UNDISPATCHED) {
+                        runCatching { f.player.prepareDiscoveryPreview(MediaItem.fromUri("https://fixture.invalid/preview"), input, f.scope) { true } }
+                    } else {
+                        f.player.prepare()
+                        f.main.idle()
+                    }
+                    assertTrue(owner.post {
+                        main.post { settlements += Settlement(request, f.hw.failedPolls, f.player.playerError?.message, f.player.playWhenReady) }
+                        if (request == 1) ownerReturned.countDown()
+                    })
+                }
+            }
+            assertTrue(ownerReturned.await(8, TimeUnit.SECONDS))
+            assertTrue(settlements.isEmpty())
+            assertTrue(f.hw.previewLoads.isEmpty())
+            assertEquals(listOf(previewFirst, !previewFirst), f.hw.reopenAttempts.toList())
+            assertEquals(listOf(NativeOutputRecovery.Failed, NativeOutputRecovery.Reset).let {
+                if (previewFirst) it.reversed() else it
+            }, f.hw.recoveryOutcomes.drop(attempts))
+            assertEquals(failedSamples, f.hw.failedSamples)
+            assertNull(f.player.playerError)
+            assertTrue(f.player.playWhenReady)
+            f.drain("Main crossed both recovery continuations", advanceOwner = false) { settlements.size == 2 }
+            assertEquals(listOf(0, 1), settlements.map { it.request })
+            val settled = settlements.last()
+            assertEquals(failedPolls, settled.failedPolls)
+            println("Both Main results (previewFirst=$previewFirst), before any failed poll: $settlements")
+            f.drain("preview failure and spare drain", advanceOwner = false) { preview.isCompleted }
+            assertTrue(runBlocking { preview.await() }.exceptionOrNull() is SafeFailure)
+            assertTrue(input.canceled)
+            assertEquals(0L, f.hw.identity(f.hw.previewLoads.single().deck))
+            assertEquals(1, f.hw.routeResets)
+            if (!previewFirst) assertEquals(failedSamples, f.hw.failedSamples)
+            assertEquals(listOf(9, 9), f.hw.transport.drop(start).map { it.operation })
+            assertEquals(occurrence, f.player.currentMediaItem)
+            assertEquals(prior.identity, f.hw.identity(prior.deck))
+            assertEquals(traversal, f.hw.traversal(prior.deck))
+            assertEquals(loads, f.hw.acceptedLoads.toList())
+            assertNull(f.player.parkedQueue)
+            assertTrue(f.loaded)
+            assertFalse(f.hw.isPlaying(prior.deck))
+            assertTrue(f.app.previewRequests.isEmpty())
+            println("Prepare/Preview (previewFirst=$previewFirst): ${f.hw.transport.drop(start)}, revision=${f.revision}, intent=${f.player.playWhenReady}, error=${f.player.playerError?.message}")
+            if (previewFirst) {
+                assertTrue(settled.error?.startsWith("Audio output is unavailable") == true)
+                assertFalse(settled.intent)
+                assertEquals(revision + 1, f.revision)
+                assertFalse(f.player.playWhenReady)
+                assertTrue(f.player.playerError?.message?.startsWith("Audio output is unavailable") == true)
+            } else {
+                assertEquals(revision, f.revision)
+                assertTrue(settled.intent)
+                assertNull(settled.error)
+                assertTrue(f.player.playWhenReady)
+                assertNull(f.player.playerError)
+                f.player.prepare()
+                f.drain("later explicit Prepare resumes the retained deck") { f.player.isPlaying }
+                f.settled()
+                assertEquals(listOf(9, 9, 9, 1), f.hw.transport.drop(start).map { it.operation })
+                assertEquals(loads, f.hw.acceptedLoads.toList())
+            }
+        }
+    }
+
+    @Test fun overlappingPrepareFailureThenSuccessPreservesIntent() = overlappingReopens(listOf(false, true))
+    @Test fun overlappingPrepareFailuresPublishLastFailure() = overlappingReopens(listOf(false, false))
+    @Test fun overlappingPrepareSuccessCannotMaskLaterFailure() = overlappingReopens(listOf(true, false))
+    @Test fun canceledSiblingCannotSwallowOnlyReopenFailure() = overlappingReopens(listOf(false), cancelSibling = true)
+
+    private fun overlappingReopens(outcomes: List<Boolean>, cancelSibling: Boolean = false) {
+        Fixture().use { f ->
+            val prior = playingOrdinary(f)
+            val start = f.hw.transport.size
+            val revision = f.revision
+            val failedSamples = f.hw.failedSamples
+            val owner = Handler(f.ownerLooper)
+            val main = Handler.createAsync(Looper.getMainLooper())
+            val passed = CountDownLatch(1)
+            val settled = mutableListOf<Int>()
+            val lifetime = f.playerField("lifetime") as CoroutineScope
+            f.hw.reopenResults.addAll(outcomes)
+            f.hw.faultBeforeRecovery = true
+            TransportGate().use { hold ->
+                assertTrue(owner.post(hold::hold))
+                assertTrue(hold.entered.await(8, TimeUnit.SECONDS))
+                repeat(2) { request ->
+                    val children = lifetime.coroutineContext[Job]!!.children.toSet()
+                    f.player.prepare()
+                    f.main.idle()
+                    val admitted = (lifetime.coroutineContext[Job]!!.children.toSet() - children).single()
+                    assertEquals(revision, f.revision)
+                    if (cancelSibling && request == 1) admitted.cancel()
+                    assertTrue(owner.post {
+                        main.post { settled += request }
+                        if (request == 1) passed.countDown()
+                    })
+                }
+            }
+            assertTrue(passed.await(8, TimeUnit.SECONDS))
+            assertTrue(settled.isEmpty())
+            assertEquals(outcomes, f.hw.reopenAttempts.toList())
+            assertEquals(List(outcomes.size) { 9 }, f.hw.transport.drop(start).map { it.operation })
+            assertEquals(outcomes.count { it }, f.hw.routeResets)
+            assertEquals(failedSamples, f.hw.failedSamples)
+            assertTrue(f.player.playWhenReady)
+            assertNull(f.player.playerError)
+            f.drain("both Main markers ran", advanceOwner = false) { settled.size == 2 }
+            assertEquals(listOf(0, 1), settled)
+            // A sticky native fault must not let a later poll satisfy the failure oracle.
+            if (outcomes.last()) {
+                f.settled()
+                assertEquals(List(outcomes.size) { 9 } + 1, f.hw.transport.drop(start).map { it.operation })
+                assertTrue(f.player.playWhenReady)
+                assertTrue(f.player.isPlaying)
+                assertEquals(revision, f.revision)
+                assertNull(f.player.playerError)
+            } else {
+                assertEquals(failedSamples, f.hw.failedSamples)
+                assertEquals(List(outcomes.size) { 9 }, f.hw.transport.drop(start).map { it.operation })
+                assertEquals(revision + 1, f.revision)
+                assertFalse(f.player.playWhenReady)
+                assertFalse(f.hw.isPlaying(prior.deck))
+                assertTrue(f.player.playerError?.message?.startsWith("Audio output is unavailable") == true)
+            }
+            assertEquals(prior.identity, f.hw.identity(prior.deck))
+            assertEquals(1, f.hw.acceptedLoads.size)
+        }
+    }
+
+    @Test fun revokedLoadedPrepareIsRefusedBeforeNativeRecovery() {
+        Fixture().use { f ->
+            val prior = playingOrdinary(f)
+            val start = f.hw.transport.size
+            f.hw.faultBeforeRecovery = true
+            val owner = Handler(f.ownerLooper)
+            TransportGate().use { held ->
+                assertTrue(owner.post(held::hold))
+                assertTrue(held.entered.await(8, TimeUnit.SECONDS))
+                f.player.prepare()
+                f.main.idle() // request queued, owner has not checked the retained source yet
+                f.player.clearMediaItems()
+                assertEquals(0, f.player.mediaItemCount)
+            }
+            f.drain("revoked assignment drained") { f.hw.identity(prior.deck) == 0L }
+            f.settled()
+            assertTrue(f.hw.transport.drop(start).none { it.operation == 9 || it.operation == 1 })
+            assertEquals(0, f.hw.routeResets)
+            assertNull(f.player.playerError)
+        }
+    }
+
+    private fun crossOwner(f: Fixture) {
+        f.main.idle()
+        awaitOwnerMarker(f)
+    }
+
+    private fun awaitOwnerMarker(f: Fixture) {
+        val passed = CountDownLatch(1)
+        assertTrue(Handler(f.ownerLooper).post { passed.countDown() })
+        assertTrue(passed.await(8, TimeUnit.SECONDS))
+    }
+
     @Test fun overlappingLoadedPreparesKeepLaterResetThroughMainSettlement() = overlappingPrepares(reset = 1)
 
     @Test fun overlappingLoadedPreparesKeepEarlierResetThroughMainSettlement() = overlappingPrepares(reset = 0)
@@ -779,7 +1129,6 @@ class DiscoveryPreviewHandoffTest {
             val prior = playingOrdinary(f)
             val revision = f.revision
             val traversal = f.playerField("seekRevision")
-            val claim = checkNotNull(f.playerField("submittedOrdinaryPlay"))
             val failedSamples = f.hw.failedSamples
             val start = f.hw.transport.size
             val acceptedLoads = f.hw.acceptedLoads.toList()
@@ -787,8 +1136,7 @@ class DiscoveryPreviewHandoffTest {
             assertNull(f.playerField("desiredSeek"))
             assertNull(f.playerField("successor"))
             f.hw.traceRecoveries = true
-            val requests = f.hw.recoveryRequests.size
-            val reads = f.hw.recoveryReads.size
+            val requests = f.hw.recoveryOutcomes.size
             if (reset == 0) f.hw.faultBeforeRecovery = true
             // A's actual healthy op9 arms the asynchronous fault for B's entry.
             if (reset == 1) f.hw.beforeRecovery = { f.hw.faultBeforeRecovery = true }
@@ -796,7 +1144,6 @@ class DiscoveryPreviewHandoffTest {
             val main = Handler.createAsync(Looper.getMainLooper())
             val ownerPassedB = CountDownLatch(1)
             val settlements = mutableListOf<Int>()
-            val claims = mutableListOf<Any?>()
             val recoveryRevisions = mutableListOf<Any?>()
             TransportGate().use { held ->
                 assertTrue(owner.post(held::hold))
@@ -807,37 +1154,24 @@ class DiscoveryPreviewHandoffTest {
                     f.player.prepare()
                     f.main.idle() // dispatch to the blocked serial native owner
                     assertEquals(revision, f.revision)
-                    assertSame(claim, f.playerField("submittedOrdinaryPlay"))
                     assertEquals(start, f.hw.transport.size)
                     assertTrue(owner.post {
-                        // This owner marker follows the complete call/state read
+                        // This owner marker follows the complete native call
                         // and the posting of its continuation back to Main.
                         main.post {
                             settlements += request
-                            claims += f.playerField("submittedOrdinaryPlay")
-                            recoveryRevisions += f.playerField("outputRecoveryRevision")
+                            recoveryRevisions += f.recoveryRevision
                         }
                         if (request == 1) ownerPassedB.countDown()
                     })
                 }
             }
-            // Don't pump Main until both callbacks (including B's exact read)
+            // Don't pump Main until both callbacks
             // are in its queue, in FIFO order around the two positive markers.
             assertTrue("native owner did not pass both recovery calls", ownerPassedB.await(8, TimeUnit.SECONDS))
             assertTrue(settlements.isEmpty())
-            assertSame(claim, f.playerField("submittedOrdinaryPlay"))
-            val issued = f.hw.recoveryRequests.drop(requests)
-            val sampled = f.hw.recoveryReads.drop(reads)
-            assertEquals(2, issued.size)
-            assertTrue(issued[0] < issued[1])
-            assertEquals(0, reads)
-            val olderReceipt = 0L
-            val expectedReceipts = when (reset) {
-                0 -> listOf(issued[0], issued[0])
-                1 -> listOf(olderReceipt, issued[1])
-                else -> listOf(olderReceipt, olderReceipt)
-            }
-            assertEquals(issued.zip(expectedReceipts), sampled)
+            val outcomes = f.hw.recoveryOutcomes.drop(requests)
+            assertEquals(List(2) { if (it == reset) NativeOutputRecovery.Reset else NativeOutputRecovery.Healthy }, outcomes)
             assertEquals(listOf(9, 9), f.hw.transport.drop(start).map { it.operation })
             assertEquals(listOf(0, 1).map { if (it == reset) -899 else 0 }, f.hw.transport.drop(start).map { it.outputError })
             assertEquals(if (reset == null) 0 else 1, f.hw.routeResets)
@@ -846,6 +1180,7 @@ class DiscoveryPreviewHandoffTest {
             assertNull(f.player.playerError)
             assertTrue(f.player.playWhenReady)
             if (seek) {
+                f.hw.holdSeek = true
                 f.player.seekTo(900)
                 assertEquals(revision + 1, f.revision)
                 assertEquals(900L, f.playerField("desiredSeek"))
@@ -855,17 +1190,26 @@ class DiscoveryPreviewHandoffTest {
             }
             f.drain("Main crossed both completion markers", advanceOwner = false) { settlements.size == 2 }
             assertEquals(listOf(0, 1), settlements)
-            if (reset != 0) assertSame(claim, claims[0])
-            if (seek) assertRetainedSeek(f, 900) else f.settled()
+            if (seek) {
+                f.drain("native observation while Seek ACK is held") { f.hw.heldSeekSamples.isNotEmpty() }
+                crossOwner(f)
+                f.main.idle()
+                crossOwner(f)
+                assertTrue(f.hw.heldSeekSamples.all { it == ProjectionPreviewHardware.SeekSample(prior.position, nativeTraversal) })
+                assertEquals(900L, f.playerField("desiredSeek"))
+                assertEquals(listOf(9, 9, 3), f.hw.transport.drop(start).map { it.operation })
+                f.hw.acknowledgeHeldSeek()
+                assertRetainedSeek(f, 900)
+                assertEquals(nativeTraversal + 1, f.hw.traversal(prior.deck))
+            } else f.settled()
             val commands = f.hw.transport.drop(start)
-            println("overlapping Prepares reset=$reset seek=$seek newerPlay=$newerPlay r=$revision traversal=$traversal native=$nativeTraversal requests=$issued reads=$sampled Main=$settlements recoveryRevisions=$recoveryRevisions claimRetained=${claims.map { it === claim }} commands=$commands nativePlaying=${f.hw.isPlaying(prior.deck)} intent=${f.player.playWhenReady} error=${f.player.playerError}")
+            println("overlapping Prepares reset=$reset seek=$seek newerPlay=$newerPlay r=$revision traversal=$traversal native=$nativeTraversal outcomes=$outcomes Main=$settlements recoveryRevisions=$recoveryRevisions commands=$commands nativePlaying=${f.hw.isPlaying(prior.deck)} intent=${f.player.playWhenReady} error=${f.player.playerError}")
             assertEquals(when {
                 seek -> listOf(9, 9, 3, 1)
                 newerPlay -> listOf(9, 9, 9, 1)
                 reset != null -> listOf(9, 9, 1)
                 else -> listOf(9, 9)
             }, commands.map { it.operation })
-            assertEquals(reset == null || seek || newerPlay, claims[1] === claim)
             if (reset != null) assertFalse(commands.last().playingBefore)
             assertTrue(commands.all { it.deck == prior.deck && it.identity == prior.identity && it.generation == prior.generation })
             if (!seek) {
@@ -1150,15 +1494,31 @@ internal class ProjectionPreviewHardware : NativeCallbackCalls {
     @Volatile var faultBeforeRecovery = false
     @Volatile var failedSamples = 0
         private set
+    @Volatile var failedPolls = 0
+        private set
     private var outputRecoveryReceipt = 0L
-    val recoveryRequests = CopyOnWriteArrayList<Long>()
-    val recoveryReads = CopyOnWriteArrayList<Pair<Long, Long>>()
+    @Volatile var recoveryStateOverride: String? = null
+    val reopenResults = ConcurrentLinkedQueue<Boolean>()
+    val reopenAttempts = CopyOnWriteArrayList<Boolean>()
+    @Volatile var failPreviewReadiness = false
+    @Volatile var holdSeek = false
+    private var heldSeek: Pair<Int, Long>? = null
+    data class SeekSample(val position: Long, val traversal: Long)
+    val heldSeekSamples = CopyOnWriteArrayList<SeekSample>()
+    @Synchronized fun acknowledgeHeldSeek() {
+        val (slot, target) = checkNotNull(heldSeek)
+        decks[slot].position = target; decks[slot].traversal++
+        heldSeek = null
+    }
     private var unreadRecoveryRequest: Long? = null
     @Volatile var traceRecoveries = false
     @Volatile var routeResets = 0
         private set
     @Synchronized fun latchRouteFault() { outputError = -899 }
     @Volatile var holdOrdinaryReady = false
+    @Volatile var trackBindReadiness = false
+    @Volatile var bindReadinessSampled = false
+        private set
     @Volatile var beforeRecovery: (() -> Unit)? = null
     @Synchronized fun publishHealthyOutput() { outputError = 0 }
     @Synchronized fun breakOutput() { outputError = 1; decks[0].playing = false }
@@ -1171,6 +1531,7 @@ internal class ProjectionPreviewHardware : NativeCallbackCalls {
     @Synchronized override fun loadPreview(handle: Long, deck: Int, input: DiscoveryPreviewInput, generation: Long): Boolean {
         previewLoads += PreviewLoad(deck, generation, input)
         decks[deck] = Deck(generation); previewOpened.remove(deck)
+        if (failPreviewReadiness) return true
         io.submit {
             try {
                 input.open(); check(input.readEncoded(ByteArray(16)) > 0)
@@ -1178,6 +1539,11 @@ internal class ProjectionPreviewHardware : NativeCallbackCalls {
             } finally { input.close() }
         }
         return true
+    }
+    val recoveryOutcomes = CopyOnWriteArrayList<NativeOutputRecovery>()
+    @Synchronized override fun recoverOutput(handle: Long): NativeOutputRecovery {
+        control(handle, 9, 0, 0.0, 0L)
+        return recoveryOutcomes.last()
     }
     @Synchronized override fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long): Boolean {
         if (operation == 7 && deck == 0) beforeOrdinaryGain?.let {
@@ -1195,8 +1561,7 @@ internal class ProjectionPreviewHardware : NativeCallbackCalls {
         if (outputError != 0 && operation in listOf(1, 2, 3)) return false
         when (operation) {
             9 -> {
-                if (traceRecoveries) {
-                    recoveryRequests += eventNanos
+                if (traceRecoveries && eventNanos != 0L) {
                     unreadRecoveryRequest = eventNanos
                 }
                 beforeRecovery?.let { beforeRecovery = null; it() }
@@ -1204,10 +1569,17 @@ internal class ProjectionPreviewHardware : NativeCallbackCalls {
                     // callback_host.cpp quiesces only a failed/recovering route;
                     // it pauses all rendered assignments without seeking them.
                     decks.forEach { it.playing = false; it.paused = false }
+                    val reopened = reopenResults.poll()?.also { reopenAttempts += it } ?: true
+                    if (!reopened) {
+                        recoveryOutcomes += NativeOutputRecovery.Failed
+                        return false
+                    }
+                    if (reopenResults.isNotEmpty()) faultBeforeRecovery = true
                     outputError = 0
                     outputRecoveryReceipt = eventNanos
                     routeResets++
-                }
+                    recoveryOutcomes += NativeOutputRecovery.Reset
+                } else recoveryOutcomes += NativeOutputRecovery.Healthy
             }
             1 -> { d.playing = true; d.paused = false; played += deck }
             2, 11 -> {
@@ -1218,7 +1590,10 @@ internal class ProjectionPreviewHardware : NativeCallbackCalls {
                 }
                 d.playing = false; d.paused = operation == 11
             }
-            3 -> { d.position = value.toLong(); d.traversal++ }
+            3 -> {
+                if (holdSeek) { check(heldSeek == null); heldSeek = deck to value.toLong() }
+                else { d.position = value.toLong(); d.traversal++ }
+            }
             8 -> decks[deck] = Deck()
         }
         return true
@@ -1235,17 +1610,32 @@ internal class ProjectionPreviewHardware : NativeCallbackCalls {
     @Synchronized fun empty() = decks.all { it.id == 0L }
     @Synchronized override fun state(handle: Long): String {
         polls++
-        unreadRecoveryRequest?.let { recoveryReads += it to outputRecoveryReceipt; unreadRecoveryRequest = null }
-        if (outputError != 0) failedSamples++
+        heldSeek?.let { (slot, _) -> heldSeekSamples += SeekSample(decks[slot].position, decks[slot].traversal) }
+        // Only the op9 follow-up state read, not a later poll, is degraded.
+        if (unreadRecoveryRequest != null) recoveryStateOverride?.let { response ->
+            recoveryStateOverride = null
+            unreadRecoveryRequest = null
+            return response
+        }
+        unreadRecoveryRequest = null
+        if (outputError != 0) {
+            failedSamples++
+            if (Thread.currentThread().stackTrace.any { it.className.startsWith(NativeCallbackOwner::class.java.name + "\$poll\$") }) failedPolls++
+        }
         return JSONObject().put("error", outputError).put("outputRecoveryReceipt", outputRecoveryReceipt).put("coherent", coherent).put("decks", JSONArray().apply {
             decks.forEachIndexed { slot, d ->
                 val ready = d.id != 0L && (slot < 2 && !holdOrdinaryReady || slot in previewOpened && !holdPreview)
                 if (slot == 0 && ready && readyAssignment == null) readyAssignment =
                     Transport(0, slot, d.id, d.id + generationOffset, d.position, d.playing, outputError)
+                if (slot == 0 && ready && outputError == 0 && trackBindReadiness && !bindReadinessSampled) {
+                    bindReadinessSampled = Thread.currentThread().stackTrace.any {
+                        it.className.startsWith(NativeCallbackOwner::class.java.name + "\$snapshot\$")
+                    }
+                }
                 put(JSONObject().put("traversalRevision", d.traversal).put("identity", d.id).put("generation", d.id + if (slot == 0) generationOffset else 0).put("positionMs", d.position)
                     .put("durationMs", 6000).put("sourceRate", 44100).put("sourceFrames", 264600)
                     .put("ready", ready).put("preparing", d.id != 0L && !ready).put("playing", d.playing)
-                    .put("handoffPaused", d.paused).put("eofCount", d.eof).put("error", 0).put("openDecoders", if (d.id == 0L) 0 else 1))
+                    .put("handoffPaused", d.paused).put("eofCount", d.eof).put("error", if (slot >= 2 && d.id != 0L && failPreviewReadiness) -1 else 0).put("openDecoders", if (d.id == 0L) 0 else 1))
             }
         }).toString()
     }

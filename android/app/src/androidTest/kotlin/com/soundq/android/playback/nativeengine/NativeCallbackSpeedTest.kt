@@ -45,6 +45,7 @@ class NativeCallbackSpeedTest {
         private var identity = 0L
         private var generation = 0L
         override fun open(): Long = 1
+        override fun recoverOutput(handle: Long) = NativeOutputRecovery.Healthy
         override fun load(handle: Long, deck: Int, path: String, identity: Long, generation: Long, positionMs: Long): Boolean {
             loads.add(1.0); speed = 1.0; this.identity = identity; this.generation = generation; return true
         }

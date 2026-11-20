@@ -51,6 +51,10 @@ internal class NativeArrangementPlayerTest {
         private var identity=0L
         private var generation=0L
         override fun open()=1L
+        override fun recoverOutput(handle: Long): NativeOutputRecovery {
+            ops.add(109)
+            return NativeOutputRecovery.Healthy
+        }
         override fun load(handle:Long,deck:Int,path:String,identity:Long,generation:Long,positionMs:Long):Boolean {this.identity=identity;this.generation=generation;position=positionMs;retiringOrdinary=false;return true}
         override fun control(handle:Long,operation:Int,deck:Int,value:Double,eventNanos:Long):Boolean {ops.add(100+operation);if(operation==8){retiringOrdinary=true;if(allowOrdinaryRetire)identity=0};if(operation==1){playing=true;pausePending=false};if(operation==3)pendingSeek=value.toLong();if(operation==2){pausePending=true;if(!holdPauseAck)playing=false};return true}
         override fun prepareSchedule(handle:Long,revision:Long,paths:Array<String>,values:LongArray):Boolean {candidate=revision;check(paths.size==expectedClips&&values.size==expectedClips*6);if(holdProbe){probeEntered.countDown();check(probePermit.await(5,TimeUnit.SECONDS))};return true}

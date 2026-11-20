@@ -37,7 +37,7 @@ internal fun nativePausedOutputPending(output:Player):Int {
             (field(output,"preparing") as java.util.concurrent.atomic.AtomicInteger).get()==0
     }
     fun paused()= !flag("released") && !flag("intent") && !flag("acknowledgedPlaying") &&
-        !flag("outputUnavailable") && field(output,"error")==null && field(output,"outputRecoveryRevision")==null &&
+        !flag("outputUnavailable") && field(output,"error")==null && field(output,"outputRecovery")==null &&
         field(output,"desiredSeek")==null && field(output,"submittedSeek")==null &&
         !output.playWhenReady && !output.isPlaying && output.playerError==null
     fun notReady():Int { nativePauseSamples.remove(output);return 1 }

@@ -53,6 +53,7 @@ class NativeCallbackJourneyTest {
         private var previewPlaying = false
         private fun thread() { check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper()); threads.add(Thread.currentThread().name) }
         override fun open(): Long { thread(); return 1 }
+        override fun recoverOutput(handle: Long): NativeOutputRecovery { thread(); return NativeOutputRecovery.Healthy }
         override fun load(handle: Long, deck: Int, path: String, identity: Long, generation: Long, positionMs: Long): Boolean {
             thread(); this.identity = identity; this.generation = generation; position = positionMs; playing = false; handoffPaused = false; return true
         }

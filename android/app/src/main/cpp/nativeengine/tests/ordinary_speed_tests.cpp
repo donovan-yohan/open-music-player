@@ -167,7 +167,7 @@ int main() {
     before=field(deck(registry.state(h),0),"sourceFrame");play(4800);after=field(deck(registry.state(h),0),"sourceFrame");
     CHECK(std::abs(after-before-4800)<1e-6);
     // Route failure + explicit recovery keeps the accepted speed (quiesce does not force 1x).
-    out->cb->outputError(-5);registry.state(h);CHECK(registry.control(h,9,0,0,0));
+    out->cb->outputError(-5);registry.state(h);CHECK(registry.recoverOutput(h)==OutputRecovery::Reset);
     CHECK(field(deck(registry.state(h),0),"rate")==1.5);
     CHECK(registry.control(h,1,0,0,0));
     // Natural end once at 1.5x.

@@ -226,21 +226,38 @@ internal class NativeCallbackOwner(
         retired
     }
 
-    /** Explicit Play/Apply only. Keeps decoder/file custody and never submits Play. */
-    suspend fun recoverOutput(current: () -> Boolean, onReset: (() -> Unit)? = null): Boolean {
-        val result = withContext(dispatcher) {
-            if (closing || handle == 0L || !current()) return@withContext null
-            val receipt = ++observationRevision // fence snapshots from the prior route
-            try {
-                if (!calls.control(handle, 9, 0, 0.0, receipt) || !current()) return@withContext null
-                // Sample only when an existing Play claim could mask a fresh submission.
-                // The host echoes this exact request only after reopening and quiescing.
-                onReset != null && JSONObject(calls.state(handle)).optLong("outputRecoveryReceipt") == receipt
-            } catch (_: Throwable) { null }
-        } ?: return false
-        if (result) onReset?.invoke()
-        return true
-    }
+    private data class OrdinaryPlay(val identity: Long, val transport: Long, val traversal: Long)
+    private var submittedOrdinaryPlay: OrdinaryPlay? = null // owner lane only
+
+    suspend fun playOrdinary(deck: Int, identity: Long, transport: Long, traversal: Long, current: () -> Boolean): Boolean =
+        withContext(dispatcher) {
+            if (closing || handle == 0L || !current()) return@withContext false
+            val play = OrdinaryPlay(identity, transport, traversal)
+            if (submittedOrdinaryPlay == play) return@withContext true
+            val accepted = try { calls.control(handle, 1, deck, 0.0, System.nanoTime()) } catch (_: Throwable) { false }
+            if (accepted) submittedOrdinaryPlay = play
+            accepted
+        }
+
+    /** Latest actual recovery outcome on this handle, across all callers; not a poll or an admission. */
+    @Volatile var latestOutputRecovery: NativeOutputRecovery? = null
+        private set
+
+    /** Explicit callers only. Reset the claim before any subsequent Play can enter this lane. */
+    suspend fun recoverOutput(current: () -> Boolean, onAttempt: (NativeOutputRecovery) -> Unit = {}): Boolean =
+        withContext(dispatcher) {
+            if (closing || handle == 0L || !current()) return@withContext false
+            ++observationRevision // fence snapshots from the prior route
+            val outcome = try { calls.recoverOutput(handle) }
+            catch (canceled: CancellationException) { throw canceled }
+            catch (_: Throwable) { NativeOutputRecovery.Unknown }
+            if (outcome == NativeOutputRecovery.Reset || outcome == NativeOutputRecovery.Unknown) submittedOrdinaryPlay = null
+            // Publish on the owner lane, including cancellation after JNI. Skipped calls
+            // cannot replace an outcome, and preview/arrangement use this same lane.
+            latestOutputRecovery = outcome
+            onAttempt(outcome)
+            outcome.ready && current()
+        }
 
     /** One queued runnable and one latest Move, independent of event rate. Terminals bypass the lane. */
     private data class ScratchCall(val operation: Int, val instance: Long, val gesture: Long, val event: Long, val rate: Double, val current: () -> Boolean, val done: (Boolean) -> Unit)
