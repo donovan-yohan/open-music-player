@@ -859,7 +859,7 @@ class DiscoveryPreviewHandoffTest {
 
     private fun resetBeforeNewerPlayAndPause(cancelEntered: Boolean) {
         Fixture().use { f ->
-            val identity = failedOrdinaryOutput(f)
+            val identity = failedOrdinaryOutput(f, singlePoll = true)
             val oldError = checkNotNull(f.player.playerError)
             val occurrence = f.player.currentMediaItem
             val nativeTraversal = f.hw.traversal(0)
@@ -868,6 +868,7 @@ class DiscoveryPreviewHandoffTest {
             val start = f.hw.transport.size
             val attempts = f.hw.recoveryOutcomes.size
             val failedSamples = f.hw.failedSamples
+            val samples = f.hw.polls
             val revision = f.revision
             val lifetime = f.playerField("lifetime") as CoroutineScope
             val owner = Handler(f.ownerLooper)
@@ -900,10 +901,14 @@ class DiscoveryPreviewHandoffTest {
             assertFalse(f.player.playWhenReady)
             assertEquals(revision + 2, f.revision)
             assertFalse(mainSettledA)
-            f.drain("Main crossed native recovery continuation", advanceOwner = false) { mainSettledA }
+            // The owner's marker already posted behind A's result. Drain due work
+            // on Main and then the owner without ticking either queue's clock.
             crossOwner(f)
+            assertTrue(mainSettledA)
             assertEquals(listOf(NativeOutputRecovery.Reset), f.hw.recoveryOutcomes.drop(attempts))
             assertEquals(failedSamples, f.hw.failedSamples)
+            assertEquals(samples, f.hw.polls)
+            assertNull("Reset must clear the latched error before another observation", f.playerField("error"))
             assertTrue(f.hw.transport.drop(start).none { it.operation == 1 || it.operation == 8 })
             assertFalse(f.hw.isPlaying(0))
             f.settled()
@@ -912,6 +917,7 @@ class DiscoveryPreviewHandoffTest {
             assertEquals(Player.STATE_READY, f.player.playbackState)
             assertFalse(f.player.playWhenReady)
             assertFalse(f.player.isPlaying)
+            assertEquals(revision + 2, f.revision)
             assertEquals(occurrence, f.player.currentMediaItem)
             assertEquals(traversal, f.playerField("seekRevision"))
             assertEquals(nativeTraversal, f.hw.traversal(0))
@@ -1227,14 +1233,31 @@ class DiscoveryPreviewHandoffTest {
         }
     }
 
-    private fun failedOrdinaryOutput(f: Fixture): Long {
+    private fun failedOrdinaryOutput(f: Fixture, singlePoll: Boolean = false): Long {
         f.prepareOrdinary()
         f.drain("ordinary source ready paused") { f.player.preparationSettled && f.player.playbackState == Player.STATE_READY }
         f.settled()
         val same = f.hw.identity(0)
         assertNotEquals(0L, same)
-        f.hw.breakOutput()
-        f.drain("route failure published") { f.player.playerError?.message?.startsWith("Audio output is unavailable") == true }
+        fun failurePublished() = f.player.playerError?.message?.startsWith("Audio output is unavailable") == true
+        if (singlePoll) {
+            // Drain any poll made due by setup while the route is still healthy.
+            // Both loopers share the clock: idling Main *for* time after the first
+            // failed poll can make its successor due before the recovery hold.
+            awaitOwnerMarker(f)
+            val failedSamples = f.hw.failedSamples
+            val failedPolls = f.hw.failedPolls
+            f.hw.breakOutput()
+            Shadows.shadowOf(f.ownerLooper).runToNextTask()
+            awaitOwnerMarker(f)
+            f.main.idle()
+            assertEquals(failedSamples + 1, f.hw.failedSamples)
+            assertEquals(failedPolls + 1, f.hw.failedPolls)
+            assertTrue("first route failure was not published", failurePublished())
+        } else {
+            f.hw.breakOutput()
+            f.drain("route failure published", predicate = ::failurePublished)
+        }
         assertFalse(f.player.playWhenReady)
         return same
     }
