@@ -33,8 +33,8 @@ type localEnrichmentContext struct{ context.Context }
 
 func (localEnrichmentContext) Value(any) any { return nil }
 
-// One pool for default Enrich clients. Clone's independent protocol policy
-// leaves the ordinary transport (including its HTTP/2 pool) in place.
+// One pool for default Enrich clients. Its independent protocol policy leaves
+// the ordinary transport (including its HTTP/2 pool) in place.
 var defaultLocalEnrichmentTransport = sync.OnceValue(func() http.RoundTripper {
 	if transport := localEnrichmentHTTP1Transport(http.DefaultTransport); transport != nil {
 		return transport
@@ -53,13 +53,33 @@ func (f localEnrichmentRoundTrip) RoundTrip(req *http.Request) (*http.Response, 
 
 func localEnrichmentHTTP1Transport(base http.RoundTripper) *http.Transport {
 	transport, ok := base.(*http.Transport)
-	if !ok || transport == nil || transport.DialTLSContext != nil || transport.DialTLS != nil {
+	if !ok || transport == nil || transport.DialTLSContext != nil {
 		return nil // a custom TLS dial can negotiate outside net/http's policy
 	}
-	private := transport.Clone()
-	private.ForceAttemptHTTP2 = false
-	private.TLSNextProto = nil
-	private.Protocols = new(http.Protocols)
+	// Select only connection settings. Do not copy legacy TLS dialers, protocol
+	// handlers, or hooks and headers for ordinary proxy CONNECT requests.
+	private := &http.Transport{
+		DialContext:            transport.DialContext,
+		DisableCompression:     transport.DisableCompression,
+		DisableKeepAlives:      transport.DisableKeepAlives,
+		ExpectContinueTimeout:  transport.ExpectContinueTimeout,
+		IdleConnTimeout:        transport.IdleConnTimeout,
+		MaxConnsPerHost:        transport.MaxConnsPerHost,
+		MaxIdleConns:           transport.MaxIdleConns,
+		MaxIdleConnsPerHost:    transport.MaxIdleConnsPerHost,
+		MaxResponseHeaderBytes: transport.MaxResponseHeaderBytes,
+		Protocols:              new(http.Protocols),
+		ReadBufferSize:         transport.ReadBufferSize,
+		ResponseHeaderTimeout:  transport.ResponseHeaderTimeout,
+		TLSClientConfig:        transport.TLSClientConfig.Clone(),
+		TLSHandshakeTimeout:    transport.TLSHandshakeTimeout,
+		WriteBufferSize:        transport.WriteBufferSize,
+	}
+	if proxy := transport.Proxy; proxy != nil {
+		private.Proxy = func(req *http.Request) (*url.URL, error) {
+			return proxy(&http.Request{URL: &url.URL{Scheme: req.URL.Scheme, Host: req.URL.Host}})
+		}
+	}
 	private.Protocols.SetHTTP1(true)
 	if private.TLSClientConfig != nil {
 		private.TLSClientConfig.NextProtos = []string{"http/1.1"}

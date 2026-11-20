@@ -156,3 +156,38 @@ func TestLocalEnrichmentRefusesUnconfinedConfiguredTransport(t *testing.T) {
 		t.Errorf("unconfined TLS dial was used: dialed=%t err=%v", called, err)
 	}
 }
+
+func TestLocalEnrichmentTransportDoesNotInheritProxyConnectCustomization(t *testing.T) {
+	var routedURL string
+	ordinary := &http.Transport{
+		Proxy: func(req *http.Request) (*url.URL, error) {
+			routedURL = req.URL.String()
+			return nil, nil
+		},
+		ProxyConnectHeader: http.Header{"X-Fixture-Only": {"ordinary-connect"}},
+		GetProxyConnectHeader: func(context.Context, *url.URL, string) (http.Header, error) {
+			return http.Header{"X-Fixture-Only": {"ordinary-callback"}}, nil
+		},
+		TLSClientConfig:     &tls.Config{NextProtos: []string{"h2"}, MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout: 4 * time.Second,
+		IdleConnTimeout:     15 * time.Second,
+		MaxIdleConnsPerHost: 4,
+	}
+	private := localEnrichmentHTTP1Transport(ordinary)
+	if private == nil || private.ProxyConnectHeader != nil || private.GetProxyConnectHeader != nil {
+		t.Fatal("private transport inherited ordinary proxy CONNECT customization")
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://musicbrainz.org/ws/2/recording?query=fixture", nil)
+	if _, err := private.Proxy(req); err != nil || routedURL != "https://musicbrainz.org" {
+		t.Fatalf("expected origin-only proxy configuration, got %q, %v", routedURL, err)
+	}
+	if private.TLSClientConfig == ordinary.TLSClientConfig || private.TLSClientConfig.MinVersion != tls.VersionTLS12 ||
+		private.TLSHandshakeTimeout != ordinary.TLSHandshakeTimeout || private.IdleConnTimeout != ordinary.IdleConnTimeout ||
+		private.MaxIdleConnsPerHost != ordinary.MaxIdleConnsPerHost {
+		t.Fatal("private transport lost independent connection policy")
+	}
+	if ordinary.ProxyConnectHeader.Get("X-Fixture-Only") != "ordinary-connect" || ordinary.GetProxyConnectHeader == nil ||
+		len(ordinary.TLSClientConfig.NextProtos) != 1 || ordinary.TLSClientConfig.NextProtos[0] != "h2" {
+		t.Fatal("constructing the private pool changed the ordinary transport")
+	}
+}
