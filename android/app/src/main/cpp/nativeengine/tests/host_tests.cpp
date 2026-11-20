@@ -230,6 +230,22 @@ int main(int argc, char** argv) {
     until(registry, handle, *out, "\"ready\":true");
     const auto traversal = [](const std::string& d) { const auto at=d.find("\"traversalRevision\":"); assert(at!=std::string::npos); return d.substr(at,d.find(',',at)-at); };
     const auto admittedTraversal=traversal(deck(registry.state(handle)));
+    assert(registry.control(handle, 1, 0, 0, 0));
+    until(registry, handle, *out, "\"playing\":true");
+    const auto routeOpens = out->opens;
+    assert(registry.control(handle, 9, 0, 0, 71));
+    auto healthyRoute = registry.state(handle);
+    assert(healthyRoute.find("\"outputRecoveryReceipt\":0,") != std::string::npos);
+    assert(deck(healthyRoute).find("\"playing\":true") != std::string::npos && out->opens == routeOpens);
+    out->callback->outputError(-899);
+    // The request can be the first consumer to learn of the sticky error.
+    assert(registry.control(handle, 9, 0, 0, 72));
+    const auto recoveredRoute = registry.state(handle);
+    assert(recoveredRoute.find("\"outputRecoveryReceipt\":72,") != std::string::npos);
+    assert(deck(recoveredRoute).find("\"playing\":false") != std::string::npos && out->opens == routeOpens + 1);
+    assert(traversal(deck(recoveredRoute)) == admittedTraversal);
+    assert(registry.control(handle, 9, 0, 0, 73));
+    assert(registry.state(handle).find("\"outputRecoveryReceipt\":72,") != std::string::npos);
     out->callback->outputError(-899);
     assert(!registry.control(handle, 1, 0, 0, 0));
     assert(registry.state(handle).find("\"error\":-899") != std::string::npos);

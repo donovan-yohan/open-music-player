@@ -44,7 +44,8 @@ internal class NativeCallbackPlayer(
     private var queueScope: AccountScope? = null
     private var error: PlaybackException? = null
     private var outputUnavailable = false
-    private var outputRecoveryRevision: Long? = null
+    @Volatile private var outputRecoveryRevision: Long? = null
+    private var pendingOutputRecoveries = 0 // Main only, for outputRecoveryRevision
     private var arrangement: NativeCallbackArrangement? = null
     private var nativeScheduleRevision = 0L
     private var arrangementGrants = emptyMap<String, MediaGrant>()
@@ -1304,7 +1305,13 @@ internal class NativeCallbackPlayer(
 
     private fun dispatchIntent(generation: Long = epoch, recoverOutput: Boolean = false) {
         val revision = transportRevision
-        if (recoverOutput) outputRecoveryRevision = revision
+        if (recoverOutput) {
+            // Same-revision Prepare calls each own their native result until Main
+            // settles it. A healthy no-op must not retire a sibling's reset.
+            if (outputRecoveryRevision != revision) pendingOutputRecoveries = 0
+            pendingOutputRecoveries++
+            outputRecoveryRevision = revision
+        }
         lifetime.launch {
             try {
                 yield()
@@ -1324,7 +1331,14 @@ internal class NativeCallbackPlayer(
                         !released && generation == epoch && selectedLoaded && assignmentCurrent() &&
                             outputRecoveryRevision == revision && error === recoveryError
                     }
-                    if (!owner.recoverOutput(recoveryCurrent)) {
+                    val claimed = submittedOrdinaryPlay?.takeIf {
+                        playing && arrangement == null && preview == null &&
+                            it == OrdinaryPlay(ordinaryIdentity, revision, seekRevision)
+                    }
+                    val onReset: (() -> Unit)? = claimed?.let { previous ->
+                        { if (current() && submittedOrdinaryPlay === previous) submittedOrdinaryPlay = null }
+                    }
+                    if (!owner.recoverOutput(recoveryCurrent, onReset)) {
                         if (recoveryCurrent()) failOutput()
                         return@launch
                     }
@@ -1356,7 +1370,9 @@ internal class NativeCallbackPlayer(
                     }
                 }
             } finally {
-                if (recoverOutput && outputRecoveryRevision == revision) outputRecoveryRevision = null
+                if (recoverOutput && outputRecoveryRevision == revision && --pendingOutputRecoveries == 0) {
+                    outputRecoveryRevision = null
+                }
             }
         }
     }

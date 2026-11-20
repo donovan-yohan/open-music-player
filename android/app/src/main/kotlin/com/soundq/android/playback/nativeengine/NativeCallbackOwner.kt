@@ -227,11 +227,19 @@ internal class NativeCallbackOwner(
     }
 
     /** Explicit Play/Apply only. Keeps decoder/file custody and never submits Play. */
-    suspend fun recoverOutput(current: () -> Boolean): Boolean = withContext(dispatcher) {
-        if (closing || handle == 0L || !current()) return@withContext false
-        observationRevision++ // prior-route snapshots cannot retire this new intent
-        try { calls.control(handle, 9, 0, 0.0, System.nanoTime()) && current() }
-        catch (_: Throwable) { false }
+    suspend fun recoverOutput(current: () -> Boolean, onReset: (() -> Unit)? = null): Boolean {
+        val result = withContext(dispatcher) {
+            if (closing || handle == 0L || !current()) return@withContext null
+            val receipt = ++observationRevision // fence snapshots from the prior route
+            try {
+                if (!calls.control(handle, 9, 0, 0.0, receipt) || !current()) return@withContext null
+                // Sample only when an existing Play claim could mask a fresh submission.
+                // The host echoes this exact request only after reopening and quiescing.
+                onReset != null && JSONObject(calls.state(handle)).optLong("outputRecoveryReceipt") == receipt
+            } catch (_: Throwable) { null }
+        } ?: return false
+        if (result) onReset?.invoke()
+        return true
     }
 
     /** One queued runnable and one latest Move, independent of event rate. Terminals bypass the lane. */

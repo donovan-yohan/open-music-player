@@ -57,6 +57,7 @@ struct Host final : Callbacks {
     uint64_t scheduleReceipt=0, retireReceipt=0, admittedScheduleRevision=0;
     bool scheduleRetiring=false, scheduleReady=false;
     bool routeRecovery = false, outputQuiesced = false;
+    uint64_t outputRecoveryReceipt = 0;
     uint64_t sequence = 0;
     uint32_t sampleRate = 0;
     std::atomic<int32_t> error{0};
@@ -140,7 +141,7 @@ struct Host final : Callbacks {
         if (settleRate) engine->render(nullptr, 128);
         return true;
     }
-    bool recoverOutput() {
+    bool recoverOutput(uint64_t receipt) {
         if (error.load(std::memory_order_acquire) == 0 && !routeRecovery) return true;
         routeRecovery = true;
         if (!quiesce()) return false;
@@ -164,7 +165,9 @@ struct Host final : Callbacks {
         }
         routeRecovery = false;
         gated.store(false, std::memory_order_release);
-        return error.load(std::memory_order_acquire) == 0;
+        if (error.load(std::memory_order_acquire) != 0) return false;
+        outputRecoveryReceipt = receipt;
+        return true;
     }
     bool close() {
         gated.store(true, std::memory_order_release);
@@ -470,7 +473,7 @@ struct Host final : Callbacks {
     }
     bool control(int operation, int deck, double value, uint64_t eventNanos) {
         if (deck < 0 || deck >= 4 || !std::isfinite(value)) return false;
-        if (operation == 9) return deck == 0 && value == 0 && recoverOutput();
+        if (operation == 9) return deck == 0 && value == 0 && recoverOutput(eventNanos);
         if(schedule || scheduleRetiring)return false;
         auto& w = workers[deck]; auto& intent = intents[deck];
         if (operation == 10) {
@@ -558,6 +561,7 @@ struct Host final : Callbacks {
         for (const auto& w : scheduleWorkers) if (w) decoders += w->openDecoders();
         std::ostringstream out; out.imbue(std::locale::classic()); out << std::setprecision(17);
         out << "{\"error\":" << error.load() << ",\"sampleRate\":" << sampleRate
+            << ",\"outputRecoveryReceipt\":" << outputRecoveryReceipt
             << ",\"naturalEndVersion\":1"
             << ",\"speedMin\":" << minSpeed << ",\"speedMax\":" << maxSpeed
             << ",\"renderedFrames\":" << snap.renderedFrames << ",\"xRuns\":" << output->xRuns()
