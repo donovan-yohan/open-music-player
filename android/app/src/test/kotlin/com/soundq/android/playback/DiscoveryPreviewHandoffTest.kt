@@ -870,7 +870,6 @@ class DiscoveryPreviewHandoffTest {
             val failedSamples = f.hw.failedSamples
             val samples = f.hw.polls
             val revision = f.revision
-            val lifetime = f.playerField("lifetime") as CoroutineScope
             val owner = Handler(f.ownerLooper)
             val main = Handler.createAsync(Looper.getMainLooper())
             val ownerReturned = CountDownLatch(1)
@@ -879,10 +878,8 @@ class DiscoveryPreviewHandoffTest {
             TransportGate().use { held ->
                 assertTrue(owner.post(held::hold))
                 assertTrue(held.entered.await(8, TimeUnit.SECONDS))
-                val children = lifetime.coroutineContext[Job]!!.children.toSet()
-                f.player.prepare()
+                prepare = admitLoadedPrepare(f)
                 f.main.idle()
-                prepare = (lifetime.coroutineContext[Job]!!.children.toSet() - children).single()
                 assertTrue(owner.post {
                     main.post { mainSettledA = true }
                     ownerReturned.countDown()
@@ -1041,17 +1038,14 @@ class DiscoveryPreviewHandoffTest {
             val main = Handler.createAsync(Looper.getMainLooper())
             val passed = CountDownLatch(1)
             val settled = mutableListOf<Int>()
-            val lifetime = f.playerField("lifetime") as CoroutineScope
             f.hw.reopenResults.addAll(outcomes)
             f.hw.faultBeforeRecovery = true
             TransportGate().use { hold ->
                 assertTrue(owner.post(hold::hold))
                 assertTrue(hold.entered.await(8, TimeUnit.SECONDS))
                 repeat(2) { request ->
-                    val children = lifetime.coroutineContext[Job]!!.children.toSet()
-                    f.player.prepare()
+                    val admitted = admitLoadedPrepare(f)
                     f.main.idle()
-                    val admitted = (lifetime.coroutineContext[Job]!!.children.toSet() - children).single()
                     assertEquals(revision, f.revision)
                     if (cancelSibling && request == 1) admitted.cancel()
                     assertTrue(owner.post {
@@ -1089,6 +1083,21 @@ class DiscoveryPreviewHandoffTest {
             assertEquals(prior.identity, f.hw.identity(prior.deck))
             assertEquals(1, f.hw.acceptedLoads.size)
         }
+    }
+
+    private fun admitLoadedPrepare(f: Fixture): Job {
+        fun pendingRecoveries(): Int = f.playerField("outputRecovery")?.let { batch ->
+            batch.javaClass.getDeclaredField("pending").apply { isAccessible = true }.getInt(batch)
+        } ?: 0
+        val lifetime = f.playerField("lifetime") as CoroutineScope
+        val jobs = lifetime.coroutineContext[Job]!!
+        val pending = pendingRecoveries()
+        val children = jobs.children.toSet()
+        // Loaded Prepare admits recovery inline, then yields. Capture its job before
+        // idling Main can deliver a queued poll and launch unrelated journal work.
+        f.player.prepare()
+        assertEquals("one loaded Prepare admitted", pending + 1, pendingRecoveries())
+        return (jobs.children.toSet() - children).single()
     }
 
     @Test fun revokedLoadedPrepareIsRefusedBeforeNativeRecovery() {
