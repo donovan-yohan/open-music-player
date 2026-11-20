@@ -506,9 +506,10 @@ paths:
       summary: Stream an operator-cleared temporary preview without adding it to Library
       description: |
         Pass the Search result's previewSourceUrl verbatim as url, when present.
-        Looks up the exact canonical source key in a local allowlist, without
-        URL normalization, provider requests, downloads, or Library writes. No
-        query parameters. The JSON request is capped at 8192 bytes and must
+        Looks up a mounted clip or acquires a bounded excerpt from that exact
+        supported provider source, depending on server configuration. Does not
+        import tracks, write to Library, or schedule analysis. No query
+        parameters. The JSON request is capped at 8192 bytes and must
         contain exactly one case-sensitive url field. A 200 is identity-encoded
         (no Content-Encoding) and streams the verified MP3 with a fixed length.
         Treat an incomplete body as a failed preview.
@@ -549,7 +550,12 @@ paths:
             text/plain:
               schema: { type: string }
         '404':
-          description: Preview unavailable, including unconfigured, not cleared, invalid media, or at capacity
+          description: Preview unavailable, including unconfigured, unsupported source, or invalid media
+          content:
+            text/plain:
+              schema: { type: string }
+        '503':
+          description: On-demand preview is busy or exceeded its acquisition deadline
           content:
             text/plain:
               schema: { type: string }
@@ -2985,7 +2991,7 @@ components:
                         format: uri
                         maxLength: 4096
                         description: >-
-                          Optional exact local-manifest key for temporary preview of this row.
+                          Optional exact provider source key for temporary preview of this row.
                           Omitted when a provider-consistent single-source identity cannot be derived.
                           Does not indicate that a clip is mounted or available, and does not
                           replace sourceUrl or change the selection snapshot.

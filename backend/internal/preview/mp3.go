@@ -2,10 +2,16 @@ package preview
 
 import "encoding/binary"
 
-// Check the bounded MPEG-1 Layer III envelope expected by progressive playback.
-// This is a packet/extent check, not a decoder. The operator must decode and
-// audition the same digest offline before adding the clearance to the manifest.
 func validMP3(data []byte, rate, frames int) bool {
+	return frames > 0 && mp3Frames(data, rate) == frames
+}
+
+// mp3Frames derives the exact gapless extent of the bounded MPEG-1 Layer III
+// envelope expected by the existing Android reader. Zero means invalid.
+func mp3Frames(data []byte, rate int) int {
+	if len(data) > maxClipBytes || (rate != 44100 && rate != 48000) {
+		return 0
+	}
 	const packetFrames = 1152
 	firstSize, channels := mp3Packet(data, rate)
 	marker := 36
@@ -13,15 +19,15 @@ func validMP3(data []byte, rate, frames int) bool {
 		marker = 21
 	}
 	if firstSize < marker+16 {
-		return false
+		return 0
 	}
 	tag := data[marker:firstSize]
 	if string(tag[:4]) != "Xing" && string(tag[:4]) != "Info" {
-		return false
+		return 0
 	}
 	flags := binary.BigEndian.Uint32(tag[4:8])
 	if flags&3 != 3 || flags > 15 {
-		return false
+		return 0
 	}
 	encoder := 16
 	if flags&4 != 0 {
@@ -31,30 +37,34 @@ func validMP3(data []byte, rate, frames int) bool {
 		encoder += 4
 	}
 	if len(tag) < encoder+36 {
-		return false
+		return 0
 	}
 	gapless := tag[encoder:]
 	if string(gapless[:4]) != "LAME" && string(gapless[:4]) != "Lavc" {
-		return false
+		return 0
 	}
 	delay := int64(gapless[21])<<4 | int64(gapless[22])>>4
 	padding := int64(gapless[22]&15)<<8 | int64(gapless[23])
 	packets := int64(binary.BigEndian.Uint32(tag[8:12]))
+	frames := packets*packetFrames - delay - padding
 	if packets == 0 || int64(binary.BigEndian.Uint32(tag[12:16])) != int64(len(data)) ||
-		padding < 529 || packets*packetFrames-delay-padding != int64(frames) {
-		return false
+		padding < 529 || frames < 1 || frames > int64(maxSeconds*rate) {
+		return 0
 	}
 	// After the tag, count every complete packet with the same rate and channel
-	// count. The manifest duration check bounds even a forged Xing packet count.
+	// count. The duration check bounds even a forged Xing packet count.
 	tail := data[firstSize:]
 	for range packets {
 		length, ch := mp3Packet(tail, rate)
 		if length == 0 || ch != channels {
-			return false
+			return 0
 		}
 		tail = tail[length:]
 	}
-	return len(tail) == 0
+	if len(tail) != 0 {
+		return 0
+	}
+	return int(frames)
 }
 
 func mp3Packet(data []byte, rate int) (length, channels int) {

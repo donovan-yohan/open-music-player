@@ -523,7 +523,7 @@ func runServer() int {
 		}
 	}()
 	cfg := config.Load()
-	discoveryPreview, err := preview.Load(os.Getenv("DISCOVERY_PREVIEW_DIR"))
+	discoveryPreview, err := preview.Configure(os.Getenv("DISCOVERY_PREVIEW_DIR"), os.Getenv("DISCOVERY_PREVIEW_ON_DEMAND"))
 	if err != nil {
 		log.Warn(ctx, "Discovery previews disabled", map[string]interface{}{"reason": err.Error()})
 	}
