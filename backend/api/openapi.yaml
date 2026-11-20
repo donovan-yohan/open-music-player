@@ -47,6 +47,75 @@ security:
   - BearerAuth: []
 
 paths:
+  /musicbrainz/local-enrichment/suggestions:
+    post:
+      tags: [Library]
+      operationId: suggestLocalTrackMetadata
+      summary: Preview MusicBrainz metadata for a local track
+      description: |
+        Available only when LOCAL_ENRICHMENT_ENABLED is explicitly true.
+        Submit only user-reviewed text and optional measured duration. The
+        server sends title and artist to MusicBrainz; album and duration are
+        used only to rank the response. This call does not accept audio,
+        locator or identity fields, apply metadata, change Library membership,
+        or fetch artwork. Release IDs identify public metadata entities and do
+        not guarantee artwork exists. Omit optional values when unknown.
+      requestBody:
+        required: true
+        description: Uncompressed UTF-8 JSON, at most 4096 bytes and 450 combined text code points. URL parameters and repeated keys are not accepted.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [title]
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                artist:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                album:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                durationMs:
+                  type: integer
+                  minimum: 1
+                  maximum: 86400000
+      responses:
+        '200':
+          description: Suggestions for review, an ambiguous result, or no match.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: ['private, no-store']
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalEnrichmentResult'
+        '400':
+          description: Invalid enrichment request.
+        '401':
+          description: Authentication required.
+        '404':
+          description: Route not registered when enrichment is disabled.
+        '408':
+          description: Request body timed out or lookup was canceled.
+        '413':
+          description: Request body exceeds the byte limit.
+        '415':
+          description: Unsupported content type, charset, or content encoding.
+        '429':
+          description: Account or server concurrency limit reached; no lookup was queued.
+        '503':
+          description: Lookup unavailable or provider response invalid.
+        '504':
+          description: MusicBrainz lookup deadline exceeded.
   /catalog/recordings/{mb_id}/membership:
     post:
       tags: [Library]
@@ -3338,6 +3407,45 @@ components:
         toPosition:
           type: integer
           minimum: 0
+
+    # ========================================================================
+    # Local Metadata Enrichment
+    # ========================================================================
+    LocalEnrichmentResult:
+      type: object
+      required: [status, candidates]
+      properties:
+        status:
+          type: string
+          enum: [suggestions, ambiguous, no_match]
+        reason:
+          type: string
+          enum: [similar_candidates]
+        candidates:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            required: [recordingMbid, title]
+            properties:
+              recordingMbid:
+                type: string
+                format: uuid
+              title:
+                type: string
+              artist:
+                type: string
+              album:
+                type: string
+              durationMs:
+                type: integer
+                minimum: 1
+              releaseMbid:
+                type: string
+                format: uuid
+              releaseGroupMbid:
+                type: string
+                format: uuid
 
     # ========================================================================
     # Error Schema

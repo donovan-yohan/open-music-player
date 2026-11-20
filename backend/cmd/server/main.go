@@ -980,6 +980,7 @@ func runServer() int {
 		SearchHandlers:          searchHandlers,
 		MBClient:                mbClient,
 		MBHandlers:              mbHandlers,
+		LocalEnrichmentEnabled:  cfg.LocalEnrichmentEnabled,
 		WSHandler:               wsHandler,
 		MatcherHandlers:         matcherHandlers,
 		LibraryHandlers:         libraryHandlers,
