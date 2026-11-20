@@ -781,10 +781,11 @@ class DiscoveryPreviewHandoffTest {
             val start = f.hw.transport.size
             val revision = f.revision
             val failedSamples = f.hw.failedSamples
-            f.hw.recoveryStateOverride = if (receipt == null) """{"error":-10001,"decks":[]}"""
+            val degradedState = if (receipt == null) """{"error":-10001,"decks":[]}"""
                 else """{"outputRecoveryReceipt":"$receipt"}"""
+            f.hw.nextPostResetState = degradedState
             f.hw.faultBeforeRecovery = true
-            f.hw.traceRecoveries = true
+            val beforeRecovery = f.hw.recoveryOutcomes.size
             val owner = Handler(f.ownerLooper)
             TransportGate().use { held ->
                 assertTrue(owner.post(held::hold))
@@ -793,7 +794,10 @@ class DiscoveryPreviewHandoffTest {
                 f.main.idle()
             }
             awaitOwnerMarker(f)
+            assertEquals(listOf(NativeOutputRecovery.Reset), f.hw.recoveryOutcomes.drop(beforeRecovery))
             assertEquals(1, f.hw.routeResets)
+            assertEquals("Reset must arm degraded state without reading it before polling resumes",
+                degradedState, f.hw.takeUnreadPostResetState())
             assertFalse(f.hw.isPlaying(prior.deck))
             assertEquals(failedSamples, f.hw.failedSamples)
             f.settled()
@@ -1135,7 +1139,6 @@ class DiscoveryPreviewHandoffTest {
             val nativeTraversal = f.hw.traversal(prior.deck)
             assertNull(f.playerField("desiredSeek"))
             assertNull(f.playerField("successor"))
-            f.hw.traceRecoveries = true
             val requests = f.hw.recoveryOutcomes.size
             if (reset == 0) f.hw.faultBeforeRecovery = true
             // A's actual healthy op9 arms the asynchronous fault for B's entry.
@@ -1497,7 +1500,10 @@ internal class ProjectionPreviewHardware : NativeCallbackCalls {
     @Volatile var failedPolls = 0
         private set
     private var outputRecoveryReceipt = 0L
-    @Volatile var recoveryStateOverride: String? = null
+    @Volatile var nextPostResetState: String? = null
+    private var unreadPostResetState: String? = null
+    @Synchronized fun takeUnreadPostResetState(): String? =
+        unreadPostResetState.also { unreadPostResetState = null }
     val reopenResults = ConcurrentLinkedQueue<Boolean>()
     val reopenAttempts = CopyOnWriteArrayList<Boolean>()
     @Volatile var failPreviewReadiness = false
@@ -1510,8 +1516,7 @@ internal class ProjectionPreviewHardware : NativeCallbackCalls {
         decks[slot].position = target; decks[slot].traversal++
         heldSeek = null
     }
-    private var unreadRecoveryRequest: Long? = null
-    @Volatile var traceRecoveries = false
+
     @Volatile var routeResets = 0
         private set
     @Synchronized fun latchRouteFault() { outputError = -899 }
@@ -1561,9 +1566,6 @@ internal class ProjectionPreviewHardware : NativeCallbackCalls {
         if (outputError != 0 && operation in listOf(1, 2, 3)) return false
         when (operation) {
             9 -> {
-                if (traceRecoveries && eventNanos != 0L) {
-                    unreadRecoveryRequest = eventNanos
-                }
                 beforeRecovery?.let { beforeRecovery = null; it() }
                 if (outputError != 0) {
                     // callback_host.cpp quiesces only a failed/recovering route;
@@ -1577,6 +1579,9 @@ internal class ProjectionPreviewHardware : NativeCallbackCalls {
                     if (reopenResults.isNotEmpty()) faultBeforeRecovery = true
                     outputError = 0
                     outputRecoveryReceipt = eventNanos
+                    // Only a real Reset arms the next read, even with the typed path's zero stamp.
+                    unreadPostResetState = nextPostResetState
+                    nextPostResetState = null
                     routeResets++
                     recoveryOutcomes += NativeOutputRecovery.Reset
                 } else recoveryOutcomes += NativeOutputRecovery.Healthy
@@ -1611,13 +1616,8 @@ internal class ProjectionPreviewHardware : NativeCallbackCalls {
     @Synchronized override fun state(handle: Long): String {
         polls++
         heldSeek?.let { (slot, _) -> heldSeekSamples += SeekSample(decks[slot].position, decks[slot].traversal) }
-        // Only the op9 follow-up state read, not a later poll, is degraded.
-        if (unreadRecoveryRequest != null) recoveryStateOverride?.let { response ->
-            recoveryStateOverride = null
-            unreadRecoveryRequest = null
-            return response
-        }
-        unreadRecoveryRequest = null
+        // A test takes the unread value at its owner barrier before advancing polling.
+        takeUnreadPostResetState()?.let { return it }
         if (outputError != 0) {
             failedSamples++
             if (Thread.currentThread().stackTrace.any { it.className.startsWith(NativeCallbackOwner::class.java.name + "\$poll\$") }) failedPolls++

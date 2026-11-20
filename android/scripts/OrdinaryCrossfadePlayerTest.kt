@@ -35,6 +35,7 @@ internal class OrdinaryCrossfadePlayerTest {
         /** Incoming cursor already moved (bookmark resume acknowledged) before native crossfade processing. */
         @Volatile var incomingCursor=0L
         @Synchronized override fun open()=1L
+        override fun recoverOutput(handle: Long) = NativeOutputRecovery.Healthy
         @Synchronized override fun load(handle:Long,deck:Int,path:String,identity:Long,generation:Long,positionMs:Long):Boolean {
             check(d[deck].id==0L);loads.add(deck)
             if(deck==1&&refuseIncomingLoad)return false
