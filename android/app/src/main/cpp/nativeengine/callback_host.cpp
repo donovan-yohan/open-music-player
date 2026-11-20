@@ -241,6 +241,11 @@ struct Host final : Callbacks {
         return true;
     }
     bool readStem(StemReceipt& receipt) {
+        // Faulted output gates both the callback and maintenance. The receipt
+        // reader is also a serialized producer, but may take over consumption
+        // only via quiesce's concrete callback-exit fence.
+        if (stemPending && error.load(std::memory_order_acquire) != 0 &&
+            (!outputQuiesced || engine->completedStructuralSequence() < stemPending) && !quiesce()) return false;
         Snapshot snap;
         if (!capture(snap) || !settleStem(snap.stem)) return false;
         receipt = snap.stem;

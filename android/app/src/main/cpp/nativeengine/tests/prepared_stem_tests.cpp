@@ -34,10 +34,15 @@ thread_local bool onOutput = false;
 struct Sink final : Output {
     Callbacks* callbacks=nullptr;
     unsigned& stops;
+    std::atomic<bool> allowStop{true};
+    std::atomic<unsigned> failedStops{0};
     explicit Sink(unsigned& stopCount):stops(stopCount){}
     bool open(Callbacks& c,uint32_t& r) override {callbacks=&c;r=rate;return true;}
     bool start() override {return true;}
-    bool stopClose() override {++stops;callbacks=nullptr;return true;}
+    bool stopClose() override {
+        if(!allowStop) {++failedStops;return false;}
+        ++stops;callbacks=nullptr;return true;
+    }
     int32_t xRuns() const noexcept override {return 0;}
     void render(float* pcm,unsigned n) {
         onOutput=true;callbacks->render(pcm,n);onOutput=false;
@@ -515,8 +520,159 @@ void rollingRefusal(const std::string& directory) {
             "peer assignment refuses rolling before another member decoder opens");
     withPeer.close();
 }
+void faultedRetirement(const std::string& directory) {
+    const auto original=directory+"/faulted-stem-original.wav",member=directory+"/faulted-stem-member.wav";
+    wav(original,dry,longFrames);wav(member,stem,longFrames);
+    Trial t(original,1,false);
+    const auto trace=std::make_shared<MemberTrace>();
+    const auto binding=t.registry.bindRollingPreparedStem(t.handle,longKey,memberFactory(member,trace));
+    window(t,0,2*page);
+    trace->hold(2*page);
+    require(t.registry.control(t.handle,1,0,0,0),"play fault fixture original at exact unity");
+    t.play(page+1,"fault_fixture_plays_dry",unity);
+    t.source(page+1);trace->awaitHold();
+
+    // Model the disconnected stream: no callback, state, recovery or test
+    // pump is driven after the fault. Only the receipt reader can advance it.
+    t.sink->allowStop=false;
+    t.sink->callbacks->outputError(-123);
+    const auto seq=t.registry.retirePreparedStem(t.handle,binding);
+    require(seq,"faulted retire enqueued");
+    StemReceipt observed;
+    for(unsigned i=0;i<3;++i) {
+        require(!(t.registry.readPreparedStem(t.handle,observed) && observed.sequence==seq) &&
+                trace->closes==0,"failed output close cannot grant retirement");
+    }
+    t.sink->allowStop=true;
+    require(!(t.registry.readPreparedStem(t.handle,observed) && observed.sequence==seq) &&
+            trace->closes==0,"successful stop still cannot release a held member read");
+    trace->release();
+    await([&]{return t.registry.readPreparedStem(t.handle,observed) && observed.sequence==seq;},
+          "receipt-only polling drains faulted retirement after both fences");
+    require(observed.result==StemResult::Retired && !observed.binding && !observed.windowEnd &&
+            trace->closes==1 && t.stops==1 && t.sink->failedStops>=3,
+            "post-block retire requires concrete close and decoder exit");
+    t.source(page+1);t.close();
+
+    // Isolate the output fence without a worker exit that could mask its loss.
+    Trial single(original,1,false);
+    const auto singleBinding=single.registry.bindPreparedStem(single.handle,longKey,0,std::vector<float>(page*2));
+    drain(single);single.ack(singleBinding,StemResult::Bound,singleBinding);
+    single.sink->allowStop=false;
+    single.sink->callbacks->outputError(-123);
+    const auto singleSeq=single.registry.retirePreparedStem(single.handle,singleBinding);
+    require(singleSeq,"single-window faulted retire enqueued");
+    for(unsigned i=0;i<3;++i)
+        require(!(single.registry.readPreparedStem(single.handle,observed) && observed.sequence==singleSeq) && single.stops==0,
+                "failed stop alone retains single-window custody");
+    single.sink->allowStop=true;
+    single.ack(singleSeq,StemResult::Retired,0);
+    require(single.sink->failedStops>=3,"single-window poll exercised actual failed stops");
+    single.close();
+}
+void peerRevocationWav(const std::string& directory) {
+    const auto original=directory+"/peer-stem-original.wav",member=directory+"/peer-stem-member.wav";
+    wav(original,dry,longFrames);wav(member,stem,longFrames);
+    Trial t(original,1,false);
+    const auto trace=std::make_shared<MemberTrace>();
+    const auto binding=t.registry.bindRollingPreparedStem(t.handle,longKey,memberFactory(member,trace));
+    window(t,0,2*page);
+    const auto gain=t.registry.setPreparedStemGain(t.handle,binding,0);
+    require(t.registry.control(t.handle,1,0,0,0),"play peer fixture original");
+    t.play(ramp,"peer_fixture_initial_ramp",[](unsigned f){return -double(f+1)/ramp;});
+    t.ack(gain,StemResult::GainApplied,binding);
+    constexpr unsigned start=ramp+17;
+    t.play(start,"peer_fixture_fully_wet",muted);
+    t.source(start);
+    require(t.registry.load(t.handle,1,original,identity+1,generation,0),"load real paused peer");
+    await([&]{
+        t.registry.state(t.handle);drain(t);
+        StemReceipt receipt;
+        return t.registry.readPreparedStem(t.handle,receipt) && receipt.revoked && !receipt.windowEnd;
+    },"peer assignment immediately revokes member coverage before next sample");
+    t.source(start);
+    retire(t,binding,0);
+    require(trace->closes==1 && trace->observed().size()==2,"retire releases decoder without deferring correction fade");
+    std::array<float,(ramp+32)*2> pcm{};
+    t.sink->render(pcm.data(),ramp+32);
+    for(unsigned i=0;i<ramp+32;++i)for(unsigned c=0;c<2;++c) {
+        const double wet=i<ramp ? double(ramp-1-i)/ramp : 0;
+        const float expected=static_cast<float>(dry(start+i,c)-wet*stem(start-1,c));
+        require(!std::memcmp(&expected,&pcm[i*2+c],sizeof(float)),"peer revocation fades copied stereo correction, then exact dry");
+    }
+    t.source(start+ramp+32);t.close();
+}
+void peerRevocationClockFence() {
+    enum class After { None, Seek, Replace, Speed, Pause, Stall };
+    for(bool wet:{true,false}) for(auto after:{After::None,After::Seek,After::Replace,After::Speed,After::Pause,After::Stall}) {
+        Engine e(rate);
+        std::vector<float> original(frames*2,0.5f), replacement(frames*2,0.375f);
+        auto member=std::make_unique<float[]>(frames*2);
+        for(unsigned i=0;i<frames;++i){member[i*2]=0.25f;member[i*2+1]=-0.125f;}
+        const auto makeWindow=[](const float* data) {
+            PcmWindow w;w.count=1;w.pages[0]={data,0,frames};return w;
+        };
+        const auto send=[&](Operation op,uint64_t seq,double value=0,uint64_t gen=generation) {
+            Command c{};c.operation=op;c.sequence=seq;c.generation=gen;c.value=value;
+            require(e.submit(c),"clock fixture command admitted");
+        };
+        const auto capture=[&] {Snapshot s;require(e.snapshot(s),"clock fixture coherent snapshot");return s;};
+        require(e.assignPaged(0,1,generation,{frames,rate,identity},makeWindow(original.data())),"clock fixture source assignment");
+        e.render(nullptr,0);
+        const auto traversal=capture().decks[0].traversalRevision;
+        require(e.bindRollingPreparedStem(2,key,traversal),"clock fixture rolling bind");
+        e.render(nullptr,0);
+        require(e.publishPreparedStemWindow(3,2,traversal,makeWindow(member.get())),"clock fixture member window");
+        e.render(nullptr,0);
+        if(wet) require(e.controlPreparedStem(4,2,0,false),"clock fixture member mute");
+        send(Operation::Play,5);
+        std::array<float,ramp*2> settled{};
+        e.render(settled.data(),ramp);
+        require(settled[ramp*2-2]==(wet ? 0.25f : 0.5f) && settled[ramp*2-1]==(wet ? 0.625f : 0.5f),
+                "clock fixture last sample is qualified wet or exact unity as selected");
+
+        require(e.assignPaged(1,6,generation,{frames,rate,identity+1},makeWindow(original.data())),"clock fixture peer assignment");
+        e.render(nullptr,0);
+        const auto revoked=capture();
+        require(revoked.stem.revoked && !revoked.stem.windowEnd && e.completedStructuralSequence()==6 &&
+                !revoked.decks[1].playing && revoked.decks[0].sourceFrame==ramp && revoked.decks[0].traversalRevision==traversal,
+                "peer releases descriptors under FIFO without changing original clock");
+        // Enforce read revocation: the held correction must not reference this
+        // released storage (run under ASan as well as the numerical oracle).
+        member.reset();
+        require(e.controlPreparedStem(7,2,1,true),"clock fixture native retire");
+        if(after==After::Seek) send(Operation::Seek,8,ramp); // same frame, different traversal
+        if(after==After::Replace) {
+            require(e.assignPaged(0,8,generation+1,{frames,rate,identity},makeWindow(replacement.data())),"same identity successor assignment");
+            send(Operation::Play,9,0,generation+1);
+        }
+        if(after==After::Speed) {
+            require(e.publishWindowRate(0,8,generation,makeWindow(original.data()),1.25) &&
+                    e.publishWindowRate(0,9,generation,makeWindow(original.data()),1),"same traversal speed away-and-back within a block");
+        }
+        if(after==After::Pause) {send(Operation::Pause,8);send(Operation::Play,9);}
+        if(after==After::Stall) {
+            require(e.publishWindow(0,8,generation,{}),"drop dry PCM readiness independently of the tail");
+            std::array<float,2> silence{1,1};
+            e.render(silence.data(),1);
+            require(silence[0]==0 && silence[1]==0 && capture().decks[0].sourceFrame==ramp,"stall emits no correction and holds the original cursor");
+            require(e.publishWindow(0,9,generation,makeWindow(original.data())),"restore dry PCM residency without a traversal change");
+        }
+        std::array<float,(ramp+1)*2> output{};
+        e.render(output.data(),ramp+1);
+        require(capture().stem.result==StemResult::Retired,"clock fixture separate retire outcome");
+        for(unsigned i=0;i<=ramp;++i) {
+            const double tail=wet && after==After::None && i<ramp ? double(ramp-1-i)/ramp : 0;
+            const double dryLevel=after==After::Replace ? 0.375 : 0.5;
+            require(output[i*2]==static_cast<float>(dryLevel-tail*0.25) && output[i*2+1]==static_cast<float>(dryLevel+tail*0.125),
+                    "peer revocation tail is numeric only, unity exact, and fenced by original clock");
+        }
+    }
+}
 }
 int main(int argc,char** argv) {
+    if(argc==3 && std::strcmp(argv[2],"--faulted-retire")==0){faultedRetirement(argv[1]);return 0;}
+    if(argc==3 && std::strcmp(argv[2],"--peer-revocation")==0){peerRevocationClockFence();peerRevocationWav(argv[1]);return 0;}
     require(argc==2 || (argc==3 && std::strcmp(argv[2],"--rolling")==0),"private build output directory argument");
     if(argc==3){rolling(argv[1]);rollingCustody(argv[1]);rollingRefusal(argv[1]);return 0;}
     const std::string original=std::string(argv[1])+"/prepared-stem-original.wav",member=std::string(argv[1])+"/prepared-stem-member.wav";

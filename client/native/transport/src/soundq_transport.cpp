@@ -193,6 +193,13 @@ struct Engine::Impl {
             return window.count && cursor >= window.pages[0].firstFrame && cursor < end();
         }
     } stem;
+    // Callback-owned scalars, never borrowed PCM. An explicit retire can free
+    // the window while this short same-clock tail is still audible.
+    struct {
+        double left = 0, right = 0;
+        uint32_t remaining = 0;
+        bool nonzero() const noexcept { return left != 0 || right != 0; }
+    } stemCorrection;
     StemReceipt stemReceipt{};
     struct Boundary { uint32_t out=0,in=1; uint64_t outGeneration=0,inGeneration=0,length=0,elapsed=0; double start=0; bool begun=false; } boundary;
     bool boundaryCurrent() const noexcept {
@@ -306,12 +313,19 @@ struct Engine::Impl {
         data[stemAt+7]=stem.end();data[stemAt+8]=stemReceipt.revoked;
         publication.store(data);
     }
-    bool stemEligible(const PreparedStemKey& key) const noexcept {
+    bool stemUnitClock() const noexcept {
         const auto& d = decks[0];
-        return !schedule && d.paged && d.source.identity == key.identity && d.generation == key.generation &&
-            d.source.frames == key.sourceFrames && d.source.sourceRate == key.sourceRate &&
+        return !schedule && d.paged &&
             !d.scratching && d.listening == 1 && d.rate.target == 1 && d.rate.value == 1 &&
-            d.cursor == std::floor(d.cursor) && !decks[1].source.identity && !decks[2].source.identity && !decks[3].source.identity;
+            d.cursor == std::floor(d.cursor);
+    }
+    bool stemClockMatches(const PreparedStemKey& key) const noexcept {
+        const auto& d = decks[0];
+        return d.source.identity == key.identity && d.generation == key.generation &&
+            d.source.frames == key.sourceFrames && d.source.sourceRate == key.sourceRate && stemUnitClock();
+    }
+    bool stemEligible(const PreparedStemKey& key) const noexcept {
+        return stemClockMatches(key) && !decks[1].source.identity && !decks[2].source.identity && !decks[3].source.identity;
     }
     void applyStem(const Envelope& e) noexcept {
         const auto& c = e.command;
@@ -335,6 +349,7 @@ struct Engine::Impl {
             if (!stemReceipt.binding && stemEligible(key) && d.cursor < d.source.frames &&
                 (!e.frame || e.frame == d.traversalRevision)) {
                 stem = {key,d.traversalRevision,e.window,{},stemRampFrames,e.frame != 0};
+                stemCorrection = {};
                 stemReceipt.binding = c.sequence;
                 stemReceipt.revoked = false;
                 stemReceipt.result = StemResult::Bound;
@@ -379,6 +394,25 @@ struct Engine::Impl {
         const auto& page = stem.window.pages[index < stem.window.pages[0].firstFrame + stem.window.pages[0].frames ? 0 : 1];
         return page.samples + (index - page.firstFrame) * 2;
     }
+    void sampleStem(uint64_t index, double& left, double& right) noexcept {
+        if (stemCorrection.remaining) {
+            if (--stemCorrection.remaining) {
+                const auto wet = double(stemCorrection.remaining) / stemRampFrames;
+                left += wet * stemCorrection.left;
+                right += wet * stemCorrection.right;
+            } else stemCorrection = {}; // terminal sample is exactly dry
+        } else if (stem.window.count || (stem.rolling && !stemReceipt.revoked)) {
+            double delta;
+            if (const auto* member = stemTap(index,delta)) {
+                const auto l = member[0], r = member[1];
+                stemCorrection = {delta * l,delta * r,0};
+                // Preserve the normal mix's multiply-add rounding; the stored
+                // products are only for a later revocation tail.
+                left += delta * l;
+                right += delta * r;
+            } else stemCorrection = {};
+        }
+    }
     void apply(const Command& c) noexcept {
         auto& d = decks[c.deck];
         if (c.operation == Operation::Assign) {
@@ -419,6 +453,7 @@ struct Engine::Impl {
     }
     void apply(const Envelope& envelope) noexcept {
         const auto& c = envelope.command;
+        const auto originalTraversal = decks[0].traversalRevision;
         if (envelope.kind == EnvelopeKind::StemBind || envelope.kind == EnvelopeKind::StemGain ||
             envelope.kind == EnvelopeKind::StemRetire || envelope.kind == EnvelopeKind::StemWindow) {
             applyStem(envelope);
@@ -542,14 +577,23 @@ struct Engine::Impl {
         }
         // Do this per command, not per block: an away-and-back rate change,
         // same-frame seek or A/B/A assignment cannot revive a borrowed member.
+        const auto& original = decks[0];
+        if (stemCorrection.nonzero() && (!original.playing || original.traversalRevision != originalTraversal || !stemUnitClock()))
+            stemCorrection = {};
         if ((stem.window.count || stem.rolling) && !stemReceipt.revoked) {
             if (!stemEligible(stem.key)) {
+                // Peer admission can revoke coverage without changing deck 0's
+                // clock. Smooth only that case, using the last applied correction.
+                if (stem.window.count && original.traversalRevision == stem.traversal && stemClockMatches(stem.key) &&
+                    stemCorrection.nonzero() && std::isfinite(stemCorrection.left) && std::isfinite(stemCorrection.right))
+                    stemCorrection.remaining = stemRampFrames;
+                else stemCorrection = {};
                 stem.window = {};
                 if (stem.rolling) stemReceipt.revoked = true;
-            } else if (decks[0].traversalRevision != stem.traversal) {
+            } else if (original.traversalRevision != stem.traversal) {
                 stem.window = {};
                 if (stem.rolling) {
-                    stem.traversal = decks[0].traversalRevision;
+                    stem.traversal = original.traversalRevision;
                     stem.wetFrames = 0;
                 }
             }
@@ -1205,8 +1249,12 @@ void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
         const bool advanceBoundary=!p.schedule && boundaryReady && p.boundaryCurrent() && p.boundary.begun && p.decks[p.boundary.out].playing && p.boundary.elapsed<p.boundary.length;
         if (p.schedule) {if(prepared)p.scheduleSample(left,right,p.renderedFrames+frame);}
         else for (auto& d : p.decks) {
+            const bool stemDeck = &d == &p.decks[0];
             d.rate.advance(); d.gain.advance();
-            if (!d.playing || d.rate.value == 0 || (!boundaryReady && p.boundaryCurrent() && (&d==&p.decks[p.boundary.out] || &d==&p.decks[p.boundary.in]))) continue;
+            if (!d.playing || d.rate.value == 0 || (!boundaryReady && p.boundaryCurrent() && (&d==&p.decks[p.boundary.out] || &d==&p.decks[p.boundary.in]))) {
+                if (stemDeck && p.stemCorrection.nonzero()) p.stemCorrection = {};
+                continue;
+            }
             double position = d.cursor;
             if (d.source.frames && position >= static_cast<double>(d.source.frames)) {
                 if (d.rate.value >= 0) {
@@ -1227,16 +1275,13 @@ void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
             const auto level = d.gain.value * std::min(1.0, slow) * p.boundaryGain(static_cast<uint32_t>(&d-p.decks.data()));
             const auto* firstTap = d.tap(index);
             const auto* nextTap = d.tap(next);
-            if (!firstTap || !nextTap) { ++d.missingPcmFrames; continue; }
+            if (!firstTap || !nextTap) {
+                if (stemDeck) p.stemCorrection = {};
+                ++d.missingPcmFrames; continue;
+            }
             double l = firstTap[0] * (1 - fraction) + nextTap[0] * fraction;
             double r = firstTap[1] * (1 - fraction) + nextTap[1] * fraction;
-            if ((p.stem.window.count || (p.stem.rolling && !p.stemReceipt.revoked)) && &d == &p.decks[0]) {
-                double delta;
-                if (const auto* member = p.stemTap(index,delta)) {
-                    l += delta * member[0];
-                    r += delta * member[1];
-                }
-            }
+            if (stemDeck) p.sampleStem(index,l,r);
             left += level * l;
             right += level * r;
             d.cursor = position + d.rate.value * d.source.sourceRate / p.outputRate;
