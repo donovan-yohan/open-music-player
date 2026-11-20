@@ -163,11 +163,8 @@ exit `+code)
 			if readErr != nil || parseErr != nil || pid <= 0 {
 				t.Fatalf("missing launched leaf: %v / %v", readErr, parseErr)
 			}
-			t.Cleanup(func() {
-				if !previewLeafStopped(pid, false) {
-					_ = syscall.Kill(pid, syscall.SIGKILL)
-				}
-			})
+			// On a regression the bounded leaf exits on its own. The test never
+			// signals a saved PID that may already belong to another process.
 			assertPreviewLeafStopped(t, pid)
 			assertNoPreviewWork(t, root)
 			if code == "0" && (err != nil || string(data) != "owned bytes") {
