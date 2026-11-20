@@ -49,6 +49,7 @@ struct Shared {
     std::condition_variable cv;
     std::vector<Read> reads;
     bool hold = false, entered = false;
+    uint64_t blockedFrom = UINT64_MAX;
     std::atomic<int> error{0}, opens{0}, closes{0};
     std::atomic<bool> shortRead{false};
     std::atomic<bool> sourceRetired{false};
@@ -57,7 +58,12 @@ struct Shared {
     bool known = false, lateEnd = false;
     unsigned salt = 0;
     void arm() { std::lock_guard<std::mutex> lock(mutex); hold = true; entered = false; }
-    void release() { { std::lock_guard<std::mutex> lock(mutex); hold = false; } cv.notify_all(); }
+    void release() { { std::lock_guard<std::mutex> lock(mutex); hold = false; blockedFrom = UINT64_MAX; } cv.notify_all(); }
+    void blockFrom(uint64_t first) { { std::lock_guard<std::mutex> lock(mutex); blockedFrom = first; } cv.notify_all(); }
+    bool requested(uint64_t first) {
+        std::lock_guard<std::mutex> lock(mutex);
+        return std::any_of(reads.begin(),reads.end(),[&](const Read& read){return read.first==first;});
+    }
     size_t count() { std::lock_guard<std::mutex> lock(mutex); return reads.size(); }
     void waitRead() { std::unique_lock<std::mutex> lock(mutex); require(cv.wait_for(lock, std::chrono::seconds(5), [&]{return entered;}), "actual read entered"); }
 };
@@ -75,7 +81,7 @@ struct Reader final : PcmReader {
           // Hold that discovery, not an earlier overlap read on a full refill.
           if (!s->lateEnd || first >= s->length) {
               s->entered = true; s->cv.notify_all();
-              s->cv.wait(lock,[&]{return !s->hold;});
+              s->cv.wait(lock,[&]{return !s->hold && first<s->blockedFrom;});
           } }
         if (s->sourceRetired.load()) throw std::runtime_error("source retired at reader return fence");
         if (s->error.load()) return s->error.load();
@@ -248,17 +254,74 @@ void callbackAck(unsigned stage) {
     f.worker->pump(f.snap);require(f.worker->stats().recycledPages==recycled+4,"old bank releases exactly after postblock ACK");
     f.renderExact(2048);
 }
-void twoNewPages() {
-    Fixture f;f.prime();f.command(Operation::Play);
+void twoNewPages(bool known) {
+    Fixture f;f.prime(known);f.command(Operation::Play);
     const auto pubs=f.worker->stats().publishedWindows, calls=f.worker->stats().decodeCalls;
     const auto before=f.s->count();
     f.crossBoundary();f.crossBoundary(); // no maintenance: two source pages advanced
     f.worker->pump(f.snap);f.publish(pubs);f.ack();
+    if(!known) {
+        require(f.worker->stats().publishedWindows==pubs+1,"first catch-up page published separately");
+        f.publish(pubs+1);f.ack();
+    }
     require(f.worker->stats().decodeCalls-calls==2,"two-page forward slide decodes exactly two missing pages");
     {std::lock_guard<std::mutex> lock(f.s->mutex);
      require(f.s->reads[before].first==f.s->reads[before-1].first+page &&
          f.s->reads[before+1].first==f.s->reads[before].first+page,"multiple missing pages decode in ascending sequential source order");}
     f.renderExact(2048);
+}
+void tightCatchup() {
+    Fixture f;f.prime();f.command(Operation::Play);
+    const auto initialEnd=(resumeFrame/page+4)*page;
+    const auto initialPublication=f.worker->stats().publishedWindows;
+    const auto traversal=f.snap.decks[0].traversalRevision;
+    const auto missing=f.snap.decks[0].missingPcmFrames;
+    f.s->blockFrom(initialEnd);
+    f.crossBoundary();f.worker->pump(f.snap);
+    until([&]{return f.s->requested(initialEnd);});
+    // One late refill, admitted normally on a page crossing. Let its predecessor
+    // cover playback until the exact last available interpolation pair is spent.
+    while(f.snap.decks[0].sourceFrame+256<initialEnd-1)f.renderExact(256);
+    while(f.snap.decks[0].sourceFrame<initialEnd-1)f.renderExact(1);
+    require(!f.worker->ready(f.snap) && f.snap.decks[0].missingPcmFrames==missing,
+        "reached the two-tap edge without spending a missing sample");
+    f.s->blockFrom(initialEnd+page);f.publish(initialPublication);
+    const auto catchupCalls=f.worker->stats().decodeCalls;
+    f.ack();
+    require(f.worker->ready(f.snap),"first late refill is ACKed and restores one page of headroom");
+    // Subsequent pages each take only 3/4 of a page of consumption. Two such
+    // reads cannot share a single publication deadline with one page resident.
+    constexpr uint32_t perRead=static_cast<uint32_t>(page*48000*3/(44100*4));
+    auto renderForRead=[&] {
+        for (uint32_t done=0;done<perRead;) {
+            const auto n=std::min(256U,perRead-done);f.renderExact(n);done+=n;
+        }
+    };
+    bool previousPublished=true;
+    for(unsigned i=0;i<8;++i) {
+        const auto first=initialEnd+(i+1)*page;
+        until([&]{return f.s->requested(first);});
+        try {renderForRead();}
+        catch(...) {
+            std::cerr<<"CATCHUP page="<<i<<" previous_page_published="<<previousPublished
+                <<" missing_delta="<<(f.snap.decks[0].missingPcmFrames-missing)
+                <<" frozen_source_floor="<<static_cast<uint64_t>(f.snap.decks[0].sourceFrame)<<'\n';
+            throw;
+        }
+        require(previousPublished && f.worker->ready(f.snap),"timely previous page covers playback while next page is held");
+        const auto published=f.worker->stats().publishedWindows;
+        f.s->blockFrom(first+page);
+        until([&]{
+            f.worker->pump(f.snap);
+            return f.worker->stats().publishedWindows>published || f.s->requested(first+page);
+        });
+        previousPublished=f.worker->stats().publishedWindows>published;
+        if(previousPublished)f.ack();
+    }
+    require(previousPublished && f.worker->stats().decodeCalls-catchupCalls==8 &&
+        f.snap.decks[0].traversalRevision==traversal && f.snap.decks[0].playing &&
+        f.snap.decks[0].missingPcmFrames==missing,"catch-up preserves continuous samples and transport");
+    f.renderExact(1024);
 }
 void uncovered() {
     Fixture f;f.prime();f.command(Operation::Play);
@@ -275,9 +338,9 @@ void uncovered() {
     f.s->release();f.publish(published);require(!f.worker->ready(f.snap),"new-only pending taps cannot grant readiness");
     f.ack();require(f.worker->ready(f.snap),"actual ACK admits new second tap");f.renderExact(512);
 }
-void seekAwayBack() {
-    Fixture f;f.prime(true);f.command(Operation::Play);
-    for(const auto target:{resumeFrame-page*6,resumeFrame}) {
+void seekAwayBack(bool known) {
+    Fixture f;f.prime(known);f.command(Operation::Play);
+    for(const auto target:{known?resumeFrame-page*6:resumeFrame+page*6,resumeFrame}) {
         const auto calls=f.worker->stats().decodeCalls, pubs=f.worker->stats().publishedWindows;
         f.worker->fenceSeek();f.command(Operation::Seek,static_cast<double>(target));
         require(!f.worker->ready(f.snap),"distant seek not covered");
@@ -383,9 +446,12 @@ int main(int argc,char** argv) {
         else if(mode.find("copy_")==0 || mode.find("decode_")==0)cancellation(mode);
         else if(mode=="ack_pre")callbackAck(1);
         else if(mode=="ack_post")callbackAck(2);
-        else if(mode=="forward_two")twoNewPages();
+        else if(mode=="forward_two")twoNewPages(false);
+        else if(mode=="forward_two_known")twoNewPages(true);
+        else if(mode=="tight_catchup")tightCatchup();
         else if(mode=="uncovered")uncovered();
-        else if(mode=="seek")seekAwayBack();
+        else if(mode=="seek")seekAwayBack(true);
+        else if(mode=="seek_unknown_forward")seekAwayBack(false);
         else if(mode=="eos_known")endControl(true,false);
         else if(mode=="eos_unknown")endControl(false,false);
         else if(mode=="short_tail")endControl(false,true);

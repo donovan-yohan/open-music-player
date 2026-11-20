@@ -83,13 +83,15 @@ func TestCatalogRecordingSourceAuthenticated(t *testing.T) {
 		t.Fatalf("exact source: status=%d headers=%v body=%q calls=%d", w.Code, w.Header(), w.Body.String(), calls)
 	}
 
-	for i, tc := range []struct {
+	for _, tc := range []struct {
 		name       string
 		status     int
 		body, want string
 		wantStatus int
 	}{
+		{"exact remix link from the requested recording", 200, strings.Replace(body, "http://www.soundcloud.com/fixture/exact-track?utm_source=test", "https://soundcloud.com/sorabecareful/constantly-sora-remix", 1), `{"recordingMbid":"` + sourceTestMBID + `","sourceUrl":"https://soundcloud.com/sorabecareful/constantly-sora-remix"}` + "\n", 200},
 		{"no exact relation", 200, strings.Replace(body, "/fixture/exact-track", "/fixture/sets/playlist", 1), `{"recordingMbid":"` + sourceTestMBID + `","sourceUrl":null}` + "\n", 200},
+		{"remix-of relationship cannot substitute for exact source", 200, `{"id":"` + sourceTestMBID + `","video":false,"relations":[{"type":"remix","target-type":"recording","direction":"backward","recording":{"id":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","title":"Constantly"}}]}`, `{"recordingMbid":"` + sourceTestMBID + `","sourceUrl":null}` + "\n", 200},
 		{"explicit empty relations", 200, `{"id":"` + sourceTestMBID + `","video":false,"relations":[]}`, `{"recordingMbid":"` + sourceTestMBID + `","sourceUrl":null}` + "\n", 200},
 		{"missing relations are unavailable", 200, `{"id":"` + sourceTestMBID + `","video":false}`, "", 503},
 		{"null relations are unavailable", 200, `{"id":"` + sourceTestMBID + `","video":false,"relations":null}`, "", 503},
@@ -103,9 +105,10 @@ func TestCatalogRecordingSourceAuthenticated(t *testing.T) {
 			if tc.wantStatus == http.StatusServiceUnavailable {
 				want = `{"code":"RECORDING_SOURCE_UNAVAILABLE","message":"recording source lookup is unavailable"}` + "\n"
 			}
+			before := calls
 			w := request(http.MethodGet, sourceTestPath, token)
-			if w.Code != tc.wantStatus || w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("Content-Type") != "application/json" || w.Body.String() != want || calls != i+2 {
-				t.Fatalf("status=%d headers=%v body=%q calls=%d", w.Code, w.Header(), w.Body.String(), calls)
+			if w.Code != tc.wantStatus || w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("Content-Type") != "application/json" || w.Body.String() != want || calls-before != 1 {
+				t.Fatalf("status=%d headers=%v body=%q request calls=%d", w.Code, w.Header(), w.Body.String(), calls-before)
 			}
 		})
 	}

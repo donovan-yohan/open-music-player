@@ -345,8 +345,13 @@ RUN adduser -D -u 10001 -g '' appuser \
     && chown -R appuser:appuser /app
 
 COPY --from=builder /server /app/server
+# Use yt-dlp's system plugin directory so the normal Discover invocation picks
+# up the SoundCloud search-only override without changing provider budgets.
+COPY yt-dlp/soundq/yt_dlp_plugins/extractor/soundq_soundcloud_search.py /etc/yt-dlp/plugins/soundq/yt_dlp_plugins/extractor/soundq_soundcloud_search.py
 
 USER appuser
+RUN --network=none --mount=type=bind,source=yt-dlp/check-soundcloud-search.py,target=/tmp/check-soundcloud-search.py \
+    python3 -B /tmp/check-soundcloud-search.py
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
