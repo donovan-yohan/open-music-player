@@ -68,8 +68,9 @@ const (
 )
 
 type analysisTask struct {
-	id      uint64
-	request analyzer.Request
+	id            uint64
+	request       analyzer.Request
+	privateSource *db.PrivateImportSource
 }
 
 // Processor handles the full download and matching pipeline
@@ -91,6 +92,7 @@ type Processor struct {
 	analysisTasks           sync.WaitGroup
 	analysisWorkers         sync.WaitGroup
 	analysisOutstanding     map[uint64]analyzer.Request
+	privateAnalysisPending  map[int64]uint64
 	analysisNextTaskID      uint64
 	analysisStopping        bool
 	requireAnalyzerIdentity bool
@@ -144,6 +146,7 @@ func New(config *ProcessorConfig) *Processor {
 		processor.analysisQueue = make(chan analysisTask, analysisQueueSize)
 		processor.analysisStop = make(chan struct{})
 		processor.analysisOutstanding = make(map[uint64]analyzer.Request)
+		processor.privateAnalysisPending = make(map[int64]uint64)
 		for range analysisConcurrency {
 			processor.analysisWorkers.Add(1)
 			go func() {
@@ -227,7 +230,9 @@ func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, prog
 		// only thing that reconciles one, so this must stay fatal.
 		return fmt.Errorf("playlist attach failed: %w", err)
 	}
-	p.enqueueAnalysis(ctx, track, metadata)
+	if _, err := p.SchedulePostStoreAnalysis(ctx, track, PostStoreDownload); err != nil {
+		log.Printf("Warning: post-download analysis for track %d: %v", track.ID, err)
+	}
 	progress(95)
 
 	log.Printf("Processing job %s: complete (track_id=%d, is_new=%v)", job.ID, track.ID, isNew)
@@ -1202,66 +1207,6 @@ func (p *Processor) markPlaylistImportFailed(ctx context.Context, job *download.
 	}
 }
 
-func (p *Processor) enqueueAnalysis(ctx context.Context, track *db.Track, _ *TrackMetadata) {
-	if p.analysisRepo == nil || p.analyzerClient == nil || track == nil {
-		return
-	}
-	// Dedupe may return an older canonical object. Candidate metadata describes
-	// the discarded upload and must not identify the bytes being analyzed.
-	metadata := trackMetadataFromDBTrack(track)
-	if metadata.StorageKey == "" {
-		return
-	}
-	sourceFileHash := ""
-	if p.trackRepo != nil {
-		var err error
-		sourceFileHash, err = p.trackRepo.GetSourceFileHash(ctx, track.ID)
-		if err != nil {
-			log.Printf("Warning: failed to read canonical source hash for track %d: %v", track.ID, err)
-		}
-	}
-	expectedAnalyzer, expectedVersion := p.analyzerIdentity()
-	provenance, _ := json.Marshal(map[string]interface{}{
-		"trigger":                   "post_download",
-		"expected_analyzer":         expectedAnalyzer,
-		"expected_analyzer_version": expectedVersion,
-		"source": map[string]interface{}{
-			"storage_key":      metadata.StorageKey,
-			"source_file_hash": sourceFileHash,
-			"source_type":      metadata.SourceType,
-			"duration_ms":      metadata.DurationMs,
-		},
-	})
-	shouldSchedule, err := p.analysisRepo.RequestAnalysisIfNeeded(ctx, track.ID, provenance)
-	if err != nil {
-		log.Printf("Warning: failed to request audio analysis for track %d: %v", track.ID, err)
-		return
-	}
-	if !shouldSchedule {
-		return
-	}
-	if p.requireAnalyzerIdentity && expectedAnalyzer == "" {
-		log.Printf("Deferred audio analysis for track %d until analyzer identity is available", track.ID)
-		return
-	}
-	req := analyzer.Request{
-		TrackID:                 track.ID,
-		StorageKey:              metadata.StorageKey,
-		SourceURL:               metadata.SourceURL,
-		SourceType:              metadata.SourceType,
-		DurationMs:              metadata.DurationMs,
-		Title:                   metadata.Title,
-		Artist:                  metadata.Artist,
-		SchemaVersion:           analyzer.SchemaVersion,
-		ExpectedAnalyzer:        expectedAnalyzer,
-		ExpectedAnalyzerVersion: expectedVersion,
-	}
-	if err := p.scheduleAnalysis(ctx, req); err != nil {
-		p.markAnalysisSchedulingFailed(req, err)
-		log.Printf("Warning: failed to schedule audio analysis for track %d: %v", track.ID, err)
-	}
-}
-
 func (p *Processor) SetAnalyzerIdentity(analyzerName, analyzerVersion string) {
 	if p == nil {
 		return
@@ -1295,10 +1240,10 @@ func (p *Processor) scheduleAnalysis(ctx context.Context, req analyzer.Request) 
 	case queue <- task:
 		return nil
 	case <-ctx.Done():
-		p.finishAnalysisTask(task.id)
+		p.finishAnalysisTask(task)
 		return ctx.Err()
 	case <-stop:
-		p.finishAnalysisTask(task.id)
+		p.finishAnalysisTask(task)
 		return errors.New("audio analysis queue is shutting down")
 	}
 }
@@ -1308,9 +1253,13 @@ func (p *Processor) analysisWorker() {
 		select {
 		case task := <-p.analysisQueue:
 			if p.analysisCtx.Err() == nil {
-				p.runAnalysis(task.request)
+				if task.privateSource != nil {
+					p.runPrivateImportAnalysis(task)
+				} else {
+					p.runAnalysis(task.request)
+				}
 			}
-			p.finishAnalysisTask(task.id)
+			p.finishAnalysisTask(task)
 		case <-p.analysisCtx.Done():
 			return
 		}
@@ -1353,8 +1302,7 @@ func (p *Processor) Shutdown(ctx context.Context) error {
 		shutdownErr = context.DeadlineExceeded
 	}
 
-	outstanding := p.outstandingAnalysisRequests()
-	p.analysisCancel()
+	outstanding := p.cancelAndSnapshotAnalysisRequests()
 	recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), analysisShutdownRecoveryTimeout)
 	defer recoveryCancel()
 	p.recoverAnalysisRows(recoveryCtx, outstanding, fmt.Errorf("analysis canceled during shutdown: %w", shutdownErr))
@@ -1380,9 +1328,12 @@ func analysisRecoveryTimer(ctx context.Context) (*time.Timer, <-chan time.Time) 
 	return timer, timer.C
 }
 
-func (p *Processor) outstandingAnalysisRequests() []analyzer.Request {
+func (p *Processor) cancelAndSnapshotAnalysisRequests() []analyzer.Request {
 	p.analysisMu.Lock()
 	defer p.analysisMu.Unlock()
+	// Stop new private claims while keeping active workers in the snapshot,
+	// even when cancellation lets them finish immediately.
+	p.analysisCancel()
 	latest := make(map[int64]struct {
 		id      uint64
 		request analyzer.Request
@@ -1407,7 +1358,7 @@ func (p *Processor) drainAnalysisQueue(ctx context.Context) {
 	for {
 		select {
 		case task := <-p.analysisQueue:
-			p.finishAnalysisTask(task.id)
+			p.finishAnalysisTask(task)
 		case <-ctx.Done():
 			return
 		default:
@@ -1416,11 +1367,18 @@ func (p *Processor) drainAnalysisQueue(ctx context.Context) {
 	}
 }
 
-func (p *Processor) finishAnalysisTask(taskID uint64) {
+func (p *Processor) finishAnalysisTask(task analysisTask) {
 	p.analysisMu.Lock()
-	_, outstanding := p.analysisOutstanding[taskID]
+	_, outstanding := p.analysisOutstanding[task.id]
+	if task.privateSource != nil {
+		trackID := task.privateSource.TrackID
+		outstanding = p.privateAnalysisPending[trackID] == task.id
+		if outstanding {
+			delete(p.privateAnalysisPending, trackID)
+		}
+	}
 	if outstanding {
-		delete(p.analysisOutstanding, taskID)
+		delete(p.analysisOutstanding, task.id)
 	}
 	p.analysisMu.Unlock()
 	if outstanding {
@@ -1467,11 +1425,7 @@ func (p *Processor) markAnalysisSchedulingFailedWithContext(ctx context.Context,
 	if p.analysisRepo == nil || scheduleErr == nil {
 		return
 	}
-	provenance, _ := json.Marshal(map[string]interface{}{
-		"trigger":                   "analysis_queue",
-		"expected_analyzer":         req.ExpectedAnalyzer,
-		"expected_analyzer_version": req.ExpectedAnalyzerVersion,
-	})
+	provenance, _ := json.Marshal(analysisWorkProvenance(req, "analysis_queue"))
 	if err := p.analysisRepo.MarkFailed(ctx, req.TrackID, scheduleErr.Error(), provenance); err != nil && !errors.Is(err, db.ErrAnalysisResultSuperseded) {
 		log.Printf("Warning: failed to mark unscheduled analysis for track %d failed: %v", req.TrackID, err)
 	}
@@ -1484,11 +1438,7 @@ func (p *Processor) runAnalysis(req analyzer.Request) {
 	}
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
-	provenance, _ := json.Marshal(map[string]interface{}{
-		"trigger":                   "analyzer_client",
-		"expected_analyzer":         req.ExpectedAnalyzer,
-		"expected_analyzer_version": req.ExpectedAnalyzerVersion,
-	})
+	provenance, _ := json.Marshal(analysisWorkProvenance(req, "analyzer_client"))
 	if err := p.analysisRepo.MarkAnalyzing(ctx, req.TrackID, provenance); err != nil {
 		if errors.Is(err, db.ErrAnalysisResultSuperseded) {
 			log.Printf("Discarded superseded analysis request for track %d", req.TrackID)
@@ -1501,6 +1451,14 @@ func (p *Processor) runAnalysis(req analyzer.Request) {
 		log.Printf("Warning: failed to mark track %d analyzing: %v", req.TrackID, err)
 		return
 	}
+	var dispatchToken string
+	if proof := req.PrivateSource; proof != nil {
+		dispatchToken = proof.Claim
+		if err := verifyStoredPrivateImportBytes(ctx, p.storage, req.StorageKey, proof.SHA256, proof.ByteLength); err != nil {
+			p.markAnalysisSchedulingFailed(req, ErrPrivateImportBytes)
+			return
+		}
+	}
 	result, err := p.analyzerClient.Analyze(ctx, req)
 	if err != nil {
 		if p.analysisShutdownCanceled() {
@@ -1508,11 +1466,15 @@ func (p *Processor) runAnalysis(req analyzer.Request) {
 		}
 		terminalCtx, terminalCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer terminalCancel()
+		errText := err.Error()
+		if req.PrivateSource != nil {
+			errText = "private canonical analysis failed"
+		}
 		if errors.Is(err, analyzer.ErrUnsupported) {
-			_ = p.analysisRepo.MarkUnsupported(terminalCtx, req.TrackID, err.Error(), provenance)
+			_ = p.analysisRepo.MarkUnsupported(terminalCtx, req.TrackID, errText, provenance)
 			return
 		}
-		_ = p.analysisRepo.MarkFailed(terminalCtx, req.TrackID, err.Error(), provenance)
+		_ = p.analysisRepo.MarkFailed(terminalCtx, req.TrackID, errText, provenance)
 		return
 	}
 	if err := ctx.Err(); err != nil {
@@ -1531,6 +1493,7 @@ func (p *Processor) runAnalysis(req analyzer.Request) {
 		ProvenanceJSON:  result.ProvenanceJSON,
 		Analyzer:        result.Analyzer,
 		AnalyzerVersion: result.AnalyzerVersion,
+		DispatchToken:   dispatchToken,
 	}); err != nil {
 		if errors.Is(err, db.ErrAnalysisResultSuperseded) {
 			log.Printf("Discarded superseded analysis result for track %d", req.TrackID)
@@ -1539,7 +1502,7 @@ func (p *Processor) runAnalysis(req analyzer.Request) {
 		log.Printf("Warning: failed to store analysis result for track %d: %v", req.TrackID, err)
 		return
 	}
-	if p.trackRepo != nil {
+	if p.trackRepo != nil && req.PrivateSource == nil {
 		if err := p.trackRepo.ApplyAnalysisGenreHint(ctx, req.TrackID, result.SummaryJSON); err != nil {
 			log.Printf("Warning: failed to apply analysis genre hint for track %d: %v", req.TrackID, err)
 		}

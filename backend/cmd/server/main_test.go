@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +26,133 @@ import (
 	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/research"
 )
+
+func TestPrivateAnalysisStartupMaintenanceRetriesWithFreshHealth(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	database, tracks, analysis := privateAnalysisFixtureDB(t, ctx)
+	peer := db.NewAnalysisRepository(openPrivateImportFixtureDB(t, ctx))
+	source := fixtureSQLPrivateSource(t, ctx, database, tracks)
+	const name, retired, worker, current = "startup-retry", "opaque-retired", "opaque-worker", "opaque-current"
+	sampled, hold := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(hold) })
+	retrySampled, retryHold := make(chan struct{}), make(chan struct{})
+	releaseRetry := sync.OnceFunc(func() { close(retryHold) })
+	var samples atomic.Int32
+	client := privateAnalysisStartupClient(t, func(w http.ResponseWriter, req *http.Request) {
+		switch samples.Add(1) {
+		case 1:
+			close(sampled)
+			select {
+			case <-hold:
+				writePrivateAnalysisHealth(w, name, retired)
+			case <-req.Context().Done():
+			}
+		case 2:
+			close(retrySampled)
+			select {
+			case <-retryHold:
+				writePrivateAnalysisHealth(w, name, current)
+			case <-req.Context().Done():
+			}
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	})
+	type outcome struct {
+		report analyzerMaintenanceReport
+		err    error
+	}
+	attempts := make(chan outcome, 2)
+	drained, advance := make(chan struct{}), make(chan struct{})
+	allowRetry := make(chan struct{})
+	var loop sync.WaitGroup
+	defer func() { release(); releaseRetry(); cancel(); loop.Wait() }()
+	loop.Go(func() {
+		runAnalyzerStartupMaintenance(ctx, 0, func() error { return nil }, func() error {
+			report, err := reconcilePrivateAnalyzerVersion(ctx, client, analysis)
+			select {
+			case attempts <- outcome{report, err}:
+			case <-ctx.Done():
+			}
+			if err != nil {
+				select {
+				case <-allowRetry:
+				case <-ctx.Done():
+				}
+			}
+			return err
+		}, func() {
+			select {
+			case drained <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case <-advance:
+			case <-ctx.Done():
+			}
+		})
+	})
+	awaitDrain := func() {
+		t.Helper()
+		select {
+		case <-drained:
+		case <-ctx.Done():
+			t.Fatal("maintenance did not reach the drain boundary")
+		}
+	}
+	awaitAttempt := func() outcome {
+		t.Helper()
+		select {
+		case result := <-attempts:
+			return result
+		case <-ctx.Done():
+			t.Fatal("maintenance did not attempt reconciliation")
+			return outcome{}
+		}
+	}
+	advanceLoop := func() {
+		t.Helper()
+		select {
+		case advance <- struct{}{}:
+		case <-ctx.Done():
+			t.Fatal("maintenance did not accept a retry tick")
+		}
+	}
+	awaitPrivateAnalysisStartupSignal(t, ctx, sampled)
+	claim := uuid.New()
+	requirePrivateClaim(t, ctx, peer, source, claim, name, worker, true)
+	release()
+	failed := awaitAttempt()
+	requirePrivateAnalysisStartupConflict(t, failed.err)
+	if failed.report.Analyzer != "" || failed.report.AnalyzerVersion != "" {
+		t.Fatalf("failed attempt published analyzer identity: %+v", failed.report)
+	}
+	if err := peer.MarkAnalyzing(ctx, source.TrackID, fixtureClaimProvenance(claim, name, worker)); err != nil {
+		t.Fatalf("aborted observation disturbed the worker: %v", err)
+	}
+	close(allowRetry)
+	select {
+	case <-retrySampled:
+	case <-drained:
+		t.Fatal("private drain ran after a 40001 and before a successful retry")
+	case <-ctx.Done():
+		t.Fatal("maintenance did not send fresh health after 40001")
+	}
+	releaseRetry()
+	retried := awaitAttempt()
+	if retried.err != nil || retried.report.Analyzer != name || retried.report.AnalyzerVersion != current || retried.report.MarkedStale != 1 {
+		t.Fatalf("retry did not reconcile fresh health: %+v", retried)
+	}
+	awaitDrain()
+	requirePrivateClaim(t, ctx, peer, source, uuid.New(), name, current, true)
+	advanceLoop()
+	awaitDrain()
+	if samples.Load() != 2 || len(attempts) != 0 {
+		t.Fatalf("maintenance re-sampled after a successful retry: samples=%d pending=%d", samples.Load(), len(attempts))
+	}
+}
 
 func TestStemsProductionCompositionKeepsReadsIndependentOfWorkerAdmission(t *testing.T) {
 	fset := token.NewFileSet()
@@ -489,6 +617,9 @@ func TestReconcileAnalyzerVersionMarksAndQueuesBoundedRepairs(t *testing.T) {
 	}
 	if tracks.limit != startupAnalyzerRepairLimit {
 		t.Fatalf("repair limit = %d, want %d", tracks.limit, startupAnalyzerRepairLimit)
+	}
+	if versions.calls < 2 {
+		t.Fatalf("expected initial and final ordinary scans: total=%d", versions.calls)
 	}
 	if len(repairs.trackIDs) != 2 || !containsTrackIDs(repairs.trackIDs, 43, 44) {
 		t.Fatalf("queued tracks = %v, want [43 44]", repairs.trackIDs)

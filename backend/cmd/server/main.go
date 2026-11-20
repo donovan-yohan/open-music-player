@@ -149,6 +149,10 @@ type analyzerVersionStore interface {
 	MarkStaleByAnalyzerVersion(ctx context.Context, analyzerName, analyzerVersion string) (int64, error)
 }
 
+type privateAnalyzerStartupStore interface {
+	ReconcilePrivateAnalyzerAtStartup(ctx context.Context, observe func(context.Context) (string, string, error)) (int64, error)
+}
+
 type analyzerMaintenanceTrackStore interface {
 	GetMaintenanceCandidates(ctx context.Context, includeMetadata, includeAnalysis bool, staleAfter time.Duration, limit int) ([]db.Track, error)
 }
@@ -374,9 +378,26 @@ func researchCommandRunnerConfig(cfg *config.Config) research.CommandRunnerConfi
 	}
 }
 
-// reconcileAnalyzerVersion invalidates rows owned by another analyzer version,
-// then drains stale work in bounded batches. Analysis overrides are owned by
-// the repository and are never modified by this reconciliation.
+// reconcilePrivateAnalyzerVersion gives the private transaction its own fresh
+// observation on every attempt. A failed observation has no other consumers.
+func reconcilePrivateAnalyzerVersion(ctx context.Context, client analyzerInfoClient, store privateAnalyzerStartupStore) (analyzerMaintenanceReport, error) {
+	startupCtx, cancel := context.WithTimeout(ctx, startupAnalyzerRepairTimeout)
+	defer cancel()
+	var info analyzer.Info
+	marked, err := store.ReconcilePrivateAnalyzerAtStartup(startupCtx, func(ctx context.Context) (string, string, error) {
+		var err error
+		info, err = client.Info(ctx)
+		return info.Analyzer, info.AnalyzerVersion, err
+	})
+	if err != nil {
+		return analyzerMaintenanceReport{}, err
+	}
+	return analyzerMaintenanceReport{Analyzer: info.Analyzer, AnalyzerVersion: info.AnalyzerVersion, MarkedStale: marked}, nil
+}
+
+// reconcileAnalyzerVersion initializes ordinary analysis and repairs public rows
+// in bounded batches, without waiting for private startup or moving its fence.
+// Analysis overrides are owned by the repository and are never modified here.
 func reconcileAnalyzerVersion(
 	ctx context.Context,
 	client analyzerInfoClient,
@@ -388,15 +409,17 @@ func reconcileAnalyzerVersion(
 	if client == nil || analysisStore == nil || tracks == nil || repairs == nil {
 		return report, nil
 	}
-	infoCtx, infoCancel := context.WithTimeout(ctx, startupAnalyzerRepairTimeout)
-	defer infoCancel()
-	info, err := client.Info(infoCtx)
+	startupCtx, startupCancel := context.WithTimeout(ctx, startupAnalyzerRepairTimeout)
+	info, err := client.Info(startupCtx)
+	startupCancel()
 	if err != nil {
 		return report, err
 	}
 	report.Analyzer = info.Analyzer
 	report.AnalyzerVersion = info.AnalyzerVersion
 	repairs.SetAnalyzerIdentity(info.Analyzer, info.AnalyzerVersion)
+	// Public scans and queue admission run outside the private startup lock.
+	// An older snapshot here has no authority to move a private fence.
 	markNewlyStale := func() (int64, error) {
 		marked, markErr := analysisStore.MarkStaleByAnalyzerVersion(ctx, info.Analyzer, info.AnalyzerVersion)
 		report.MarkedStale += marked
@@ -441,6 +464,42 @@ func reconcileAnalyzerVersion(
 				return report, nil
 			}
 		}
+	}
+}
+
+func runAnalyzerStartupMaintenance(ctx context.Context, retryInterval time.Duration, reconcilePublic, reconcilePrivate func() error, drainPrivate func()) {
+	// Public scans can also retry independently; a failed public repair must
+	// not invalidate a successfully committed private fence.
+	var public sync.WaitGroup
+	public.Go(func() {
+		for ctx.Err() == nil && reconcilePublic() != nil {
+			if !waitAnalyzerMaintenanceRetry(ctx, retryInterval) {
+				return
+			}
+		}
+	})
+	defer public.Wait()
+	for ctx.Err() == nil && reconcilePrivate() != nil {
+		if !waitAnalyzerMaintenanceRetry(ctx, retryInterval) {
+			return
+		}
+	}
+	// Private workers read live identity at claim time. Don't rerun a
+	// successful startup reconciliation just because the endpoint changes.
+	for ctx.Err() == nil {
+		drainPrivate()
+		if !waitAnalyzerMaintenanceRetry(ctx, retryInterval) {
+			return
+		}
+	}
+}
+
+func waitAnalyzerMaintenanceRetry(ctx context.Context, interval time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(interval):
+		return true
 	}
 }
 
@@ -770,36 +829,44 @@ func runServer() int {
 	if serviceAnalyzerClient != nil {
 		maintenanceCtx, maintenanceCancel := context.WithCancel(context.Background())
 		stopAnalyzerMaintenance = maintenanceCancel
-		go func() {
-			for {
-				report, err := reconcileAnalyzerVersion(
-					maintenanceCtx,
-					serviceAnalyzerClient,
-					analysisRepo,
-					trackRepo,
-					jobProcessor,
-				)
-				if err == nil {
-					log.Info(ctx, "Analyzer version reconciliation completed", map[string]interface{}{
-						"analyzer":         report.Analyzer,
-						"analyzer_version": report.AnalyzerVersion,
-						"marked_stale":     report.MarkedStale,
-						"batches":          report.Batches,
-						"candidates":       report.Candidates,
-						"queued":           report.Queued,
-						"skipped":          report.Skipped,
-						"failures":         report.Failures,
-					})
-					return
+		go runAnalyzerStartupMaintenance(maintenanceCtx, startupAnalyzerRetryInterval,
+			func() error {
+				report, err := reconcileAnalyzerVersion(maintenanceCtx, serviceAnalyzerClient, analysisRepo, trackRepo, jobProcessor)
+				if err != nil {
+					log.Error(ctx, "Public analyzer version reconciliation will retry", nil, err)
+					return err
 				}
-				log.Error(ctx, "Analyzer version reconciliation will retry", nil, err)
-				select {
-				case <-maintenanceCtx.Done():
-					return
-				case <-time.After(startupAnalyzerRetryInterval):
+				log.Info(ctx, "Public analyzer version reconciliation completed", map[string]interface{}{
+					"analyzer":         report.Analyzer,
+					"analyzer_version": report.AnalyzerVersion,
+					"marked_stale":     report.MarkedStale,
+					"batches":          report.Batches,
+					"candidates":       report.Candidates,
+					"queued":           report.Queued,
+					"skipped":          report.Skipped,
+					"failures":         report.Failures,
+				})
+				return nil
+			},
+			func() error {
+				report, err := reconcilePrivateAnalyzerVersion(maintenanceCtx, serviceAnalyzerClient, analysisRepo)
+				if err != nil {
+					log.Error(ctx, "Private analyzer version reconciliation will retry", nil, err)
+					return err
 				}
-			}
-		}()
+				log.Info(ctx, "Private analyzer version reconciliation completed", map[string]interface{}{
+					"analyzer":         report.Analyzer,
+					"analyzer_version": report.AnalyzerVersion,
+					"marked_stale":     report.MarkedStale,
+				})
+				return nil
+			},
+			func() {
+				if _, err := jobProcessor.DrainPrivateImportAnalysis(maintenanceCtx); err != nil && maintenanceCtx.Err() == nil {
+					log.Error(ctx, "Private import analysis drain will retry", nil, err)
+				}
+			},
+		)
 	}
 	maintenanceHandlers := api.NewMaintenanceHandlers(trackRepo, jobProcessor, maintenanceConfig)
 

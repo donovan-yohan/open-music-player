@@ -30,9 +30,10 @@ import (
 
 // Client provides access to S3-compatible object storage (MinIO).
 type Client struct {
-	client        *minio.Client
-	presignClient *minio.Client
-	bucket        string
+	client              *minio.Client
+	presignClient       *minio.Client
+	privateImportClient *minio.Client
+	bucket              string
 }
 
 // Config holds the configuration for the object storage client.
@@ -53,11 +54,18 @@ func New(cfg *Config) (*Client, error) {
 		return nil, fmt.Errorf("invalid minio endpoint: %w", err)
 	}
 
-	client, err := minio.New(endpoint, &minio.Options{
+	internalOptions := minio.Options{
 		Creds:  miniocreds.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Region: minioRegion(cfg.Region),
 		Secure: secure,
-	})
+	}
+	transport, err := minio.DefaultTransport(secure)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create minio transport: %w", err)
+	}
+	readOptions := internalOptions
+	readOptions.Transport = privateImportTransport{transport}
+	client, err := minio.New(endpoint, &readOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create minio client: %w", err)
 	}
@@ -77,10 +85,21 @@ func New(cfg *Config) (*Client, error) {
 		}
 	}
 
+	// MinIO counts attempts, including the first, in MaxRetries. The staged
+	// write and cleanup policy/delete calls are one-shot; ordinary storage
+	// and presign keep their defaults.
+	privateImportOptions := readOptions
+	privateImportOptions.MaxRetries = 1
+	privateImportClient, err := minio.New(endpoint, &privateImportOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create minio private import client: %w", err)
+	}
+
 	return &Client{
-		client:        client,
-		presignClient: presignClient,
-		bucket:        cfg.Bucket,
+		client:              client,
+		presignClient:       presignClient,
+		privateImportClient: privateImportClient,
+		bucket:              cfg.Bucket,
 	}, nil
 }
 
@@ -149,8 +168,8 @@ func (c *Client) StatObject(ctx context.Context, key string) (*ObjectInfo, error
 	}, nil
 }
 
-// IsObjectNotFound reports confirmed object absence, including wrapped StatObject
-// errors. Bucket absence and other access/service failures are not object absence.
+// IsObjectNotFound recognizes the SDK's NoSuchKey classification. The SDK
+// can infer it from an untyped HEAD 404; do not use it as custody evidence.
 func IsObjectNotFound(err error) bool {
 	var response minio.ErrorResponse
 	if errors.As(err, &response) {
@@ -236,6 +255,29 @@ func (c *Client) PutObject(ctx context.Context, key string, reader io.Reader, si
 
 	return nil
 }
+
+// PutPrivateImportObject makes one conditional, single-part upload to a
+// previously reserved attempt key. A failed response is uncertain: the
+// caller must not replay the write or authorize deletion on that basis.
+func (c *Client) PutPrivateImportObject(ctx context.Context, key string, reader io.Reader, size int64) error {
+	opts := minio.PutObjectOptions{ContentType: "audio/mpeg", DisableMultipart: true}
+	opts.SetMatchETagExcept("*")
+	// The spool belongs to the producer. Hiding Seek alone does not prevent
+	// replay: the SDK wraps readers in an io.Seeker with a no-op Seek.
+	// Use the one-attempt client, with the SDK's redirect refusal intact.
+	_, err := c.privateImportClient.PutObject(ctx, c.bucket, key, struct{ io.Reader }{reader}, size, opts)
+	if err != nil {
+		return privatePutError{err}
+	}
+	return nil
+}
+
+// The cause can contain the attempted key (in an SDK or transport message).
+// Keep it available to errors.Is/As, not in the displayed error context.
+type privatePutError struct{ cause error }
+
+func (e privatePutError) Error() string { return "private intake object Put failed" }
+func (e privatePutError) Unwrap() error { return e.cause }
 
 // DeleteObject removes an object from storage.
 func (c *Client) DeleteObject(ctx context.Context, key string) error {

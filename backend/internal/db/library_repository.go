@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 var ErrTrackAlreadyInLibrary = errors.New("track already in library")
@@ -221,26 +222,37 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 	return tracks, total, nil
 }
 
-// AddTrackToLibrary adds a track to a user's library.
+// AddTrackToLibrary adds a visible track to a user's library. Unknown and
+// foreign IDs are indistinguishable, including if a stale membership exists.
 func (r *LibraryRepository) AddTrackToLibrary(ctx context.Context, userID uuid.UUID, trackID int64) (*LibraryEntry, error) {
-	query := `
-		INSERT INTO user_library (user_id, track_id, added_at)
-		VALUES ($1, $2, NOW())
-		ON CONFLICT (user_id, track_id) DO NOTHING
-		RETURNING user_id, track_id, added_at
+	const query = `
+		WITH visible_track AS (
+			SELECT id FROM tracks WHERE id = $2 AND (private_owner_id IS NULL OR private_owner_id = $1)
+		), added AS (
+			INSERT INTO user_library (user_id, track_id, added_at)
+			SELECT $1, id, NOW() FROM visible_track
+			ON CONFLICT (user_id, track_id) DO NOTHING
+			RETURNING added_at
+		)
+		SELECT added.added_at FROM visible_track LEFT JOIN added ON TRUE
 	`
-
-	var entry LibraryEntry
-	err := r.db.QueryRowContext(ctx, query, userID, trackID).Scan(&entry.UserID, &entry.TrackID, &entry.AddedAt)
+	var addedAt sql.NullTime
+	err := r.db.QueryRowContext(ctx, query, userID, trackID).Scan(&addedAt)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			// ON CONFLICT DO NOTHING returns no rows if already exists
-			return nil, ErrTrackAlreadyInLibrary
+		var pgErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) ||
+			(errors.As(err, &pgErr) && pgErr.Code == "23503" && pgErr.Table == "user_library" &&
+				(pgErr.Constraint == "user_library_visible_track" || pgErr.Constraint == "user_library_track_id_fkey")) {
+			// The trigger/FK can also refuse an ID removed or replaced after
+			// the query snapshot. Do not disclose that race to callers.
+			return nil, ErrTrackNotFound
 		}
 		return nil, err
 	}
-
-	return &entry, nil
+	if !addedAt.Valid {
+		return nil, ErrTrackAlreadyInLibrary
+	}
+	return &LibraryEntry{UserID: userID, TrackID: trackID, AddedAt: addedAt.Time}, nil
 }
 
 // RemoveTrackFromLibrary removes a track from a user's library.

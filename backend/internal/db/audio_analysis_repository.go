@@ -99,6 +99,7 @@ type AnalysisResult struct {
 	ProvenanceJSON  json.RawMessage
 	Analyzer        string
 	AnalyzerVersion string
+	DispatchToken   string // Set only by the worker, never by the analyzer response.
 }
 
 type AnalysisRepairRequest struct {
@@ -259,10 +260,11 @@ func (r *AnalysisRepository) MarkAnalyzing(ctx context.Context, trackID int64, p
 		UPDATE track_analysis
 		SET status = $2,
 			started_at = COALESCE(started_at, NOW()),
-			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || COALESCE($3::jsonb, '{}'::jsonb),
+			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || (COALESCE($3::jsonb, '{}'::jsonb) - 'dispatch_token'),
 			updated_at = NOW()
 		WHERE track_id = $1
 		  AND status = $4
+		  AND COALESCE(dispatch_token::text, '') = COALESCE($3::jsonb->>'dispatch_token', '')
 		  AND (
 			COALESCE(provenance_json->>'expected_analyzer', '') = ''
 			OR provenance_json->>'expected_analyzer' = COALESCE($3::jsonb->>'expected_analyzer', '')
@@ -333,7 +335,9 @@ func (r *AnalysisRepository) StoreResult(ctx context.Context, trackID int64, res
 		INSERT INTO track_analysis (
 			track_id, schema_version, status, summary_json, artifacts_json, provenance_json,
 			requested_at, started_at, completed_at, updated_at
-		) VALUES ($1, $2, $3, COALESCE($4::jsonb, '{}'::jsonb), COALESCE($5::jsonb, '{}'::jsonb), COALESCE($6::jsonb, '{}'::jsonb), NOW(), NOW(), NOW(), NOW())
+		) SELECT $1, $2, $3, COALESCE($4::jsonb, '{}'::jsonb), COALESCE($5::jsonb, '{}'::jsonb),
+			COALESCE($6::jsonb, '{}'::jsonb) - 'dispatch_token', NOW(), NOW(), NOW(), NOW()
+		WHERE $10 = '' OR EXISTS (SELECT 1 FROM track_analysis WHERE track_id = $1 AND dispatch_token::text = $10)
 		ON CONFLICT (track_id) DO UPDATE
 		SET schema_version = EXCLUDED.schema_version,
 			status = EXCLUDED.status,
@@ -346,7 +350,7 @@ func (r *AnalysisRepository) StoreResult(ctx context.Context, trackID int64, res
 			updated_at = NOW()
 			WHERE (
 				track_analysis.status = $9
-			) AND (
+			) AND COALESCE(track_analysis.dispatch_token::text, '') = $10 AND (
 				COALESCE(track_analysis.provenance_json->>'expected_analyzer', '') = ''
 			OR (
 				NULLIF($7, '') IS NOT NULL
@@ -370,6 +374,7 @@ func (r *AnalysisRepository) StoreResult(ctx context.Context, trackID int64, res
 		analyzerName,
 		analyzerVersion,
 		AnalysisStatusAnalyzing,
+		result.DispatchToken,
 	)
 	if err != nil {
 		return err
@@ -593,11 +598,13 @@ func (r *AnalysisRepository) markTerminal(ctx context.Context, trackID int64, st
 		UPDATE track_analysis
 		SET status = $2,
 			error = NULLIF($3, ''),
-			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || COALESCE($4::jsonb, '{}'::jsonb),
+			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || (COALESCE($4::jsonb, '{}'::jsonb) - 'dispatch_token'),
 			completed_at = NOW(),
 			updated_at = NOW()
 		WHERE track_id = $1
 		  AND status IN ($5, $6, $7)
+		  AND COALESCE(dispatch_token::text, '') = COALESCE($4::jsonb->>'dispatch_token', '')
+		  AND (status <> $7 OR COALESCE($4::jsonb->>'dispatch_token', '') = '')
 		  AND (
 			COALESCE(provenance_json->>'expected_analyzer', '') = ''
 			OR provenance_json->>'expected_analyzer' = COALESCE($4::jsonb->>'expected_analyzer', '')
@@ -631,10 +638,91 @@ func (r *AnalysisRepository) markTerminal(ctx context.Context, trackID int64, st
 	return nil
 }
 
+// MarkStaleByAnalyzerVersion is the ordinary public scan. It can run again
+// after a bounded batch using an older startup sample, so it must not move a
+// private fence that another worker may already have acquired.
 func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, analyzerName, analyzerVersion string) (int64, error) {
+	return markStaleByAnalyzerVersion(ctx, r.db.ExecContext, analyzerName, analyzerVersion, false)
+}
+
+// ReconcilePrivateAnalyzerAtStartup owns the entire observation-to-write
+// interval. Serializing only the UPDATE would let a delayed health response
+// from one backend retire a newer peer's claim. Identities are opaque; the
+// shared PostgreSQL lock orders samples, not versions.
+func (r *AnalysisRepository) ReconcilePrivateAnalyzerAtStartup(ctx context.Context, observe func(context.Context) (string, string, error)) (int64, error) {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return 0, fmt.Errorf("begin private analyzer startup: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // commit or context cancellation can already have ended the transaction
+	// LOCK TABLE waits without establishing a repeatable-read snapshot. This
+	// mode also excludes receipt writes, so a canonical import cannot publish
+	// a new private obligation mid-observation. Receipt reads (including
+	// worker claims) can still proceed; no analysis rows are locked yet.
+	if _, err := tx.ExecContext(ctx, `LOCK TABLE private_import_receipts IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return 0, fmt.Errorf("lock private analyzer startup receipts: %w", err)
+	}
+	// Establish the snapshot only after the receipt wait. Migrate takes tracks
+	// before receipts, the reverse of startup. If it already has the schema key,
+	// release receipts without sampling; otherwise keep migration out of its DDL
+	// until this transaction ends. Neither advisory attempt may wait.
+	var acquired bool
+	if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(`+schemaMigrationLockKey+`)`).Scan(&acquired); err != nil {
+		return 0, fmt.Errorf("try schema migration lock for private analyzer startup: %w", err)
+	}
+	if !acquired {
+		return 0, errors.New("private analyzer startup: schema migration in progress")
+	}
+	// Keep ordering health observations with older peers during rolling restarts.
+	if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended('private-import/v1:analysis-startup', 0))`).Scan(&acquired); err != nil {
+		return 0, fmt.Errorf("try private analyzer startup advisory lock: %w", err)
+	}
+	if !acquired {
+		return 0, errors.New("private analyzer startup already held by an older peer")
+	}
+	name, version, err := observe(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if name == "" || version == "" {
+		return 0, errors.New("private analyzer startup requires both identity fields")
+	}
+	// A worker can change a row the snapshot's version predicate would skip.
+	// Lock all existing private analysis rows after health so PostgreSQL raises
+	// 40001 for any intervening change, including a claim from unfenced stale.
+	if _, err := tx.ExecContext(ctx, `SELECT count(*) FROM (
+		SELECT a.track_id FROM track_analysis a JOIN tracks t ON t.id = a.track_id
+		WHERE t.private_owner_id IS NOT NULL FOR NO KEY UPDATE OF a
+	) AS private_analysis`); err != nil {
+		return 0, fmt.Errorf("recheck private analyzer startup rows: %w", err)
+	}
+	// The canonical import writes its receipt and stale analysis obligation
+	// atomically. A legacy receipt can lack the row, and a worker can INSERT
+	// one while health is in flight. Restore the same unclaimed obligation;
+	// in repeatable read a conflicting insert invisible to us raises 40001.
+	if _, err := tx.ExecContext(ctx, `INSERT INTO track_analysis (track_id, status, provenance_json)
+		SELECT t.id, 'stale', '{"trigger":"post_library_upload"}'::jsonb
+		FROM tracks t WHERE t.private_owner_id IS NOT NULL
+		AND EXISTS (SELECT 1 FROM private_import_receipts r WHERE r.track_id = t.id)
+		AND NOT EXISTS (SELECT 1 FROM track_analysis a WHERE a.track_id = t.id)
+		ON CONFLICT (track_id) DO NOTHING`); err != nil {
+		return 0, fmt.Errorf("recheck missing private analyzer startup rows: %w", err)
+	}
+	marked, err := markStaleByAnalyzerVersion(ctx, tx.ExecContext, name, version, true)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile private analyzer fence: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit private analyzer startup: %w", err)
+	}
+	return marked, nil
+}
+
+func markStaleByAnalyzerVersion(ctx context.Context, exec func(context.Context, string, ...any) (sql.Result, error), analyzerName, analyzerVersion string, private bool) (int64, error) {
 	query := `
 		UPDATE track_analysis
 		SET status = $3,
+			dispatch_token = NULL,
 			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || jsonb_build_object(
 				'expected_analyzer', NULLIF($1, ''),
 				'expected_analyzer_version', NULLIF($2, ''),
@@ -648,7 +736,7 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 				)
 			),
 			updated_at = NOW()
-		WHERE status IN ($4, $5, $6, $7)
+		WHERE $8::boolean = EXISTS (SELECT 1 FROM tracks t WHERE t.id = track_analysis.track_id AND t.private_owner_id IS NOT NULL)
 		  AND (
 			(
 				status = $4
@@ -679,9 +767,10 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 					)
 				)
 			)
+			OR ($8::boolean AND status = $3 AND NOT ` + privateImportIdentityMatches + `)
 		  )
 	`
-	result, err := r.db.ExecContext(
+	result, err := exec(
 		ctx,
 		query,
 		analyzerName,
@@ -691,6 +780,7 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 		AnalysisStatusPending,
 		AnalysisStatusAnalyzing,
 		AnalysisStatusFailed,
+		private,
 	)
 	if err != nil {
 		return 0, err

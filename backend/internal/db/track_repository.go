@@ -53,6 +53,8 @@ type Track struct {
 	MetadataProvenance json.RawMessage
 	CoverArtURL        sql.NullString
 	MetadataUserEdited bool
+	// Private is populated by the exact internal GetByID read, not serialized.
+	Private bool `json:"-"`
 	// HasMetadataOverride is not a tracks column. It is set by the display-layer
 	// merge (see track_metadata_override_repository.go) when the requesting user has
 	// a per-user override for this track, so clients can render an "edited" affordance.
@@ -493,7 +495,7 @@ func (r *TrackRepository) GetByID(ctx context.Context, id int64) (*Track, error)
 			   source_url, source_type, storage_key, file_size_bytes,
 			   codec, bitrate_kbps, sample_rate_hz, channels, content_type,
 			   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
-			   cover_art_url, metadata_user_edited, created_at, updated_at
+			   cover_art_url, metadata_user_edited, created_at, updated_at, private_owner_id IS NOT NULL
 		FROM tracks
 		WHERE id = $1
 	`
@@ -506,7 +508,7 @@ func (r *TrackRepository) GetByID(ctx context.Context, id int64) (*Track, error)
 		&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 		&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
 		&metadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &metadataProvenance,
-		&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
+		&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt, &t.Private,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -568,7 +570,7 @@ func (r *TrackRepository) UpdateMBMatch(ctx context.Context, trackID int64, matc
 			album = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(NULLIF($13, ''), album) ELSE album END,
 			duration_ms = CASE WHEN (metadata_user_edited = FALSE OR $16 = FALSE) AND $14 > 0 THEN $14 ELSE duration_ms END,
 			updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND private_owner_id IS NULL
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
@@ -1259,7 +1261,7 @@ func (r *TrackRepository) GetMaintenanceCandidates(ctx context.Context, includeM
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at
 		FROM tracks t
 		LEFT JOIN track_analysis ta ON ta.track_id = t.id
-		WHERE (
+		WHERE t.private_owner_id IS NULL AND ((
 			$1::boolean
 			AND t.mb_verified = FALSE
 			AND t.metadata_user_edited = FALSE
@@ -1273,7 +1275,7 @@ func (r *TrackRepository) GetMaintenanceCandidates(ctx context.Context, includeM
 				OR ta.status = 'stale'
 				OR (ta.status IN ('pending', 'analyzing') AND ta.updated_at < NOW() - ($3::bigint * INTERVAL '1 second'))
 			)
-		)
+		))
 		ORDER BY CASE
 				WHEN $2::boolean AND ta.status = 'stale' THEN 0
 				WHEN $2::boolean AND ta.status IN ('pending', 'analyzing')
@@ -1329,7 +1331,7 @@ func (r *TrackRepository) GetAudioQualityMaintenanceCandidates(ctx context.Conte
 			   COALESCE(metadata_provenance, '{}'::jsonb),
 			   cover_art_url, metadata_user_edited, created_at, updated_at
 		FROM tracks
-		WHERE storage_key IS NOT NULL
+		WHERE private_owner_id IS NULL AND storage_key IS NOT NULL
 		  AND btrim(storage_key) <> ''
 		  AND (
 			  NULLIF(btrim(codec), '') IS NULL OR COALESCE(bitrate_kbps, 0) <= 0

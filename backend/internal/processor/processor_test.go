@@ -389,11 +389,9 @@ func TestEnqueueAnalysisSkipsPendingRowWhenAnalyzerClientMissing(t *testing.T) {
 	store := &fakeAnalysisStore{}
 	processor := &Processor{analysisRepo: store}
 
-	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42, StorageKey: sqlNullString("tracks/fixture/job-fixture.wav")}, &TrackMetadata{
-		StorageKey: "tracks/fixture/job-fixture.wav",
-		SourceURL:  "fixture://silence",
-		SourceType: "fixture",
-	})
+	if queued, err := processor.SchedulePostStoreAnalysis(context.Background(), &db.Track{ID: 42, StorageKey: sqlNullString("tracks/fixture/job-fixture.wav")}, PostStoreDownload); err != nil || queued {
+		t.Fatalf("missing analyzer submitted work: queued=%v err=%v", queued, err)
+	}
 
 	if store.requestCount != 0 {
 		t.Fatalf("RequestAnalysis called %d time(s) without analyzer client; would leave an unprocessable pending row", store.requestCount)
@@ -409,9 +407,9 @@ func TestEnqueueAnalysisDefersRequiredIdentityWithoutCallingAnalyzer(t *testing.
 		RequireAnalyzerIdentity: true,
 	})
 
-	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42, StorageKey: sqlNullString("tracks/fixture/job-fixture.wav")}, &TrackMetadata{
-		StorageKey: "tracks/fixture/job-fixture.wav",
-	})
+	if queued, err := processor.SchedulePostStoreAnalysis(context.Background(), &db.Track{ID: 42, StorageKey: sqlNullString("tracks/fixture/job-fixture.wav")}, PostStoreDownload); err != nil || queued {
+		t.Fatalf("required identity not deferred: queued=%v err=%v", queued, err)
+	}
 
 	if store.requestCount != 1 {
 		t.Fatalf("RequestAnalysis called %d time(s), want one deferred pending row", store.requestCount)
@@ -951,14 +949,9 @@ func TestEnqueueAnalysisRunsConfiguredAnalyzerAndStoresResult(t *testing.T) {
 	processor := New(&ProcessorConfig{AnalysisRepo: store, AnalyzerClient: client})
 	processor.SetAnalyzerIdentity("omp-mir-analyzer", "2026-07-11-3")
 
-	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42, StorageKey: sqlNullString("tracks/fixture/job-fixture.wav")}, &TrackMetadata{
-		StorageKey: "tracks/fixture/job-fixture.wav",
-		SourceURL:  "fixture://silence",
-		SourceType: "fixture",
-		DurationMs: 197500,
-		Title:      "Fixture Song",
-		Artist:     "Fixture Artist",
-	})
+	if queued, err := processor.SchedulePostStoreAnalysis(context.Background(), &db.Track{ID: 42, StorageKey: sqlNullString("tracks/fixture/job-fixture.wav")}, PostStoreDownload); err != nil || !queued {
+		t.Fatalf("configured analyzer did not queue: queued=%v err=%v", queued, err)
+	}
 
 	select {
 	case req := <-client.requests:

@@ -51,6 +51,11 @@ func (p *Processor) RepairMetadata(ctx context.Context, track *db.Track, opts Me
 		return MetadataRepairResult{Status: "skipped", Reason: "missing_track"}, nil
 	}
 	result := MetadataRepairResult{TrackID: track.ID}
+	if track.Private {
+		result.Status = "skipped"
+		result.Reason = "private_track"
+		return result, nil
+	}
 	if track.MetadataUserEdited && !opts.Force {
 		result.Status = "skipped"
 		result.Reason = "user_edited_metadata"
@@ -89,6 +94,11 @@ func (p *Processor) RequestAnalysisRepair(ctx context.Context, track *db.Track, 
 		return AnalysisRepairResult{Status: "skipped", Reason: "missing_track"}, nil
 	}
 	result := AnalysisRepairResult{TrackID: track.ID}
+	if track.Private {
+		result.Status = "skipped"
+		result.Reason = "private_track"
+		return result, nil
+	}
 	if p.analysisRepo == nil {
 		result.Status = "skipped"
 		result.Reason = "analysis_store_disabled"

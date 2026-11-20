@@ -313,6 +313,9 @@ func (h *MaintenanceHandlers) selectRepairTracks(ctx context.Context, ids []int6
 		if err != nil {
 			return nil, err
 		}
+		if track.Private {
+			return nil, db.ErrTrackNotFound
+		}
 		tracks = append(tracks, *track)
 		if len(tracks) >= limit {
 			break

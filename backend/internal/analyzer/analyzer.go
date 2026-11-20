@@ -28,6 +28,14 @@ type Request struct {
 	SchemaVersion           int
 	ExpectedAnalyzer        string
 	ExpectedAnalyzerVersion string
+	// Worker-side validation and claim fencing, never part of the HTTP DTO.
+	PrivateSource *PrivateSourceProof `json:"-"`
+}
+
+type PrivateSourceProof struct {
+	SHA256     string
+	ByteLength int64
+	Claim      string
 }
 
 type Result struct {
@@ -104,20 +112,24 @@ func IdentityFromProvenance(raw json.RawMessage) (string, string, error) {
 	return provenance.Analyzer, provenance.AnalyzerVersion, nil
 }
 
+// Surrounding whitespace is presentation, not part of either opaque field.
+func normalizeIdentity(name, version string) (string, string) {
+	return strings.TrimSpace(name), strings.TrimSpace(version)
+}
+
 func ValidateResultIdentity(req Request, result *Result) error {
 	if result == nil {
 		return errors.New("analyzer returned nil result")
 	}
-	var err error
-	result.Analyzer, result.AnalyzerVersion, err = IdentityFromProvenance(result.ProvenanceJSON)
+	name, version, err := IdentityFromProvenance(result.ProvenanceJSON)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(result.Analyzer) == "" || strings.TrimSpace(result.AnalyzerVersion) == "" {
+	result.Analyzer, result.AnalyzerVersion = normalizeIdentity(name, version)
+	if result.Analyzer == "" || result.AnalyzerVersion == "" {
 		return errors.New("analyzer result provenance missing analyzer identity")
 	}
-	expectedAnalyzer := strings.TrimSpace(req.ExpectedAnalyzer)
-	expectedVersion := strings.TrimSpace(req.ExpectedAnalyzerVersion)
+	expectedAnalyzer, expectedVersion := normalizeIdentity(req.ExpectedAnalyzer, req.ExpectedAnalyzerVersion)
 	if (expectedAnalyzer == "") != (expectedVersion == "") {
 		return errors.New("expected analyzer identity requires both name and version")
 	}
@@ -129,6 +141,24 @@ func ValidateResultIdentity(req Request, result *Result) error {
 			expectedAnalyzer,
 			expectedVersion,
 		)
+	}
+	// StoreResult decodes identity into a struct again, but startup SQL looks
+	// up exact keys. Remove all aliases accepted by encoding/json's Unicode
+	// case folding so neither a reparse nor JSONB key ordering can change it.
+	var provenance map[string]json.RawMessage
+	if err := json.Unmarshal(result.ProvenanceJSON, &provenance); err != nil {
+		return fmt.Errorf("parse analyzer provenance: %w", err)
+	}
+	for key := range provenance {
+		if strings.EqualFold(key, "analyzer") || strings.EqualFold(key, "analyzer_version") {
+			delete(provenance, key)
+		}
+	}
+	provenance["analyzer"], _ = json.Marshal(result.Analyzer) // strings always marshal
+	provenance["analyzer_version"], _ = json.Marshal(result.AnalyzerVersion)
+	result.ProvenanceJSON, err = json.Marshal(provenance)
+	if err != nil {
+		return fmt.Errorf("encode canonical analyzer provenance: %w", err)
 	}
 	return nil
 }
