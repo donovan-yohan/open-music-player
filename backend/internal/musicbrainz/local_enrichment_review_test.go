@@ -191,3 +191,43 @@ func TestLocalEnrichmentTransportDoesNotInheritProxyConnectCustomization(t *test
 		t.Fatal("constructing the private pool changed the ordinary transport")
 	}
 }
+
+func TestLocalEnrichmentTransportConcurrentColdStart(t *testing.T) {
+	for range 32 {
+		refused := fmt.Errorf("fixture dial refused")
+		ordinary := &http.Transport{
+			ForceAttemptHTTP2: true,
+			DialContext: func(context.Context, string, string) (net.Conn, error) {
+				return nil, refused
+			},
+		}
+		start := make(chan struct{})
+		ordinaryDone := make(chan error, 1)
+		privateDone := make(chan *http.Transport, 1)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://fixture.invalid/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			<-start
+			resp, err := ordinary.RoundTrip(req)
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			ordinaryDone <- err
+		}()
+		go func() {
+			<-start
+			privateDone <- localEnrichmentHTTP1Transport(ordinary)
+		}()
+		close(start)
+		err, private := <-ordinaryDone, <-privateDone
+		ordinary.CloseIdleConnections()
+		if err == nil || !strings.Contains(err.Error(), refused.Error()) {
+			t.Fatalf("ordinary cold request did not reach the fixture dial: %v", err)
+		}
+		if private == nil || !private.Protocols.HTTP1() || private.Protocols.HTTP2() || private.Protocols.UnencryptedHTTP2() {
+			t.Fatal("private pool did not preserve its explicit HTTP/1 policy")
+		}
+	}
+}

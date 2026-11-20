@@ -52,8 +52,14 @@ func (f localEnrichmentRoundTrip) RoundTrip(req *http.Request) (*http.Response, 
 }
 
 func localEnrichmentHTTP1Transport(base http.RoundTripper) *http.Transport {
-	transport, ok := base.(*http.Transport)
-	if !ok || transport == nil || transport.DialTLSContext != nil {
+	source, ok := base.(*http.Transport)
+	if !ok || source == nil {
+		return nil
+	}
+	// Clone synchronizes with net/http's first-use HTTP/2 initialization of
+	// TLSClientConfig. Never read the ordinary transport's live fields directly.
+	transport := source.Clone()
+	if transport.DialTLSContext != nil {
 		return nil // a custom TLS dial can negotiate outside net/http's policy
 	}
 	// Select only connection settings. Do not copy legacy TLS dialers, protocol
@@ -71,7 +77,7 @@ func localEnrichmentHTTP1Transport(base http.RoundTripper) *http.Transport {
 		Protocols:              new(http.Protocols),
 		ReadBufferSize:         transport.ReadBufferSize,
 		ResponseHeaderTimeout:  transport.ResponseHeaderTimeout,
-		TLSClientConfig:        transport.TLSClientConfig.Clone(),
+		TLSClientConfig:        transport.TLSClientConfig,
 		TLSHandshakeTimeout:    transport.TLSHandshakeTimeout,
 		WriteBufferSize:        transport.WriteBufferSize,
 	}
