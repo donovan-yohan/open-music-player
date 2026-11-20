@@ -520,6 +520,107 @@ func (db *DB) Migrate() error {
 
 	CREATE INDEX IF NOT EXISTS idx_tracks_genre ON tracks(genre);
 
+	-- Existing tracks stay shared. No external import admission is registered.
+	-- Block account deletion until an explicit private object retirement workflow
+	-- exists: cascading here would leave original bytes without their custodian.
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS private_owner_id UUID REFERENCES users(id) ON DELETE RESTRICT;
+	DO $$ BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'tracks'::regclass AND conname = 'tracks_private_exact_source') THEN
+			ALTER TABLE tracks ADD CONSTRAINT tracks_private_exact_source CHECK (
+				private_owner_id IS NULL OR (
+					private_owner_id <> '00000000-0000-0000-0000-000000000000'::uuid
+					AND source_file_hash IS NOT NULL AND octet_length(source_file_hash) = 71
+					AND source_file_hash COLLATE "C" ~ '^sha256:[0-9a-f]{64}$'
+					AND file_size_bytes IS NOT NULL AND file_size_bytes > 0
+					AND storage_key IS NOT NULL AND storage_key <> ''
+				)
+			);
+		END IF;
+	END $$;
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_private_exact_source
+		ON tracks(private_owner_id, source_file_hash, file_size_bytes) WHERE private_owner_id IS NOT NULL;
+
+	-- Scope is chosen only on INSERT; in particular a shared row with existing
+	-- memberships cannot be claimed by converting it to a private row. A private
+	-- track's identity and original byte handle never change in place.
+	CREATE OR REPLACE FUNCTION enforce_tracks_private_custody() RETURNS TRIGGER AS $$
+	BEGIN
+		IF NEW.private_owner_id IS DISTINCT FROM OLD.private_owner_id OR (
+			OLD.private_owner_id IS NOT NULL AND
+			(NEW.id, NEW.identity_hash, NEW.storage_key, NEW.source_file_hash, NEW.file_size_bytes, NEW.duration_ms)
+			IS DISTINCT FROM
+			(OLD.id, OLD.identity_hash, OLD.storage_key, OLD.source_file_hash, OLD.file_size_bytes, OLD.duration_ms)
+		) THEN
+			RAISE EXCEPTION 'private track custody cannot change' USING
+				ERRCODE = '23514', CONSTRAINT = 'tracks_private_custody';
+		END IF;
+		RETURN NULL;
+	END;
+	$$ LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp;
+	DROP TRIGGER IF EXISTS trg_tracks_private_custody ON tracks;
+	CREATE TRIGGER trg_tracks_private_custody AFTER UPDATE ON tracks FOR EACH ROW
+		WHEN (OLD.private_owner_id IS NOT NULL OR NEW.private_owner_id IS NOT NULL)
+		EXECUTE FUNCTION enforce_tracks_private_custody();
+
+	-- Cover the final INSERT/UPDATE row from every SQL writer, including upserts
+	-- and INSERT ... SELECT. Use the fired table's schema, never a caller's path
+	-- or temporary table. Lock the track against removal/key reuse through commit.
+	CREATE OR REPLACE FUNCTION enforce_user_library_visible_track() RETURNS TRIGGER AS $$
+	DECLARE
+		visible BOOLEAN;
+	BEGIN
+		EXECUTE format('SELECT TRUE FROM %I.tracks WHERE id = $1 AND (private_owner_id IS NULL OR private_owner_id = $2) FOR KEY SHARE', TG_TABLE_SCHEMA)
+			INTO visible USING NEW.track_id, NEW.user_id;
+		IF visible IS DISTINCT FROM TRUE THEN
+			RAISE EXCEPTION 'library track not found' USING
+				ERRCODE = '23503', TABLE = 'user_library', CONSTRAINT = 'user_library_visible_track';
+		END IF;
+		RETURN NULL;
+	END;
+	$$ LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp;
+	DROP TRIGGER IF EXISTS trg_user_library_visible_track ON user_library;
+	CREATE TRIGGER trg_user_library_visible_track AFTER INSERT OR UPDATE ON user_library
+		FOR EACH ROW EXECUTE FUNCTION enforce_user_library_visible_track();
+
+	-- Retain committed operations independently of current Library membership.
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_private_receipt_custody ON tracks(private_owner_id, id);
+	CREATE TABLE IF NOT EXISTS private_import_receipts (
+		owner_id UUID NOT NULL,
+		operation_id UUID NOT NULL CHECK (operation_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+		track_id BIGINT NOT NULL,
+		intent_hash CHAR(64) NOT NULL CHECK (intent_hash COLLATE "C" ~ '^[0-9a-f]{64}$'),
+		committed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (owner_id, operation_id),
+		FOREIGN KEY (owner_id, track_id) REFERENCES tracks(private_owner_id, id) ON DELETE RESTRICT
+	);
+	CREATE INDEX IF NOT EXISTS idx_private_import_receipts_track ON private_import_receipts(track_id);
+
+	-- One never-reused attempt and one intent fingerprint per operation. Keep
+	-- exact custody even if the account disappears; do not cascade orphan keys.
+	CREATE TABLE IF NOT EXISTS private_import_attempts (
+		owner_id UUID NOT NULL,
+		operation_id UUID NOT NULL,
+		attempt_id UUID NOT NULL UNIQUE,
+		intent_hash CHAR(64) NOT NULL CHECK (intent_hash COLLATE "C" ~ '^[0-9a-f]{64}$'),
+		sha256 VARCHAR(71) NOT NULL CHECK (sha256 COLLATE "C" ~ '^sha256:[0-9a-f]{64}$'),
+		byte_length BIGINT NOT NULL CHECK (byte_length BETWEEN 1 AND 67108864),
+		duration_ms INTEGER CHECK (duration_ms BETWEEN 1 AND 1800000),
+		title TEXT NOT NULL,
+		artist TEXT NOT NULL,
+		album TEXT NOT NULL,
+		phase TEXT NOT NULL CHECK (phase IN ('reserved','putting','observed','stored','winner','refused','retiring','quarantined','cleaned')),
+		expires_at TIMESTAMPTZ NOT NULL,
+		cleanup_after TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+		PRIMARY KEY (owner_id, operation_id),
+		CHECK (phase IN ('reserved','refused') OR duration_ms IS NOT NULL)
+	);
+	CREATE INDEX IF NOT EXISTS idx_private_import_attempts_expiry ON private_import_attempts(expires_at)
+		WHERE phase IN ('reserved','putting','observed','stored');
+	CREATE INDEX IF NOT EXISTS idx_private_import_attempts_cleanup ON private_import_attempts(cleanup_after)
+		WHERE phase = 'retiring';
+	CREATE INDEX IF NOT EXISTS idx_private_import_attempts_active ON private_import_attempts(owner_id)
+		WHERE phase IN ('reserved','putting','observed','stored','retiring','quarantined');
+
 	CREATE TABLE IF NOT EXISTS mix_plans (
 		id UUID PRIMARY KEY,
 		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -785,6 +886,8 @@ func (db *DB) Migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_track_analysis_status ON track_analysis(status);
 	CREATE INDEX IF NOT EXISTS idx_track_analysis_updated_at ON track_analysis(updated_at DESC);
+	-- Private claim identity is worker-internal, not response provenance.
+	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS dispatch_token UUID;
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS overrides_json JSONB NOT NULL DEFAULT '{}'::jsonb;
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS manual_override_revision BIGINT NOT NULL DEFAULT 0;
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS manual_override_updated_at TIMESTAMP WITH TIME ZONE;

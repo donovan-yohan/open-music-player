@@ -771,28 +771,37 @@ func runServer() int {
 		maintenanceCtx, maintenanceCancel := context.WithCancel(context.Background())
 		stopAnalyzerMaintenance = maintenanceCancel
 		go func() {
+			reconciled := false
 			for {
-				report, err := reconcileAnalyzerVersion(
-					maintenanceCtx,
-					serviceAnalyzerClient,
-					analysisRepo,
-					trackRepo,
-					jobProcessor,
-				)
-				if err == nil {
-					log.Info(ctx, "Analyzer version reconciliation completed", map[string]interface{}{
-						"analyzer":         report.Analyzer,
-						"analyzer_version": report.AnalyzerVersion,
-						"marked_stale":     report.MarkedStale,
-						"batches":          report.Batches,
-						"candidates":       report.Candidates,
-						"queued":           report.Queued,
-						"skipped":          report.Skipped,
-						"failures":         report.Failures,
-					})
-					return
+				if !reconciled {
+					report, err := reconcileAnalyzerVersion(
+						maintenanceCtx,
+						serviceAnalyzerClient,
+						analysisRepo,
+						trackRepo,
+						jobProcessor,
+					)
+					if err == nil {
+						reconciled = true
+						log.Info(ctx, "Analyzer version reconciliation completed", map[string]interface{}{
+							"analyzer":         report.Analyzer,
+							"analyzer_version": report.AnalyzerVersion,
+							"marked_stale":     report.MarkedStale,
+							"batches":          report.Batches,
+							"candidates":       report.Candidates,
+							"queued":           report.Queued,
+							"skipped":          report.Skipped,
+							"failures":         report.Failures,
+						})
+					} else {
+						log.Error(ctx, "Analyzer version reconciliation will retry", nil, err)
+					}
 				}
-				log.Error(ctx, "Analyzer version reconciliation will retry", nil, err)
+				// Reuse this maintenance owner for one bounded batch at readiness
+				// and on its existing cadence. No per-upload jobs or retry loops.
+				if _, err := jobProcessor.DrainPrivateImportAnalysis(maintenanceCtx); err != nil && maintenanceCtx.Err() == nil {
+					log.Error(ctx, "Private import analysis drain will retry", nil, err)
+				}
 				select {
 				case <-maintenanceCtx.Done():
 					return

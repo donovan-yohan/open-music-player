@@ -29,10 +29,11 @@ const (
 	CatalogNeedsReview       CatalogMembershipRefusal = "NEEDS_REVIEW"
 )
 
-// AddCatalogMembership locks only the selected track FOR UPDATE: unlike KEY SHARE,
-// this excludes non-key MBID/verification updates through membership commit. The
-// following READ COMMITTED statement admits exactly one matching row at its own
-// snapshot. Concurrent new competing evidence after that snapshot is not excluded;
+// AddCatalogMembership locks only the selected shared track FOR UPDATE: unlike
+// KEY SHARE, this excludes non-key MBID/verification updates through membership
+// commit. Private rows are absent for every caller. The following READ COMMITTED
+// statement requires exactly one matching shared row at its own snapshot.
+// Concurrent new competing evidence after that snapshot is not excluded;
 // later resolver reads may therefore report ambiguity. No predicate-lock claim is
 // made. The selected identity remains protected, regardless of other writers.
 func (r *LibraryRepository) AddCatalogMembership(ctx context.Context, userID, recordingID uuid.UUID, trackID int64) (CatalogMembership, error) {
@@ -47,7 +48,7 @@ func (r *LibraryRepository) AddCatalogMembership(ctx context.Context, userID, re
 	defer tx.Rollback()
 	var recording uuid.NullUUID
 	var verified bool
-	err = tx.QueryRowContext(ctx, `SELECT mb_recording_id, mb_verified FROM tracks WHERE id=$1 FOR UPDATE`, trackID).Scan(&recording, &verified)
+	err = tx.QueryRowContext(ctx, `SELECT mb_recording_id, mb_verified FROM tracks WHERE id=$1 AND private_owner_id IS NULL FOR UPDATE`, trackID).Scan(&recording, &verified)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CatalogMembership{}, CatalogTargetUnavailable
 	}
@@ -61,7 +62,7 @@ func (r *LibraryRepository) AddCatalogMembership(ctx context.Context, userID, re
 		return CatalogMembership{}, CatalogNeedsReview
 	}
 	var ambiguous bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tracks WHERE mb_recording_id=$1 AND id<>$2)`, recordingID, trackID).Scan(&ambiguous); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tracks WHERE mb_recording_id=$1 AND id<>$2 AND private_owner_id IS NULL)`, recordingID, trackID).Scan(&ambiguous); err != nil {
 		return CatalogMembership{}, fmt.Errorf("check catalog evidence: %w", err)
 	}
 	if ambiguous {

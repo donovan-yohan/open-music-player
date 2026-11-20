@@ -326,19 +326,12 @@ func (h *LibraryHandlers) AddTrackToLibrary(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Verify track exists
-	_, err = h.trackRepo.GetByID(r.Context(), trackID)
+	entry, err := h.libraryRepo.AddTrackToLibrary(r.Context(), userCtx.UserID, trackID)
 	if err != nil {
 		if errors.Is(err, db.ErrTrackNotFound) {
 			writeLibraryError(w, http.StatusNotFound, "TRACK_NOT_FOUND", "track not found")
 			return
 		}
-		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to verify track")
-		return
-	}
-
-	entry, err := h.libraryRepo.AddTrackToLibrary(r.Context(), userCtx.UserID, trackID)
-	if err != nil {
 		if errors.Is(err, db.ErrTrackAlreadyInLibrary) {
 			writeLibraryError(w, http.StatusConflict, "ALREADY_IN_LIBRARY", "track already in library")
 			return

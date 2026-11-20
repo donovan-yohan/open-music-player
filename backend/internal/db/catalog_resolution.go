@@ -17,15 +17,16 @@ type CatalogTrackCandidate struct {
 	InLibrary  bool  `json:"inLibrary"`
 }
 
-// ResolveCatalogRecording reads exact stored metadata and this user's membership in
-// one statement/snapshot. One extra row detects truncation without counting all matches.
+// ResolveCatalogRecording reads exact shared rows and this user's membership in
+// one snapshot. Private rows, including the caller's, do not consume the limit.
+// One extra shared row detects truncation without counting all matches.
 func (r *TrackRepository) ResolveCatalogRecording(ctx context.Context, recordingID, userID uuid.UUID) ([]CatalogTrackCandidate, bool, error) {
 	if recordingID == uuid.Nil || userID == uuid.Nil {
 		return nil, false, fmt.Errorf("recording and user identifiers must be non-nil")
 	}
 	rows, err := r.db.QueryContext(ctx, `SELECT t.id, t.mb_verified,
  EXISTS(SELECT 1 FROM user_library ul WHERE ul.track_id=t.id AND ul.user_id=$2)
- FROM tracks t WHERE t.mb_recording_id=$1 ORDER BY t.id LIMIT $3`, recordingID, userID, CatalogResolutionLimit+1)
+ FROM tracks t WHERE t.mb_recording_id=$1 AND t.private_owner_id IS NULL ORDER BY t.id LIMIT $3`, recordingID, userID, CatalogResolutionLimit+1)
 	if err != nil {
 		return nil, false, fmt.Errorf("resolve catalog recording: %w", err)
 	}

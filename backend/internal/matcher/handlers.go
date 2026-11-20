@@ -93,6 +93,16 @@ func (h *Handler) HandleMatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// Numeric matcher actions are shared-catalog operations, never an owner
+// lookup for private Library tracks. Fence before any provider request.
+func (h *Handler) getSharedTrack(r *http.Request, trackID int64) (*db.Track, error) {
+	track, err := h.trackRepo.GetByID(r.Context(), trackID)
+	if err == nil && track.Private {
+		return nil, db.ErrTrackNotFound
+	}
+	return track, err
+}
+
 // HandleMatchTrack handles POST /api/v1/tracks/{id}/match - matches an existing track
 func (h *Handler) HandleMatchTrack(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -114,7 +124,7 @@ func (h *Handler) HandleMatchTrack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get the track
-	track, err := h.trackRepo.GetByID(r.Context(), trackID)
+	track, err := h.getSharedTrack(r, trackID)
 	if err != nil {
 		if err == db.ErrTrackNotFound {
 			writeError(w, http.StatusNotFound, "Track not found")
@@ -241,7 +251,7 @@ func (h *Handler) HandleConfirmMatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify track exists
-	if _, err := h.trackRepo.GetByID(r.Context(), trackID); err != nil {
+	if _, err := h.getSharedTrack(r, trackID); err != nil {
 		if err == db.ErrTrackNotFound {
 			writeError(w, http.StatusNotFound, "Track not found")
 			return
@@ -352,7 +362,7 @@ func (h *Handler) HandleLinkMB(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify track exists
-	track, err := h.trackRepo.GetByID(r.Context(), trackID)
+	track, err := h.getSharedTrack(r, trackID)
 	if err != nil {
 		if err == db.ErrTrackNotFound {
 			writeError(w, http.StatusNotFound, "Track not found")

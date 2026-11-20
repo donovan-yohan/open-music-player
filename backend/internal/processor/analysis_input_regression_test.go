@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,11 +27,14 @@ import (
 // Keep the real processor, track dedupe and library repositories in the loop.
 // Only the SQL driver, object store and remote analyzer are fakes.
 type processorSQLFake struct {
-	mu            sync.Mutex
-	queries       []string
-	canonicalHash string
-	libraryErr    error
-	failedImport  bool
+	mu             sync.Mutex
+	queries        []string
+	canonicalHash  string
+	canonicalSize  int64
+	postStoreTrack *db.Track
+	genreHintCalls int
+	libraryErr     error
+	failedImport   bool
 }
 
 type processorConnector struct{ fake *processorSQLFake }
@@ -85,16 +89,33 @@ func (c processorConn) QueryContext(_ context.Context, query string, args []driv
 	c.fake.queries = append(c.fake.queries, query)
 	switch {
 	case strings.Contains(query, "WHERE identity_hash = $1"):
-		return processorRow(int64(42), args[0].Value, "Canonical Song", "Canonical Artist", "", int64(123000), nil,
-			nil, nil, nil, false, "https://canonical.test/a", "canonical", "tracks/canonical-a.wav", int64(4096),
+		return processorRow(int64(42), args[0].Value, "Canonical Song", "Canonical Artist", "", int64(1000), nil,
+			nil, nil, nil, false, "https://canonical.test/a", "canonical", "tracks/canonical-a.wav", c.fake.canonicalSize,
 			"pcm_s16le", int64(256), int64(16000), int64(1), "audio/wav", "{}", "provider", nil, "{}", nil, false, time.Now(), time.Now()), nil
+	case strings.Contains(query, "FROM tracks") && strings.Contains(query, "WHERE id = $1") && strings.Contains(query, "file_size_bytes"):
+		if args[0].Value != int64(42) {
+			return nil, fmt.Errorf("unexpected canonical track read: %v", args)
+		}
+		track := c.fake.postStoreTrack
+		if track == nil {
+			return &processorRows{}, nil
+		}
+		return processorRow(track.ID, "private-fixture", track.Title, track.Artist.String, nil, int64(track.DurationMs.Int32), nil,
+			nil, nil, nil, false, track.SourceURL.String, track.SourceType.String, track.StorageKey.String, track.FileSizeBytes.Int64,
+			"pcm_s16le", int64(256), int64(16000), int64(1), "audio/wav", "{}", "provider", nil, "{}", nil, false, time.Now(), time.Now(), track.Private), nil
 	case strings.Contains(query, "SELECT source_file_hash FROM tracks"):
+		if args[0].Value != int64(42) {
+			return nil, fmt.Errorf("unexpected canonical hash read: %v", args)
+		}
 		return processorRow(c.fake.canonicalHash), nil
 	case strings.Contains(query, "INSERT INTO user_library"):
 		if c.fake.libraryErr != nil {
 			return nil, c.fake.libraryErr
 		}
-		return processorRow(args[0].Value, args[1].Value, time.Now()), nil
+		if len(args) != 2 || args[1].Value != int64(42) {
+			return nil, fmt.Errorf("unexpected library target: %v", args)
+		}
+		return processorRow(time.Now()), nil
 	default:
 		return nil, fmt.Errorf("unexpected query: %s", query)
 	}
@@ -105,6 +126,12 @@ func (c processorConn) ExecContext(_ context.Context, query string, args []drive
 	c.fake.queries = append(c.fake.queries, query)
 	switch {
 	case strings.Contains(query, "pg_advisory_xact_lock"):
+	case strings.Contains(query, "WITH genre_hint AS") && c.fake.postStoreTrack != nil:
+		if args[0].Value != int64(42) || args[1].Value != `{"bpm":{"value":124}}` {
+			return nil, fmt.Errorf("unexpected genre hint input: %v", args)
+		}
+		c.fake.genreHintCalls++
+		return driver.RowsAffected(0), nil // this fixture's summary contains no genre
 	case strings.Contains(query, "UPDATE playlist_import_items"):
 		if len(args) != 3 || args[0].Value != int64(7) || args[1].Value != playlistimport.ItemStatusFailed || !strings.Contains(fmt.Sprint(args[2].Value), "library insert unavailable") {
 			return nil, fmt.Errorf("unexpected import-failure bookkeeping: %+v", args)
@@ -118,7 +145,7 @@ func (c processorConn) ExecContext(_ context.Context, query string, args []drive
 
 func newProcessorSQLFake(t *testing.T) (*db.DB, *processorSQLFake) {
 	t.Helper()
-	fake := &processorSQLFake{canonicalHash: "sha256:" + strings.Repeat("a", 64)}
+	fake := &processorSQLFake{canonicalHash: "sha256:" + strings.Repeat("a", 64), canonicalSize: 4096}
 	raw := sql.OpenDB(processorConnector{fake})
 	t.Cleanup(func() { _ = raw.Close() })
 	return &db.DB{DB: raw}, fake
@@ -143,43 +170,30 @@ func (s *inputAnalysisStore) RequestAnalysis(ctx context.Context, trackID int64,
 func TestProcessDeduplicatedUploadAnalyzesCanonicalAudio(t *testing.T) {
 	database, fakeSQL := newProcessorSQLFake(t)
 	store := &inputAnalysisStore{}
-	client := &fakeAnalyzerClient{requests: make(chan analyzer.Request, 1), err: analyzer.ErrUnsupported}
-	objects := &fakeObjectStorage{}
-	p := New(&ProcessorConfig{TrackRepo: db.NewTrackRepository(database), Storage: objects, AnalysisRepo: store, AnalyzerClient: client})
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := p.Shutdown(ctx); err != nil {
-			t.Errorf("shutdown: %v", err)
-		}
-	})
-	job := &download.DownloadJob{ID: "candidate-b", URL: "fixture://candidate-b", SourceType: "fixture", Title: "Candidate Song", Artist: "Candidate Artist", DurationMs: 1000}
+	audio := testWAVBytes(t, 16000, 1)
+	fakeSQL.canonicalSize, fakeSQL.canonicalHash = int64(len(audio)), fixtureSHA256(audio)
+	objects := &fakeObjectStorage{objects: map[string][]byte{canonicalAnalysisKey: audio}}
+	client, seen, calls := newAnalysisWireFixture(t, objects, http.StatusUnsupportedMediaType)
+	p := New(&ProcessorConfig{TrackRepo: db.NewTrackRepository(database), LibraryRepo: db.NewLibraryRepository(database), Storage: objects, AnalysisRepo: store, AnalyzerClient: client})
+	t.Cleanup(func() { drainAnalysisForTest(t, p) })
+	job := &download.DownloadJob{ID: "candidate-b", UserID: uuid.NewString(), URL: "fixture://candidate-b", SourceType: "fixture", Title: "Candidate Song", Artist: "Candidate Artist", DurationMs: 2000}
 	if err := p.Process(context.Background(), job, func(int) {}); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case req := <-client.requests:
-		if req.TrackID != 42 || req.StorageKey != "tracks/canonical-a.wav" || req.SourceURL != "https://canonical.test/a" || req.SourceType != "canonical" || req.DurationMs != 123000 || req.Title != "Canonical Song" || req.Artist != "Canonical Artist" {
-			t.Fatalf("analysis used discarded candidate B instead of canonical A: %+v", req)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("canonical analysis was not scheduled")
+	wire := receiveAnalysisWire(t, seen)
+	want := fmt.Sprintf(`{"schema_version":%d,"track_id":42,"storage_key":%q,"source_url":"https://canonical.test/a","source_type":"canonical","duration_ms":1000,"title":"Canonical Song","artist":"Canonical Artist"}`, analyzer.SchemaVersion, canonicalAnalysisKey)
+	if string(wire.body) != want || wire.hash != fakeSQL.canonicalHash || wire.size != fakeSQL.canonicalSize {
+		t.Fatalf("analysis used wrong input: %s, %s/%d; want %s, %s/%d", wire.body, wire.hash, wire.size, want, fakeSQL.canonicalHash, fakeSQL.canonicalSize)
 	}
-	var provenance struct {
-		Source struct {
-			StorageKey string `json:"storage_key"`
-			Hash       string `json:"source_file_hash"`
-		} `json:"source"`
+	drainAnalysisForTest(t, p)
+	if calls.Load() != 1 || store.unsupportedCount != 1 {
+		t.Fatalf("URL analysis requests=%d unsupported=%d; want 1/1", calls.Load(), store.unsupportedCount)
 	}
-	if err := json.Unmarshal(store.provenance, &provenance); err != nil {
-		t.Fatal(err)
+	assertStoredSource(t, store.provenance, "post_download", canonicalAnalysisKey, wire.hash, 0, 1000, "canonical")
+	if objects.key != "tracks/fixture/candidate-b.wav" || len(objects.data) == 0 || fixtureSHA256(objects.data) == wire.hash {
+		t.Fatalf("candidate B was not a distinct uploaded object: %s, %s/%d", objects.key, fixtureSHA256(objects.data), len(objects.data))
 	}
-	if provenance.Source.StorageKey != "tracks/canonical-a.wav" || provenance.Source.Hash != fakeSQL.canonicalHash {
-		t.Fatalf("analysis source provenance = %+v; want canonical A key/hash", provenance.Source)
-	}
-	if objects.key != "tracks/fixture/candidate-b.wav" {
-		t.Fatalf("candidate B was not actually uploaded: %s", objects.key)
-	}
+	t.Logf("analyzer POST /analyze body=%s opened=%s bytes=%d; discarded candidate=%s %s bytes=%d", wire.body, wire.hash, wire.size, objects.key, fixtureSHA256(objects.data), len(objects.data))
 	if job.TrackID == nil || *job.TrackID != 42 {
 		t.Fatalf("deduplication lost canonical track ID: %v", job.TrackID)
 	}
@@ -199,7 +213,9 @@ func TestEnqueueAnalysisDoesNotScheduleAlreadyAnalyzedTrack(t *testing.T) {
 		analysisQueue: make(chan analysisTask, 1), analysisStop: make(chan struct{}),
 		analysisOutstanding: make(map[uint64]analyzer.Request),
 	}
-	p.enqueueAnalysis(context.Background(), &db.Track{ID: 42, StorageKey: sqlNullString("tracks/canonical-a.wav")}, &TrackMetadata{StorageKey: "tracks/candidate-b.wav"})
+	if queued, err := p.SchedulePostStoreAnalysis(context.Background(), &db.Track{ID: 42, StorageKey: sqlNullString(canonicalAnalysisKey)}, PostStoreDownload); err != nil || queued {
+		t.Fatalf("already analyzed canonical track: queued=%v err=%v", queued, err)
+	}
 	if store.requestCount != 1 {
 		t.Fatalf("analysis persistence requests = %d, want one", store.requestCount)
 	}

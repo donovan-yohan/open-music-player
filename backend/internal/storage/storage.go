@@ -30,9 +30,10 @@ import (
 
 // Client provides access to S3-compatible object storage (MinIO).
 type Client struct {
-	client        *minio.Client
-	presignClient *minio.Client
-	bucket        string
+	client           *minio.Client
+	presignClient    *minio.Client
+	privatePutClient *minio.Client
+	bucket           string
 }
 
 // Config holds the configuration for the object storage client.
@@ -53,11 +54,12 @@ func New(cfg *Config) (*Client, error) {
 		return nil, fmt.Errorf("invalid minio endpoint: %w", err)
 	}
 
-	client, err := minio.New(endpoint, &minio.Options{
+	internalOptions := minio.Options{
 		Creds:  miniocreds.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Region: minioRegion(cfg.Region),
 		Secure: secure,
-	})
+	}
+	client, err := minio.New(endpoint, &internalOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create minio client: %w", err)
 	}
@@ -77,10 +79,20 @@ func New(cfg *Config) (*Client, error) {
 		}
 	}
 
+	// MinIO counts attempts, including the first, in MaxRetries. Only the
+	// staged write is one-shot; ordinary storage and presign keep their defaults.
+	privatePutOptions := internalOptions
+	privatePutOptions.MaxRetries = 1
+	privatePutClient, err := minio.New(endpoint, &privatePutOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create minio private put client: %w", err)
+	}
+
 	return &Client{
-		client:        client,
-		presignClient: presignClient,
-		bucket:        cfg.Bucket,
+		client:           client,
+		presignClient:    presignClient,
+		privatePutClient: privatePutClient,
+		bucket:           cfg.Bucket,
 	}, nil
 }
 
@@ -235,6 +247,19 @@ func (c *Client) PutObject(ctx context.Context, key string, reader io.Reader, si
 	}
 
 	return nil
+}
+
+// PutPrivateImportObject makes one conditional, single-part upload to a
+// previously reserved attempt key. A failed response is uncertain: the
+// caller must not replay the write or authorize deletion on that basis.
+func (c *Client) PutPrivateImportObject(ctx context.Context, key string, reader io.Reader, size int64) error {
+	opts := minio.PutObjectOptions{ContentType: "audio/mpeg", DisableMultipart: true}
+	opts.SetMatchETagExcept("*")
+	// The spool belongs to the producer. Hiding Seek alone does not prevent
+	// replay: the SDK wraps readers in an io.Seeker with a no-op Seek.
+	// Use the one-attempt client, with the SDK's redirect refusal intact.
+	_, err := c.privatePutClient.PutObject(ctx, c.bucket, key, struct{ io.Reader }{reader}, size, opts)
+	return err
 }
 
 // DeleteObject removes an object from storage.

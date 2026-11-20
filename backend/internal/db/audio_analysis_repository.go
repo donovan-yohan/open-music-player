@@ -99,6 +99,7 @@ type AnalysisResult struct {
 	ProvenanceJSON  json.RawMessage
 	Analyzer        string
 	AnalyzerVersion string
+	DispatchToken   string // Set only by the worker, never by the analyzer response.
 }
 
 type AnalysisRepairRequest struct {
@@ -259,10 +260,11 @@ func (r *AnalysisRepository) MarkAnalyzing(ctx context.Context, trackID int64, p
 		UPDATE track_analysis
 		SET status = $2,
 			started_at = COALESCE(started_at, NOW()),
-			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || COALESCE($3::jsonb, '{}'::jsonb),
+			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || (COALESCE($3::jsonb, '{}'::jsonb) - 'dispatch_token'),
 			updated_at = NOW()
 		WHERE track_id = $1
 		  AND status = $4
+		  AND COALESCE(dispatch_token::text, '') = COALESCE($3::jsonb->>'dispatch_token', '')
 		  AND (
 			COALESCE(provenance_json->>'expected_analyzer', '') = ''
 			OR provenance_json->>'expected_analyzer' = COALESCE($3::jsonb->>'expected_analyzer', '')
@@ -333,7 +335,9 @@ func (r *AnalysisRepository) StoreResult(ctx context.Context, trackID int64, res
 		INSERT INTO track_analysis (
 			track_id, schema_version, status, summary_json, artifacts_json, provenance_json,
 			requested_at, started_at, completed_at, updated_at
-		) VALUES ($1, $2, $3, COALESCE($4::jsonb, '{}'::jsonb), COALESCE($5::jsonb, '{}'::jsonb), COALESCE($6::jsonb, '{}'::jsonb), NOW(), NOW(), NOW(), NOW())
+		) SELECT $1, $2, $3, COALESCE($4::jsonb, '{}'::jsonb), COALESCE($5::jsonb, '{}'::jsonb),
+			COALESCE($6::jsonb, '{}'::jsonb) - 'dispatch_token', NOW(), NOW(), NOW(), NOW()
+		WHERE $10 = '' OR EXISTS (SELECT 1 FROM track_analysis WHERE track_id = $1 AND dispatch_token::text = $10)
 		ON CONFLICT (track_id) DO UPDATE
 		SET schema_version = EXCLUDED.schema_version,
 			status = EXCLUDED.status,
@@ -346,7 +350,7 @@ func (r *AnalysisRepository) StoreResult(ctx context.Context, trackID int64, res
 			updated_at = NOW()
 			WHERE (
 				track_analysis.status = $9
-			) AND (
+			) AND COALESCE(track_analysis.dispatch_token::text, '') = $10 AND (
 				COALESCE(track_analysis.provenance_json->>'expected_analyzer', '') = ''
 			OR (
 				NULLIF($7, '') IS NOT NULL
@@ -370,6 +374,7 @@ func (r *AnalysisRepository) StoreResult(ctx context.Context, trackID int64, res
 		analyzerName,
 		analyzerVersion,
 		AnalysisStatusAnalyzing,
+		result.DispatchToken,
 	)
 	if err != nil {
 		return err
@@ -593,11 +598,13 @@ func (r *AnalysisRepository) markTerminal(ctx context.Context, trackID int64, st
 		UPDATE track_analysis
 		SET status = $2,
 			error = NULLIF($3, ''),
-			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || COALESCE($4::jsonb, '{}'::jsonb),
+			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || (COALESCE($4::jsonb, '{}'::jsonb) - 'dispatch_token'),
 			completed_at = NOW(),
 			updated_at = NOW()
 		WHERE track_id = $1
 		  AND status IN ($5, $6, $7)
+		  AND COALESCE(dispatch_token::text, '') = COALESCE($4::jsonb->>'dispatch_token', '')
+		  AND (status <> $7 OR COALESCE($4::jsonb->>'dispatch_token', '') = '')
 		  AND (
 			COALESCE(provenance_json->>'expected_analyzer', '') = ''
 			OR provenance_json->>'expected_analyzer' = COALESCE($4::jsonb->>'expected_analyzer', '')
@@ -635,6 +642,7 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 	query := `
 		UPDATE track_analysis
 		SET status = $3,
+			dispatch_token = NULL,
 			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || jsonb_build_object(
 				'expected_analyzer', NULLIF($1, ''),
 				'expected_analyzer_version', NULLIF($2, ''),

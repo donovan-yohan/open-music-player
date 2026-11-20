@@ -28,6 +28,14 @@ type Request struct {
 	SchemaVersion           int
 	ExpectedAnalyzer        string
 	ExpectedAnalyzerVersion string
+	// Worker-side validation and claim fencing, never part of the HTTP DTO.
+	PrivateSource *PrivateSourceProof `json:"-"`
+}
+
+type PrivateSourceProof struct {
+	SHA256     string
+	ByteLength int64
+	Claim      string
 }
 
 type Result struct {
