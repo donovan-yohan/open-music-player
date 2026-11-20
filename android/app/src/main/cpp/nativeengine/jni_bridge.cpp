@@ -192,6 +192,13 @@ Java_com_soundq_android_playback_nativeengine_NativeCallbackBridge_control(
             value, static_cast<uint64_t>(eventNanos)) ? JNI_TRUE : JNI_FALSE;
     } catch (...) { return JNI_FALSE; }
 }
+extern "C" JNIEXPORT jint JNICALL
+Java_com_soundq_android_playback_nativeengine_NativeCallbackBridge_recoverOutput(JNIEnv*, jclass, jlong handle) {
+    using soundq::nativeengine::OutputRecovery;
+    try {
+        return static_cast<jint>(registry().recoverOutput(handle > 0 ? static_cast<uint64_t>(handle) : 0));
+    } catch (...) { return static_cast<jint>(OutputRecovery::Unknown); }
+}
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_soundq_android_playback_nativeengine_NativeCallbackBridge_state(JNIEnv* env, jclass, jlong handle) {
     try {

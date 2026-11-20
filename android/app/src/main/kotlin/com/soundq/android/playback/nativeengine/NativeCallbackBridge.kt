@@ -13,7 +13,8 @@ internal object NativeCallbackBridge {
     @JvmStatic external fun loadReader(handle: Long, deck: Int, reader: NativePcmReader, identity: Long, generation: Long, positionMs: Long, speed: Double): Boolean
     @JvmStatic external fun loadPreview(handle: Long, deck: Int, input: DiscoveryPreviewInput, generation: Long): Boolean
     // Operation 10 sets an assigned ordinary deck's listening speed (admission only).
-    // Operation 9 is explicit paused output recovery, not Play or source release.
+    // Explicit paused recovery, independent of diagnostic state JSON.
+    @JvmStatic external fun recoverOutput(handle: Long): Int
     @JvmStatic external fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long): Boolean
     // Six longs/clip: globalStart, sourceIn, sourceOut, fadeIn, fadeOut,
     // full-source catalog duration (sourceOut==sourceDuration only), otherwise zero.
@@ -33,6 +34,10 @@ internal object NativeCallbackBridge {
     @JvmStatic external fun crossfade(handle: Long, outgoing: Int, outgoingGeneration: Long, incoming: Int, incomingGeneration: Long, milliseconds: Long): Boolean
 }
 
+internal enum class NativeOutputRecovery(val ready: Boolean) {
+    Failed(false), Healthy(true), Reset(true), Unknown(false),
+}
+
 /** The only substituted boundary in Player tests, together with encoded source IO. */
 internal interface NativeCallbackCalls {
     fun open(): Long
@@ -40,6 +45,7 @@ internal interface NativeCallbackCalls {
     fun loadSpeed(handle: Long, deck: Int, path: String, identity: Long, generation: Long, positionMs: Long, speed: Double): Boolean = false
     fun loadReader(handle: Long, deck: Int, reader: NativePcmReader, identity: Long, generation: Long, positionMs: Long, speed: Double): Boolean = false
     fun loadPreview(handle: Long, deck: Int, input: DiscoveryPreviewInput, generation: Long): Boolean = false
+    fun recoverOutput(handle: Long): NativeOutputRecovery
     fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long): Boolean
     fun prepareSchedule(handle: Long, revision: Long, paths: Array<String>, values: LongArray): Boolean = false
     fun prepareScheduleV2(handle: Long, revision: Long, paths: Array<String>, values: LongArray, tempo: DoubleArray): Boolean = false
@@ -65,6 +71,12 @@ internal object JniNativeCallbackCalls : NativeCallbackCalls {
         NativeCallbackBridge.loadReader(handle, deck, reader, identity, generation, positionMs, speed)
     override fun loadPreview(handle: Long, deck: Int, input: DiscoveryPreviewInput, generation: Long) =
         NativeCallbackBridge.loadPreview(handle, deck, input, generation)
+    override fun recoverOutput(handle: Long) = when (NativeCallbackBridge.recoverOutput(handle)) {
+        0 -> NativeOutputRecovery.Failed
+        1 -> NativeOutputRecovery.Healthy
+        2 -> NativeOutputRecovery.Reset
+        else -> NativeOutputRecovery.Unknown
+    }
     override fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long) =
         NativeCallbackBridge.control(handle, operation, deck, value, eventNanos)
     override fun prepareSchedule(handle: Long, revision: Long, paths: Array<String>, values: LongArray) = NativeCallbackBridge.prepareSchedule(handle, revision, paths, values)

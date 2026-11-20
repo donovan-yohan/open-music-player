@@ -6,6 +6,7 @@ snapshots retain the original observer-only behavioral probe, not a compile RED.
 """
 import argparse
 from pathlib import Path
+import re
 import subprocess
 
 p = argparse.ArgumentParser()
@@ -19,7 +20,13 @@ owner = (root / 'app/src/main/kotlin/com/soundq/android/playback/nativeengine/Na
 
 def method(text, marker):
     start = text.index(marker)
-    brace = text.index('{', start)
+    # Find the body after the complete parameter list; defaults can be lambdas.
+    end = text.index('(', start) + 1
+    depth = 1
+    while depth:
+        depth += (text[end] == '(') - (text[end] == ')')
+        end += 1
+    brace = text.index('{', end)
     depth = 1
     at = brace + 1
     while depth:
@@ -32,11 +39,32 @@ def method(text, marker):
 
 
 has_recovery = '    suspend fun recoverOutput(' in owner
+typed = 'onAttempt: (NativeOutputRecovery)' in owner
+legacy_claim = '    private data class OrdinaryPlay(' in source
+engine = root / 'app/src/main/kotlin/com/soundq/android/playback/nativeengine'
+outcome = ''
+owner_state = ''
+player_state = ' var outputRecoveryRevision:Long?=null\n var pendingOutputRecoveries=0'
+player_recovery = ''
+replace_marker = 'outputRecoveryRevision = revision'
+recover_once = 'owner.recoverOutput(current)'
+if typed:
+    outcome = (engine / 'NativeCallbackBridge.kt').read_text().split('internal enum class NativeOutputRecovery', 1)[1].split('}', 1)[0]
+    outcome = 'enum class NativeOutputRecovery' + outcome + '}'
+    owner_state = owner[owner.index('    private data class OrdinaryPlay('):owner.index('    /** One queued runnable')]
+    player_state = source[source.index('    private class OutputRecoveryBatch('):source.index('    private var arrangement:')]
+    player_state += '\n val outputRecoveryRevision get()=outputRecovery?.revision'
+    player_recovery = source[source.index('    private fun recoveryCurrent('):source.index('    private fun dispatchIntent(')]
+    replace_marker = 'outputRecovery = OutputRecoveryBatch(epoch, revision, error).also { it.pending = 1 }'
+    recover_once = 'owner.recoverOutput(current = current)'
+elif legacy_claim:
+    player_state += '\n' + '\n'.join(line for line in source.splitlines()
+                                      if line.startswith(('    private data class OrdinaryPlay(', '    private var submittedOrdinaryPlay:')))
 fail_old = method(source, '    private fun fail(message: String)')
 fail = (method(source, '    private fun failOutput()') if '    private fun failOutput()' in source else
         fail_old.replace('private fun fail(message: String)', 'private fun failOutput(message: String = "Audio output is unavailable")'))
 dispatch = method(source, '    private fun dispatchIntent(')
-recover = method(owner, '    suspend fun recoverOutput(') if has_recovery else ''
+recover = owner_state if typed else method(owner, '    suspend fun recoverOutput(') if has_recovery else ''
 entry = method(source, '    override fun handleSetPlayWhenReady(').replace('override fun', 'fun')
 observe = method(source, '    private fun observe(').replace('private fun', 'fun')
 pause_ack = method(source, '    private fun acknowledgePausePosition(') if '    private fun acknowledgePausePosition(' in source else ''
@@ -56,30 +84,48 @@ object Player {const val STATE_IDLE=1;const val STATE_BUFFERING=2;const val STAT
 class PlaybackException(s:String,c:Throwable?,v:Int):Exception(s){companion object{const val ERROR_CODE_IO_UNSPECIFIED=1}}
 class ListenableFuture<T>
 val String.mediaId:String get()=this
-class Grant(val scope:Int)
-class Session {var scope=1;fun current(s:Int)=s==scope}
+class Grant(val scope:Int) { fun current(graph:Graph)=graph.session.current(scope) }
+class Session {var scope=1;fun current(s:Int)=s==scope;fun previewOwnerCurrent(s:Int)=current(s)}
 class Graph {val session=Session()}
+class Preview(val scope:Int) {val input get()=this;fun cancel()=Unit}
+class Journal {
+ fun transportIntent(playing:Boolean) {}
+ fun observe(snapshot:NativeCallbackSnapshot,allowNatural:Boolean) {}
+ fun acknowledgeSeek(deck:Int,traversal:Long,position:Long) {error("unexpected seek ACK")}
+}
 class NativeCallbackDeck(val identity:Long=3,val generation:Long=3,val positionMs:Long=1200,val durationMs:Long=5000,
  val sourceRate:Int=48000,val sourceFrames:Long=240000,val ready:Boolean=true,val playing:Boolean=false,
- val eofCount:Long=0,val error:Int=0,val scratching:Boolean=false,val syncState:Int=0)
+ val eofCount:Long=0,val error:Int=0,val scratching:Boolean=false,val syncState:Int=0,val traversalRevision:Long=0)
 class NativeCallbackSnapshot(val error:Int,val deck:NativeCallbackDeck=NativeCallbackDeck(),
  val decks:List<NativeCallbackDeck> = listOf(deck),val scheduleRevision:Long=0,val globalPositionMs:Long=1200,
- val scheduleDurationMs:Long=5000,val scheduleEnded:Boolean=false,val scheduleReady:Boolean=true,val schedulePlaying:Boolean=false)
+ val scheduleDurationMs:Long=5000,val scheduleEnded:Boolean=false,val scheduleReady:Boolean=true,val schedulePlaying:Boolean=false,
+ val speedMin:Double=1.0,val speedMax:Double=1.0)
 class NativeCallbackArrangement(val revision:Long=7)
 object NativeCallbackTraversal {fun next(o:List<Int>,i:Int,r:Int,e:Boolean):Int?=error("unexpected EOF")}
+// Legacy bool-recovery owners can read the op9 stamp after a genuine reset.
+class JSONObject(private val receipt:Long) {fun optLong(key:String):Long {check(key=="outputRecoveryReceipt");return receipt}}
+OUTPUT_OUTCOME
 class Calls {
  var error=-899;val operations=mutableListOf<Int>();var entered:CompletableDeferred<Unit>?=null;var hold:CompletableDeferred<Unit>?=null
  var failRecovery=false;var throwRecovery=false;var playing=false
+ private var receipt=0L
+ fun state(h:Long)=receipt
+ TYPED_CALL
  suspend fun control(h:Long,op:Int,d:Int,v:Double,n:Long):Boolean {
+  if(op==9)return reopen(n)
   operations.add(op)
-  if(op==9 && error!=0) {
-   entered?.complete(Unit);hold?.await()
-   if(throwRecovery)throw IllegalStateException("native recovery failed")
-   if(failRecovery)return false
-   error=0;playing=false
-  }
   if(op==1)playing=true
   if(op==2)playing=false
+  return true
+ }
+ private suspend fun reopen(stamp:Long):Boolean {
+  operations.add(9)
+  if(error==0)return true
+  entered?.complete(Unit);hold?.await()
+  playing=false
+  if(throwRecovery)throw IllegalStateException("native recovery failed")
+  if(failRecovery)return false
+  error=0;receipt=stamp
   return true
  }
  fun snapshot()=NativeCallbackSnapshot(error,NativeCallbackDeck(playing=playing),schedulePlaying=playing)
@@ -87,7 +133,8 @@ class Calls {
 class Owner(val calls:Calls) {
  val dispatcher=Dispatchers.Unconfined;var closing=false;var handle=1L;var observationRevision=0L
  RECOVER
- suspend fun control(op:Int,current:()->Boolean):Boolean {if(closing||!current())return false;return calls.control(1,op,0,0.0,0)}
+ suspend fun controlDeck(deck:Int,operation:Int,current:()->Boolean):Boolean {if(closing||!current())return false;return calls.control(1,operation,deck,0.0,0)}
+ suspend fun control(op:Int,current:()->Boolean)=controlDeck(0,op,current)
  suspend fun arrangement(op:Int,current:()->Boolean)=control(op,current)
  suspend fun snapshot(current:()->Boolean):NativeCallbackSnapshot?=if(!closing&&current())calls.snapshot()else null
 }
@@ -96,7 +143,19 @@ class Probe(val owner:Owner,val lifetime:CoroutineScope) {
  var desiredSeek:Long?=null;var submittedSeek:Long?=100;var acknowledgedSeekPosition:Long?=null
  var pausePosition:Long?=null;var acknowledgedPausePosition:Long?=null
  var performanceTransportHeld=false;var performanceDecks=emptyMap<String,String>()
- var intent=true;var acknowledgedPlaying=true;var playback=Player.STATE_READY;var outputUnavailable=false;var outputRecoveryRevision:Long?=null;var error:PlaybackException?=null
+ var intent=true;var acknowledgedPlaying=true;var playback=Player.STATE_READY;var outputUnavailable=false;var error:PlaybackException?=null
+ PLAYER_STATE
+ PLAYER_RECOVERY
+ fun installNewerRecoveryMarker(revision:Long) { REPLACE_MARKER }
+ val ordinaryDeck=0;val ordinaryIdentity=3L;val seekRevision=0L
+ val preview:Preview?=null;val previewPreparation:Preview?=null;val previewStartFence:CompletableDeferred<Boolean>?=null
+ var previewQueueTransient=false;val journal=Journal()
+ var speedBounds=1.0 to 1.0;var reconcileSpeed=false;val onSpeedChanged:(()->Unit)?=null
+ fun speedPreferenceChanged():Unit=error("unexpected speed bounds")
+ fun observeSpeed(deck:NativeCallbackDeck) {}
+ fun observeSuccessor(snapshot:NativeCallbackSnapshot)=false
+ fun prepareSuccessor() {} // no spare deck in this recovery fixture
+ fun finishDiscoveryPreview(message:String?=null,keepPending:Boolean=false):Unit=error("unexpected preview")
  var index=0;val items=listOf("a","b");var position=1200L;var retired=0;var performanceRevoked=0
  val graph=Graph();var queueScope:Int?=1;var activeUri:String?="source";var activeGrant:Grant?=Grant(1)
  val grants=mutableMapOf("source" to activeGrant!!);var arrangementGrants=grants.toMap()
@@ -111,14 +170,14 @@ class Probe(val owner:Owner,val lifetime:CoroutineScope) {
  fun handlePrepare(){error("unexpected source preparation")}
  fun revokePerformance(){performanceRevoked++}
  fun invalidateState(){}
- fun seekNative(t:Long){submittedSeek=t}
+ fun seekNative(t:Long,naturalRepeat:Boolean=false){submittedSeek=t}
  fun handleSeek(i:Int,p:Long,c:Int){error("unexpected seek")}
  fun done()=ListenableFuture<Unit>()
  suspend fun prepareRecovery() {
   fun valid()=!released&&assignmentCurrent()
  PREPARE_RECOVERY
  }
- fun retireSelection(){selectedLoaded=false;retired++;epoch++;transportRevision++}
+ fun retireSelection(natural:Boolean=false){selectedLoaded=false;retired++;epoch++;transportRevision++}
  FAIL_OLD
  FAIL
  DISPATCH
@@ -190,8 +249,9 @@ suspend fun CoroutineScope.newerRecoveryMarker() {
  val calls=Calls();val owner=Owner(calls);val p=Probe(owner,this)
  p.observe(NativeCallbackSnapshot(-899));calls.entered=CompletableDeferred();calls.hold=CompletableDeferred()
  p.handleSetPlayWhenReady(true);withTimeout(5000){calls.entered!!.await()}
- val successor=p.transportRevision+1;p.transportRevision=successor;p.outputRecoveryRevision=successor
+ val successor=p.transportRevision+1;p.transportRevision=successor
  p.error=PlaybackException("successor recovery error",null,1);val replacement=p.error
+ p.installNewerRecoveryMarker(successor)
  calls.hold!!.complete(Unit);settle()
  check(p.outputRecoveryRevision==successor && p.error===replacement && p.outputUnavailable && 1 !in calls.operations)
  println("PASS obsolete recovery cannot clear newer recovery token/error")
@@ -214,11 +274,25 @@ fun main()=runBlocking {
  applying.prepareRecovery()
  check(!applying.intent && applying.selectedLoaded && applying.retired==0 && calls.operations==listOf(9))
  calls.operations.clear();owner.closing=true
- check(!owner.recoverOutput{true});check(calls.operations.isEmpty())
- owner.closing=false;check(!owner.recoverOutput{false});check(calls.operations.isEmpty())
+ val recover: suspend (() -> Boolean) -> Boolean = { current -> RECOVER_ONCE }
+ check(!recover {true});check(calls.operations.isEmpty())
+ owner.closing=false;check(!recover {false});check(calls.operations.isEmpty())
  println("PASS arrangement prepare-recovery, closing and revoked owner refusal")
 }
-'''.replace('PREPARE_RECOVERY', prepare_recovery).replace('FAIL_OLD', fail_old).replace('RECOVER', recover).replace('FAIL', fail).replace('DISPATCH', dispatch).replace('ENTRY', entry).replace('OBSERVE', observe).replace('PAUSE_ACK', pause_ack).replace('ASSIGNMENT', assignment)
+'''
+typed_call = '''suspend fun recoverOutput(h:Long):NativeOutputRecovery {
+  val resetting=error!=0
+  return if(!reopen(0)) NativeOutputRecovery.Failed
+         else if(resetting) NativeOutputRecovery.Reset else NativeOutputRecovery.Healthy
+ }''' if typed else ''
+extracts = {
+    'PREPARE_RECOVERY': prepare_recovery, 'FAIL_OLD': fail_old, 'RECOVER_ONCE': recover_once,
+    'RECOVER': recover, 'FAIL': fail, 'DISPATCH': dispatch, 'ENTRY': entry, 'OBSERVE': observe,
+    'PAUSE_ACK': pause_ack, 'ASSIGNMENT': assignment, 'OUTPUT_OUTCOME': outcome,
+    'TYPED_CALL': typed_call, 'PLAYER_STATE': player_state, 'PLAYER_RECOVERY': player_recovery,
+    'REPLACE_MARKER': replace_marker,
+}
+fixture = re.sub(r'\b(?:' + '|'.join(extracts) + r')\b', lambda match: extracts[match[0]], fixture)
 if not has_recovery:
     # Preserve the original pre-recovery observer selection/cursor RED. No absent
     # recovery API is compiled/called and no downstream recovery assertions run.

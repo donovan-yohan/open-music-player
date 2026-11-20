@@ -230,6 +230,23 @@ int main(int argc, char** argv) {
     until(registry, handle, *out, "\"ready\":true");
     const auto traversal = [](const std::string& d) { const auto at=d.find("\"traversalRevision\":"); assert(at!=std::string::npos); return d.substr(at,d.find(',',at)-at); };
     const auto admittedTraversal=traversal(deck(registry.state(handle)));
+    assert(registry.control(handle, 1, 0, 0, 0));
+    until(registry, handle, *out, "\"playing\":true");
+    const auto routeOpens = out->opens;
+    assert(registry.recoverOutput(0) == OutputRecovery::Failed);
+    assert(registry.recoverOutput(handle) == OutputRecovery::Healthy);
+    const auto healthyRoute = registry.state(handle);
+    assert(deck(healthyRoute).find("\"playing\":true") != std::string::npos && out->opens == routeOpens);
+    out->callback->outputError(-899);
+    // First consumer of the sticky error; no state read is needed for this result.
+    out->failOpen = true;
+    assert(registry.recoverOutput(handle) == OutputRecovery::Failed);
+    out->failOpen = false;
+    assert(registry.recoverOutput(handle) == OutputRecovery::Reset);
+    const auto recoveredRoute = registry.state(handle);
+    assert(deck(recoveredRoute).find("\"playing\":false") != std::string::npos && out->opens == routeOpens + 2);
+    assert(traversal(deck(recoveredRoute)) == admittedTraversal);
+    assert(registry.recoverOutput(handle) == OutputRecovery::Healthy);
     out->callback->outputError(-899);
     assert(!registry.control(handle, 1, 0, 0, 0));
     assert(registry.state(handle).find("\"error\":-899") != std::string::npos);
@@ -237,7 +254,7 @@ int main(int argc, char** argv) {
     const auto opensBefore = out->opens;
     // Explicit recovery must recreate output, not merely clear its error latch.
     // Existing output/engine/decoder custody and source cursor survive.
-    assert(registry.control(handle, 9, 0, 0, 0));
+    assert(registry.recoverOutput(handle) == OutputRecovery::Reset);
     assert(registry.state(handle).find("\"error\":0") != std::string::npos);
     assert(testDecoders == 1);
     assert(out->opens == opensBefore + 1);
@@ -246,7 +263,7 @@ int main(int argc, char** argv) {
     assert(traversal(afterRecovery) == admittedTraversal);
     const auto cursor = [](const std::string& d) { const auto at=d.find("\"sourceFrame\":"); return d.substr(at,d.find(',',at)-at); };
     assert(cursor(afterRecovery) == cursor(beforeRecovery));
-    assert(registry.control(handle, 9, 0, 0, 0));
+    assert(registry.recoverOutput(handle) == OutputRecovery::Healthy);
     assert(out->opens == opensBefore + 1); // healthy retry never doubles output
     out->block();
     assert(deck(registry.state(handle)).find("\"playing\":false") != std::string::npos);
@@ -256,15 +273,15 @@ int main(int argc, char** argv) {
     assert(registry.control(handle,5,0,-1,10)); out->block();
     // Failed open/start and rate mismatch remain gated with decoder custody.
     out->callback->outputError(-899); out->failOpen = true;
-    assert(!registry.control(handle, 9, 0, 0, 0)); assert(testDecoders == 1);
+    assert(registry.recoverOutput(handle) == OutputRecovery::Failed); assert(testDecoders == 1);
     assert(registry.state(handle).find("\"error\":-899") != std::string::npos);
     out->failOpen = false; out->failStart = true;
-    assert(!registry.control(handle, 9, 0, 0, 0)); assert(testDecoders == 1);
+    assert(registry.recoverOutput(handle) == OutputRecovery::Failed); assert(testDecoders == 1);
     out->failStart = false; out->actualRate = 48000;
     const auto startsBefore = out->starts;
-    assert(!registry.control(handle, 9, 0, 0, 0)); assert(out->starts == startsBefore);
+    assert(registry.recoverOutput(handle) == OutputRecovery::Failed); assert(out->starts == startsBefore);
     assert(registry.state(handle).find("\"error\":-10003") != std::string::npos);
-    out->actualRate = 44100; assert(registry.control(handle, 9, 0, 0, 0));
+    out->actualRate = 44100; assert(registry.recoverOutput(handle) == OutputRecovery::Reset);
     out->block(); assert(deck(registry.state(handle)).find("\"playing\":false") != std::string::npos);
     const auto sourceCursor = [&](const std::string& state) { const auto d=deck(state);const std::string key="\"sourceFrame\":";const auto at=d.find(key)+key.size();return std::stod(d.substr(at)); };
     const auto recoveredPosition=sourceCursor(registry.state(handle));
@@ -275,13 +292,13 @@ int main(int argc, char** argv) {
     out->callback->outputError(-899);
     assert(registry.control(handle, 8, 0, 0, 0));
     until(registry, handle, *out, "\"identity\":0"); assert(testDecoders == 0);
-    assert(registry.control(handle, 9, 0, 0, 0));
+    assert(registry.recoverOutput(handle) == OutputRecovery::Reset);
     assert(registry.load(handle, 0, "/fake/final", 88, 8, 0));
     until(registry, handle, *out, "\"ready\":true");
     out->callback->outputError(-899);
     out->failClose = true;
     const auto refusedOpen = out->opens;
-    assert(!registry.control(handle,9,0,0,0));
+    assert(registry.recoverOutput(handle) == OutputRecovery::Failed);
     assert(out->opens == refusedOpen && testDecoders == 1);
     assert(!registry.close(handle)); assert(testDecoders == 1);
     assert(registry.open(std::make_unique<FakeOutput>()) == 0);
@@ -310,7 +327,7 @@ int main(int argc, char** argv) {
     readySchedule(); assert(registry.arrangement(handle,1,0)); out->block();
     assert(registry.arrangement(handle,3,1200)); out->block(); readySchedule();
     out->callback->outputError(-899);
-    assert(registry.control(handle,9,0,0,0));
+    assert(registry.recoverOutput(handle) == OutputRecovery::Reset);
     json=registry.state(handle);
     assert(json.find("\"globalFrame\":52920")!=std::string::npos);
     assert(json.find("\"schedulePlaying\":false")!=std::string::npos);
@@ -324,7 +341,7 @@ int main(int argc, char** argv) {
     while(registry.state(handle).find("\"scheduleRevision\":0")==std::string::npos) assert(std::chrono::steady_clock::now()<retireDeadline);
     assert(testDecoders==0);
     assert(!registry.prepareSchedule(handle,2,{"/fake/a"},{0,0,5000,0,0,0}));
-    assert(registry.control(handle,9,0,0,0));
+    assert(registry.recoverOutput(handle) == OutputRecovery::Reset);
     assert(registry.prepareSchedule(handle,2,{"/fake/a"},{0,0,5000,0,0,0}));
     assert(registry.close(handle)); assert(testDecoders==0);
     std::cout << "PASS: lifetime, 4 empty decks, exact source rate/frames, deferred intents, pause gesture, turnover, unload ACK+join, sticky route error, failed-close custody, stale handles\n";

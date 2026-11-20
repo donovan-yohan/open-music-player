@@ -140,10 +140,10 @@ struct Host final : Callbacks {
         if (settleRate) engine->render(nullptr, 128);
         return true;
     }
-    bool recoverOutput() {
-        if (error.load(std::memory_order_acquire) == 0 && !routeRecovery) return true;
+    OutputRecovery recoverOutput() {
+        if (error.load(std::memory_order_acquire) == 0 && !routeRecovery) return OutputRecovery::Healthy;
         routeRecovery = true;
-        if (!quiesce()) return false;
+        if (!quiesce()) return OutputRecovery::Failed;
         const auto previousError = error.exchange(0, std::memory_order_acq_rel);
         uint32_t actualRate = sampleRate;
         // open creates a fresh, independently revocable callback proxy. Never
@@ -154,17 +154,18 @@ struct Host final : Callbacks {
         catch (...) { outputError(internalError); }
         if (!opened || actualRate != sampleRate || error.load() != 0) {
             outputError(actualRate != sampleRate ? -10003 : previousError ? previousError : internalError);
-            return false;
+            return OutputRecovery::Failed;
         }
         bool started = false;
         try { started = output->start(); } catch (...) { outputError(internalError); }
         if (!started || error.load() != 0) {
             outputError(previousError ? previousError : internalError);
-            return false;
+            return OutputRecovery::Failed;
         }
         routeRecovery = false;
         gated.store(false, std::memory_order_release);
-        return error.load(std::memory_order_acquire) == 0;
+        if (error.load(std::memory_order_acquire) != 0) return OutputRecovery::Failed;
+        return OutputRecovery::Reset;
     }
     bool close() {
         gated.store(true, std::memory_order_release);
@@ -470,7 +471,6 @@ struct Host final : Callbacks {
     }
     bool control(int operation, int deck, double value, uint64_t eventNanos) {
         if (deck < 0 || deck >= 4 || !std::isfinite(value)) return false;
-        if (operation == 9) return deck == 0 && value == 0 && recoverOutput();
         if(schedule || scheduleRetiring)return false;
         auto& w = workers[deck]; auto& intent = intents[deck];
         if (operation == 10) {
@@ -681,6 +681,10 @@ bool Registry::loadSpeed(uint64_t h, int d, const std::string& p, uint64_t id, u
 bool Registry::loadReader(uint64_t h,int d,std::shared_ptr<const PcmReaderFactory> factory,uint64_t id,uint64_t g,uint64_t ms,double speed,bool progressive) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->valid(h) && impl_->host->loadReader(d,std::move(factory),id,g,ms,speed,progressive);
+}
+OutputRecovery Registry::recoverOutput(uint64_t h) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->valid(h) ? impl_->host->recoverOutput() : OutputRecovery::Failed;
 }
 bool Registry::control(uint64_t h, int op, int d, double v, uint64_t t) {
     std::lock_guard<std::mutex> lock(impl_->mutex);

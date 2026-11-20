@@ -31,6 +31,8 @@ struct Output {
     virtual int32_t xRuns() const noexcept = 0;
 };
 std::unique_ptr<Output> makeOboeOutput();
+// JNI outcome codes, independent of the state JSON producer.
+enum class OutputRecovery : int { Unknown = -1, Failed = 0, Healthy = 1, Reset = 2 };
 class Registry {
 public:
     Registry();
@@ -46,8 +48,9 @@ public:
                    uint64_t identity, uint64_t generation, uint64_t positionMs, double speed);
     bool loadReader(uint64_t handle, int deck, std::shared_ptr<const PcmReaderFactory> factory,
                     uint64_t identity, uint64_t generation, uint64_t positionMs, double speed, bool progressive = false);
-    // Operation 9 reopens failed output paused, preserving engine/cursor/custody.
-    // Explicit user intent only. A changed actual output rate is refused.
+    // Explicit intent only: reopen paused, preserving engine/cursor/custody.
+    // A changed actual output rate is refused.
+    OutputRecovery recoverOutput(uint64_t handle);
     bool control(uint64_t handle, int operation, int deck, double value, uint64_t eventNanos);
     bool crossfade(uint64_t handle, int outgoing, uint64_t outgoingGeneration,
                    int incoming, uint64_t incomingGeneration, uint64_t milliseconds);

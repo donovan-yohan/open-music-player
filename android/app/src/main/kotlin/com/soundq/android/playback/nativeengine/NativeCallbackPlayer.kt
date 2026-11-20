@@ -44,7 +44,12 @@ internal class NativeCallbackPlayer(
     private var queueScope: AccountScope? = null
     private var error: PlaybackException? = null
     private var outputUnavailable = false
-    private var outputRecoveryRevision: Long? = null
+    private class OutputRecoveryBatch(val generation: Long, revision: Long, val error: PlaybackException?) {
+        var pending = 0 // Main only
+        @Volatile var revision = revision // fences JNI admission, not settlement of the retained source
+        @Volatile var lastAttempt: NativeOutputRecovery? = null // only this batch's explicit calls
+    }
+    @Volatile private var outputRecovery: OutputRecoveryBatch? = null
     private var arrangement: NativeCallbackArrangement? = null
     private var nativeScheduleRevision = 0L
     private var arrangementGrants = emptyMap<String, MediaGrant>()
@@ -1300,51 +1305,68 @@ internal class NativeCallbackPlayer(
         }
     }
 
+    private fun recoveryCurrent(batch: OutputRecoveryBatch): Boolean =
+        !released && batch.generation == epoch && selectedLoaded && assignmentCurrent() &&
+            outputRecovery === batch && error === batch.error
+
+    private fun settleRecovery(batch: OutputRecoveryBatch): Boolean {
+        if (--batch.pending != 0 || outputRecovery !== batch) return false
+        val valid = recoveryCurrent(batch)
+        outputRecovery = null
+        val attempt = batch.lastAttempt ?: return false // every request was refused before JNI
+        if (!valid) return false
+        // Reconcile the retained source against the last actual owner outcome. A later
+        // reopen by a different caller can obsolete this result, but cannot grant Play.
+        if (owner.latestOutputRecovery?.ready != true) { failOutput(); return false }
+        outputUnavailable = false; error = null
+        if (playback == Player.STATE_IDLE) playback = Player.STATE_BUFFERING
+        return attempt.ready
+    }
+
     private fun dispatchIntent(generation: Long = epoch, recoverOutput: Boolean = false) {
         val revision = transportRevision
-        if (recoverOutput) outputRecoveryRevision = revision
-        lifetime.launch {
+        val batch = if (recoverOutput) {
+            val retained = outputRecovery?.takeIf { it.generation == generation && it.error === error }
+            (retained ?: OutputRecoveryBatch(generation, revision, error)).also {
+                it.revision = revision
+                it.pending++
+                outputRecovery = it
+            }
+        } else null
+        lifetime.launch(start = CoroutineStart.UNDISPATCHED) {
+            var recovered = false
+            val playing: Boolean
             try {
                 yield()
                 if (released || generation != epoch || revision != transportRevision || !selectedLoaded) return@launch
-                val playing = intent && assignmentCurrent()
+                playing = intent && assignmentCurrent()
                 if (playing && preview != null && previewStartFence?.await() == false) {
                     if (!released && generation == epoch && revision == transportRevision) fail("Preview audio output could not be prepared")
                     return@launch
                 }
-                val current = { !released && generation == epoch && revision == transportRevision && (!playing || intent && assignmentCurrent()) }
-                if (recoverOutput) {
-                    // Reopening belongs to the retained source, not to Play's
-                    // transport revision. Pause revokes Play but must still let
-                    // this source accept its completed, paused output recovery.
-                    val recoveryError = error
-                    val recoveryCurrent = {
-                        !released && generation == epoch && selectedLoaded && assignmentCurrent() &&
-                            outputRecoveryRevision == revision && error === recoveryError
-                    }
-                    if (!owner.recoverOutput(recoveryCurrent)) {
-                        if (recoveryCurrent()) failOutput()
-                        return@launch
-                    }
-                    if (!recoveryCurrent()) return@launch
-                    outputUnavailable = false; error = null
-                    if (playback == Player.STATE_IDLE) playback = Player.STATE_BUFFERING
-                } else if (outputUnavailable) return@launch
-                // Completion never revives the captured Play after Pause/Seek.
-                if (!current()) return@launch
-                if (desiredSeek != null) { seekNative(requireNotNull(desiredSeek)); return@launch }
-                if (arrangement != null && intent && playback != Player.STATE_READY) return@launch
-                val accepted = if (arrangement != null) owner.arrangement(if (playing) 1 else 2, current = current)
-                    else owner.controlDeck(ordinaryDeck, if (playing) 1 else 2, current = current)
-                if (!accepted) {
-                    if (generation == epoch && revision == transportRevision) {
-                        val state = owner.snapshot { !released && generation == epoch && revision == transportRevision }
-                        if (released || generation != epoch || revision != transportRevision) return@launch
-                        if (state?.error != 0) failOutput() else fail("Audio output refused transport")
-                    }
+                // Pause/Seek revoke transport, not completed recovery of the retained source.
+                if (batch != null) owner.recoverOutput({ recoveryCurrent(batch) && batch.revision == revision }) {
+                    batch.lastAttempt = it
                 }
             } finally {
-                if (recoverOutput && outputRecoveryRevision == revision) outputRecoveryRevision = null
+                // Settle the latest native attempt, not the latest admitted request:
+                // a skipped sibling must not erase a genuine outcome.
+                if (batch != null) recovered = settleRecovery(batch)
+            }
+            if ((batch != null && !recovered) || outputUnavailable) return@launch
+            val current = { !released && generation == epoch && revision == transportRevision && (!playing || intent && assignmentCurrent()) }
+            if (!current()) return@launch
+            if (desiredSeek != null) { seekNative(requireNotNull(desiredSeek)); return@launch }
+            if (arrangement != null && intent && playback != Player.STATE_READY) return@launch
+            val accepted = when {
+                arrangement != null -> owner.arrangement(if (playing) 1 else 2, current = current)
+                playing && preview == null -> owner.playOrdinary(ordinaryDeck, ordinaryIdentity, revision, seekRevision, current)
+                else -> owner.controlDeck(ordinaryDeck, if (playing) 1 else 2, current = current)
+            }
+            if (!accepted && generation == epoch && revision == transportRevision) {
+                val state = owner.snapshot { !released && generation == epoch && revision == transportRevision }
+                if (released || generation != epoch || revision != transportRevision) return@launch
+                if (state?.error != 0) failOutput() else fail("Audio output refused transport")
             }
         }
     }
@@ -1597,7 +1619,7 @@ internal class NativeCallbackPlayer(
         if (snapshot == null || snapshot.error != 0) {
             // A queued old-route observation cannot cancel fresh explicit intent
             // while its serialized recovery is waiting to start or settle.
-            if (outputRecoveryRevision == null) failOutput()
+            if (outputRecovery == null) failOutput()
             return
         }
         // Healthy observation alone never resumes an interrupted intent.

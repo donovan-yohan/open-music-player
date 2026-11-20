@@ -48,17 +48,17 @@ class OutputRecoveryJourneyTest {
             this.identity = identity; this.generation = generation; position = positionMs; playing = false
             return outputError == 0
         }
+        override fun recoverOutput(handle: Long): NativeOutputRecovery {
+            check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
+            if (outputError == 0) return NativeOutputRecovery.Healthy
+            recoveries++
+            recoveryEntered.countDown()
+            if (holdRecovery) check(recoveryPermit.await(10, TimeUnit.SECONDS))
+            outputError = 0; playing = false
+            return NativeOutputRecovery.Reset
+        }
         override fun control(handle: Long, operation: Int, deck: Int, value: Double, eventNanos: Long): Boolean {
             check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
-            if (operation == 9) {
-                // Healthy native recovery is idempotent and does not reopen output.
-                if (outputError == 0) return true
-                recoveries++
-                recoveryEntered.countDown()
-                if (holdRecovery) check(recoveryPermit.await(10, TimeUnit.SECONDS))
-                outputError = 0; playing = false
-                return true
-            }
             if (operation == 8) { identity = 0; playing = false; return true }
             if (outputError != 0) return false
             when (operation) {

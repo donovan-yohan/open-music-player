@@ -173,6 +173,10 @@ internal class QueueMutationHardware:NativeCallbackCalls {
     @Synchronized fun deck(slot:Int)=decks[slot].copy()
     @Synchronized fun position(slot:Int,ms:Long){decks[slot].position=ms}
     override fun open()=1L
+    override fun recoverOutput(handle: Long): NativeOutputRecovery {
+        calls.add(Call(9, 0))
+        return NativeOutputRecovery.Healthy
+    }
     @Synchronized override fun load(handle:Long,deck:Int,path:String,identity:Long,generation:Long,positionMs:Long):Boolean {
         check(decks[deck].id==0L);decks[deck]=Deck(identity,generation,positionMs);return true
     }

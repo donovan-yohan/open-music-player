@@ -40,8 +40,65 @@ case "$TARGET" in
   tailnet)
     exec "$ROOT/scripts/tailnet-staging.sh" smoke
     ;;
+  preview-proxy)
+    shift
+    if (( $# )); then
+      exec go run "$ROOT/scripts/preview-proxy-smoke.go" -receiver "$@"
+    fi
+    # The checked-in config and synthetic upstream share a networkless container.
+    context="$(docker context show)"
+    socket="$(docker context inspect "$context" --format '{{.Endpoints.docker.Host}}')"
+    if [[ "$socket" != unix://* ]]; then
+      echo 'Preview proxy smoke requires a local Docker Unix socket.' >&2
+      exit 2
+    fi
+    engine=(docker --context "$context")
+    image="$("${engine[@]}" image inspect nginx:1.28-alpine --format '{{.Id}}')"
+    arch="$("${engine[@]}" image inspect "$image" --format '{{.Os}}/{{.Architecture}}')"
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/soundq-preview.XXXXXXXX")"
+    name="${dir##*/}"
+    label="org.soundq.preview-smoke=$name"
+    cleanup_preview() {
+      local status=$? found remaining cleanup_failed=no
+      if [[ "${creating:-no}" == yes ]]; then
+        # Fall back to the exact per-run label if create did not return its ID.
+        if found="$("${engine[@]}" container ls -aq --no-trunc --filter "label=$label")"; then
+          if [[ "$found" =~ ^[a-f0-9]{64}$ && ( -z "${cid:-}" || "$found" == "$cid" ) ]]; then
+            if "${engine[@]}" container rm -f "$found" >/dev/null &&
+               remaining="$("${engine[@]}" container ls -aq --filter "label=$label")" && [[ -z "$remaining" ]]; then
+              printf 'Removed preview fixture container %s\n' "$found"
+            else
+              cleanup_failed=yes
+            fi
+          elif [[ -n "$found" || -n "${cid:-}" ]]; then
+            cleanup_failed=yes
+          fi
+        else
+          cleanup_failed=yes
+        fi
+      fi
+      if [[ "$cleanup_failed" == yes ]]; then
+        echo 'Could not verify preview fixture cleanup.' >&2
+        status=1
+      fi
+      rm -f "$dir/probe"
+      rmdir "$dir" || status=1
+      exit "$status"
+    }
+    trap cleanup_preview EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    GOOS=linux GOARCH="${arch#linux/}" CGO_ENABLED=0 GOFLAGS= go build -o "$dir/probe" "$ROOT/scripts/preview-proxy-smoke.go"
+    creating=yes
+    cid="$("${engine[@]}" create --pull=never --name "$name" --label "$label" --network none --add-host backend:127.0.0.1 \
+      --mount "type=bind,src=$ROOT/nginx/nginx.conf,dst=/etc/nginx/nginx.conf,readonly" \
+      --mount "type=bind,src=$dir/probe,dst=/preview-smoke,readonly" \
+      --entrypoint nginx "$image" -g 'daemon off;')"
+    "${engine[@]}" start "$cid" >/dev/null
+    "${engine[@]}" exec "$cid" /preview-smoke -bundled-nginx
+    ;;
   *)
-    echo "usage: scripts/smoke [local|backend|isolated|codex|playback|playback-isolated|e2e|e2e-isolated|downloads|downloads-isolated|tailnet]" >&2
+    echo "usage: scripts/smoke [local|backend|isolated|codex|playback|playback-isolated|e2e|e2e-isolated|downloads|downloads-isolated|tailnet|preview-proxy]" >&2
     exit 2
     ;;
 esac
