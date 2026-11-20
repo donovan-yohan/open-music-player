@@ -58,11 +58,11 @@ func (s stagedFixtureStore) PutPrivateImportObject(ctx context.Context, key stri
 	return s.Client.PutPrivateImportObject(ctx, key, audio, size)
 }
 
-func (s stagedFixtureStore) DeleteObject(ctx context.Context, key string) error {
+func (s stagedFixtureStore) DeletePrivateImportObject(ctx context.Context, key string) error {
 	if s.delete != nil {
 		return s.delete(ctx, key)
 	}
-	return s.Client.DeleteObject(ctx, key)
+	return s.Client.DeletePrivateImportObject(ctx, key)
 }
 
 func privateIntakeEnv(t *testing.T) (context.Context, *db.DB, *storage.Client, string) {

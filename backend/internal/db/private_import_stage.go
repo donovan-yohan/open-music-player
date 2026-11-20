@@ -11,9 +11,10 @@ import (
 )
 
 var (
-	ErrPrivateImportStageCapacity = errors.New("private intake capacity exhausted")
-	ErrPrivateImportStagePending  = errors.New("private intake attempt is pending or its write is uncertain")
-	ErrPrivateImportStageClosed   = errors.New("private intake attempt is closed")
+	ErrPrivateImportStageCapacity       = errors.New("private intake capacity exhausted")
+	ErrPrivateImportStagePending        = errors.New("private intake attempt is pending or its write is uncertain")
+	ErrPrivateImportStageClosed         = errors.New("private intake attempt is closed")
+	ErrPrivateImportStageReconciliation = errors.New("private intake capacity release unconfirmed; attempt requires reconciliation")
 )
 
 // PrivateImportManifest is the trusted, accepted intent before any bytes are
@@ -139,6 +140,10 @@ func (r *TrackRepository) ReservePrivateImportStage(ctx context.Context, m Priva
 	}
 	var consumed atomic.Bool
 	return &PrivateImportReservation{intent: in, authorize: func(ctx context.Context, in PrivateImportIntent) error {
+		in, _, err := in.normalize()
+		if err != nil {
+			return err // Invalid measured facts do not consume the producer's grant.
+		}
 		if !consumed.CompareAndSwap(false, true) {
 			return ErrPrivateImportStageClosed
 		}
@@ -152,15 +157,9 @@ func (r *TrackRepository) RefusePrivateImportStage(ctx context.Context, in Priva
 	return privateStageSQL("refuse reservation", err)
 }
 
-// Only the one-shot reservation reaches this barrier. If SQL's ACK is lost,
-// its sole producer still has not dispatched and can burn the exact attempt
-// without object IO. Recovery, including observed or quarantined attempts,
-// has no such proof and may not downgrade an attempt.
+// Only the one-shot reservation reaches this barrier. On any authorization
+// error, no caller ever gets permission to dispatch this attempt.
 func (r *TrackRepository) authorizePrivateImportPut(ctx context.Context, in PrivateImportIntent, fingerprint string) error {
-	in, _, err := in.normalize()
-	if err != nil {
-		return err
-	}
 	result, err := r.db.ExecContext(ctx, `UPDATE private_import_attempts SET phase='putting',duration_ms=$5
 		WHERE owner_id=$1 AND operation_id=$2 AND attempt_id=$3 AND intent_hash=$4 AND phase='reserved'
 		AND expires_at > clock_timestamp()`, in.OwnerID, in.OperationID, in.AttemptID, fingerprint, in.DurationMs)
@@ -168,12 +167,41 @@ func (r *TrackRepository) authorizePrivateImportPut(ctx context.Context, in Priv
 	if err == nil {
 		return nil
 	}
-	settle, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-	defer cancel()
-	_, refuseErr := r.db.ExecContext(settle, `UPDATE private_import_attempts SET phase='refused',title='',artist='',album=''
-		WHERE owner_id=$1 AND operation_id=$2 AND attempt_id=$3 AND intent_hash=$4
-		AND (phase='reserved' OR (phase='putting' AND duration_ms=$5))`, in.OwnerID, in.OperationID, in.AttemptID, fingerprint, in.DurationMs)
-	return errors.Join(err, privateStageSQL("settle undispatched Put", refuseErr))
+	return errors.Join(err, r.settleUndispatchedPrivateImportPut(context.WithoutCancel(ctx), in, fingerprint))
+}
+
+// The consumed grant plus the authorization error is the surviving producer's
+// proof of no dispatch, even if expiry already quarantined its exact attempt.
+// No collector or recovering process has that proof. If the producer dies or
+// cannot settle in this bounded window, quarantine remains charged; neither
+// its age nor an absent object can distinguish it from a dispatched Put.
+func (r *TrackRepository) settleUndispatchedPrivateImportPut(ctx context.Context, in PrivateImportIntent, fingerprint string) error {
+	var failures error
+	for range 2 {
+		settle, stop := context.WithTimeout(ctx, 3*time.Second)
+		result, err := r.db.ExecContext(settle, `UPDATE private_import_attempts SET phase='refused',title='',artist='',album=''
+			WHERE owner_id=$1 AND operation_id=$2 AND attempt_id=$3 AND intent_hash=$4
+			AND (phase='reserved' OR (phase IN ('putting','quarantined') AND duration_ms=$5))`, in.OwnerID, in.OperationID, in.AttemptID, fingerprint, in.DurationMs)
+		stop()
+		settleErr := requireIntakeTransition("settle undispatched Put", result, err)
+		if settleErr == nil {
+			return nil
+		}
+
+		// The refusal ACK could also be lost. Observe only an exact durable
+		// refusal; absence or any other phase does not prove release.
+		observe, stop := context.WithTimeout(ctx, 3*time.Second)
+		var refused bool
+		err = r.db.QueryRowContext(observe, `SELECT EXISTS (SELECT 1 FROM private_import_attempts
+			WHERE owner_id=$1 AND operation_id=$2 AND attempt_id=$3 AND intent_hash=$4 AND phase='refused')`,
+			in.OwnerID, in.OperationID, in.AttemptID, fingerprint).Scan(&refused)
+		stop()
+		if err == nil && refused {
+			return nil
+		}
+		failures = errors.Join(failures, settleErr, privateStageSQL("read undispatched Put refusal", err))
+	}
+	return errors.Join(ErrPrivateImportStageReconciliation, failures)
 }
 
 // AcknowledgePrivateImportPut consumes a positive completion, not the mere

@@ -37,6 +37,9 @@ func New(host, port, user, password, dbname string) (*DB, error) {
 	return &DB{DB: db}, nil
 }
 
+// Keep the schema key compatible with older server processes.
+const schemaMigrationLockKey = `hashtextextended('open_music_player_schema_migrate', 0)`
+
 func (db *DB) Migrate() error {
 	// Multiple API processes and integration tests can initialize concurrently.
 	// A transaction-scoped lock cannot cover the legacy self-contained schema
@@ -46,11 +49,11 @@ func (db *DB) Migrate() error {
 		return fmt.Errorf("acquire migration connection: %w", err)
 	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(context.Background(), `SELECT pg_advisory_lock(hashtextextended('open_music_player_schema_migrate', 0))`); err != nil {
+	if _, err := conn.ExecContext(context.Background(), `SELECT pg_advisory_lock(`+schemaMigrationLockKey+`)`); err != nil {
 		return fmt.Errorf("lock schema migration: %w", err)
 	}
 	defer func() {
-		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended('open_music_player_schema_migrate', 0))`)
+		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(`+schemaMigrationLockKey+`)`)
 	}()
 
 	// Keep startup self-sufficient for local-first dogfood. The SQL files under

@@ -112,17 +112,15 @@ func privateIntakeStageAtSealExpiry(t *testing.T, ctx context.Context, pg *db.DB
 		r, err := resume.Recover(ctx, owner, m.OperationID)
 		result <- outcome{r, err}
 	}()
-	waiting, stop := context.WithTimeout(ctx, 3*time.Second)
-	defer stop()
-	waitPrivateIntakeSQL(t, waiting, pg, `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND classid=0 AND objid=98442175 AND objsubid=1 AND NOT granted)`)
+	waitPrivateIntakeSQL(t, ctx, pg, `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND classid=0 AND objid=98442175 AND objsubid=1 AND NOT granted)`)
+	// Deliberately observe the recorded arrival after expiry, while the real
+	// receipt INSERT is still held. Observer scheduling must not affect it.
+	waitPrivateIntakeSQL(t, ctx, pg, `SELECT expires_at<=clock_timestamp() FROM private_import_attempts WHERE owner_id=$1 AND operation_id=$2`, owner, m.OperationID)
 	var trackID int64
-	var live bool
-	if err := pg.QueryRowContext(ctx, `SELECT last_value, (SELECT expires_at>clock_timestamp() FROM private_import_attempts WHERE owner_id=$1 AND operation_id=$2)
-		FROM fixture_stage_seal_track WHERE is_called`, owner, m.OperationID).Scan(&trackID, &live); err != nil || !live || trackID <= 0 {
-		t.Fatalf("held receipt INSERT did not reach all writes while live: %v %d %v", live, trackID, err)
+	if err := pg.QueryRowContext(ctx, `SELECT last_value FROM fixture_stage_seal_track WHERE is_called`).Scan(&trackID); err != nil || trackID <= 0 {
+		t.Fatalf("held receipt INSERT did not record arrival: track=%d err=%v", trackID, err)
 	}
 	requireNoStagePublication(t, ctx, pg, m, trackID) // None visible while the transaction is held.
-	waitPrivateIntakeSQL(t, ctx, pg, `SELECT expires_at<=clock_timestamp() FROM private_import_attempts WHERE owner_id=$1 AND operation_id=$2`, owner, m.OperationID)
 	if err := holder.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +142,13 @@ func privateIntakeStageAtSealExpiry(t *testing.T, ctx context.Context, pg *db.DB
 
 type stageAuthLossConnector struct {
 	driver.Connector
-	after func()
+	hooks stageAuthLossHooks
+}
+
+type stageAuthLossHooks struct {
+	authorized func()
+	settlement func(context.Context, driver.Result, error) error
+	observed   func(context.Context, error)
 }
 
 func (c stageAuthLossConnector) Connect(ctx context.Context) (driver.Conn, error) {
@@ -152,15 +156,16 @@ func (c stageAuthLossConnector) Connect(ctx context.Context) (driver.Conn, error
 	if err != nil {
 		return nil, err
 	}
-	return stageAuthLossConn{Conn: conn, after: c.after}, nil
+	return stageAuthLossConn{Conn: conn, hooks: c.hooks}, nil
 }
 
 type stageAuthLossConn struct {
 	driver.Conn
-	after func()
+	hooks stageAuthLossHooks
 }
 
 var errStageAuthLost = errors.New("fixture consumed SQL ACK with generated key-detail sentinel")
+var errStageRefuseAckLost = errors.New("fixture consumed refusal SQL ACK")
 
 func (c stageAuthLossConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	exec, ok := c.Conn.(driver.ExecerContext)
@@ -169,20 +174,34 @@ func (c stageAuthLossConn) ExecContext(ctx context.Context, query string, args [
 	}
 	result, err := exec.ExecContext(ctx, query, args)
 	if err == nil && strings.Contains(query, "SET phase='putting'") {
-		c.after() // The actual SQL autocommit succeeded; withhold its ACK from the repository.
+		n, err := result.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if n != 1 {
+			return result, nil
+		}
+		c.hooks.authorized() // The actual SQL autocommit succeeded; withhold its ACK from the repository.
 		return nil, errStageAuthLost
+	}
+	if c.hooks.settlement != nil && strings.Contains(query, "SET phase='refused'") {
+		err = c.hooks.settlement(ctx, result, err)
 	}
 	return result, err
 }
 
 func (c stageAuthLossConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if q, ok := c.Conn.(driver.QueryerContext); ok {
-		return q.QueryContext(ctx, query, args)
+		rows, err := q.QueryContext(ctx, query, args)
+		if c.hooks.observed != nil && strings.Contains(query, "AND phase='refused'") {
+			c.hooks.observed(ctx, err)
+		}
+		return rows, err
 	}
 	return nil, driver.ErrSkip
 }
 
-func openStageAuthLossFixtureDB(t *testing.T, ctx context.Context, after func()) *db.DB {
+func openStageAuthLossFixtureDB(t *testing.T, ctx context.Context, hooks stageAuthLossHooks) *db.DB {
 	t.Helper()
 	dsn, token := os.Getenv("OMP_PRIVATE_FENCE_TEST_DSN"), os.Getenv("OMP_PRIVATE_FENCE_TEST_MARKER")
 	parts := privateImportFixtureDSN.FindStringSubmatch(dsn)
@@ -196,7 +215,7 @@ func openStageAuthLossFixtureDB(t *testing.T, ctx context.Context, after func())
 	if err != nil {
 		t.Fatal("could not construct attested Postgres connector")
 	}
-	pool := sql.OpenDB(stageAuthLossConnector{Connector: connector, after: after})
+	pool := sql.OpenDB(stageAuthLossConnector{Connector: connector, hooks: hooks})
 	t.Cleanup(func() { _ = pool.Close() })
 	pg := &db.DB{DB: pool}
 	if err := pg.CheckDatabaseNotProtected(ctx); err != nil {
@@ -209,7 +228,24 @@ func openStageAuthLossFixtureDB(t *testing.T, ctx context.Context, after func())
 	return pg
 }
 
-func privateIntakeStageLostAuthorizeAck(t *testing.T, ctx context.Context, pg *db.DB, owner uuid.UUID, store *storage.Client, ffmpeg string) {
+func privateIntakeStageLostAuthorizeAck(t *testing.T, ctx context.Context, pg *db.DB, _ uuid.UUID, store *storage.Client, ffmpeg string) {
+	for _, tc := range []struct {
+		name string
+		fail string
+	}{
+		{name: "FirstSettlementSucceeds"},
+		{name: "SettlementAckLost", fail: "ack"},
+		{name: "FirstSettlementFailsThenExpires", fail: "putting"},
+		{name: "SettlementBudgetExhausted", fail: "all"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			privateIntakeStageAuthorizeFault(t, ctx, pg, seedPrivateStageUser(t, pg, ctx), store, ffmpeg, tc.fail)
+		})
+	}
+}
+
+func privateIntakeStageAuthorizeFault(t *testing.T, ctx context.Context, pg *db.DB, owner uuid.UUID, store *storage.Client, ffmpeg, fail string) {
+	t.Helper()
 	a := privateImportMP3(t, ctx, 773)
 	m := stageManifest(owner, a.data)
 	upload, cancel := context.WithCancel(ctx)
@@ -226,11 +262,92 @@ func privateIntakeStageLostAuthorizeAck(t *testing.T, ctx context.Context, pg *d
 		t.Fatalf("setup did not retain actual sibling Put: %v %v", r, err)
 	}
 	siblingKey := requireIntakeAttempt(t, ctx, pg, other, "putting")
+	fresh := newPrivateIntake(t, pg, stagedFixtureStore{Client: store}, ffmpeg)
+	if fail == "putting" || fail == "all" {
+		// The fault is an actual Postgres error, not a replacement driver
+		// result. The first failure is witnessed before expiry quarantines
+		// both the never-dispatched attempt and the real, lost sibling Put.
+		if _, err := pg.ExecContext(ctx, `CREATE FUNCTION fixture_stage_refuse_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+			IF OLD.owner_id=TG_ARGV[1]::uuid AND OLD.operation_id=TG_ARGV[2]::uuid
+			AND NEW.phase='refused' AND (OLD.phase='putting' OR TG_ARGV[0]='all')
+			THEN RAISE EXCEPTION 'fixture settlement refused'; END IF;
+			RETURN NEW; END $$`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			if _, err := pg.ExecContext(cleanup, `DROP TRIGGER IF EXISTS fixture_stage_refuse_fail ON private_import_attempts; DROP FUNCTION fixture_stage_refuse_fail()`); err != nil {
+				t.Error(err)
+			}
+		})
+		if _, err := pg.ExecContext(ctx, `CREATE TRIGGER fixture_stage_refuse_fail BEFORE UPDATE ON private_import_attempts
+			FOR EACH ROW EXECUTE FUNCTION fixture_stage_refuse_fail(`+pq.QuoteLiteral(fail)+`,`+pq.QuoteLiteral(owner.String())+`,`+pq.QuoteLiteral(m.OperationID.String())+`)`); err != nil {
+			t.Fatal(err)
+		}
+	}
 	authorizations := 0
-	lost := openStageAuthLossFixtureDB(t, ctx, func() {
-		authorizations++
-		committedKey = requireIntakeAttempt(t, ctx, pg, m, "putting")
-		cancel()
+	var updates, observations int
+	var contexts []<-chan struct{}
+	checkContext := func(bound context.Context) {
+		t.Helper()
+		deadline, ok := bound.Deadline()
+		if !ok || time.Until(deadline) > 3*time.Second || !errors.Is(upload.Err(), context.Canceled) {
+			t.Fatal("settlement or observation did not have a fresh bounded context independent of cancellation")
+		}
+		for _, prior := range contexts {
+			if prior == bound.Done() {
+				t.Fatal("settlement or observation reused a prior budget")
+			}
+		}
+		contexts = append(contexts, bound.Done())
+	}
+	lost := openStageAuthLossFixtureDB(t, ctx, stageAuthLossHooks{
+		authorized: func() {
+			authorizations++
+			committedKey = requireIntakeAttempt(t, ctx, pg, m, "putting")
+			t.Log("actual authorization updated one row and independently visible as putting; SQL ACK withheld")
+			cancel()
+		},
+		settlement: func(bound context.Context, result driver.Result, err error) error {
+			checkContext(bound)
+			updates++
+			if (fail == "putting" && updates == 1) || fail == "all" {
+				var sqlErr *pq.Error
+				if !errors.As(err, &sqlErr) || sqlErr.Code != "P0001" || sqlErr.Message != "fixture settlement refused" {
+					t.Fatalf("settlement %d did not genuinely fail in PostgreSQL: %v", updates, err)
+				}
+				t.Logf("settlement %d failed in PostgreSQL (%s)", updates, sqlErr.Code)
+				if updates == 1 {
+					expirePrivateIntakeFixture(t, ctx, pg, m)
+					expirePrivateIntakeFixture(t, ctx, pg, other)
+					if n, err := fresh.Collect(ctx, 8); n != 0 || err != nil {
+						t.Fatalf("unsettled attempts should expire to quarantine, not collect: %d %v", n, err)
+					}
+					if requireIntakeAttempt(t, ctx, pg, m, "quarantined") != committedKey || requireIntakeAttempt(t, ctx, pg, other, "quarantined") != siblingKey {
+						t.Fatal("expiry did not retain both exact attempts")
+					}
+					t.Log("ordinary expiry quarantined both attempts before producer recovery")
+				}
+			} else if err != nil {
+				t.Fatalf("settlement %d did not reach SQL success: %v", updates, err)
+			} else if fail == "ack" {
+				if n, err := result.RowsAffected(); err != nil || n != 1 || requireIntakeAttempt(t, ctx, pg, m, "refused") != committedKey {
+					t.Fatalf("no exact committed refusal to withhold: affected=%d err=%v", n, err)
+				}
+				t.Log("actual refusal updated one row and independently visible as refused; SQL ACK withheld")
+				return errStageRefuseAckLost
+			}
+			return err
+		},
+		observed: func(bound context.Context, err error) {
+			checkContext(bound)
+			if err != nil {
+				t.Fatalf("fresh exact settlement observation did not reach SQL: %v", err)
+			}
+			observations++
+			t.Log("performed exact SQL observation under a fresh bounded context")
+		},
 	})
 	puts, deletes, reads := 0, 0, 0
 	writer := newPrivateIntake(t, lost, stagedFixtureStore{Client: store,
@@ -244,12 +361,40 @@ func privateIntakeStageLostAuthorizeAck(t *testing.T, ctx context.Context, pg *d
 			reads++
 			return nil, nil, errors.New("unexpected Get")
 		},
+		absent: func(context.Context, string) bool { reads++; return false },
 	}, ffmpeg)
-	if r, err := writer.Import(upload, m, bytes.NewReader(a.data)); r != nil || !errors.Is(err, errStageAuthLost) || strings.Contains(err.Error(), errStageAuthLost.Error()) || authorizations != 1 || committedKey == "" || puts+deletes+reads != 0 {
+	r, err := writer.Import(upload, m, bytes.NewReader(a.data))
+	if r != nil || !errors.Is(err, errStageAuthLost) || strings.Contains(err.Error(), errStageAuthLost.Error()) || authorizations != 1 || committedKey == "" || puts+deletes+reads != 0 {
 		t.Errorf("did not keep distinct committed-authorize/lost-ACK custody: receipt=%v err=%v authorizations=%d put=%d delete=%d read=%d", r, err, authorizations, puts, deletes, reads)
+	}
+	if fail == "all" {
+		if err == nil || !strings.Contains(err.Error(), "requires reconciliation") || updates != 2 || observations != 2 {
+			t.Errorf("missing explicit exhausted-settlement hold: %v updates=%d observations=%d", err, updates, observations)
+		}
+		// Even once the SQL fault lifts, a different collector has no
+		// producer proof and must keep both exact attempts charged.
+		if _, err := pg.ExecContext(ctx, `ALTER TABLE private_import_attempts DISABLE TRIGGER fixture_stage_refuse_fail`); err != nil {
+			t.Fatal(err)
+		}
+		if n, err := fresh.Collect(ctx, 8); n != 0 || err != nil {
+			t.Fatalf("collector released unresolved custody after SQL recovery: %d %v", n, err)
+		}
+		requireIntakeAttempt(t, ctx, pg, m, "quarantined")
+		requireIntakeAttempt(t, ctx, pg, other, "quarantined")
+		if r, err := fresh.Import(ctx, stageManifest(owner, a.data), neverReadPrivateIntake{t}); r != nil || !errors.Is(err, db.ErrPrivateImportStageCapacity) {
+			t.Fatalf("unresolved custody stopped charging capacity: %v %v", r, err)
+		}
+		requireIntakeObject(t, ctx, store, siblingKey, a.data)
+		return
 	}
 	if key := requireIntakeAttempt(t, ctx, pg, m, "refused"); key != committedKey {
 		t.Fatal("settlement did not burn the exact undispatched attempt")
+	}
+	if fail == "putting" && (updates != 2 || observations != 1) {
+		t.Fatalf("missing bounded producer recovery: updates=%d observations=%d", updates, observations)
+	}
+	if fail == "ack" && (updates != 1 || observations != 1 || errors.Is(err, errStageRefuseAckLost)) {
+		t.Fatalf("committed refusal was not proven by exact readback: %v updates=%d observations=%d", err, updates, observations)
 	}
 	if _, err := store.StatObject(ctx, committedKey); !storage.IsObjectNotFound(err) {
 		t.Fatal("undispatched attempt did not remain absent")
@@ -257,13 +402,15 @@ func privateIntakeStageLostAuthorizeAck(t *testing.T, ctx context.Context, pg *d
 	if r, err := writer.Import(ctx, m, neverReadPrivateIntake{t}); r != nil || !errors.Is(err, db.ErrPrivateImportStageClosed) {
 		t.Fatalf("burned operation reopened: %v %v", r, err)
 	}
-	fresh := newPrivateIntake(t, pg, stagedFixtureStore{Client: store}, ffmpeg)
 	next := stageManifest(owner, a.data)
 	if r, err := fresh.Import(ctx, next, bytes.NewReader(a.data)); r == nil || err != nil {
 		t.Fatalf("no-Put settlement did not free owner capacity: %v %v", r, err)
 	}
 	if key := requireIntakeAttempt(t, ctx, pg, next, "winner"); key == committedKey {
 		t.Fatal("fresh admission reused retired attempt key")
+	}
+	if _, _, err := db.NewTrackRepository(pg).ReservePrivateImportStage(ctx, stageManifest(other.OwnerID, a.data)); !errors.Is(err, db.ErrPrivateImportStageCapacity) {
+		t.Fatalf("reconciliation freed the actual lost Put's owner capacity: %v", err)
 	}
 	expirePrivateIntakeFixture(t, ctx, pg, other)
 	if n, err := fresh.Collect(ctx, 8); n != 0 || err != nil {
@@ -281,15 +428,29 @@ func privateIntakeStageReservationOnce(t *testing.T, ctx context.Context, pg *db
 		t.Fatalf("reservation not admitted: %v %v", receipt, err)
 	}
 	copied := *grant
-	in, err := grant.AuthorizePut(ctx, a.ms)
+	puts := 0
+	dispatch := func(reservation *db.PrivateImportReservation, duration int32) (db.PrivateImportIntent, error) {
+		in, err := reservation.AuthorizePut(ctx, duration)
+		if err != nil {
+			return in, err
+		}
+		puts++
+		return in, store.PutPrivateImportObject(ctx, in.ObjectKey(), bytes.NewReader(a.data), in.ByteLength)
+	}
+	for _, duration := range []int32{0, -1, 1<<31 - 1} {
+		if _, err := dispatch(grant, duration); err == nil || errors.Is(err, db.ErrPrivateImportStageClosed) || puts != 0 {
+			t.Errorf("bad duration consumed the grant or dispatched: duration=%d put=%d err=%v", duration, puts, err)
+		}
+	}
+	if key := requireIntakeAttempt(t, ctx, pg, m, "reserved"); key != grant.Intent().ObjectKey() {
+		t.Fatal("invalid durations changed the exact attempt")
+	}
+	in, err := dispatch(grant, a.ms)
 	if err != nil || in.ObjectKey() != requireIntakeAttempt(t, ctx, pg, m, "putting") {
-		t.Fatalf("did not authorize exact attempt: %v", err)
+		t.Fatalf("corrected call did not authorize and dispatch the exact attempt: %v", err)
 	}
-	if err := store.PutPrivateImportObject(ctx, in.ObjectKey(), bytes.NewReader(a.data), in.ByteLength); err != nil {
-		t.Fatal("could not dispatch original Put")
-	}
-	if _, err := copied.AuthorizePut(ctx, a.ms); !errors.Is(err, db.ErrPrivateImportStageClosed) {
-		t.Fatalf("copied grant re-entered the Put barrier: %v", err)
+	if _, err := dispatch(&copied, a.ms); !errors.Is(err, db.ErrPrivateImportStageClosed) || puts != 1 {
+		t.Fatalf("copied grant re-entered the Put barrier: puts=%d err=%v", puts, err)
 	}
 	requireIntakeAttempt(t, ctx, pg, m, "putting")
 	expirePrivateIntakeFixture(t, ctx, pg, m)

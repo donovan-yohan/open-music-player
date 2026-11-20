@@ -236,6 +236,41 @@ func TestServiceClientRejectsResultFromUnexpectedAnalyzerVersion(t *testing.T) {
 	}
 }
 
+func TestServiceClientCanonicalizesWireAndStoredIdentityPair(t *testing.T) {
+	const name, version = "Opaque-Analyzer", "Opaque-v2"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req serviceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ExpectedAnalyzer != name || req.ExpectedAnalyzerVersion != version {
+			t.Errorf("request did not use canonical pair: %+v %v", req, err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"schema_version":1,"summary":{},"provenance":{"analyzer":" \tOpaque-Analyzer","analyzer_version":"Opaque-v2\r ","other":{"model":"verbatim"}}}`))
+	}))
+	defer server.Close()
+	client, err := NewServiceClient(ServiceConfig{Enabled: true, BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.Analyze(context.Background(), Request{TrackID: 1, StorageKey: "fixture.wav", ExpectedAnalyzer: " " + name + "\n", ExpectedAnalyzerVersion: "\t" + version})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Analyzer != name || result.AnalyzerVersion != version {
+		t.Fatalf("typed result did not use canonical pair: %+v", result)
+	}
+	var provenance struct {
+		Analyzer string `json:"analyzer"`
+		Version  string `json:"analyzer_version"`
+		Other    struct {
+			Model string `json:"model"`
+		} `json:"other"`
+	}
+	if err := json.Unmarshal(result.ProvenanceJSON, &provenance); err != nil || provenance.Analyzer != name || provenance.Version != version || provenance.Other.Model != "verbatim" {
+		t.Fatalf("result provenance lost canonical identity or unrelated evidence: %s %v", result.ProvenanceJSON, err)
+	}
+}
+
 func TestServiceClientRejectsBlankResultIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"schema_version":1,"summary":{},"artifacts":{},"provenance":{"analyzer":"","analyzer_version":""}}`))

@@ -30,10 +30,10 @@ import (
 
 // Client provides access to S3-compatible object storage (MinIO).
 type Client struct {
-	client           *minio.Client
-	presignClient    *minio.Client
-	privatePutClient *minio.Client
-	bucket           string
+	client              *minio.Client
+	presignClient       *minio.Client
+	privateImportClient *minio.Client
+	bucket              string
 }
 
 // Config holds the configuration for the object storage client.
@@ -64,7 +64,7 @@ func New(cfg *Config) (*Client, error) {
 		return nil, fmt.Errorf("failed to create minio transport: %w", err)
 	}
 	readOptions := internalOptions
-	readOptions.Transport = privateAbsenceTransport{transport}
+	readOptions.Transport = privateImportTransport{transport}
 	client, err := minio.New(endpoint, &readOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create minio client: %w", err)
@@ -85,20 +85,21 @@ func New(cfg *Config) (*Client, error) {
 		}
 	}
 
-	// MinIO counts attempts, including the first, in MaxRetries. Only the
-	// staged write is one-shot; ordinary storage and presign keep their defaults.
-	privatePutOptions := internalOptions
-	privatePutOptions.MaxRetries = 1
-	privatePutClient, err := minio.New(endpoint, &privatePutOptions)
+	// MinIO counts attempts, including the first, in MaxRetries. The staged
+	// write and cleanup policy/delete calls are one-shot; ordinary storage
+	// and presign keep their defaults.
+	privateImportOptions := readOptions
+	privateImportOptions.MaxRetries = 1
+	privateImportClient, err := minio.New(endpoint, &privateImportOptions)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create minio private put client: %w", err)
+		return nil, fmt.Errorf("failed to create minio private import client: %w", err)
 	}
 
 	return &Client{
-		client:           client,
-		presignClient:    presignClient,
-		privatePutClient: privatePutClient,
-		bucket:           cfg.Bucket,
+		client:              client,
+		presignClient:       presignClient,
+		privateImportClient: privateImportClient,
+		bucket:              cfg.Bucket,
 	}, nil
 }
 
@@ -264,7 +265,7 @@ func (c *Client) PutPrivateImportObject(ctx context.Context, key string, reader 
 	// The spool belongs to the producer. Hiding Seek alone does not prevent
 	// replay: the SDK wraps readers in an io.Seeker with a no-op Seek.
 	// Use the one-attempt client, with the SDK's redirect refusal intact.
-	_, err := c.privatePutClient.PutObject(ctx, c.bucket, key, struct{ io.Reader }{reader}, size, opts)
+	_, err := c.privateImportClient.PutObject(ctx, c.bucket, key, struct{ io.Reader }{reader}, size, opts)
 	if err != nil {
 		return privatePutError{err}
 	}

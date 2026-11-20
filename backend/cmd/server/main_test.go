@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +26,112 @@ import (
 	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/research"
 )
+
+func TestPrivateAnalysisStartupMaintenanceRetriesWithFreshHealth(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	database, tracks, analysis := privateAnalysisFixtureDB(t, ctx)
+	peer := db.NewAnalysisRepository(openPrivateImportFixtureDB(t, ctx))
+	source := fixtureSQLPrivateSource(t, ctx, database, tracks)
+	const name, retired, worker, current = "startup-retry", "opaque-retired", "opaque-worker", "opaque-current"
+	sampled, hold := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(hold) })
+	var samples atomic.Int32
+	client := privateAnalysisStartupClient(t, func(w http.ResponseWriter, req *http.Request) {
+		switch samples.Add(1) {
+		case 1:
+			close(sampled)
+			select {
+			case <-hold:
+				writePrivateAnalysisHealth(w, name, retired)
+			case <-req.Context().Done():
+			}
+		case 2:
+			writePrivateAnalysisHealth(w, name, current)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	})
+	type outcome struct {
+		report analyzerMaintenanceReport
+		err    error
+	}
+	attempts := make(chan outcome, 2)
+	drained, advance := make(chan struct{}), make(chan struct{})
+	var loop sync.WaitGroup
+	defer func() { release(); cancel(); loop.Wait() }()
+	loop.Go(func() {
+		runAnalyzerStartupMaintenance(ctx, 0, func() error {
+			report, err := reconcileAnalyzerVersion(ctx, client, analysis, tracks, &startupRepairProcessor{})
+			select {
+			case attempts <- outcome{report, err}:
+			case <-ctx.Done():
+			}
+			return err
+		}, func() {
+			select {
+			case drained <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case <-advance:
+			case <-ctx.Done():
+			}
+		})
+	})
+	awaitDrain := func() {
+		t.Helper()
+		select {
+		case <-drained:
+		case <-ctx.Done():
+			t.Fatal("maintenance did not reach the drain boundary")
+		}
+	}
+	awaitAttempt := func() outcome {
+		t.Helper()
+		select {
+		case result := <-attempts:
+			return result
+		case <-ctx.Done():
+			t.Fatal("maintenance did not attempt reconciliation")
+			return outcome{}
+		}
+	}
+	advanceLoop := func() {
+		t.Helper()
+		select {
+		case advance <- struct{}{}:
+		case <-ctx.Done():
+			t.Fatal("maintenance did not accept a retry tick")
+		}
+	}
+	awaitPrivateAnalysisStartupSignal(t, ctx, sampled)
+	claim := uuid.New()
+	requirePrivateClaim(t, ctx, peer, source, claim, name, worker, true)
+	release()
+	failed := awaitAttempt()
+	requirePrivateAnalysisStartupConflict(t, failed.err)
+	if failed.report.Analyzer != "" || failed.report.AnalyzerVersion != "" {
+		t.Fatalf("failed attempt published analyzer identity: %+v", failed.report)
+	}
+	awaitDrain()
+	if err := peer.MarkAnalyzing(ctx, source.TrackID, fixtureClaimProvenance(claim, name, worker)); err != nil {
+		t.Fatalf("aborted observation disturbed the worker: %v", err)
+	}
+	advanceLoop()
+	retried := awaitAttempt()
+	if retried.err != nil || retried.report.Analyzer != name || retried.report.AnalyzerVersion != current || retried.report.MarkedStale != 1 {
+		t.Fatalf("retry did not reconcile fresh health: %+v", retried)
+	}
+	awaitDrain()
+	requirePrivateClaim(t, ctx, peer, source, uuid.New(), name, current, true)
+	advanceLoop()
+	awaitDrain()
+	if samples.Load() != 2 || len(attempts) != 0 {
+		t.Fatalf("maintenance re-sampled after a successful retry: samples=%d pending=%d", samples.Load(), len(attempts))
+	}
+}
 
 func TestStemsProductionCompositionKeepsReadsIndependentOfWorkerAdmission(t *testing.T) {
 	fset := token.NewFileSet()
@@ -363,9 +470,10 @@ type startupVersionStore struct {
 	startupCalls int
 }
 
-func (s *startupVersionStore) MarkStaleByAnalyzerVersionAtStartup(ctx context.Context, analyzerName, analyzerVersion string) (int64, error) {
+func (s *startupVersionStore) ReconcilePrivateAnalyzerAtStartup(ctx context.Context, observe func(context.Context) (string, string, error)) (int64, error) {
 	s.startupCalls++
-	return s.MarkStaleByAnalyzerVersion(ctx, analyzerName, analyzerVersion)
+	_, _, err := observe(ctx)
+	return 0, err
 }
 
 func (s *startupVersionStore) MarkStaleByAnalyzerVersion(_ context.Context, analyzerName, analyzerVersion string) (int64, error) {

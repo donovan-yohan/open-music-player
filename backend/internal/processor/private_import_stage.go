@@ -32,12 +32,16 @@ type privateIntakeObjects interface {
 	PutPrivateImportObject(context.Context, string, io.Reader, int64) error
 	StatObject(context.Context, string) (*storage.ObjectInfo, error)
 	VerifyPrivateImportObjectAbsent(context.Context, string) bool
-	DeleteObject(context.Context, string) error
+	VerifyPrivateImportCollectionUnversioned(context.Context) bool
+	DeletePrivateImportObject(context.Context, string) error
 }
 
 // PrivateImportIntake is an unwired service for already-authorized calls.
-// Only this producer may Put its attempt keys. The bucket must be private,
-// unversioned and free of lifecycle deletion on this keyspace.
+// Activation requires exclusive staged-key custody: one private, never-versioned
+// bucket behind a qualified internal endpoint, no competing writers or lifecycle
+// deletion, and versioning immutably disabled for the lifetime of every attempt.
+// The collector's per-attempt checks fail closed on observable drift, but do not
+// make policy reads, exact Delete and the database commit atomic.
 type PrivateImportIntake struct {
 	tracks              *db.TrackRepository
 	objects             privateIntakeObjects
@@ -176,13 +180,19 @@ func (s *PrivateImportIntake) Collect(ctx context.Context, limit int) (int, erro
 func (s *PrivateImportIntake) deleteExact(ctx context.Context, key string) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := s.objects.DeleteObject(ctx, key); err != nil {
-		return errors.New("private intake delete not acknowledged")
+	if !s.objects.VerifyPrivateImportCollectionUnversioned(ctx) {
+		return errors.New("private intake bucket not verified as never versioned before delete")
+	}
+	if err := s.objects.DeletePrivateImportObject(ctx, key); err != nil {
+		return errors.New("private intake unversioned delete not acknowledged")
 	}
 	if !s.objects.VerifyPrivateImportObjectAbsent(ctx, key) {
 		return errors.New("private intake object absence not verified")
 	}
-	return nil
+	if !s.objects.VerifyPrivateImportCollectionUnversioned(ctx) {
+		return errors.New("private intake bucket not verified as never versioned after absence")
+	}
+	return ctx.Err()
 }
 
 type contextIntakeReader struct {

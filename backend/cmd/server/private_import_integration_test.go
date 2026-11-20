@@ -28,6 +28,13 @@ var privateImportFixtureMarker = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func openPrivateImportFixtureDB(t *testing.T, ctx context.Context) *db.DB {
 	t.Helper()
+	return openPrivateImportFixturePool(t, ctx, false)
+}
+
+const privateImportMigrationFixtureApplication = "private-startup-migration-fixture"
+
+func openPrivateImportFixturePool(t *testing.T, ctx context.Context, migration bool) *db.DB {
+	t.Helper()
 	dsn, token := os.Getenv("OMP_PRIVATE_FENCE_TEST_DSN"), os.Getenv("OMP_PRIVATE_FENCE_TEST_MARKER")
 	if dsn == "" {
 		t.Skip("requires an independently attested disposable private-import fixture")
@@ -35,6 +42,11 @@ func openPrivateImportFixtureDB(t *testing.T, ctx context.Context) *db.DB {
 	parts := privateImportFixtureDSN.FindStringSubmatch(dsn)
 	if len(parts) != 3 || parts[1] != parts[2] || !privateImportFixtureMarker.MatchString(token) || os.Getenv(db.AllowProtectedDBTestsEnv) != "" {
 		t.Fatal("refusing non-disposable fixture DSN")
+	}
+	if migration {
+		// Migrate uses background contexts and a separate connection for its
+		// advisory key. Set the timeout on every physical connection at startup.
+		dsn += "&statement_timeout=8000&application_name=" + privateImportMigrationFixtureApplication
 	}
 	if err := db.CheckDSNNotProtected(dsn); err != nil {
 		t.Fatal(err)

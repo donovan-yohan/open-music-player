@@ -636,23 +636,25 @@ func fixtureSQLPrivateSource(t *testing.T, ctx context.Context, database *db.DB,
 		t.Fatal(err)
 	}
 	source.TrackID = receipt.TrackID
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		for _, step := range []struct {
-			query string
-			arg   any
-		}{
-			{`DELETE FROM private_import_receipts WHERE owner_id=$1`, owner},
-			{`DELETE FROM tracks WHERE id=$1`, source.TrackID},
-			{`DELETE FROM users WHERE id=$1`, owner},
-		} {
-			if _, err := database.ExecContext(cleanupCtx, step.query, step.arg); err != nil {
-				t.Error(err)
-			}
-		}
-	})
+	t.Cleanup(func() { cleanupPrivateAnalysisReceipt(t, database, receipt) })
 	return source
+}
+
+func cleanupPrivateAnalysisReceipt(t *testing.T, database *db.DB, receipt *db.PrivateImportReceipt) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := database.ExecContext(ctx, `DELETE FROM private_import_receipts WHERE owner_id=$1 AND operation_id=$2 AND track_id=$3`, receipt.OwnerID, receipt.OperationID, receipt.TrackID); err != nil {
+		t.Error(err)
+		return
+	}
+	if _, err := database.ExecContext(ctx, `DELETE FROM tracks WHERE id=$1 AND private_owner_id=$2`, receipt.TrackID, receipt.OwnerID); err != nil {
+		t.Error(err)
+		return
+	}
+	if _, err := database.ExecContext(ctx, `DELETE FROM users WHERE id=$1`, receipt.OwnerID); err != nil {
+		t.Error(err)
+	}
 }
 
 func fixtureClaimProvenance(token uuid.UUID, name, version string) json.RawMessage {
@@ -791,7 +793,7 @@ func TestPrivateAnalysisClaimCannotReplaceConflictingIdentityFence(t *testing.T)
 	const name, older, newer = "rolling-fixture", "opaque-a", "opaque-z"
 	oldToken, newToken := uuid.New(), uuid.New()
 	requirePrivateClaim(t, ctx, analysis, source, oldToken, name, older, true)
-	if _, err := analysis.MarkStaleByAnalyzerVersionAtStartup(ctx, name, newer); err != nil {
+	if _, err := analysis.ReconcilePrivateAnalyzerAtStartup(ctx, func(context.Context) (string, string, error) { return name, newer, nil }); err != nil {
 		t.Fatal(err)
 	}
 	assertFence := func(want string) {
@@ -822,7 +824,7 @@ func TestPrivateAnalysisClaimCannotReplaceConflictingIdentityFence(t *testing.T)
 		t.Fatal(err)
 	}
 	assertFence(newer) // Repeated ordinary scans must not re-pin stale rows.
-	if _, err := analysis.MarkStaleByAnalyzerVersionAtStartup(ctx, name, final); err != nil {
+	if _, err := analysis.ReconcilePrivateAnalyzerAtStartup(ctx, func(context.Context) (string, string, error) { return name, final, nil }); err != nil {
 		t.Fatal(err)
 	}
 	assertFence(final)
@@ -845,6 +847,666 @@ func TestPrivateAnalysisClaimCannotReplaceConflictingIdentityFence(t *testing.T)
 	}
 }
 
+// Use the production HTTP client and startup caller. The first server response
+// captures its identity before the test releases delivery to backend A.
+func privateAnalysisStartupClient(t *testing.T, handler func(http.ResponseWriter, *http.Request)) *analyzer.ServiceClient {
+	t.Helper()
+	service := httptest.NewServer(http.HandlerFunc(handler))
+	t.Cleanup(service.Close)
+	client, err := analyzer.NewServiceClient(analyzer.ServiceConfig{Enabled: true, BaseURL: service.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+func writePrivateAnalysisHealth(w http.ResponseWriter, name, version string) {
+	_, _ = fmt.Fprintf(w, `{"status":"healthy","analyzer":%q,"analyzer_version":%q,"tempo_model":"test","key_model":"test","spectral_provenance":"test","spectral_channel_set":"bands3-v1"}`, name, version)
+}
+
+func startupMigrationFixture(t *testing.T) (*db.DB, *db.DB) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	database := openPrivateImportFixtureDB(t, ctx)
+	migration := openPrivateImportFixturePool(t, ctx, true)
+	var timeout string
+	if err := migration.QueryRowContext(ctx, `SHOW statement_timeout`).Scan(&timeout); err != nil || timeout != "8s" {
+		t.Fatalf("migration peer statement_timeout=%q: %v", timeout, err)
+	}
+	if err := migration.Migrate(); err != nil {
+		t.Fatalf("initialize guarded migration fixture: %v", err)
+	}
+	post, cancelPost := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelPost()
+	if err := database.CheckDatabaseNotProtected(post); err != nil {
+		t.Fatal(err)
+	}
+	return database, migration
+}
+
+func awaitStartupMigrationWait(t *testing.T, ctx context.Context, read func() (string, error)) string {
+	t.Helper()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		wait, err := read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if wait != "" {
+			return wait
+		}
+		select {
+		case <-tick.C:
+		case <-ctx.Done():
+			t.Fatal("migration did not reach the PostgreSQL wait boundary")
+		}
+	}
+}
+
+func tryPrivateStartupHealth(ctx context.Context, database *db.DB, client *analyzer.ServiceClient) (int64, error) {
+	return db.NewAnalysisRepository(database).ReconcilePrivateAnalyzerAtStartup(ctx, func(ctx context.Context) (string, string, error) {
+		info, err := client.Info(ctx)
+		return info.Analyzer, info.AnalyzerVersion, err
+	})
+}
+
+func TestPrivateAnalysisStartupDoesNotDeadlockPeerMigration(t *testing.T) {
+	database, migration := startupMigrationFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 17*time.Second)
+	defer cancel()
+	var receipts int
+	if err := database.QueryRowContext(ctx, `SELECT count(*) FROM private_import_receipts`).Scan(&receipts); err != nil || receipts != 0 {
+		t.Fatalf("need an empty receipt fixture; count=%d: %v", receipts, err)
+	}
+	// Remove one index from before the conflicting DDL and one at the receipt
+	// lock. Independent readback must see both or neither, never a partial batch.
+	if _, err := database.ExecContext(ctx, `DROP INDEX idx_users_email, idx_private_import_receipts_track`); err != nil {
+		t.Fatal(err)
+	}
+	var restored bool
+	t.Cleanup(func() {
+		if !restored {
+			if err := migration.Migrate(); err != nil {
+				t.Errorf("restore fixture indexes: %v", err)
+			}
+		}
+	})
+	readSchema := func() (early, late bool, temp int) {
+		t.Helper()
+		if err := database.QueryRowContext(ctx, `SELECT to_regclass('idx_users_email') IS NOT NULL,
+			to_regclass('idx_private_import_receipts_track') IS NOT NULL,
+			(SELECT count(*) FROM pg_class WHERE relpersistence='t')`).Scan(&early, &late, &temp); err != nil {
+			t.Fatal(err)
+		}
+		return early, late, temp
+	}
+	_, _, initialTemp := readSchema()
+	sampled, hold := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(hold) })
+	client := privateAnalysisStartupClient(t, func(w http.ResponseWriter, req *http.Request) {
+		close(sampled)
+		select {
+		case <-hold:
+			writePrivateAnalysisHealth(w, "migration-fence", "opaque-current")
+		case <-req.Context().Done():
+		}
+	})
+	var startupErr, migrationErr error
+	var workers sync.WaitGroup
+	defer func() { release(); cancel(); workers.Wait() }()
+	workers.Go(func() { _, startupErr = tryPrivateStartupHealth(ctx, database, client) })
+	awaitPrivateAnalysisStartupSignal(t, ctx, sampled)
+	workers.Go(func() { migrationErr = migration.Migrate() })
+	wait := awaitStartupMigrationWait(t, ctx, func() (string, error) {
+		var got string
+		err := database.QueryRowContext(ctx, `WITH startup AS (
+			SELECT pid FROM pg_locks WHERE relation='private_import_receipts'::regclass
+			AND mode='ShareRowExclusiveLock' AND granted
+		) SELECT COALESCE((SELECT CASE WHEN wl.locktype='advisory' THEN 'schema advisory key'
+			ELSE 'receipts ShareLock with tracks AccessExclusiveLock' END
+			FROM pg_locks wl JOIN pg_stat_activity m USING(pid) WHERE m.application_name=$1
+			AND m.datname=current_database() AND NOT wl.granted
+			AND EXISTS (SELECT 1 FROM startup WHERE pid=ANY(pg_blocking_pids(wl.pid)))
+			AND ((wl.locktype='advisory' AND wl.objsubid=1
+			      AND ((wl.classid::bigint << 32) | wl.objid::bigint)=hashtextextended('open_music_player_schema_migrate',0))
+			 OR (wl.relation='private_import_receipts'::regclass AND wl.mode='ShareLock'
+			     AND EXISTS (SELECT 1 FROM pg_locks tr WHERE tr.pid=wl.pid AND tr.granted
+			         AND tr.relation='tracks'::regclass AND tr.mode='AccessExclusiveLock'))) LIMIT 1), '')`, privateImportMigrationFixtureApplication).Scan(&got)
+		return got, err
+	})
+	t.Logf("real Migrate blocked on %s while startup held the health response", wait)
+	if early, late, temp := readSchema(); early || late || temp != initialTemp {
+		t.Fatalf("partial schema state visible while Migrate waits: early=%t late=%t temp=%d", early, late, temp)
+	}
+	release()
+	workers.Wait()
+	early, late, temp := readSchema()
+	restored = early && late
+	if early != late || temp != initialTemp || restored != (migrationErr == nil) {
+		t.Errorf("migration did not settle atomically: early=%t late=%t temp=%d migration=%v", early, late, temp, migrationErr)
+	}
+	if startupErr != nil || migrationErr != nil {
+		state := func(err error) string {
+			var pgErr *pq.Error
+			if errors.As(err, &pgErr) {
+				return string(pgErr.Code)
+			}
+			return "none"
+		}
+		t.Fatalf("startup and Migrate must both succeed: startup=%v (SQLSTATE %s); migration=%v (SQLSTATE %s)", startupErr, state(startupErr), migrationErr, state(migrationErr))
+	}
+	if wait != "schema advisory key" {
+		t.Fatalf("a successful migration still took schema relation locks during the observation: %s", wait)
+	}
+}
+
+func TestPrivateAnalysisStartupRefusesBeforeHealthWhilePeerMigrates(t *testing.T) {
+	database, migration := startupMigrationFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 17*time.Second)
+	defer cancel()
+	tracks := db.NewTrackRepository(database)
+	source := fixtureSQLPrivateSource(t, ctx, database, tracks)
+	analysis := db.NewAnalysisRepository(database)
+	const name, old, current = "migration-reverse", "opaque-old", "opaque-current"
+	requirePrivateClaim(t, ctx, analysis, source, uuid.New(), name, old, true)
+	blocker, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workers sync.WaitGroup
+	defer func() { _ = blocker.Rollback(); cancel(); workers.Wait() }()
+	if _, err := blocker.ExecContext(ctx, `LOCK TABLE tracks IN ACCESS SHARE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	var blockerPID int
+	if err := blocker.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		t.Fatal(err)
+	}
+	migrated := make(chan error, 1)
+	workers.Go(func() { migrated <- migration.Migrate() })
+	wait := awaitStartupMigrationWait(t, ctx, func() (string, error) {
+		var got string
+		err := database.QueryRowContext(ctx, `WITH peers AS (
+			SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND application_name=$1
+		) SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_locks l JOIN peers p USING(pid)
+			WHERE l.locktype='advisory' AND l.objsubid=1 AND l.granted
+			AND ((l.classid::bigint << 32) | l.objid::bigint)=hashtextextended('open_music_player_schema_migrate',0))
+			AND EXISTS (SELECT 1 FROM pg_locks l JOIN peers p USING(pid)
+			WHERE l.relation='tracks'::regclass AND l.mode='AccessExclusiveLock' AND NOT l.granted
+			AND $2=ANY(pg_blocking_pids(l.pid))) THEN 'schema key held; tracks AccessExclusiveLock waiting' ELSE '' END`, privateImportMigrationFixtureApplication, blockerPID).Scan(&got)
+		return got, err
+	})
+	t.Logf("real Migrate paused before touching receipts: %s", wait)
+	var samples atomic.Int32
+	var endpointCurrent atomic.Bool
+	unwantedHealth := make(chan struct{}, 1)
+	client := privateAnalysisStartupClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		samples.Add(1)
+		if endpointCurrent.Load() {
+			writePrivateAnalysisHealth(w, name, current)
+		} else {
+			unwantedHealth <- struct{}{}
+			writePrivateAnalysisHealth(w, name, old)
+		}
+	})
+	attempted := make(chan error, 1)
+	workers.Go(func() { _, err := tryPrivateStartupHealth(ctx, database, client); attempted <- err })
+	select {
+	case err := <-attempted:
+		if err == nil || !strings.Contains(err.Error(), "schema migration in progress") || samples.Load() != 0 {
+			t.Fatalf("startup did not refuse the held schema key before health: samples=%d error=%v", samples.Load(), err)
+		}
+	case <-unwantedHealth:
+		t.Fatal("startup sampled health while real Migrate held the schema key")
+	case <-ctx.Done():
+		t.Fatal("startup blocked instead of refusing the held schema key")
+	}
+	if err := blocker.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-migrated; err != nil {
+		t.Fatalf("paused Migrate did not finish after release: %v", err)
+	}
+	endpointCurrent.Store(true)
+	if marked, err := tryPrivateStartupHealth(ctx, database, client); err != nil || marked != 1 || samples.Load() != 1 {
+		t.Fatalf("fresh observation did not reconcile after Migrate: marked=%d samples=%d error=%v", marked, samples.Load(), err)
+	}
+	requirePrivateClaim(t, ctx, analysis, source, uuid.New(), name, current, true)
+}
+
+func TestPrivateAnalysisStartupOrdersTwoBackendSamples(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	database, tracksA, analysisA := privateAnalysisFixtureDB(t, ctx)
+	peer := openPrivateImportFixtureDB(t, ctx)
+	analysisB := db.NewAnalysisRepository(peer)
+	source := fixtureSQLPrivateSource(t, ctx, database, tracksA)
+	// Deliberately reversed lexical order: version strings are opaque.
+	const name, older, newer = "startup-order", "z-before", "a-after"
+	retired, replacement := uuid.New(), uuid.New()
+	requirePrivateClaim(t, ctx, analysisA, source, retired, name, older, true)
+	sampledA, sampledB, resume := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(resume) })
+	clientA := privateAnalysisStartupClient(t, func(w http.ResponseWriter, req *http.Request) {
+		close(sampledA)
+		select {
+		case <-resume:
+			writePrivateAnalysisHealth(w, name, older)
+		case <-req.Context().Done():
+		}
+	})
+	clientB := privateAnalysisStartupClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		close(sampledB)
+		writePrivateAnalysisHealth(w, name, newer)
+	})
+	var starters sync.WaitGroup
+	defer func() { release(); cancel(); starters.Wait() }()
+	start := func(client *analyzer.ServiceClient, analysis *db.AnalysisRepository) <-chan error {
+		done := make(chan error, 1)
+		starters.Go(func() {
+			_, err := reconcileAnalyzerVersion(ctx, client, analysis, &startupTrackStore{}, &startupRepairProcessor{})
+			done <- err
+		})
+		return done
+	}
+	doneA := start(clientA, analysisA)
+	select {
+	case <-sampledA:
+	case <-ctx.Done():
+		t.Fatal("first startup did not reach its held health sample")
+	}
+	doneB := start(clientB, analysisB)
+	await := func(done <-chan error) {
+		t.Helper()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal("startup did not settle")
+		}
+	}
+	// Wait for a positive race witness, either the peer blocked at the real
+	// database authority or the predecessor reaching HTTP prematurely.
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	observedLock := false
+observe:
+	for {
+		select {
+		case <-sampledB:
+			break observe
+		case <-tick.C:
+			observedLock = hasPrivateAnalysisStartupWaiter(t, ctx, database)
+			if observedLock {
+				break observe
+			}
+		case <-ctx.Done():
+			t.Fatal("peer neither waited at PostgreSQL nor reached health")
+		}
+	}
+	if observedLock {
+		t.Log("peer waited at PostgreSQL before sending its health request")
+		select {
+		case <-sampledB:
+			t.Error("peer sampled health before obtaining the startup lock")
+		default:
+		}
+		release()
+		await(doneA)
+		await(doneB)
+		requirePrivateClaim(t, ctx, analysisB, source, replacement, name, newer, true)
+	} else {
+		await(doneB)
+		requirePrivateClaim(t, ctx, analysisB, source, replacement, name, newer, true)
+		release()
+		await(doneA)
+	}
+	prov := fixtureClaimProvenance(replacement, name, newer)
+	var status, version string
+	var token sql.NullString
+	if err := database.QueryRowContext(ctx, `SELECT status, provenance_json->>'expected_analyzer_version', dispatch_token::text FROM track_analysis WHERE track_id=$1`, source.TrackID).Scan(&status, &version, &token); err != nil || status != db.AnalysisStatusPending || version != newer || token.String != replacement.String() {
+		t.Fatalf("delayed startup cleared the newer claim: status=%s version=%q token=%+v error=%v", status, version, token, err)
+	}
+	if !observedLock {
+		t.Fatal("peer health was not ordered by the database startup lock")
+	}
+	if err := analysisB.MarkAnalyzing(ctx, source.TrackID, prov); err != nil {
+		t.Fatalf("newer claim could not start: %v", err)
+	}
+	if err := analysisA.MarkFailed(ctx, source.TrackID, "stale backend", fixtureClaimProvenance(retired, name, older)); !errors.Is(err, db.ErrAnalysisResultSuperseded) {
+		t.Fatalf("retired token still owned the row: %v", err)
+	}
+	result := db.AnalysisResult{Analyzer: name, AnalyzerVersion: newer, DispatchToken: replacement.String(),
+		SummaryJSON: json.RawMessage(`{"bpm":123}`), ProvenanceJSON: json.RawMessage(`{"analyzer":"startup-order","analyzer_version":"a-after"}`)}
+	if err := analysisB.StoreResult(ctx, source.TrackID, result); err != nil {
+		t.Fatalf("newer claim could not publish: %v", err)
+	}
+	row, err := analysisB.GetByTrackID(ctx, source.TrackID)
+	if err != nil || row.Status != db.AnalysisStatusAnalyzed || !bytes.Contains(row.SummaryJSON, []byte(`123`)) {
+		t.Fatalf("newer result did not persist: %+v %v", row, err)
+	}
+}
+
+func hasPrivateAnalysisStartupWaiter(t *testing.T, ctx context.Context, database *db.DB) bool {
+	t.Helper()
+	// Observe a real blocker on either the predecessor's advisory key or the
+	// receipt relation. The same fixture runs on both production snapshots.
+	var waiting bool
+	if err := database.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks
+		WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database())
+		AND NOT granted AND cardinality(pg_blocking_pids(pid)) > 0
+		AND ((locktype='advisory' AND objsubid=1 AND ((classid::bigint << 32) | objid::bigint) = hashtextextended('private-import/v1:analysis-startup',0))
+		     OR (locktype='relation' AND relation='private_import_receipts'::regclass AND mode='ShareRowExclusiveLock')))`).Scan(&waiting); err != nil {
+		t.Fatal(err)
+	}
+	return waiting
+}
+
+func awaitPrivateAnalysisStartupSignal(t *testing.T, ctx context.Context, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-ctx.Done():
+		t.Fatal("startup did not reach its held health response")
+	}
+}
+
+func requirePrivateAnalysisStartupConflict(t *testing.T, err error) {
+	t.Helper()
+	var conflict *pq.Error
+	if !errors.As(err, &conflict) || conflict.Code != "40001" {
+		t.Fatalf("wanted PostgreSQL 40001 from the intervening claim, got %v", err)
+	}
+}
+
+func TestPrivateAnalysisStartupWaitingPeerUsesPostLockSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		claimDuringHold bool
+	}{
+		{name: "sample_matches_predecessor_snapshot"},
+		{name: "worker_claim_from_unfenced_stale", claimDuringHold: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			database, tracks, analysisA := privateAnalysisFixtureDB(t, ctx)
+			analysisB := db.NewAnalysisRepository(openPrivateImportFixtureDB(t, ctx))
+			source := fixtureSQLPrivateSource(t, ctx, database, tracks)
+			const name, v1, v2 = "waiting-startup", "z-v1", "a-v2"
+			claim := uuid.New()
+			if !tc.claimDuringHold {
+				requirePrivateClaim(t, ctx, analysisA, source, claim, name, v2, true)
+			}
+			sampledA, sampledB, hold := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			release := sync.OnceFunc(func() { close(hold) })
+			var endpointAtV2 atomic.Bool
+			var samples atomic.Int32
+			client := privateAnalysisStartupClient(t, func(w http.ResponseWriter, req *http.Request) {
+				switch samples.Add(1) {
+				case 1:
+					close(sampledA)
+					select {
+					case <-hold:
+						writePrivateAnalysisHealth(w, name, v1)
+					case <-req.Context().Done():
+					}
+				case 2:
+					close(sampledB)
+					if endpointAtV2.Load() {
+						writePrivateAnalysisHealth(w, name, v2)
+					}
+				default:
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			})
+			var starters sync.WaitGroup
+			defer func() { release(); cancel(); starters.Wait() }()
+			start := func(analysis *db.AnalysisRepository) <-chan error {
+				done := make(chan error, 1)
+				starters.Go(func() {
+					_, err := reconcileAnalyzerVersion(ctx, client, analysis, &startupTrackStore{}, &startupRepairProcessor{})
+					done <- err
+				})
+				return done
+			}
+			doneA := start(analysisA)
+			awaitPrivateAnalysisStartupSignal(t, ctx, sampledA)
+			doneB := start(analysisB)
+			tick := time.NewTicker(5 * time.Millisecond)
+			defer tick.Stop()
+			for !hasPrivateAnalysisStartupWaiter(t, ctx, database) {
+				select {
+				case <-sampledB:
+					t.Fatal("backend B sampled health before acquiring the PostgreSQL lock")
+				case <-tick.C:
+				case <-ctx.Done():
+					t.Fatal("backend B never waited at PostgreSQL")
+				}
+			}
+			// B's predecessor snapshot must predate the worker commit. A still
+			// holds v1 while the claim commits and the endpoint switches to v2.
+			if tc.claimDuringHold {
+				requirePrivateClaim(t, ctx, analysisB, source, claim, name, v1, true)
+			}
+			endpointAtV2.Store(true)
+			if !hasPrivateAnalysisStartupWaiter(t, ctx, database) {
+				t.Fatal("backend B stopped waiting before A released health")
+			}
+			t.Log("backend B positively waited at PostgreSQL after the endpoint switched and before A released health")
+			release()
+			errA, errB := <-doneA, <-doneB
+			if errB != nil {
+				t.Fatalf("waiting backend B could not reconcile v2: %v (A: %v)", errB, errA)
+			}
+			var status, version string
+			var token sql.NullString
+			if err := database.QueryRowContext(ctx, `SELECT status, provenance_json->>'expected_analyzer_version', dispatch_token::text FROM track_analysis WHERE track_id=$1`, source.TrackID).Scan(&status, &version, &token); err != nil {
+				t.Fatal(err)
+			}
+			if status != db.AnalysisStatusStale || version != v2 || token.Valid {
+				t.Fatalf("backend B reported success but left status=%s version=%q token=%+v (A: %v)", status, version, token, errA)
+			}
+			if tc.claimDuringHold {
+				requirePrivateAnalysisStartupConflict(t, errA)
+			} else if errA != nil {
+				t.Fatalf("backend A did not settle its uncontested v1 sample: %v", errA)
+			}
+			if got := samples.Load(); got != 2 {
+				t.Fatalf("health sample count=%d, want 2", got)
+			}
+			requirePrivateClaim(t, ctx, analysisB, source, uuid.New(), name, v2, true)
+		})
+	}
+}
+
+func TestPrivateAnalysisStartupRejectsClaimFromUnfencedStateDuringHealth(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		missingRow bool
+	}{
+		{name: "stale_row"},
+		{name: "legacy_missing_row", missingRow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			database, tracks, analysis := privateAnalysisFixtureDB(t, ctx)
+			peer := db.NewAnalysisRepository(openPrivateImportFixtureDB(t, ctx))
+			source := fixtureSQLPrivateSource(t, ctx, database, tracks)
+			if tc.missingRow {
+				if _, err := database.ExecContext(ctx, `DELETE FROM track_analysis WHERE track_id=$1`, source.TrackID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			const name, observed, worker = "unfenced-startup", "opaque-observed", "opaque-worker"
+			sampled, hold := make(chan struct{}), make(chan struct{})
+			release := sync.OnceFunc(func() { close(hold) })
+			client := privateAnalysisStartupClient(t, func(w http.ResponseWriter, req *http.Request) {
+				close(sampled)
+				select {
+				case <-hold:
+					writePrivateAnalysisHealth(w, name, observed)
+				case <-req.Context().Done():
+				}
+			})
+			var startupErr error
+			var starter sync.WaitGroup
+			defer func() { release(); cancel(); starter.Wait() }()
+			starter.Go(func() {
+				_, startupErr = reconcileAnalyzerVersion(ctx, client, analysis, &startupTrackStore{}, &startupRepairProcessor{})
+			})
+			awaitPrivateAnalysisStartupSignal(t, ctx, sampled)
+			claim := uuid.New()
+			requirePrivateClaim(t, ctx, peer, source, claim, name, worker, true)
+			release()
+			starter.Wait()
+			if err := peer.MarkAnalyzing(ctx, source.TrackID, fixtureClaimProvenance(claim, name, worker)); err != nil {
+				t.Fatalf("held startup changed the intervening claim: %v (startup: %v)", err, startupErr)
+			}
+			requirePrivateAnalysisStartupConflict(t, startupErr)
+		})
+	}
+}
+
+func TestPrivateAnalysisStartupRejectsAnInterveningWorkerClaim(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	database, tracks, analysis := privateAnalysisFixtureDB(t, ctx)
+	peer := db.NewAnalysisRepository(openPrivateImportFixtureDB(t, ctx))
+	source := fixtureSQLPrivateSource(t, ctx, database, tracks)
+	const name, before, current = "startup-cas", "opaque-before", "opaque-current"
+	requirePrivateClaim(t, ctx, analysis, source, uuid.New(), name, current, true)
+	if _, err := database.ExecContext(ctx, `UPDATE track_analysis SET requested_at=NOW()-INTERVAL '31 minutes' WHERE track_id=$1`, source.TrackID); err != nil {
+		t.Fatal(err)
+	}
+	sampled, resume := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(resume) })
+	client := privateAnalysisStartupClient(t, func(w http.ResponseWriter, req *http.Request) {
+		close(sampled)
+		select {
+		case <-resume:
+			writePrivateAnalysisHealth(w, name, before)
+		case <-req.Context().Done():
+		}
+	})
+	var startupErr error
+	var starter sync.WaitGroup
+	defer func() { release(); cancel(); starter.Wait() }()
+	starter.Go(func() {
+		_, startupErr = reconcileAnalyzerVersion(ctx, client, analysis, &startupTrackStore{}, &startupRepairProcessor{})
+	})
+	select {
+	case <-sampled:
+	case <-ctx.Done():
+		t.Fatal("startup did not reach its held health sample")
+	}
+	replacement := uuid.New()
+	requirePrivateClaim(t, ctx, peer, source, replacement, name, current, true)
+	release()
+	starter.Wait()
+	if err := peer.MarkAnalyzing(ctx, source.TrackID, fixtureClaimProvenance(replacement, name, current)); err != nil {
+		t.Fatalf("startup overwrote an intervening worker claim: %v (startup: %v)", err, startupErr)
+	}
+	var conflict *pq.Error
+	if !errors.As(startupErr, &conflict) || conflict.Code != "40001" {
+		t.Fatalf("startup did not reject its stale row snapshot: %v", startupErr)
+	}
+	// The next startup attempt reads fresh health; the aborted transaction
+	// must release the authority and leave the live matching fence alone.
+	fresh := privateAnalysisStartupClient(t, func(w http.ResponseWriter, _ *http.Request) { writePrivateAnalysisHealth(w, name, current) })
+	if _, err := reconcileAnalyzerVersion(ctx, fresh, analysis, &startupTrackStore{}, &startupRepairProcessor{}); err != nil {
+		t.Fatalf("fresh attempt failed: %v", err)
+	}
+	var status, token string
+	if err := database.QueryRowContext(ctx, `SELECT status, dispatch_token::text FROM track_analysis WHERE track_id=$1`, source.TrackID).Scan(&status, &token); err != nil || status != db.AnalysisStatusAnalyzing || token != replacement.String() {
+		t.Fatalf("fresh attempt disturbed matching worker: %s %q %v", status, token, err)
+	}
+}
+
+func TestPrivateAnalysisStartupNormalizesFenceForRecovery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	database, tracks, analysis := privateAnalysisFixtureDB(t, ctx)
+	source := fixtureSQLPrivateSource(t, ctx, database, tracks)
+	const name, version = "normalized-analyzer", "normalized-v2"
+	requirePrivateClaim(t, ctx, analysis, source, uuid.New(), "prior-analyzer", "prior-v1", true)
+	client := privateAnalysisStartupClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		writePrivateAnalysisHealth(w, " \t"+name+"\n ", "\r "+version+" \t")
+	})
+	repairs := &startupRepairProcessor{}
+	report, err := reconcileAnalyzerVersion(ctx, client, analysis, &startupTrackStore{}, repairs)
+	if err != nil {
+		t.Fatalf("startup did not recover old fence: %+v %v", report, err)
+	}
+	candidates, err := tracks.GetPrivateImportAnalysisCandidates(ctx, name, version, 16)
+	if err != nil || len(candidates) != 1 || candidates[0].TrackID != source.TrackID {
+		t.Fatalf("normalized worker pair did not select the startup fence: %v %v", candidates, err)
+	}
+	if report.Analyzer != name || report.AnalyzerVersion != version || repairs.analyzer != name || repairs.analyzerVersion != version {
+		t.Fatalf("startup consumers disagreed about normalized pair: %+v", report)
+	}
+	requirePrivateClaim(t, ctx, analysis, source, uuid.New(), name, version, true)
+}
+
+func createFixturePrivateWriteFault(ctx context.Context, database *db.DB, table string) error {
+	_, err := database.ExecContext(ctx, `CREATE FUNCTION fixture_private_write_fault() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION USING ERRCODE='P0001', MESSAGE='fixture write fault'; END$$;
+		CREATE TRIGGER fixture_private_write_fault BEFORE INSERT ON `+pq.QuoteIdentifier(table)+` FOR EACH ROW EXECUTE FUNCTION fixture_private_write_fault()`)
+	return err
+}
+
+func dropFixturePrivateWriteFault(database *db.DB, table string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, err := database.ExecContext(ctx, `DROP TRIGGER IF EXISTS fixture_private_write_fault ON `+pq.QuoteIdentifier(table)+`; DROP FUNCTION IF EXISTS fixture_private_write_fault()`)
+	return err
+}
+
+func TestPrivateCanonicalWriteFaultCleanupIsBounded(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	database, _, _ := privateAnalysisFixtureDB(t, ctx)
+	peer := openPrivateImportFixtureDB(t, ctx)
+	const table = "private_import_receipts"
+	if err := createFixturePrivateWriteFault(ctx, database, table); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := dropFixturePrivateWriteFault(database, table, 5*time.Second); err != nil {
+			t.Error(err)
+		}
+	})
+	lock, err := peer.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Rollback() }()
+	if _, err := lock.ExecContext(ctx, `LOCK TABLE private_import_receipts IN ACCESS SHARE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	// The operation deadline must end the DROP before the conflicting lock
+	// is released. The outer wait is a failsafe, not the source of cancellation.
+	done := make(chan error, 1)
+	var teardown sync.WaitGroup
+	teardown.Go(func() { done <- dropFixturePrivateWriteFault(database, table, 200*time.Millisecond) })
+	defer func() { _ = lock.Rollback(); teardown.Wait() }()
+	select {
+	case err := <-done:
+		var canceled *pq.Error
+		if !errors.Is(err, context.DeadlineExceeded) && (!errors.As(err, &canceled) || canceled.Code != "57014") {
+			t.Fatalf("held trigger drop did not return a deadline/cancellation error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("trigger teardown outlived its bound while PostgreSQL held a conflicting lock")
+	}
+	// This test context is already canceled when cleanup needs its own budget.
+	cancel()
+}
+
 func TestPrivateCanonicalWriteErrorsIdentifyOperationAndRollback(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -855,12 +1517,11 @@ func TestPrivateCanonicalWriteErrorsIdentifyOperationAndRollback(t *testing.T) {
 		{"private_import_receipts", "insert canonical private receipt"},
 	} {
 		t.Run(tt.table, func(t *testing.T) {
-			if _, err := database.ExecContext(ctx, `CREATE FUNCTION fixture_private_write_fault() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION USING ERRCODE='P0001', MESSAGE='fixture write fault'; END$$;
-				CREATE TRIGGER fixture_private_write_fault BEFORE INSERT ON `+tt.table+` FOR EACH ROW EXECUTE FUNCTION fixture_private_write_fault()`); err != nil {
+			if err := createFixturePrivateWriteFault(ctx, database, tt.table); err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				if _, err := database.Exec(`DROP TRIGGER fixture_private_write_fault ON ` + tt.table + `; DROP FUNCTION fixture_private_write_fault()`); err != nil {
+				if err := dropFixturePrivateWriteFault(database, tt.table, 5*time.Second); err != nil {
 					t.Error(err)
 				}
 			})
@@ -901,12 +1562,35 @@ func TestPrivateAnalysisWaitsInSharedQueueWithoutLeaseAndRefreshesIdentity(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	var worker *processor.Processor
+	var publicIDs []int64
+	t.Cleanup(func() {
+		if worker != nil {
+			stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := worker.Shutdown(stop)
+			cancel()
+			if err != nil {
+				t.Errorf("cannot retire FIFO fixtures before workers stop: %v", err)
+				return
+			}
+		}
+		cleanupPrivateAnalysisReceipt(t, database, receipt)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for _, id := range publicIDs {
+			if _, err := database.ExecContext(ctx, `DELETE FROM tracks WHERE id=$1 AND private_owner_id IS NULL`, id); err != nil {
+				t.Error(err)
+			}
+		}
+	})
 	sharedTrack := func(label string) *db.Track {
 		t.Helper()
-		track, _, err := tracks.CreateTrackFromMetadata(ctx, "queue fixture artist", label, "", 500, db.WithStorage("fixture/"+label, 1))
-		if err != nil {
-			t.Fatal(err)
+		label += " " + in.OperationID.String()
+		track, created, err := tracks.CreateTrackFromMetadata(ctx, "queue fixture artist", label, "", 500, db.WithStorage("fixture/"+label, 1))
+		if err != nil || !created {
+			t.Fatalf("create owned FIFO track: created=%t %v", created, err)
 		}
+		publicIDs = append(publicIDs, track.ID)
 		return track
 	}
 	head, tail := sharedTrack("queue head"), sharedTrack("queue tail")
@@ -914,9 +1598,10 @@ func TestPrivateAnalysisWaitsInSharedQueueWithoutLeaseAndRefreshesIdentity(t *te
 	healthState.Store(1)
 	var healthReads atomic.Int32
 	type request struct {
-		TrackID         int64  `json:"track_id"`
-		StorageKey      string `json:"storage_key"`
-		ExpectedVersion string `json:"expected_analyzer_version"`
+		TrackID          int64  `json:"track_id"`
+		StorageKey       string `json:"storage_key"`
+		ExpectedAnalyzer string `json:"expected_analyzer"`
+		ExpectedVersion  string `json:"expected_analyzer_version"`
 	}
 	var seen []request
 	var mu sync.Mutex
@@ -932,7 +1617,12 @@ func TestPrivateAnalysisWaitsInSharedQueueWithoutLeaseAndRefreshesIdentity(t *te
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
-			_, _ = fmt.Fprintf(w, `{"status":"healthy","analyzer":%q,"analyzer_version":"queue-v%d","tempo_model":"test","key_model":"test","spectral_provenance":"test","spectral_channel_set":"bands3-v1"}`, name, state)
+			version := fmt.Sprintf("queue-v%d", state)
+			if state == 2 {
+				writePrivateAnalysisHealth(w, " \t"+name, version+"\n ")
+			} else {
+				writePrivateAnalysisHealth(w, name, version)
+			}
 			return
 		}
 		var got request
@@ -944,7 +1634,7 @@ func TestPrivateAnalysisWaitsInSharedQueueWithoutLeaseAndRefreshesIdentity(t *te
 		mu.Lock()
 		seen = append(seen, got)
 		mu.Unlock()
-		actual := "queue-v1" // Ordinary jobs retain their startup admission input.
+		actualName, actual := name, "queue-v1" // Ordinary jobs retain their startup admission input.
 		switch got.TrackID {
 		case head.ID:
 			close(headStarted)
@@ -954,7 +1644,7 @@ func TestPrivateAnalysisWaitsInSharedQueueWithoutLeaseAndRefreshesIdentity(t *te
 				return
 			}
 		case receipt.TrackID:
-			actual = fmt.Sprintf("queue-v%d", healthState.Load())
+			actualName, actual = " \t"+name, fmt.Sprintf("queue-v%d\r ", healthState.Load())
 			data, err := fixtureReadObject(req.Context(), objects, got.StorageKey)
 			if err != nil || got.StorageKey != in.ObjectKey() || !bytes.Equal(data, audio.data) {
 				t.Errorf("queued private track lost exact object: %v", err)
@@ -962,7 +1652,7 @@ func TestPrivateAnalysisWaitsInSharedQueueWithoutLeaseAndRefreshesIdentity(t *te
 				return
 			}
 		}
-		_, _ = fmt.Fprintf(w, `{"schema_version":1,"summary":{"bpm":123},"artifacts":{},"provenance":{"analyzer":%q,"analyzer_version":%q}}`, name, actual)
+		_, _ = fmt.Fprintf(w, `{"schema_version":1,"summary":{"bpm":123},"artifacts":{},"provenance":{"analyzer":%q,"analyzer_version":%q}}`, actualName, actual)
 	}))
 	defer service.Close()
 	defer unblock()
@@ -970,14 +1660,7 @@ func TestPrivateAnalysisWaitsInSharedQueueWithoutLeaseAndRefreshesIdentity(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker := processor.New(&processor.ProcessorConfig{TrackRepo: tracks, AnalysisRepo: analysis, AnalyzerClient: client, Storage: objects, RequireAnalyzerIdentity: true})
-	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := worker.Shutdown(stop); err != nil {
-			t.Error(err)
-		}
-	})
+	worker = processor.New(&processor.ProcessorConfig{TrackRepo: tracks, AnalysisRepo: analysis, AnalyzerClient: client, Storage: objects, RequireAnalyzerIdentity: true})
 	startup, err := reconcileAnalyzerVersion(ctx, client, analysis, tracks, worker)
 	if err != nil || startup.AnalyzerVersion != "queue-v1" || startup.Queued != 0 {
 		t.Fatalf("ordinary startup: %+v %v", startup, err)
@@ -1040,11 +1723,11 @@ func TestPrivateAnalysisWaitsInSharedQueueWithoutLeaseAndRefreshesIdentity(t *te
 	if len(seen) != 3 || seen[0].TrackID != head.ID || seen[1].TrackID != receipt.TrackID || seen[2].TrackID != tail.ID {
 		t.Fatalf("private work lost its place in the shared FIFO: %+v", seen)
 	}
-	if healthReads.Load() <= before || seen[1].ExpectedVersion != "queue-v2" || seen[2].ExpectedVersion != "queue-v1" {
+	if healthReads.Load() <= before || seen[1].ExpectedAnalyzer != "queue-fixture" || seen[1].ExpectedVersion != "queue-v2" || seen[2].ExpectedVersion != "queue-v1" {
 		t.Fatalf("queued private request reused startup identity or changed ordinary dispatch: %+v", seen)
 	}
 	row, err := analysis.GetByTrackID(ctx, receipt.TrackID)
-	if err != nil || row.Status != db.AnalysisStatusAnalyzed || !bytes.Contains(row.ProvenanceJSON, []byte(`"queue-v2"`)) {
+	if err != nil || row.Status != db.AnalysisStatusAnalyzed || !bytes.Contains(row.ProvenanceJSON, []byte(`"queue-v2"`)) || !bytes.Contains(row.ProvenanceJSON, []byte(`"queue-fixture"`)) {
 		t.Fatalf("fresh private result not committed: %+v %v", row, err)
 	}
 }

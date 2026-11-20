@@ -144,7 +144,8 @@ func (c *ServiceClient) Info(ctx context.Context) (Info, error) {
 	if err := json.Unmarshal(body, &info); err != nil {
 		return Info{}, fmt.Errorf("parse analyzer health response: %w", err)
 	}
-	if strings.TrimSpace(info.Analyzer) == "" || strings.TrimSpace(info.AnalyzerVersion) == "" {
+	info.Analyzer, info.AnalyzerVersion = normalizeIdentity(info.Analyzer, info.AnalyzerVersion)
+	if info.Analyzer == "" || info.AnalyzerVersion == "" {
 		return Info{}, errors.New("analyzer health response missing analyzer identity")
 	}
 	if !strings.EqualFold(strings.TrimSpace(info.Status), "healthy") {
@@ -164,6 +165,7 @@ func (c *ServiceClient) Analyze(ctx context.Context, req Request) (*Result, erro
 	if schemaVersion <= 0 {
 		schemaVersion = SchemaVersion
 	}
+	name, version := normalizeIdentity(req.ExpectedAnalyzer, req.ExpectedAnalyzerVersion)
 	payload, err := json.Marshal(serviceRequest{
 		SchemaVersion:           schemaVersion,
 		TrackID:                 req.TrackID,
@@ -173,8 +175,8 @@ func (c *ServiceClient) Analyze(ctx context.Context, req Request) (*Result, erro
 		DurationMs:              req.DurationMs,
 		Title:                   req.Title,
 		Artist:                  req.Artist,
-		ExpectedAnalyzer:        strings.TrimSpace(req.ExpectedAnalyzer),
-		ExpectedAnalyzerVersion: strings.TrimSpace(req.ExpectedAnalyzerVersion),
+		ExpectedAnalyzer:        name,
+		ExpectedAnalyzerVersion: version,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode analyzer request: %w", err)
