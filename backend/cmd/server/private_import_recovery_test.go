@@ -118,6 +118,77 @@ func (s fixtureHeldPrivateAnalysisStart) MarkAnalyzing(ctx context.Context, trac
 	return s.AnalysisRepository.MarkAnalyzing(ctx, trackID, provenance)
 }
 
+// Durable recovery deliberately closes its first pool. Keep teardown on a
+// separately attested pool and delete each receipt before its shared track.
+type durableImportFixtures struct {
+	owners    []uuid.UUID
+	receipts  map[[2]uuid.UUID]int64
+	publicKey string
+}
+
+func (f durableImportFixtures) remove(ctx context.Context, database *db.DB) error {
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for ids, trackID := range f.receipts {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM private_import_receipts WHERE owner_id=$1 AND operation_id=$2 AND track_id=$3`, ids[0], ids[1], trackID); err != nil {
+			return fmt.Errorf("delete owned receipt: %w", err)
+		}
+	}
+	for ids, trackID := range f.receipts {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM tracks WHERE private_owner_id=$1 AND id=$2`, ids[0], trackID); err != nil {
+			return fmt.Errorf("delete owned private track: %w", err)
+		}
+	}
+	if f.publicKey != "" {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM tracks WHERE storage_key=$1 AND private_owner_id IS NULL`, f.publicKey); err != nil {
+			return fmt.Errorf("delete owned ordinary download: %w", err)
+		}
+	}
+	for _, owner := range f.owners {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id=$1`, owner); err != nil {
+			return fmt.Errorf("delete owned fixture user: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (f durableImportFixtures) assertRemoved(t *testing.T, database *db.DB) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	assertAbsent := func(label, query string, args ...any) {
+		t.Helper()
+		var present bool
+		if err := database.QueryRowContext(ctx, query, args...).Scan(&present); err != nil || present {
+			t.Errorf("owned %s remains after durable fixture cleanup: present=%t err=%v", label, present, err)
+		}
+	}
+	for ids, trackID := range f.receipts {
+		assertAbsent("receipt", `SELECT EXISTS (SELECT 1 FROM private_import_receipts WHERE owner_id=$1 AND operation_id=$2)`, ids[0], ids[1])
+		assertAbsent("private track", `SELECT EXISTS (SELECT 1 FROM tracks WHERE id=$1)`, trackID)
+	}
+	if f.publicKey != "" {
+		assertAbsent("download track", `SELECT EXISTS (SELECT 1 FROM tracks WHERE storage_key=$1)`, f.publicKey)
+	}
+	for _, owner := range f.owners {
+		assertAbsent("user", `SELECT EXISTS (SELECT 1 FROM users WHERE id=$1)`, owner)
+	}
+}
+
+func registerDurableImportFaultCleanup(t *testing.T, database *db.DB, statement string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := database.ExecContext(ctx, statement); err != nil {
+			t.Errorf("restore durable import fault fixture: %v", err)
+		}
+	})
+}
+
 func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
@@ -126,8 +197,25 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 	if err := firstDB.Migrate(); err != nil {
 		t.Fatal(err)
 	}
+	cleanupDB := openPrivateImportFixtureDB(t, ctx)
+	fixtures := durableImportFixtures{receipts: make(map[[2]uuid.UUID]int64)}
+	workersStopped := true
+	t.Cleanup(func() { fixtures.assertRemoved(t, cleanupDB) })
+	t.Cleanup(func() {
+		if !workersStopped {
+			t.Error("cannot remove durable fixtures before analysis workers stop")
+			return
+		}
+		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		if err := fixtures.remove(cleanup, cleanupDB); err != nil {
+			t.Errorf("remove durable fixtures: %v", err)
+		}
+	})
 	owner := seedPrivateImportUser(t, firstDB, ctx)
+	fixtures.owners = append(fixtures.owners, owner)
 	other := seedPrivateImportUser(t, firstDB, ctx)
+	fixtures.owners = append(fixtures.owners, other)
 	a, b := privateImportMP3(t, ctx, 557), privateImportMP3(t, ctx, 907)
 	if len(a.data) != len(b.data) || a.hash == b.hash {
 		t.Fatal("negative must have equal length but distinct bytes")
@@ -153,6 +241,7 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 		if err != nil || r == nil || r.OwnerID != in.OwnerID || r.OperationID != in.OperationID || r.SHA256 != in.SHA256 || r.ByteLength != in.ByteLength || r.TrackID <= 0 || r.CommittedAt.IsZero() {
 			t.Fatalf("invalid committed receipt %v, err=%v", r, err)
 		}
+		fixtures.receipts[[2]uuid.UUID{r.OwnerID, r.OperationID}] = r.TrackID
 		return r
 	}
 	refuse := func(in db.PrivateImportIntent, expected error) {
@@ -168,14 +257,19 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 		CREATE TRIGGER fixture_refuse_receipt BEFORE INSERT ON private_import_receipts FOR EACH ROW EXECUTE FUNCTION fixture_refuse_receipt()`); err != nil {
 		t.Fatal(err)
 	}
+	registerDurableImportFaultCleanup(t, cleanupDB, `DROP TRIGGER IF EXISTS fixture_refuse_receipt ON private_import_receipts; DROP FUNCTION IF EXISTS fixture_refuse_receipt()`)
 	if r, err := processor.CommitStoredPrivateImport(ctx, tracks, objects, first); r != nil || err == nil || !strings.Contains(err.Error(), "fixture refused receipt") {
 		t.Fatalf("late receipt rollback fault: %v %v", r, err)
 	}
-	for _, table := range []string{"tracks", "user_library", "track_analysis", "private_import_receipts"} {
-		var count int
-		if err := firstDB.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count); err != nil || count != 0 {
-			t.Fatalf("atomic write leaked %s rows=%d err=%v", table, count, err)
-		}
+	var leakedTrack, leakedMembership, leakedAnalysis, leakedReceipt bool
+	if err := firstDB.QueryRowContext(ctx, `WITH owned_tracks AS (
+		SELECT id FROM tracks WHERE private_owner_id=$1 OR storage_key=$3
+	) SELECT EXISTS(SELECT 1 FROM owned_tracks),
+		EXISTS(SELECT 1 FROM user_library WHERE user_id=$1),
+		EXISTS(SELECT 1 FROM track_analysis WHERE track_id IN (SELECT id FROM owned_tracks)),
+		EXISTS(SELECT 1 FROM private_import_receipts WHERE owner_id=$1 AND operation_id=$2)`,
+		owner, first.OperationID, first.ObjectKey()).Scan(&leakedTrack, &leakedMembership, &leakedAnalysis, &leakedReceipt); err != nil || leakedTrack || leakedMembership || leakedAnalysis || leakedReceipt {
+		t.Fatalf("atomic write rollback: track=%t membership=%t analysis=%t receipt=%t err=%v", leakedTrack, leakedMembership, leakedAnalysis, leakedReceipt, err)
 	}
 	if _, err := firstDB.ExecContext(ctx, `DROP TRIGGER fixture_refuse_receipt ON private_import_receipts; DROP FUNCTION fixture_refuse_receipt()`); err != nil {
 		t.Fatal(err)
@@ -256,7 +350,7 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 	loadStatus(secondAck.TrackID, db.AnalysisStatusStale)
 
 	const health = `{"status":"healthy","analyzer":"fixture","analyzer_version":"fixture-v1","tempo_model":"test","key_model":"test","spectral_provenance":"test","spectral_channel_set":"bands3-v1"}`
-	const result = `{"schema_version":1,"summary":{"bpm":123},"artifacts":{},"provenance":{"analyzer":"fixture","analyzer_version":"fixture-v1"}}`
+	const result = `{"schema_version":1,"summary":{"bpm":123},"artifacts":{},"provenance":{"analyzer":"fixture","analyzer_verſion":" fixture-v1 ","model":{"source":"generated"},"analyzer_verſion_note":"preserved"}}`
 	type observation struct {
 		wire      map[string]json.RawMessage
 		key, hash string
@@ -321,6 +415,7 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 			stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := p.Shutdown(stop); err != nil {
+				workersStopped = false
 				t.Error(err)
 			}
 		})
@@ -328,6 +423,9 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 	}
 	startup := func(p *processor.Processor, client *analyzer.ServiceClient) {
 		t.Helper()
+		if _, err := reconcilePrivateAnalyzerVersion(ctx, client, analysis); err != nil {
+			t.Fatalf("private startup: %v", err)
+		}
 		report, err := reconcileAnalyzerVersion(ctx, client, analysis, tracks, p)
 		if err != nil || report.Analyzer != "fixture" || report.AnalyzerVersion != "fixture-v1" || report.Queued != 0 {
 			t.Fatalf("wrong startup/identity owner: %+v %v", report, err)
@@ -346,6 +444,7 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 		CREATE TRIGGER fixture_refuse_claim BEFORE UPDATE ON track_analysis FOR EACH ROW WHEN (NEW.status = 'pending') EXECUTE FUNCTION fixture_refuse_claim()`); err != nil {
 		t.Fatal(err)
 	}
+	registerDurableImportFaultCleanup(t, cleanupDB, `DROP TRIGGER IF EXISTS fixture_refuse_claim ON track_analysis; DROP FUNCTION IF EXISTS fixture_refuse_claim(); DROP SEQUENCE IF EXISTS fixture_claim_attempts`)
 	if n, err := stopped.DrainPrivateImportAnalysis(ctx); n != 2 || err != nil {
 		t.Fatalf("expected two durable intents to reach the worker: %d %v", n, err)
 	}
@@ -450,7 +549,8 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 	}
 	release()
 	// Entire existing URL worker path with its own local file fetch and storage Put.
-	job := &download.DownloadJob{ID: uuid.NewString(), UserID: owner.String(), URL: "file://" + a.path, SourceType: "local-fixture", Title: first.Title, Artist: first.Artist, Album: first.Album, DurationMs: int(first.DurationMs)}
+	job := &download.DownloadJob{ID: uuid.NewString(), UserID: owner.String(), URL: "file://" + a.path, SourceType: "local-fixture", Title: first.Title + " " + strings.ReplaceAll(first.OperationID.String(), "-", ""), Artist: first.Artist, Album: first.Album, DurationMs: int(first.DurationMs)}
+	fixtures.publicKey = "tracks/local-fixture/" + job.ID + ".mp3"
 	if err := worker.Process(ctx, job, func(int) {}); err != nil || job.TrackID == nil || *job.TrackID == firstAck.TrackID || *job.TrackID == secondAck.TrackID {
 		t.Fatalf("URL ingest crossed private byte dedupe: %+v %v", job.TrackID, err)
 	}
@@ -469,6 +569,12 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 	}
 	for _, ack := range []*db.PrivateImportReceipt{firstAck, secondAck} {
 		row := loadStatus(ack.TrackID, db.AnalysisStatusAnalyzed)
+		fields := assertFixtureResultIdentity(t, row.ProvenanceJSON, "fixture", "fixture-v1")
+		var model map[string]string
+		if err := json.Unmarshal(fields["model"], &model); err != nil || model["source"] != "generated" ||
+			string(fields["analyzer_verſion_note"]) != `"preserved"` || fields["analyzer_verſion"] != nil {
+			t.Fatalf("database lost result provenance or retained alias: %s %v", row.ProvenanceJSON, err)
+		}
 		if !bytes.Contains(row.SummaryJSON, []byte(`123`)) || bytes.Contains(row.ProvenanceJSON, []byte("dispatch_token")) {
 			t.Fatalf("result/claim provenance boundary: %s %s", row.SummaryJSON, row.ProvenanceJSON)
 		}
@@ -916,10 +1022,6 @@ func TestPrivateAnalysisStartupDoesNotDeadlockPeerMigration(t *testing.T) {
 	database, migration := startupMigrationFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 17*time.Second)
 	defer cancel()
-	var receipts int
-	if err := database.QueryRowContext(ctx, `SELECT count(*) FROM private_import_receipts`).Scan(&receipts); err != nil || receipts != 0 {
-		t.Fatalf("need an empty receipt fixture; count=%d: %v", receipts, err)
-	}
 	// Remove one index from before the conflicting DDL and one at the receipt
 	// lock. Independent readback must see both or neither, never a partial batch.
 	if _, err := database.ExecContext(ctx, `DROP INDEX idx_users_email, idx_private_import_receipts_track`); err != nil {
@@ -1106,7 +1208,7 @@ func TestPrivateAnalysisStartupOrdersTwoBackendSamples(t *testing.T) {
 	start := func(client *analyzer.ServiceClient, analysis *db.AnalysisRepository) <-chan error {
 		done := make(chan error, 1)
 		starters.Go(func() {
-			_, err := reconcileAnalyzerVersion(ctx, client, analysis, &startupTrackStore{}, &startupRepairProcessor{})
+			_, err := reconcilePrivateAnalyzerVersion(ctx, client, analysis)
 			done <- err
 		})
 		return done
@@ -1269,7 +1371,7 @@ func TestPrivateAnalysisStartupWaitingPeerUsesPostLockSnapshot(t *testing.T) {
 			start := func(analysis *db.AnalysisRepository) <-chan error {
 				done := make(chan error, 1)
 				starters.Go(func() {
-					_, err := reconcileAnalyzerVersion(ctx, client, analysis, &startupTrackStore{}, &startupRepairProcessor{})
+					_, err := reconcilePrivateAnalyzerVersion(ctx, client, analysis)
 					done <- err
 				})
 				return done
@@ -1358,7 +1460,7 @@ func TestPrivateAnalysisStartupRejectsClaimFromUnfencedStateDuringHealth(t *test
 			var starter sync.WaitGroup
 			defer func() { release(); cancel(); starter.Wait() }()
 			starter.Go(func() {
-				_, startupErr = reconcileAnalyzerVersion(ctx, client, analysis, &startupTrackStore{}, &startupRepairProcessor{})
+				_, startupErr = reconcilePrivateAnalyzerVersion(ctx, client, analysis)
 			})
 			awaitPrivateAnalysisStartupSignal(t, ctx, sampled)
 			claim := uuid.New()
@@ -1398,7 +1500,7 @@ func TestPrivateAnalysisStartupRejectsAnInterveningWorkerClaim(t *testing.T) {
 	var starter sync.WaitGroup
 	defer func() { release(); cancel(); starter.Wait() }()
 	starter.Go(func() {
-		_, startupErr = reconcileAnalyzerVersion(ctx, client, analysis, &startupTrackStore{}, &startupRepairProcessor{})
+		_, startupErr = reconcilePrivateAnalyzerVersion(ctx, client, analysis)
 	})
 	select {
 	case <-sampled:
@@ -1419,7 +1521,7 @@ func TestPrivateAnalysisStartupRejectsAnInterveningWorkerClaim(t *testing.T) {
 	// The next startup attempt reads fresh health; the aborted transaction
 	// must release the authority and leave the live matching fence alone.
 	fresh := privateAnalysisStartupClient(t, func(w http.ResponseWriter, _ *http.Request) { writePrivateAnalysisHealth(w, name, current) })
-	if _, err := reconcileAnalyzerVersion(ctx, fresh, analysis, &startupTrackStore{}, &startupRepairProcessor{}); err != nil {
+	if _, err := reconcilePrivateAnalyzerVersion(ctx, fresh, analysis); err != nil {
 		t.Fatalf("fresh attempt failed: %v", err)
 	}
 	var status, token string
@@ -1439,6 +1541,10 @@ func TestPrivateAnalysisStartupNormalizesFenceForRecovery(t *testing.T) {
 		writePrivateAnalysisHealth(w, " \t"+name+"\n ", "\r "+version+" \t")
 	})
 	repairs := &startupRepairProcessor{}
+	privateReport, err := reconcilePrivateAnalyzerVersion(ctx, client, analysis)
+	if err != nil || privateReport.Analyzer != name || privateReport.AnalyzerVersion != version {
+		t.Fatalf("private startup did not use the normalized pair: %+v %v", privateReport, err)
+	}
 	report, err := reconcileAnalyzerVersion(ctx, client, analysis, &startupTrackStore{}, repairs)
 	if err != nil {
 		t.Fatalf("startup did not recover old fence: %+v %v", report, err)
@@ -1661,6 +1767,9 @@ func TestPrivateAnalysisWaitsInSharedQueueWithoutLeaseAndRefreshesIdentity(t *te
 		t.Fatal(err)
 	}
 	worker = processor.New(&processor.ProcessorConfig{TrackRepo: tracks, AnalysisRepo: analysis, AnalyzerClient: client, Storage: objects, RequireAnalyzerIdentity: true})
+	if _, err := reconcilePrivateAnalyzerVersion(ctx, client, analysis); err != nil {
+		t.Fatalf("private startup: %v", err)
+	}
 	startup, err := reconcileAnalyzerVersion(ctx, client, analysis, tracks, worker)
 	if err != nil || startup.AnalyzerVersion != "queue-v1" || startup.Queued != 0 {
 		t.Fatalf("ordinary startup: %+v %v", startup, err)
@@ -1727,7 +1836,26 @@ func TestPrivateAnalysisWaitsInSharedQueueWithoutLeaseAndRefreshesIdentity(t *te
 		t.Fatalf("queued private request reused startup identity or changed ordinary dispatch: %+v", seen)
 	}
 	row, err := analysis.GetByTrackID(ctx, receipt.TrackID)
-	if err != nil || row.Status != db.AnalysisStatusAnalyzed || !bytes.Contains(row.ProvenanceJSON, []byte(`"queue-v2"`)) || !bytes.Contains(row.ProvenanceJSON, []byte(`"queue-fixture"`)) {
+	if err != nil || row == nil || row.Status != db.AnalysisStatusAnalyzed {
 		t.Fatalf("fresh private result not committed: %+v %v", row, err)
 	}
+	fields := assertFixtureResultIdentity(t, row.ProvenanceJSON, "queue-fixture", "queue-v2")
+	if string(fields["expected_analyzer"]) != `"queue-fixture"` || string(fields["expected_analyzer_version"]) != `"queue-v2"` {
+		t.Fatalf("queue result lost its independent claim identity: %s", row.ProvenanceJSON)
+	}
+}
+
+func assertFixtureResultIdentity(t *testing.T, raw json.RawMessage, wantName, wantVersion string) map[string]json.RawMessage {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("invalid stored result provenance: %v", err)
+	}
+	var name, version string
+	nameErr := json.Unmarshal(fields["analyzer"], &name)
+	versionErr := json.Unmarshal(fields["analyzer_version"], &version)
+	if nameErr != nil || versionErr != nil || name != wantName || version != wantVersion {
+		t.Fatalf("stored result identity fields = %q@%q, want %q@%q: %v %v (provenance: %s)", name, version, wantName, wantVersion, nameErr, versionErr, raw)
+	}
+	return fields
 }

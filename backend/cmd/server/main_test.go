@@ -36,6 +36,8 @@ func TestPrivateAnalysisStartupMaintenanceRetriesWithFreshHealth(t *testing.T) {
 	const name, retired, worker, current = "startup-retry", "opaque-retired", "opaque-worker", "opaque-current"
 	sampled, hold := make(chan struct{}), make(chan struct{})
 	release := sync.OnceFunc(func() { close(hold) })
+	retrySampled, retryHold := make(chan struct{}), make(chan struct{})
+	releaseRetry := sync.OnceFunc(func() { close(retryHold) })
 	var samples atomic.Int32
 	client := privateAnalysisStartupClient(t, func(w http.ResponseWriter, req *http.Request) {
 		switch samples.Add(1) {
@@ -47,7 +49,12 @@ func TestPrivateAnalysisStartupMaintenanceRetriesWithFreshHealth(t *testing.T) {
 			case <-req.Context().Done():
 			}
 		case 2:
-			writePrivateAnalysisHealth(w, name, current)
+			close(retrySampled)
+			select {
+			case <-retryHold:
+				writePrivateAnalysisHealth(w, name, current)
+			case <-req.Context().Done():
+			}
 		default:
 			w.WriteHeader(http.StatusInternalServerError)
 		}
@@ -58,14 +65,21 @@ func TestPrivateAnalysisStartupMaintenanceRetriesWithFreshHealth(t *testing.T) {
 	}
 	attempts := make(chan outcome, 2)
 	drained, advance := make(chan struct{}), make(chan struct{})
+	allowRetry := make(chan struct{})
 	var loop sync.WaitGroup
-	defer func() { release(); cancel(); loop.Wait() }()
+	defer func() { release(); releaseRetry(); cancel(); loop.Wait() }()
 	loop.Go(func() {
-		runAnalyzerStartupMaintenance(ctx, 0, func() error {
-			report, err := reconcileAnalyzerVersion(ctx, client, analysis, tracks, &startupRepairProcessor{})
+		runAnalyzerStartupMaintenance(ctx, 0, func() error { return nil }, func() error {
+			report, err := reconcilePrivateAnalyzerVersion(ctx, client, analysis)
 			select {
 			case attempts <- outcome{report, err}:
 			case <-ctx.Done():
+			}
+			if err != nil {
+				select {
+				case <-allowRetry:
+				case <-ctx.Done():
+				}
 			}
 			return err
 		}, func() {
@@ -115,11 +129,18 @@ func TestPrivateAnalysisStartupMaintenanceRetriesWithFreshHealth(t *testing.T) {
 	if failed.report.Analyzer != "" || failed.report.AnalyzerVersion != "" {
 		t.Fatalf("failed attempt published analyzer identity: %+v", failed.report)
 	}
-	awaitDrain()
 	if err := peer.MarkAnalyzing(ctx, source.TrackID, fixtureClaimProvenance(claim, name, worker)); err != nil {
 		t.Fatalf("aborted observation disturbed the worker: %v", err)
 	}
-	advanceLoop()
+	close(allowRetry)
+	select {
+	case <-retrySampled:
+	case <-drained:
+		t.Fatal("private drain ran after a 40001 and before a successful retry")
+	case <-ctx.Done():
+		t.Fatal("maintenance did not send fresh health after 40001")
+	}
+	releaseRetry()
 	retried := awaitAttempt()
 	if retried.err != nil || retried.report.Analyzer != name || retried.report.AnalyzerVersion != current || retried.report.MarkedStale != 1 {
 		t.Fatalf("retry did not reconcile fresh health: %+v", retried)
@@ -464,16 +485,9 @@ func (c startupInfoClient) Info(context.Context) (analyzer.Info, error) {
 }
 
 type startupVersionStore struct {
-	marked       int64
-	markResults  []int64
-	calls        int
-	startupCalls int
-}
-
-func (s *startupVersionStore) ReconcilePrivateAnalyzerAtStartup(ctx context.Context, observe func(context.Context) (string, string, error)) (int64, error) {
-	s.startupCalls++
-	_, _, err := observe(ctx)
-	return 0, err
+	marked      int64
+	markResults []int64
+	calls       int
 }
 
 func (s *startupVersionStore) MarkStaleByAnalyzerVersion(_ context.Context, analyzerName, analyzerVersion string) (int64, error) {
@@ -604,8 +618,8 @@ func TestReconcileAnalyzerVersionMarksAndQueuesBoundedRepairs(t *testing.T) {
 	if tracks.limit != startupAnalyzerRepairLimit {
 		t.Fatalf("repair limit = %d, want %d", tracks.limit, startupAnalyzerRepairLimit)
 	}
-	if versions.startupCalls != 1 || versions.calls < 2 {
-		t.Fatalf("expected a single startup refence along with ordinary scans: startup=%d total=%d", versions.startupCalls, versions.calls)
+	if versions.calls < 2 {
+		t.Fatalf("expected initial and final ordinary scans: total=%d", versions.calls)
 	}
 	if len(repairs.trackIDs) != 2 || !containsTrackIDs(repairs.trackIDs, 43, 44) {
 		t.Fatalf("queued tracks = %v, want [43 44]", repairs.trackIDs)

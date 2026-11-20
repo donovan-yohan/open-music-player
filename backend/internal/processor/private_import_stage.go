@@ -184,7 +184,7 @@ func (s *PrivateImportIntake) deleteExact(ctx context.Context, key string) error
 		return errors.New("private intake bucket not verified as never versioned before delete")
 	}
 	if err := s.objects.DeletePrivateImportObject(ctx, key); err != nil {
-		return errors.New("private intake unversioned delete not acknowledged")
+		return err // Storage supplies a redacted error with the SDK cause intact.
 	}
 	if !s.objects.VerifyPrivateImportObjectAbsent(ctx, key) {
 		return errors.New("private intake object absence not verified")

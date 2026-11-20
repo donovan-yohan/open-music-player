@@ -271,6 +271,39 @@ func TestServiceClientCanonicalizesWireAndStoredIdentityPair(t *testing.T) {
 	}
 }
 
+func TestServiceClientCanonicalizesCaseFoldIdentityAliases(t *testing.T) {
+	const name, version = "Opaque-Analyzer", "Opaque-v2"
+	for _, tc := range []struct{ name, wire string }{
+		{"unicode_alias_overwrites_after_rewrite", `"Analyzer":"old","analyzer":"Opaque-Analyzer","analyzer_version":"old","analyzer_verſion":" Opaque-v2 "`},
+		{"already_trimmed_alias_only", `"Analyzer":"Opaque-Analyzer","Analyzer_Verſion":"Opaque-v2"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"schema_version":1,"summary":{},"provenance":{` + tc.wire + `,"other":{"model":"verbatim"},"analyzer_verſion_note":"preserved"}}`))
+			}))
+			defer server.Close()
+			client, err := NewServiceClient(ServiceConfig{Enabled: true, BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := client.Analyze(context.Background(), Request{TrackID: 1, ExpectedAnalyzer: name, ExpectedAnalyzerVersion: version})
+			if err != nil || result.Analyzer != name || result.AnalyzerVersion != version {
+				t.Fatalf("wire result did not validate against the expected pair: %+v %v", result, err)
+			}
+			decodedName, decodedVersion, err := IdentityFromProvenance(result.ProvenanceJSON)
+			if err != nil || decodedName != name || decodedVersion != version {
+				t.Errorf("second identity decode differs from validated pair: %q@%q %v", decodedName, decodedVersion, err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(result.ProvenanceJSON, &fields); err != nil || len(fields) != 4 ||
+				string(fields["analyzer"]) != `"Opaque-Analyzer"` || string(fields["analyzer_version"]) != `"Opaque-v2"` ||
+				string(fields["other"]) != `{"model":"verbatim"}` || string(fields["analyzer_verſion_note"]) != `"preserved"` {
+				t.Fatalf("serialized provenance must have only canonical identity plus unchanged unrelated keys: %s %v", result.ProvenanceJSON, err)
+			}
+		})
+	}
+}
+
 func TestServiceClientRejectsBlankResultIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"schema_version":1,"summary":{},"artifacts":{},"provenance":{"analyzer":"","analyzer_version":""}}`))
