@@ -317,7 +317,7 @@ ENTRYPOINT ["/usr/bin/docker-entrypoint.sh"]
 CMD ["minio"]
 
 # Keep this final so an unqualified Docker build still produces the API image.
-FROM alpine:3.19 AS server-runtime
+FROM alpine:3.24@sha256:c6b073f8e9e58d881f6ffba6ebf3b9ebd60b9e7d6e8337018c0e68bb5c356873 AS server-runtime
 
 WORKDIR /app
 
@@ -325,11 +325,20 @@ RUN apk add --no-cache \
         ca-certificates \
         curl \
         ffmpeg \
+        nodejs \
         py3-pip \
         python3 \
+        tini \
         tzdata \
-    && pip3 install --no-cache-dir --break-system-packages yt-dlp \
-    && rm -rf /var/cache/apk/*
+    && printf '%s\n' \
+        'yt-dlp==2026.10.26 --hash=sha256:a05c5b5d8562f7e8a62f5334348b406af4930d56d3a65f8021d14af0e22339ae' \
+        'yt-dlp-ejs==0.8.0 --hash=sha256:79300e5fca7f937a1eeede11f0456862c1b41107ce1d726871e0207424f4bdb4' \
+        > /tmp/preview-requirements.txt \
+    && pip3 install --no-cache-dir --break-system-packages --only-binary=:all: --require-hashes -r /tmp/preview-requirements.txt \
+    && rm -f /tmp/preview-requirements.txt \
+    && yt-dlp --version \
+    && node -e 'if (parseInt(process.versions.node, 10) < 22) process.exit(1)' \
+    && ffmpeg -hide_banner -encoders | grep -w libmp3lame
 
 RUN adduser -D -u 10001 -g '' appuser \
     && mkdir -p /app/data /app/tmp \
@@ -341,4 +350,6 @@ USER appuser
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
-ENTRYPOINT ["/app/server"]
+# Canceled preview workers can orphan already-killed descendants. Reap them
+# even when the surrounding deployment does not set Compose init: true.
+ENTRYPOINT ["/sbin/tini", "--", "/app/server"]

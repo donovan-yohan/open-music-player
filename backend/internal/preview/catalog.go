@@ -1,4 +1,4 @@
-// Package preview serves only explicitly cleared, locally mounted Discover clips.
+// Package preview serves temporary Discover clips without importing tracks.
 package preview
 
 import (
@@ -45,12 +45,33 @@ type clip struct {
 	expiresAt    time.Time
 }
 
-// Catalog is a startup snapshot of an operator-controlled allowlist. It has no
-// provider, persistence, or import dependency. A nil Catalog is disabled.
+// Catalog owns one configured preview source and the shared request limit.
+// A nil Catalog is disabled. Neither source writes to the Library.
 type Catalog struct {
 	dir    string
 	clips  map[string]clip
 	active chan struct{}
+	fetch  func(context.Context, string) ([]byte, error)
+}
+
+// Configure selects one preview source at startup. Do not fall back to fetching
+// after a mounted clip is removed or expires.
+func Configure(dir, onDemand string) (*Catalog, error) {
+	switch onDemand {
+	case "", "false":
+		return Load(dir)
+	case "true":
+		if dir != "" {
+			return nil, errors.New("mounted and on-demand preview modes are mutually exclusive")
+		}
+		fetch, err := newYTDLPFetcher()
+		if err != nil {
+			return nil, err
+		}
+		return &Catalog{active: make(chan struct{}, maxConcurrent), fetch: fetch}, nil
+	default:
+		return nil, errors.New("DISCOVERY_PREVIEW_ON_DEMAND must be true or false")
+	}
 }
 
 // Load reads manifest.json once from an absolute, trusted local mount (empty

@@ -1,15 +1,31 @@
 # Operate Discover previews
 
-Preview is off by default. To enable it, set `DISCOVERY_PREVIEW_DIR` on the Go
-server to an absolute, clean path to an operator-controlled **read-only local
-mount**. Keep that mount and its parents under operator control. The server
-loads `manifest.json` from that directory at startup; leave the variable unset
-or use an empty array to disable previews. A malformed manifest disables the
-entire allowlist and logs a safe reason without printing its contents or path.
-No DB, storage, import or provider configuration is needed for the route.
+## On-demand previews
 
-Use one manifest row per exact source key. `GET /api/v1/discovery/search`
-may include `previewSourceUrl` on a `results[]` row. Send that string verbatim
+For a deployment permitted to preview its configured provider sources, set
+`DISCOVERY_PREVIEW_ON_DEMAND=true` on the Go server and leave
+`DISCOVERY_PREVIEW_DIR` unset. The server image includes `yt-dlp`, `ffmpeg`,
+and a local Node.js runtime with yt-dlp's EJS provider scripts. It does not
+download solver components at request time. No clip inventory, library entry,
+object storage, download job, BPM, waveform, or analysis is needed. Tap Play to
+request a temporary excerpt; Add to Library remains the separate import action.
+
+The authenticated endpoint fetches a bounded excerpt of the exact selected
+YouTube, YouTube Music, or SoundCloud source. It returns a validated MP3 on
+the existing preview response with its exact length and gapless frame count.
+It limits simultaneous requests and acquisition time; a slow response body
+has a separate write budget. It does not queue requests or search for another
+recording when a source is unavailable. A canceled request stops acquisition.
+There is no promise of provider availability or instant playback.
+
+The two modes are mutually exclusive and read at server startup. Unset both
+variables and restart the Go server to disable previews. Set the on-demand mode
+only on a deployment permitted to fetch and serve those excerpts.
+
+## Source keys
+
+`GET /api/v1/discovery/search` may include `previewSourceUrl` on a `results[]`
+row. Send that string verbatim
 as `{"url":"…"}` to `POST /api/v1/discovery/preview`. Keep the original
 `sourceUrl` and candidate ID for import and selection. The preview key is not
 stored in the selection snapshot and does not indicate clip availability.
@@ -21,6 +37,16 @@ tracking parameters (`si`, `utm_source`, `utm_medium`, `utm_campaign`,
 or a direct SoundCloud track permalink. SoundCloud API keys must be exact numeric
 track URLs. Search omits the hint for ambiguous or unsupported URLs and never
 follows redirects. Neither the manifest nor the preview POST accepts aliases.
+
+## Mounted clips
+
+To use only pre-prepared clips, set `DISCOVERY_PREVIEW_DIR` to an absolute,
+clean path to an operator-controlled **read-only local mount**. Leave
+`DISCOVERY_PREVIEW_ON_DEMAND` unset. Keep the mount and its parents under
+operator control. The server loads `manifest.json` once at startup. An empty
+array disables previews; a malformed manifest disables the entire allowlist
+and logs a safe reason without printing its contents or path.
+Use one manifest row per exact source key.
 
 All manifest fields are required, once each. The manifest is a JSON array
 (max 256 rows / 256 KiB):
@@ -64,8 +90,8 @@ permission to mount a clip.
 
 ## Qualify the receiving proxy before enablement
 
-Keep `DISCOVERY_PREVIEW_DIR` unset on the receiving service until the following
-check passes on its actual ingress topology. Every hop for
+Keep preview modes disabled on the receiving service until the following check
+passes on its actual ingress topology. Every hop for
 `POST /api/v1/discovery/preview` must forward the prefix without waiting for the
 complete response, preserve its bytes and preview headers, and avoid compression
 and caching. The origin sends `Cache-Control: private, no-store`.
@@ -101,5 +127,5 @@ versions, matching settings, negotiated HTTP protocol, and passing output in
 the operator's private evidence. A health check, direct-origin pass, buffering
 timeout, or proof through a different proxy is not a pass for the receiving
 route. If the route cannot be qualified, leave previews off; if enablement is
-later rolled back, unset the variable and restart only the preview-owning Go
+later rolled back, unset the selected mode and restart only the preview-owning Go
 service through its normal operational procedure.
