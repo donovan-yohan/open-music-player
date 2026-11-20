@@ -260,9 +260,21 @@ struct WorkerDeck::Impl {
         job.extent = extent;
         job.cursor = cursor; // milliseconds for open, source frames for subsequent fills
         job.speed = intended.speed;
+        if (!open && !job.progressive && !extent && job.speed == 1 && submittedSpeed == 1 &&
+            current.count == current.first.size()) {
+            const auto end = current.first.back() + current.frames.back();
+            // The ordinary target is at least two pages ahead of this bank and
+            // at most two pages of acknowledged PCM remain. Publish the first
+            // missing page before waiting on more reads, so one late fill does
+            // not cause more underruns despite timely individual page reads.
+            // This chooses a fill range, not a transport cursor. Uncovered seeks
+            // outside this bank still demand a neighborhood at their target.
+            if (cursor < end && cursor >= current.first.front() + 2 * pageFrames)
+                job.cursor = current.first.front() + pageFrames;
+        }
         if (job.progressive) job.batch = previewWindow({}, extent, cursor, open);
         else if (open) job.batch.count = 4;
-        else job.batch = neighborhood({}, extent, cursor);
+        else job.batch = neighborhood({}, extent, job.cursor);
         // Only an ordinary forward turnover of acknowledged, unprocessed PCM.
         // A strictly newer last page requires real reader work only while the
         // worker's endpoint still matches this job (rechecked before copying).

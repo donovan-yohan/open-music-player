@@ -309,21 +309,27 @@ func newYouTubeProviderWithMetadataEnrichment(concurrency int, timeout time.Dura
 	})
 }
 
-// Search returns ordinary Discover results in the provider and source order in
-// which they were searched. It deliberately does not infer a preferred source
-// or invoke the source-quality judge: choosing the exact downloadable item is
-// a user action.
+type sourceSearchOrder uint8
+
+const (
+	providerOrder sourceSearchOrder = iota
+	queryPermalinkOrder
+	sourceQualityOrder
+)
+
+// Search returns unranked results in provider and source order for internal
+// callers. It does not infer a preferred source or invoke the quality judge.
 func (s *Service) Search(ctx context.Context, query string, requested []string, limit int) SearchResponse {
-	return s.search(ctx, query, requested, limit, false)
+	return s.search(ctx, query, requested, limit, providerOrder)
 }
 
 // SearchRanked is for explicit assist flows that ask for source-quality
-// analysis. Unlike ordinary Discover, it may classify and reorder candidates.
+// analysis. It may classify candidates and rank them across providers.
 func (s *Service) SearchRanked(ctx context.Context, query string, requested []string, limit int) SearchResponse {
-	return s.search(ctx, query, requested, limit, true)
+	return s.search(ctx, query, requested, limit, sourceQualityOrder)
 }
 
-func (s *Service) search(ctx context.Context, query string, requested []string, limit int, rankSources bool) SearchResponse {
+func (s *Service) search(ctx context.Context, query string, requested []string, limit int, order sourceSearchOrder) SearchResponse {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -333,9 +339,9 @@ func (s *Service) search(ctx context.Context, query string, requested []string, 
 	sourceProviders, includeCatalog := s.resolveRequest(requested)
 	ctx, cancel := context.WithTimeout(ctx, s.overallTimeout)
 	defer cancel()
-	raw := s.searchSourcesWithContext(ctx, query, sourceProviders, limit)
+	raw := s.searchSourcesWithContext(ctx, query, sourceProviders, limit, order)
 	results := raw.Results
-	if rankSources {
+	if order == sourceQualityOrder {
 		results = rankSourceCandidatesWithJudge(ctx, query, results, s.sourceQualityJudge)
 	}
 	// Attach AcousticBrainz candidate hints after the strip so the strip cannot
@@ -374,10 +380,10 @@ func (s *Service) SearchSources(ctx context.Context, query string, requested []s
 	sourceProviders, _ := s.resolveRequest(requested)
 	ctx, cancel := context.WithTimeout(ctx, s.overallTimeout)
 	defer cancel()
-	return s.searchSourcesWithContext(ctx, query, sourceProviders, limit)
+	return s.searchSourcesWithContext(ctx, query, sourceProviders, limit, providerOrder)
 }
 
-func (s *Service) searchSourcesWithContext(ctx context.Context, query string, sourceProviders []string, limit int) SourceSearchResponse {
+func (s *Service) searchSourcesWithContext(ctx context.Context, query string, sourceProviders []string, limit int, order sourceSearchOrder) SourceSearchResponse {
 
 	type result struct {
 		provider string
@@ -440,9 +446,40 @@ func (s *Service) searchSourcesWithContext(ctx context.Context, query string, so
 		resp.Providers = append(resp.Providers, summary)
 	}
 	for _, providerName := range sourceProviders {
-		resp.Results = append(resp.Results, providerItems[providerName]...)
+		items := providerItems[providerName]
+		if order == queryPermalinkOrder {
+			items = preferQueryPermalinkMatches(query, items)
+		}
+		resp.Results = append(resp.Results, items...)
 	}
 	return resp
+}
+
+// preferQueryPermalinkMatches brings a full, multiword track slug match forward
+// within its returned provider batch. It is lexical evidence only: it neither
+// establishes a catalog recording match nor changes what can be previewed or added.
+func preferQueryPermalinkMatches(query string, items []Candidate) []Candidate {
+	query = normalizedTokenText(query)
+	if len(items) < 2 || !strings.Contains(query, " ") {
+		return items // Do not match opaque single-token paths (e.g. watch or a numeric ID).
+	}
+	var matches, others []Candidate
+	for _, item := range items {
+		if item.Downloadable {
+			if key := preview.SourceKey(item.Provider, item.SourceURL); key != "" {
+				u, err := url.Parse(key)
+				if err == nil && normalizedTokenText(lastSegment(u.Path)) == query {
+					matches = append(matches, item)
+					continue
+				}
+			}
+		}
+		others = append(others, item)
+	}
+	if len(matches) == 0 {
+		return items
+	}
+	return append(matches, others...)
 }
 
 // SearchCatalog reuses the existing MusicBrainz client for one explicitly
@@ -748,7 +785,7 @@ func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	providers := splitCSV(r.URL.Query().Get("providers"))
-	resp := h.service.Search(r.Context(), query, providers, limit)
+	resp := h.service.search(r.Context(), query, providers, limit, queryPermalinkOrder)
 	if len(resp.Providers) == 0 {
 		writeError(w, http.StatusBadRequest, "NO_PROVIDERS", "no discovery providers can be attempted")
 		return

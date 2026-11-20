@@ -545,7 +545,11 @@ paths:
   /discovery/search:
     get:
       tags: [Browse]
-      summary: Search neutral provider-order source candidates and create a short-lived selection session
+      summary: Search source candidates and create a short-lived selection session
+      description: >-
+        Results stay grouped in provider order. Within a provider, an exact
+        multiword match to a track permalink's slug can appear first. This is a
+        text match, not a recommendation or proof of recording identity.
       operationId: discoverySearch
       parameters:
         - name: q

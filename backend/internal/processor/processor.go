@@ -552,7 +552,13 @@ func runYTDLPCommand(ctx context.Context, executable, sourceURL string, metadata
 	defer os.RemoveAll(dir)
 
 	outputTemplate := filepath.Join(dir, "audio.%(ext)s")
-	cmd := exec.CommandContext(ctx, executable, "--no-playlist", "--max-filesize", fmt.Sprintf("%d", maxBytes), "--extract-audio", "--audio-format", "mp3", "--write-info-json", "--no-progress", "-o", outputTemplate, sourceURL)
+	// Durable imports prefer the best audio-only rendition, falling back to
+	// the same source's muxed audio when necessary. Keep the existing MP3
+	// contract, but don't use the extractor's medium-quality encoding default.
+	cmd := exec.CommandContext(ctx, executable,
+		"--no-playlist", "--max-filesize", fmt.Sprintf("%d", maxBytes),
+		"--format", "bestaudio/best", "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0", "--keep-video",
+		"--write-info-json", "--no-progress", "-o", outputTemplate, sourceURL)
 	var output limitedOutput
 	output.limit = maxYTDLPLogBytes
 	cmd.Stdout = &output
@@ -560,39 +566,73 @@ func runYTDLPCommand(ctx context.Context, executable, sourceURL string, metadata
 	if err := cmd.Run(); err != nil {
 		return "", "", fmt.Errorf("yt-dlp failed: %w: %s", err, strings.TrimSpace(output.String()))
 	}
-	return collectYTDLPOutput(dir, metadata, maxBytes)
+	return collectYTDLPOutput(ctx, dir, metadata, maxBytes)
 }
 
-func collectYTDLPOutput(dir string, metadata *TrackMetadata, maxBytes int64) (string, string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", "", err
-	}
-	var audioPath string
-	for _, entry := range entries {
-		if entry.IsDir() || strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		audioPath = filepath.Join(dir, entry.Name())
-		break
-	}
-	if audioPath == "" {
+func collectYTDLPOutput(ctx context.Context, dir string, metadata *TrackMetadata, maxBytes int64) (string, string, error) {
+	audioPath := filepath.Join(dir, "audio.mp3")
+	info, err := os.Lstat(audioPath)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && !info.Mode().IsRegular()) {
 		return "", "", fmt.Errorf("yt-dlp did not produce an audio file")
 	}
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".info.json") {
-			populateMetadataFromInfo(filepath.Join(dir, entry.Name()), metadata)
-			break
-		}
-	}
-	path, contentType, err := copyToBoundedTemp(audioPath, maxBytes)
 	if err != nil {
 		return "", "", err
 	}
-	if contentType == "" {
-		contentType = "audio/mpeg"
+	if info.Size() > maxBytes {
+		if err := retryBoundedYTDLPEncode(ctx, dir, audioPath, info.Size(), maxBytes); err != nil {
+			return "", "", err
+		}
 	}
-	return path, contentType, nil
+	path, _, err := copyToBoundedTemp(audioPath, maxBytes)
+	if err != nil {
+		return "", "", err
+	}
+	populateMetadataFromInfo(filepath.Join(dir, "audio.info.json"), metadata)
+	// The encoder output is explicitly MP3, including in images without mime.types.
+	return path, "audio/mpeg", nil
+}
+
+// Yt-dlp's size limit applies to the rendition, not the resulting MP3. If
+// premium encoding crosses the cap, use its retained input at the previous
+// encoder quality. Never re-fetch, change renditions, or truncate the audio.
+func retryBoundedYTDLPEncode(ctx context.Context, dir, audioPath string, encodedBytes, maxBytes int64) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var input string
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.Type().IsRegular() || !strings.HasPrefix(name, "audio.") || name == "audio.mp3" || name == "audio.info.json" {
+			continue
+		}
+		if input != "" {
+			return fmt.Errorf("downloaded file too large: %d bytes (ambiguous retained rendition)", encodedBytes)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Size() > maxBytes {
+			return fmt.Errorf("downloaded file too large: %d bytes (retained rendition exceeds cap)", encodedBytes)
+		}
+		input = filepath.Join(dir, name)
+	}
+	if input == "" {
+		return fmt.Errorf("downloaded file too large: %d bytes", encodedBytes)
+	}
+	if err := os.Remove(audioPath); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-v", "error", "-n", "-protocol_whitelist", "file",
+		"-format_whitelist", "aac,asf,avi,flac,flv,matroska,webm,mov,mp4,m4a,3gp,3g2,mj2,mp3,mpegts,ogg,wav",
+		"-i", input, "-vn", "-c:a", "libmp3lame", "-q:a", "5", audioPath)
+	output := limitedOutput{limit: maxYTDLPLogBytes}
+	cmd.Stderr = &output
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("encode retained rendition under audio size cap: %w: %s", err, strings.TrimSpace(output.String()))
+	}
+	return nil
 }
 
 type limitedOutput struct {

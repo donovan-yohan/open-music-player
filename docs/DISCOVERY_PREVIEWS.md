@@ -10,6 +10,16 @@ download solver components at request time. No clip inventory, library entry,
 object storage, download job, BPM, waveform, or analysis is needed. Tap Play to
 request a temporary excerpt; Add to Library remains the separate import action.
 
+For a new download, Add to Library acquires the full selected source. The
+importer prefers the provider's best audio-only rendition, falls back to audio
+from the same source when necessary, and uses high-quality variable-bitrate MP3
+when encoding is needed. If that encode exceeds the existing size cap, the
+importer tries its previous quality setting on the already downloaded rendition.
+It never truncates the track to meet the cap. The provider still determines the
+available quality.
+Save may reuse an existing Library track; it does not upgrade existing audio in
+place. Analysis, when needed, uses the durable Library audio after import.
+
 The authenticated endpoint fetches a bounded excerpt of the exact selected
 YouTube, YouTube Music, or SoundCloud source. It returns a validated MP3 on
 the existing preview response with its exact length and gapless frame count.

@@ -89,7 +89,9 @@ func TestCatalogRecordingSourceAuthenticated(t *testing.T) {
 		body, want string
 		wantStatus int
 	}{
+		{"exact remix link from the requested recording", 200, strings.Replace(body, "http://www.soundcloud.com/fixture/exact-track?utm_source=test", "https://soundcloud.com/sorabecareful/constantly-sora-remix", 1), `{"recordingMbid":"` + sourceTestMBID + `","sourceUrl":"https://soundcloud.com/sorabecareful/constantly-sora-remix"}` + "\n", 200},
 		{"no exact relation", 200, strings.Replace(body, "/fixture/exact-track", "/fixture/sets/playlist", 1), `{"recordingMbid":"` + sourceTestMBID + `","sourceUrl":null}` + "\n", 200},
+		{"remix-of relationship cannot substitute for exact source", 200, `{"id":"` + sourceTestMBID + `","video":false,"relations":[{"type":"remix","target-type":"recording","direction":"backward","recording":{"id":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","title":"Constantly"}}]}`, `{"recordingMbid":"` + sourceTestMBID + `","sourceUrl":null}` + "\n", 200},
 		{"explicit empty relations", 200, `{"id":"` + sourceTestMBID + `","video":false,"relations":[]}`, `{"recordingMbid":"` + sourceTestMBID + `","sourceUrl":null}` + "\n", 200},
 		{"missing relations are unavailable", 200, `{"id":"` + sourceTestMBID + `","video":false}`, "", 503},
 		{"null relations are unavailable", 200, `{"id":"` + sourceTestMBID + `","video":false,"relations":null}`, "", 503},
