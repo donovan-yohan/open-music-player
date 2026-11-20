@@ -306,6 +306,11 @@ class DiscoveryPreviewHandoffTest {
                 f.player.pause()
                 f.drain("ordinary Pause acknowledged") { !f.player.isPlaying && !f.player.playWhenReady && !f.hw.isPlaying(0) }
             }
+            // Selecting the ordinary row launches a system Like readback on IO.
+            // Settle it before preview admission, not by assuming its wire order.
+            f.drain("ordinary Like readback acknowledged") {
+                f.graph.library.likeView(f.scope, TrackId(2))?.track?.liked == false
+            }
             val before = f.topology()
             assertEquals(rows, before.rows)
             assertEquals(1, before.index)
@@ -350,7 +355,7 @@ class DiscoveryPreviewHandoffTest {
                 f.projection.startDiscoveryPreview(foreignScope, checkNotNull(ImportSource.parse(previewUrl("B"))), "B", "Fixture") { true }
             })
             assertEquals(listOf(f.app.expectedPreview("A", "a")), f.app.previewRequests.toList())
-            assertEquals(listOf("/api/v1/discovery/preview", "/api/v1/auth/refresh"), f.app.wirePaths.dropWhile { it == "/api/v1/library" })
+            assertEquals(listOf("/api/v1/library", "/api/v1/discovery/preview", "/api/v1/auth/refresh"), f.app.wirePaths.toList())
 
             val polls = f.hw.polls
             f.drain("ordinary readiness observer crossed the held save before the account collector") { f.hw.polls >= polls + 4 }
@@ -375,8 +380,8 @@ class DiscoveryPreviewHandoffTest {
             assertEquals(load.generation, f.hw.identity(load.deck))
             assertEquals(before, f.topology())
             assertEquals(listOf(f.app.expectedPreview("A", "a"), f.app.expectedPreview("A", "b")), f.app.previewRequests.toList())
-            assertEquals(listOf("/api/v1/discovery/preview", "/api/v1/auth/refresh", "/api/v1/discovery/preview"),
-                f.app.wirePaths.dropWhile { it == "/api/v1/library" })
+            assertEquals(listOf("/api/v1/library", "/api/v1/discovery/preview", "/api/v1/auth/refresh", "/api/v1/discovery/preview"),
+                f.app.wirePaths.toList())
             f.hw.holdPreview = false
             assertTrue(f.await(work))
             f.drain("exact reopened preview active") { f.player.isPlaying && f.projection.state.value.title == "A" }
@@ -1457,7 +1462,7 @@ class PreviewHandoffApplication : SoundQApplication() {
     internal val hardware = ProjectionPreviewHardware()
     internal val saveEntered = CountDownLatch(1)
     internal val saveRelease = CountDownLatch(1)
-    internal var accountCollector: HeldAccountCollector? = null
+    @Volatile internal var accountCollector: HeldAccountCollector? = null
     internal val previewRequests = CopyOnWriteArrayList<PreviewRequest>()
     internal val wirePaths = CopyOnWriteArrayList<String>()
     internal fun expectedPreview(name: String, generation: String) = PreviewRequest(
@@ -1480,6 +1485,9 @@ class PreviewHandoffApplication : SoundQApplication() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 wirePaths += request.url.encodedPath
                 return when (request.url.encodedPath) {
+                    "/api/v1/library" -> if (accountCollector != null && request.method == "GET") {
+                        MockResponse.Builder().body("""{"tracks":[{"id":2,"title":"Next","artist":"Fixture","duration_ms":6000,"is_liked":false}],"total":1,"limit":20,"offset":0}""").build()
+                    } else MockResponse.Builder().code(404).build()
                     "/api/v1/auth/refresh" -> MockResponse.Builder().body(fixture.auth(access = "b")).build()
                     "/api/v1/discovery/preview" -> {
                         check(request.method == "POST" && request.headers["Accept"] == "audio/mpeg")
