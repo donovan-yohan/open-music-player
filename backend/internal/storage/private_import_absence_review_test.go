@@ -106,6 +106,43 @@ func TestPrivateImportAbsenceCompleteBoundedWireProof(t *testing.T) {
 	}
 }
 
+func TestPrivateImportRetryErrorBodyCannotEscapeProofBudget(t *testing.T) {
+	const maxBytes = 4096
+	const slowDown = `<Error><Code>SlowDown</Code></Error>`
+	for _, tc := range []struct {
+		name, payload     string
+		readErr, closeErr error
+		wantBytes         int
+		wantEOF           bool
+	}{
+		{name: "over_cap", payload: slowDown + strings.Repeat(" ", maxBytes*8), wantBytes: maxBytes + 1},
+		{name: "read_error", payload: slowDown, readErr: errors.New("fixture framing error"), wantBytes: len(slowDown)},
+		{name: "close_error", payload: slowDown, closeErr: errors.New("fixture close error"), wantBytes: len(slowDown), wantEOF: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := &trackedAbsenceBody{Reader: strings.NewReader(tc.payload), readErr: tc.readErr, closeErr: tc.closeErr}
+			requests := 0
+			client := newPutFixture(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				if requests == 1 {
+					res := putFixtureReply(req, http.StatusServiceUnavailable, "")
+					res.Body = body
+					return res, nil
+				}
+				res := putFixtureReply(req, http.StatusNotFound, "")
+				res.Body = io.NopCloser(strings.NewReader(`<Error><Code>NoSuchKey</Code><Resource>/` + putFixtureBucket + `/` + putFixtureKey + `</Resource></Error>`))
+				return res, nil
+			})
+			if client.VerifyPrivateImportObjectAbsent(putFixtureContext(t), putFixtureKey) {
+				t.Error("clean 404 laundered invalid intermediate response")
+			}
+			if body.n != tc.wantBytes || body.eof != tc.wantEOF || body.closes != 1 {
+				t.Errorf("intermediate bytes=%d EOF=%t closes=%d, want %d/%t/1", body.n, body.eof, body.closes, tc.wantBytes, tc.wantEOF)
+			}
+		})
+	}
+}
+
 func TestPrivateImportDeleteRetainsRedactedSDKCause(t *testing.T) {
 	const vendorMessage = "synthetic refusal containing " + putFixtureKey + " and " + putFixtureSecret
 	transportErr := errors.New("synthetic lost response for " + putFixtureKey)

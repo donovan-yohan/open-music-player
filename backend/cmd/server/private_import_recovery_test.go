@@ -118,32 +118,75 @@ func (s fixtureHeldPrivateAnalysisStart) MarkAnalyzing(ctx context.Context, trac
 	return s.AnalysisRepository.MarkAnalyzing(ctx, trackID, provenance)
 }
 
-// Durable recovery deliberately closes its first pool. Keep teardown on a
-// separately attested pool and delete each receipt before its shared track.
+// The fixture owns generated inputs, not the receipt (or error) a write returns.
+type durableImportOperation struct{ owner, operation uuid.UUID }
+
 type durableImportFixtures struct {
-	owners    []uuid.UUID
-	receipts  map[[2]uuid.UUID]int64
-	publicKey string
+	owners     []uuid.UUID
+	operations map[durableImportOperation]struct{}
+	publicKeys []string
 }
 
+func (f *durableImportFixtures) newOwner(t *testing.T, ctx context.Context, database *db.DB) uuid.UUID {
+	t.Helper()
+	owner := uuid.New()
+	f.owners = append(f.owners, owner)
+	if _, err := database.ExecContext(ctx, `INSERT INTO users(id,email,username,password_hash) VALUES($1,$2,'fixture','fixture')`, owner, owner.String()+"@fixture.invalid"); err != nil {
+		t.Fatal(err)
+	}
+	return owner
+}
+
+func (f *durableImportFixtures) attempt(in db.PrivateImportIntent, write func() (*db.PrivateImportReceipt, error)) (*db.PrivateImportReceipt, error) {
+	if f.operations == nil {
+		f.operations = make(map[durableImportOperation]struct{})
+	}
+	f.operations[durableImportOperation{in.OwnerID, in.OperationID}] = struct{}{}
+	return write()
+}
+
+// Call after all writers stop, using a separately attested pool if the write
+// pool has closed. RETURNING reads the durable receipt at the exact input key;
+// no returned application ACK participates in teardown.
 func (f durableImportFixtures) remove(ctx context.Context, database *db.DB) error {
+	if err := database.CheckDatabaseNotProtected(ctx); err != nil {
+		return err
+	}
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for ids, trackID := range f.receipts {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM private_import_receipts WHERE owner_id=$1 AND operation_id=$2 AND track_id=$3`, ids[0], ids[1], trackID); err != nil {
+	type privateTrack struct {
+		owner uuid.UUID
+		id    int64
+	}
+	privateTracks := make(map[privateTrack]bool)
+	for op := range f.operations {
+		var trackID int64
+		err := tx.QueryRowContext(ctx, `DELETE FROM private_import_receipts WHERE owner_id=$1 AND operation_id=$2 RETURNING track_id`, op.owner, op.operation).Scan(&trackID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // Refusal or rollback with no durable receipt.
+		}
+		if err != nil {
 			return fmt.Errorf("delete owned receipt: %w", err)
 		}
+		privateTracks[privateTrack{op.owner, trackID}] = false
 	}
-	for ids, trackID := range f.receipts {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM tracks WHERE private_owner_id=$1 AND id=$2`, ids[0], trackID); err != nil {
+	for track := range privateTracks {
+		result, err := tx.ExecContext(ctx, `DELETE FROM tracks WHERE private_owner_id=$1 AND id=$2
+			AND NOT EXISTS (SELECT 1 FROM private_import_receipts WHERE owner_id=$1 AND track_id=$2)`, track.owner, track.id)
+		if err != nil {
 			return fmt.Errorf("delete owned private track: %w", err)
 		}
+		deleted, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read owned private track deletion: %w", err)
+		}
+		privateTracks[track] = deleted == 1
 	}
-	if f.publicKey != "" {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM tracks WHERE storage_key=$1 AND private_owner_id IS NULL`, f.publicKey); err != nil {
+	for _, key := range f.publicKeys {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM tracks WHERE storage_key=$1 AND private_owner_id IS NULL`, key); err != nil {
 			return fmt.Errorf("delete owned ordinary download: %w", err)
 		}
 	}
@@ -152,30 +195,164 @@ func (f durableImportFixtures) remove(ctx context.Context, database *db.DB) erro
 			return fmt.Errorf("delete owned fixture user: %w", err)
 		}
 	}
-	return tx.Commit()
-}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit durable fixture teardown: %w", err)
+	}
 
-func (f durableImportFixtures) assertRemoved(t *testing.T, database *db.DB) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	check, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	assertAbsent := func(label, query string, args ...any) {
-		t.Helper()
+	var failures error
+	assertState := func(label string, want bool, query string, args ...any) {
 		var present bool
-		if err := database.QueryRowContext(ctx, query, args...).Scan(&present); err != nil || present {
-			t.Errorf("owned %s remains after durable fixture cleanup: present=%t err=%v", label, present, err)
+		if err := database.QueryRowContext(check, query, args...).Scan(&present); err != nil || present != want {
+			failures = errors.Join(failures, fmt.Errorf("durable fixture teardown: %s present=%t want=%t err=%v", label, present, want, err))
 		}
 	}
-	for ids, trackID := range f.receipts {
-		assertAbsent("receipt", `SELECT EXISTS (SELECT 1 FROM private_import_receipts WHERE owner_id=$1 AND operation_id=$2)`, ids[0], ids[1])
-		assertAbsent("private track", `SELECT EXISTS (SELECT 1 FROM tracks WHERE id=$1)`, trackID)
+	for op := range f.operations {
+		assertState("owned receipt", false, `SELECT EXISTS (SELECT 1 FROM private_import_receipts WHERE owner_id=$1 AND operation_id=$2)`, op.owner, op.operation)
 	}
-	if f.publicKey != "" {
-		assertAbsent("download track", `SELECT EXISTS (SELECT 1 FROM tracks WHERE storage_key=$1)`, f.publicKey)
+	for track, deleted := range privateTracks {
+		if deleted {
+			assertState("owned private track or dependent rows", false, `SELECT EXISTS (SELECT 1 FROM tracks WHERE id=$1)
+				OR EXISTS (SELECT 1 FROM user_library WHERE track_id=$1)
+				OR EXISTS (SELECT 1 FROM track_analysis WHERE track_id=$1)`, track.id)
+		} else {
+			assertState("still-referenced track", true, `SELECT EXISTS (SELECT 1 FROM private_import_receipts r
+				JOIN tracks t ON t.private_owner_id=r.owner_id AND t.id=r.track_id WHERE r.owner_id=$1 AND r.track_id=$2)`, track.owner, track.id)
+		}
+	}
+	for _, key := range f.publicKeys {
+		assertState("owned public track", false, `SELECT EXISTS (SELECT 1 FROM tracks WHERE storage_key=$1 AND private_owner_id IS NULL)`, key)
 	}
 	for _, owner := range f.owners {
-		assertAbsent("user", `SELECT EXISTS (SELECT 1 FROM users WHERE id=$1)`, owner)
+		assertState("owned user", false, `SELECT EXISTS (SELECT 1 FROM users WHERE id=$1)`, owner)
 	}
+	return failures
+}
+
+func (f *durableImportFixtures) cleanup(t *testing.T, database *db.DB, writersStopped func() bool) {
+	t.Helper()
+	t.Cleanup(func() {
+		if writersStopped != nil && !writersStopped() {
+			t.Error("cannot remove durable fixtures before analysis workers stop")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := f.remove(ctx, database); err != nil {
+			t.Errorf("remove durable fixtures: %v", err)
+		}
+	})
+}
+
+func TestPrivateImportDurableFixtureCleanupUsesAttemptedOperation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	writeDB, tracks, _ := privateAnalysisFixtureDB(t, ctx)
+	readDB := openPrivateImportFixtureDB(t, ctx)
+	rescue := durableImportFixtures{operations: make(map[durableImportOperation]struct{})}
+	rescue.cleanup(t, readDB, nil)
+	data := []byte("generated receipt custody fixture")
+	audio := privateFixtureAudio{data: data, hash: fixtureSHA256(data), ms: 500}
+	commit := func(t *testing.T, in db.PrivateImportIntent) *db.PrivateImportReceipt {
+		t.Helper()
+		rescue.operations[durableImportOperation{in.OwnerID, in.OperationID}] = struct{}{}
+		_, source, err := tracks.ResolvePrivateImportCommit(ctx, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ack, err := tracks.CommitVerifiedPrivateImport(ctx, in, source)
+		if err != nil || ack == nil {
+			t.Fatalf("fixture did not commit: %v", err)
+		}
+		readback, err := db.NewTrackRepository(readDB).GetPrivateImportReceipt(ctx, in.OwnerID, in.OperationID)
+		if err != nil || readback == nil || *readback != *ack {
+			t.Fatalf("fault must follow an independently visible exact commit: %v", err)
+		}
+		return readback
+	}
+	assertReceipt := func(t *testing.T, in db.PrivateImportIntent, want *db.PrivateImportReceipt) {
+		t.Helper()
+		got, err := db.NewTrackRepository(readDB).GetPrivateImportReceipt(ctx, in.OwnerID, in.OperationID)
+		if want == nil {
+			if got != nil || !errors.Is(err, db.ErrPrivateImportNotFound) {
+				t.Fatalf("committed attempted receipt escaped teardown: %v %v", got, err)
+			}
+		} else if err != nil || got == nil || *got != *want {
+			t.Fatalf("teardown changed unowned receipt: %v %v", got, err)
+		}
+	}
+	foreign := fixtureCanonicalIntent(rescue.newOwner(t, ctx, writeDB), audio)
+	foreignAck := commit(t, foreign)
+	for _, mode := range []string{"wrong_ack", "uncertain_ack", "unexpected_commit_on_refusal"} {
+		t.Run(mode, func(t *testing.T) {
+			var in db.PrivateImportIntent
+			var committed *db.PrivateImportReceipt
+			t.Run("write", func(t *testing.T) {
+				var fixtures durableImportFixtures
+				fixtures.cleanup(t, readDB, nil)
+				in = fixtureCanonicalIntent(fixtures.newOwner(t, ctx, writeDB), audio)
+				rescue.owners = append(rescue.owners, in.OwnerID)
+				// The wrong ACK names a real different owner at the same operation ID.
+				in.OperationID = foreign.OperationID
+				lost := errors.New("fixture lost commit acknowledgement")
+				ack, err := fixtures.attempt(in, func() (*db.PrivateImportReceipt, error) {
+					committed = commit(t, in)
+					switch mode {
+					case "wrong_ack":
+						return foreignAck, nil
+					case "uncertain_ack":
+						return nil, lost
+					default: // The caller expected a refusal, but the write committed.
+						return committed, nil
+					}
+				})
+				switch mode {
+				case "wrong_ack":
+					if err != nil || ack != foreignAck || ack.OwnerID == in.OwnerID {
+						t.Fatal("wrong-ACK fault was not observed")
+					}
+				case "uncertain_ack":
+					if ack != nil || !errors.Is(err, lost) {
+						t.Fatal("uncertain-ACK fault was not observed")
+					}
+				default:
+					if ack != committed || err != nil {
+						t.Fatal("refusal control did not return the unexpected commit")
+					}
+				}
+			})
+			if committed == nil {
+				t.Fatal("did not reach a durable write")
+			}
+			assertReceipt(t, in, nil)
+			var left bool
+			if err := readDB.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tracks WHERE id=$1)
+				OR EXISTS (SELECT 1 FROM user_library WHERE track_id=$1) OR EXISTS (SELECT 1 FROM track_analysis WHERE track_id=$1)
+				OR EXISTS (SELECT 1 FROM users WHERE id=$2)`, committed.TrackID, in.OwnerID).Scan(&left); err != nil || left {
+				t.Fatalf("committed track/dependents/owner escaped teardown: %t %v", left, err)
+			}
+			assertReceipt(t, foreign, foreignAck)
+		})
+	}
+	t.Run("shared_dedup_track", func(t *testing.T) {
+		in := fixtureCanonicalIntent(foreign.OwnerID, audio)
+		t.Run("write", func(t *testing.T) {
+			var fixtures durableImportFixtures
+			fixtures.cleanup(t, readDB, nil) // Own the new operation, not the user or original receipt.
+			ack, err := fixtures.attempt(in, func() (*db.PrivateImportReceipt, error) { return commit(t, in), nil })
+			if err != nil || ack == nil || ack.TrackID != foreignAck.TrackID {
+				t.Fatal("shared canonical dedup control did not share a track")
+			}
+		})
+		assertReceipt(t, in, nil)
+		assertReceipt(t, foreign, foreignAck)
+		var retained bool
+		if err := readDB.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM user_library WHERE user_id=$1 AND track_id=$2)
+			AND EXISTS (SELECT 1 FROM track_analysis WHERE track_id=$2)`, foreign.OwnerID, foreignAck.TrackID).Scan(&retained); err != nil || !retained {
+			t.Fatalf("teardown disturbed shared canonical dependents: %t %v", retained, err)
+		}
+	})
 }
 
 func registerDurableImportFaultCleanup(t *testing.T, database *db.DB, statement string) {
@@ -198,24 +375,11 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanupDB := openPrivateImportFixtureDB(t, ctx)
-	fixtures := durableImportFixtures{receipts: make(map[[2]uuid.UUID]int64)}
+	var fixtures durableImportFixtures
 	workersStopped := true
-	t.Cleanup(func() { fixtures.assertRemoved(t, cleanupDB) })
-	t.Cleanup(func() {
-		if !workersStopped {
-			t.Error("cannot remove durable fixtures before analysis workers stop")
-			return
-		}
-		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
-		defer stop()
-		if err := fixtures.remove(cleanup, cleanupDB); err != nil {
-			t.Errorf("remove durable fixtures: %v", err)
-		}
-	})
-	owner := seedPrivateImportUser(t, firstDB, ctx)
-	fixtures.owners = append(fixtures.owners, owner)
-	other := seedPrivateImportUser(t, firstDB, ctx)
-	fixtures.owners = append(fixtures.owners, other)
+	fixtures.cleanup(t, cleanupDB, func() bool { return workersStopped })
+	owner := fixtures.newOwner(t, ctx, firstDB)
+	other := fixtures.newOwner(t, ctx, firstDB)
 	a, b := privateImportMP3(t, ctx, 557), privateImportMP3(t, ctx, 907)
 	if len(a.data) != len(b.data) || a.hash == b.hash {
 		t.Fatal("negative must have equal length but distinct bytes")
@@ -235,18 +399,22 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 	put(first.ObjectKey(), a)
 	put(second.ObjectKey(), a)
 	tracks := db.NewTrackRepository(firstDB)
+	commitStored := func(in db.PrivateImportIntent) (*db.PrivateImportReceipt, error) {
+		return fixtures.attempt(in, func() (*db.PrivateImportReceipt, error) {
+			return processor.CommitStoredPrivateImport(ctx, tracks, objects, in)
+		})
+	}
 	commit := func(in db.PrivateImportIntent) *db.PrivateImportReceipt {
 		t.Helper()
-		r, err := processor.CommitStoredPrivateImport(ctx, tracks, objects, in)
+		r, err := commitStored(in)
 		if err != nil || r == nil || r.OwnerID != in.OwnerID || r.OperationID != in.OperationID || r.SHA256 != in.SHA256 || r.ByteLength != in.ByteLength || r.TrackID <= 0 || r.CommittedAt.IsZero() {
 			t.Fatalf("invalid committed receipt %v, err=%v", r, err)
 		}
-		fixtures.receipts[[2]uuid.UUID{r.OwnerID, r.OperationID}] = r.TrackID
 		return r
 	}
 	refuse := func(in db.PrivateImportIntent, expected error) {
 		t.Helper()
-		if r, err := processor.CommitStoredPrivateImport(ctx, tracks, objects, in); r != nil || !errors.Is(err, expected) {
+		if r, err := commitStored(in); r != nil || !errors.Is(err, expected) {
 			t.Fatalf("expected %v, got %v %v", expected, r, err)
 		}
 	}
@@ -258,7 +426,7 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	registerDurableImportFaultCleanup(t, cleanupDB, `DROP TRIGGER IF EXISTS fixture_refuse_receipt ON private_import_receipts; DROP FUNCTION IF EXISTS fixture_refuse_receipt()`)
-	if r, err := processor.CommitStoredPrivateImport(ctx, tracks, objects, first); r != nil || err == nil || !strings.Contains(err.Error(), "fixture refused receipt") {
+	if r, err := commitStored(first); r != nil || err == nil || !strings.Contains(err.Error(), "fixture refused receipt") {
 		t.Fatalf("late receipt rollback fault: %v %v", r, err)
 	}
 	var leakedTrack, leakedMembership, leakedAnalysis, leakedReceipt bool
@@ -284,7 +452,9 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 		t.Fatal("losing proof not bound to real bytes")
 	}
 	firstAck := commit(first) // Simulate losing the response after commit.
-	if r, err := tracks.CommitVerifiedPrivateImport(ctx, loser, losingProof); r != nil || !errors.Is(err, db.ErrPrivateImportSourceChanged) {
+	if r, err := fixtures.attempt(loser, func() (*db.PrivateImportReceipt, error) {
+		return tracks.CommitVerifiedPrivateImport(ctx, loser, losingProof)
+	}); r != nil || !errors.Is(err, db.ErrPrivateImportSourceChanged) {
 		t.Fatalf("losing proof authorized winning canonical key: %v %v", r, err)
 	}
 	if err := objects.DeleteObject(ctx, loser.ObjectKey()); err != nil {
@@ -550,7 +720,7 @@ func TestPrivateImportDurableReceiptAndCanonicalAnalysisRecovery(t *testing.T) {
 	release()
 	// Entire existing URL worker path with its own local file fetch and storage Put.
 	job := &download.DownloadJob{ID: uuid.NewString(), UserID: owner.String(), URL: "file://" + a.path, SourceType: "local-fixture", Title: first.Title + " " + strings.ReplaceAll(first.OperationID.String(), "-", ""), Artist: first.Artist, Album: first.Album, DurationMs: int(first.DurationMs)}
-	fixtures.publicKey = "tracks/local-fixture/" + job.ID + ".mp3"
+	fixtures.publicKeys = append(fixtures.publicKeys, "tracks/local-fixture/"+job.ID+".mp3")
 	if err := worker.Process(ctx, job, func(int) {}); err != nil || job.TrackID == nil || *job.TrackID == firstAck.TrackID || *job.TrackID == secondAck.TrackID {
 		t.Fatalf("URL ingest crossed private byte dedupe: %+v %v", job.TrackID, err)
 	}
@@ -731,36 +901,22 @@ func fixtureCanonicalIntent(owner uuid.UUID, audio privateFixtureAudio) db.Priva
 func fixtureSQLPrivateSource(t *testing.T, ctx context.Context, database *db.DB, tracks *db.TrackRepository) db.PrivateImportSource {
 	t.Helper()
 	data := []byte("synthetic facts for SQL, never opened by an analyzer")
-	owner := seedPrivateImportUser(t, database, ctx)
+	var fixtures durableImportFixtures
+	fixtures.cleanup(t, database, nil)
+	owner := fixtures.newOwner(t, ctx, database)
 	in := fixtureCanonicalIntent(owner, privateFixtureAudio{data: data, hash: fixtureSHA256(data), ms: 500})
 	_, source, err := tracks.ResolvePrivateImportCommit(ctx, in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := tracks.CommitVerifiedPrivateImport(ctx, in, source)
+	receipt, err := fixtures.attempt(in, func() (*db.PrivateImportReceipt, error) {
+		return tracks.CommitVerifiedPrivateImport(ctx, in, source)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.TrackID = receipt.TrackID
-	t.Cleanup(func() { cleanupPrivateAnalysisReceipt(t, database, receipt) })
 	return source
-}
-
-func cleanupPrivateAnalysisReceipt(t *testing.T, database *db.DB, receipt *db.PrivateImportReceipt) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := database.ExecContext(ctx, `DELETE FROM private_import_receipts WHERE owner_id=$1 AND operation_id=$2 AND track_id=$3`, receipt.OwnerID, receipt.OperationID, receipt.TrackID); err != nil {
-		t.Error(err)
-		return
-	}
-	if _, err := database.ExecContext(ctx, `DELETE FROM tracks WHERE id=$1 AND private_owner_id=$2`, receipt.TrackID, receipt.OwnerID); err != nil {
-		t.Error(err)
-		return
-	}
-	if _, err := database.ExecContext(ctx, `DELETE FROM users WHERE id=$1`, receipt.OwnerID); err != nil {
-		t.Error(err)
-	}
 }
 
 func fixtureClaimProvenance(token uuid.UUID, name, version string) json.RawMessage {
@@ -1632,13 +1788,17 @@ func TestPrivateCanonicalWriteErrorsIdentifyOperationAndRollback(t *testing.T) {
 				}
 			})
 			data := []byte("synthetic custody facts")
-			owner := seedPrivateImportUser(t, database, ctx)
+			var fixtures durableImportFixtures
+			fixtures.cleanup(t, database, nil)
+			owner := fixtures.newOwner(t, ctx, database)
 			in := fixtureCanonicalIntent(owner, privateFixtureAudio{data: data, hash: fixtureSHA256(data), ms: 500})
 			_, source, err := tracks.ResolvePrivateImportCommit(ctx, in)
 			if err != nil {
 				t.Fatal(err)
 			}
-			receipt, err := tracks.CommitVerifiedPrivateImport(ctx, in, source)
+			receipt, err := fixtures.attempt(in, func() (*db.PrivateImportReceipt, error) {
+				return tracks.CommitVerifiedPrivateImport(ctx, in, source)
+			})
 			var driver *pq.Error
 			if receipt != nil || err == nil || !strings.Contains(err.Error(), tt.operation+": ") || !errors.As(err, &driver) || !errors.Is(err, driver) || driver.Code != "P0001" {
 				t.Errorf("expected static %q and original PostgreSQL fault, got receipt=%v err=%v", tt.operation, receipt, err)
@@ -1658,33 +1818,29 @@ func TestPrivateAnalysisWaitsInSharedQueueWithoutLeaseAndRefreshesIdentity(t *te
 	defer cancel()
 	database, tracks, analysis := privateAnalysisFixtureDB(t, ctx)
 	objects := privateImportObjectStore(t, ctx)
-	owner := seedPrivateImportUser(t, database, ctx)
+	var fixtures durableImportFixtures
+	workersStopped := true
+	fixtures.cleanup(t, database, func() bool { return workersStopped })
+	owner := fixtures.newOwner(t, ctx, database)
 	audio := privateImportMP3(t, ctx, 631)
 	in := fixtureCanonicalIntent(owner, audio)
 	if err := objects.PutObject(ctx, in.ObjectKey(), bytes.NewReader(audio.data), int64(len(audio.data)), "audio/mpeg"); err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := processor.CommitStoredPrivateImport(ctx, tracks, objects, in)
+	receipt, err := fixtures.attempt(in, func() (*db.PrivateImportReceipt, error) {
+		return processor.CommitStoredPrivateImport(ctx, tracks, objects, in)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var worker *processor.Processor
-	var publicIDs []int64
 	t.Cleanup(func() {
 		if worker != nil {
 			stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			err := worker.Shutdown(stop)
 			cancel()
 			if err != nil {
-				t.Errorf("cannot retire FIFO fixtures before workers stop: %v", err)
-				return
-			}
-		}
-		cleanupPrivateAnalysisReceipt(t, database, receipt)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		for _, id := range publicIDs {
-			if _, err := database.ExecContext(ctx, `DELETE FROM tracks WHERE id=$1 AND private_owner_id IS NULL`, id); err != nil {
+				workersStopped = false
 				t.Error(err)
 			}
 		}
@@ -1692,11 +1848,13 @@ func TestPrivateAnalysisWaitsInSharedQueueWithoutLeaseAndRefreshesIdentity(t *te
 	sharedTrack := func(label string) *db.Track {
 		t.Helper()
 		label += " " + in.OperationID.String()
-		track, created, err := tracks.CreateTrackFromMetadata(ctx, "queue fixture artist", label, "", 500, db.WithStorage("fixture/"+label, 1))
+		key := "fixture/" + label
+		fixtures.publicKeys = append(fixtures.publicKeys, key)
+		track, created, err := tracks.CreateTrackFromMetadata(ctx, "queue fixture artist", label, "", 500, db.WithStorage(key, 1))
 		if err != nil || !created {
 			t.Fatalf("create owned FIFO track: created=%t %v", created, err)
 		}
-		publicIDs = append(publicIDs, track.ID)
+
 		return track
 	}
 	head, tail := sharedTrack("queue head"), sharedTrack("queue tail")

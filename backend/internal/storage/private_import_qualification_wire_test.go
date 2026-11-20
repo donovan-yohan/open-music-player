@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -58,6 +59,17 @@ func TestPrivateImportQualificationHTTP11(t *testing.T) {
 		{name: "absence_duplicate_namespace_in_ignored_detail", body: `<Error>` + fields + `<Message><Detail xmlns="urn:wrong" xmlns="">irrelevant</Detail></Message></Error>`},
 		{name: "absence_duplicate_attribute", body: `<Error note="a" note="b">` + fields + `</Error>`},
 		{name: "absence_undeclared_attribute_prefix", body: `<Error junk:note="a">` + fields + `</Error>`},
+		{name: "absence_undeclared_detail_prefix", body: `<Error>` + fields + `<Message><junk:Detail/></Message></Error>`},
+		{name: "absence_undeclared_different_prefix", body: `<s:Error xmlns:s="` + ns + `"><s:Code>NoSuchKey</s:Code><s:Resource>` + resource + `</s:Resource><s:Message><other:Detail/></s:Message></s:Error>`},
+		{name: "absence_bound_detail_prefix", body: `<s:Error xmlns:s="` + ns + `"><s:Code>NoSuchKey</s:Code><s:Resource>` + resource + `</s:Resource><s:Message><s:Detail/></s:Message><Unprefixed/></s:Error>`, want: true},
+		{name: "absence_unprefixed_binding_under_prefixed_root", body: `<s:Error xmlns:s="` + ns + `">` + fields + `</s:Error>`},
+		{name: "absence_xml_reserved_prefix", body: `<Error>` + fields + `<xml:Detail/></Error>`},
+		{name: "absence_xmlns_reserved_prefix", body: `<Error>` + fields + `<xmlns:Detail/></Error>`},
+		{name: "absence_empty_prefix", body: `<Error>` + fields + `<:Detail/></Error>`},
+		{name: "absence_empty_local_name", body: `<Error>` + fields + `<Detail:/></Error>`},
+		{name: "absence_invalid_bound_local_name", body: `<s:Error xmlns:s="` + ns + `"><s:Code>NoSuchKey</s:Code><s:Resource>` + resource + `</s:Resource><s:1Detail/></s:Error>`},
+		{name: "absence_mismatched_raw_end", body: `<Error xmlns="` + ns + `">` + fields + `<Detail></other:Detail></Error>`},
+		{name: "absence_undeclared_prefix_not_s3_namespace", body: `<s3:Error xmlns="` + ns + `">` + fields + `</s3:Error>`},
 		{name: "absence_unquoted_attribute", body: `<Error note=unquoted>` + fields + `</Error>`},
 		{name: "policy_plain", body: policy, policy: true, want: true},
 		{name: "policy_unrelated_trailer", body: policy, trailer: field("X-Amz-Request-Id", "fixture-request"), policy: true, want: true},
@@ -104,6 +116,95 @@ func TestPrivateImportQualificationHTTP11(t *testing.T) {
 			}
 			if got != tc.want || calls.Load() != 1 {
 				t.Fatalf("qualified=%t requests=%d; want %t and one exact request", got, calls.Load(), tc.want)
+			}
+		})
+	}
+}
+
+func TestPrivateImportQualificationRetryHTTP11(t *testing.T) {
+	const path = "/" + putFixtureBucket + "/" + putFixtureKey
+	const policyPath = "/" + putFixtureBucket + "/"
+	const notFound = `<Error><Code>NoSuchKey</Code><Resource>` + path + `</Resource></Error>`
+	const policy = `<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>`
+	const slowDown = `<Error><Code>SlowDown</Code></Error>`
+	const capBytes = 4096
+	field := func(name, value string) http.Header { return http.Header{http.CanonicalHeaderKey(name): {value}} }
+	for _, tc := range []struct {
+		name, intermediate string
+		header, trailer    http.Header
+		intermediateStatus int
+		truncated, policy  bool
+		want               bool
+	}{
+		{name: "clean_retry", intermediate: slowDown, want: true},
+		{name: "clean_retry_exact_cap", intermediate: slowDown + strings.Repeat(" ", capBytes-len(slowDown)), want: true},
+		{name: "clean_retry_matching_vendor_code", intermediate: slowDown, header: field("X-Minio-Error-Code", "SlowDown"), trailer: field("X-Minio-Error-Code", "SlowDown"), want: true},
+		{name: "clean_retry_unrelated_trailer", intermediate: slowDown, trailer: field("X-Amz-Request-Id", "fixture-request"), want: true},
+		{name: "retry_marker_header", intermediate: slowDown, header: field("X-Amz-Delete-Marker", "true")},
+		{name: "retry_marker_trailer", intermediate: slowDown, trailer: field("X-Amz-Delete-Marker", "true")},
+		{name: "retry_version_trailer", intermediate: slowDown, trailer: field("X-Amz-Version-Id", "null")},
+		{name: "retry_age_trailer", intermediate: slowDown, trailer: field("Age", "0")},
+		{name: "retry_conflicting_vendor_code", intermediate: slowDown, trailer: field("X-Minio-Error-Code", "NoSuchBucket")},
+		{name: "retry_wrong_target", intermediate: `<Error><Code>SlowDown</Code><Key>wrong-key</Key></Error>`},
+		{name: "retry_bare_error"},
+		{name: "retry_invalid_xml", intermediate: slowDown + `<Error/>`},
+		{name: "retry_over_cap", intermediate: slowDown + strings.Repeat(" ", capBytes+1-len(slowDown))},
+		{name: "retry_framing_error_after_complete_xml", intermediate: slowDown, truncated: true},
+		{name: "unexpected_success_cannot_be_laundered", intermediate: slowDown, intermediateStatus: http.StatusNonAuthoritativeInfo, header: field("X-Minio-Error-Code", "SlowDown")},
+		{name: "policy_no_clean_retry", intermediate: slowDown, policy: true},
+		{name: "policy_no_retry_after_trailer", intermediate: slowDown, trailer: field("X-Amz-Version-Id", "null"), policy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wantCalls := int32(2)
+			status := tc.intermediateStatus
+			if status == 0 {
+				status = http.StatusServiceUnavailable
+			}
+			target, query, byteRange, finalBody, finalStatus := path, "", "bytes=0-0", notFound, http.StatusNotFound
+			if tc.policy {
+				wantCalls = 1
+				target, query, byteRange, finalBody, finalStatus = policyPath, "versioning=", "", policy, http.StatusOK
+			}
+			var calls atomic.Int32
+			wire := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempt := calls.Add(1)
+				if r.Proto != "HTTP/1.1" || r.Method != http.MethodGet || r.URL.Path != target || r.URL.RawQuery != query || r.Header.Get("Range") != byteRange ||
+					r.Header.Get("Cache-Control") != "no-cache, no-store" || !strings.HasPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 Credential="+putFixtureAccess+"/") {
+					t.Error("expected a fresh signed HTTP/1.1 GET of the same exact target")
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if attempt != 1 {
+					writeChunkedQualificationFixture(w, finalStatus, finalBody, nil, nil)
+					return
+				}
+				if tc.truncated {
+					w.Header().Set("Content-Length", strconv.Itoa(len(tc.intermediate)+1))
+					w.WriteHeader(status)
+					_, _ = io.WriteString(w, tc.intermediate)
+					return
+				}
+				writeChunkedQualificationFixture(w, status, tc.intermediate, tc.header, tc.trailer)
+			}))
+			defer wire.Close()
+			store, err := New(&Config{Endpoint: wire.URL, AccessKey: putFixtureAccess, SecretKey: putFixtureSecret, Bucket: putFixtureBucket, Region: putFixtureRegion})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := putFixtureContext(t)
+			var got bool
+			if tc.policy {
+				got = store.VerifyPrivateImportCollectionUnversioned(ctx)
+			} else {
+				got = store.VerifyPrivateImportObjectAbsent(ctx, putFixtureKey)
+			}
+			// A premature wire close used to be fatal in the SDK itself. Do not
+			// require it to retry, but must never let a later 404 clear the failure.
+			if tc.truncated && calls.Load() == 1 && !got {
+				return
+			}
+			if got != tc.want || calls.Load() != wantCalls {
+				t.Fatalf("qualified=%t requests=%d; want %t and %d exact request(s)", got, calls.Load(), tc.want, wantCalls)
 			}
 		})
 	}

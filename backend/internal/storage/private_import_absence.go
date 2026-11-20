@@ -12,8 +12,8 @@ import (
 )
 
 type privateAbsenceProbe struct {
-	bucket, key            string
-	qualified, unqualified bool
+	bucket, key       string
+	exact404, tainted bool
 }
 type privateVersioningProbe struct{ unversioned bool }
 type privateDeleteProbe struct{ unversioned bool }
@@ -48,94 +48,114 @@ func (t privateImportTransport) RoundTrip(req *http.Request) (*http.Response, er
 		probe.unversioned = resp.StatusCode == http.StatusNoContent && !hasVersionHeaders(resp.Header) && !hasS3ErrorHeaders(resp.Header)
 	}
 	if absence != nil {
-		absence.qualified = false
-		absence.unqualified = absence.unqualified || hasStaleOrVersionMetadata(resp.Header)
-		if resp.StatusCode == http.StatusNotFound {
-			// MinIO v7.0.98 can synthesize NoSuchKey, override the XML Code
-			// from a header, and decode only the first XML element. Qualify
-			// the original response before the SDK parses and drains it.
-			const maxAbsenceXML = 4096
-			body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxAbsenceXML+1))
-			closeErr := resp.Body.Close()
-			resp.Body = http.NoBody
-			// Inspect all proof-conflicting metadata, including trailers from the
-			// original body, before handing a buffered response to the SDK.
-			if readErr == nil && closeErr == nil && len(body) <= maxAbsenceXML &&
-				!absence.unqualified && !hasStaleOrVersionMetadata(resp.Trailer) &&
-				matchesAbsenceVendorCode(resp.Header) && matchesAbsenceVendorCode(resp.Trailer) && isExactAbsenceXML(body, absence.bucket, absence.key) {
-				absence.qualified = true
-				resp.Body = io.NopCloser(bytes.NewReader(body))
-			}
-		}
+		absence.observe(resp)
 	}
 	return resp, nil
 }
 
-func matchesAbsenceVendorCode(h http.Header) bool {
-	for _, code := range h.Values("X-Minio-Error-Code") {
-		if code != "NoSuchKey" {
+func (p *privateAbsenceProbe) observe(resp *http.Response) {
+	p.exact404 = false
+	wireBody := resp.Body
+	resp.Body = http.NoBody
+	if resp.StatusCode/100 == 2 {
+		// MinIO v7.0.98 can drain a 2xx response with bad object metadata
+		// or an unexpected status. Never expose a potential object payload.
+		p.tainted = true
+		_ = wireBody.Close()
+		return
+	}
+
+	// MinIO consumes and drains non-success bodies before deciding whether
+	// to retry. Own EOF here, including intermediate responses, so late
+	// trailers cannot disappear and the SDK can only drain bounded memory.
+	const maxAbsenceError = 4096
+	body, readErr := io.ReadAll(io.LimitReader(wireBody, maxAbsenceError+1))
+	closeErr := wireBody.Close()
+	if readErr != nil || closeErr != nil || len(body) > maxAbsenceError ||
+		hasStaleOrVersionMetadata(resp.Header) || hasStaleOrVersionMetadata(resp.Trailer) {
+		p.tainted = true
+		return
+	}
+	fields, ok := parseS3ProofError(body)
+	code := fields["Code"]
+	resource := "/" + p.bucket + "/" + p.key
+	if !ok || !matchesVendorCode(resp.Header, code) || !matchesVendorCode(resp.Trailer, code) ||
+		contradictsS3Field(fields, "Resource", resource) || contradictsS3Field(fields, "BucketName", p.bucket) || contradictsS3Field(fields, "Key", p.key) {
+		p.tainted = true
+		return
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		if code != "NoSuchKey" || (fields["Resource"] != resource && (fields["BucketName"] != p.bucket || fields["Key"] != p.key)) {
+			p.tainted = true
+			return
+		}
+		p.exact404 = true
+	}
+	// Retain the SDK's interpretation and retry behavior for clean errors;
+	// it can never make a tainted probe qualify with a subsequent response.
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+}
+
+func contradictsS3Field(fields map[string]string, field, want string) bool {
+	value, present := fields[field]
+	return present && value != want
+}
+
+func matchesVendorCode(h http.Header, code string) bool {
+	for _, value := range h.Values("X-Minio-Error-Code") {
+		if value != code {
 			return false
 		}
 	}
 	return true
 }
 
-// Qualification uses XML from the wire, not the SDK's fallback or last-field
-// wins. Only a single Error root with unambiguous scalar binding fields counts.
-func isExactAbsenceXML(body []byte, bucket, key string) bool {
+// Read one complete S3 Error document. RawToken preserves lexical prefixes:
+// Token resolves a bound prefix but silently leaves an unbound one in Space.
+// The only allowed binding is a single root declaration of the S3 namespace.
+// Check all raw names (even diagnostic descendants) and exact tag pairing.
+func parseS3ProofError(body []byte) (map[string]string, bool) {
 	d := xml.NewDecoder(bytes.NewReader(body))
-	var namespace, field string
+	var prefix, field string
 	var text bytes.Buffer
 	fields := make(map[string]string, 4)
-	depth := 0
+	var open []xml.Name
 	found := false
 	for {
 		offset := d.InputOffset()
-		token, err := d.Token()
+		token, err := d.RawToken()
 		if err != nil {
-			if err != io.EOF || !found || depth != 0 || fields["Code"] != "NoSuchKey" {
-				return false
-			}
-			if b, ok := fields["BucketName"]; ok && b != bucket {
-				return false
-			}
-			if k, ok := fields["Key"]; ok && k != key {
-				return false
-			}
-			if resource, ok := fields["Resource"]; ok {
-				return resource == "/"+bucket+"/"+key
-			}
-			return fields["BucketName"] == bucket && fields["Key"] == key
+			return fields, err == io.EOF && found && len(open) == 0 && isS3ProofName(fields["Code"])
 		}
+		depth := len(open)
 		switch v := token.(type) {
 		case xml.StartElement:
-			// encoding/xml translates namespaces but does not reject duplicate
-			// declarations or attributes. Allow only one S3 namespace declaration
-			// on the root, and no attributes anywhere else, including details.
-			if len(v.Attr) != 0 && (depth != 0 || !isS3AbsenceRootDeclaration(v)) {
-				return false
-			}
-			switch {
-			case depth == 0:
-				if found || v.Name.Local != "Error" || (v.Name.Space != "" && v.Name.Space != s3AbsenceNamespace) {
-					return false
+			if depth == 0 {
+				if found || !isS3ProofErrorRoot(v) {
+					return nil, false
 				}
-				found, namespace = true, v.Name.Space
-			case depth == 1:
+				found, prefix = true, v.Name.Space
+			} else if len(v.Attr) != 0 || !isS3ProofName(v.Name.Local) || (v.Name.Space != "" && v.Name.Space != prefix) || field != "" {
+				// No descendant declarations or attributes. Binding fields are
+				// scalar; even ignored elements cannot introduce an unknown QName.
+				return nil, false
+			} else if depth == 1 {
 				switch v.Name.Local {
 				case "Code", "Resource", "BucketName", "Key":
-					if _, duplicate := fields[v.Name.Local]; duplicate || v.Name.Space != namespace {
-						return false
+					// Unprefixed diagnostics are allowed under a prefixed root, but
+					// evidence fields must be in the same namespace as the root.
+					if _, duplicate := fields[v.Name.Local]; duplicate || v.Name.Space != prefix {
+						return nil, false
 					}
 					field = v.Name.Local
 				}
-			case field != "":
-				// Binding fields are scalar, not mixed-content markup.
-				return false
 			}
-			depth++
+			open = append(open, v.Name)
 		case xml.EndElement:
-			depth--
+			if depth == 0 || open[depth-1] != v.Name {
+				return nil, false
+			}
+			open = open[:depth-1]
 			if field != "" {
 				fields[field], field = text.String(), ""
 				text.Reset()
@@ -144,29 +164,50 @@ func isExactAbsenceXML(body []byte, bucket, key string) bool {
 			if field != "" {
 				_, _ = text.Write(v)
 			} else if depth <= 1 && len(bytes.Trim(body[offset:d.InputOffset()], " 	\r\n")) != 0 {
-				return false
+				return nil, false
 			}
 		case xml.Comment:
 			// Comments are valid XML document content and not evidence.
 		case xml.ProcInst:
 			if offset != 0 || v.Target != "xml" || !isKnownS3XMLDeclaration(v.Inst) {
-				return false
+				return nil, false
 			}
 		default:
-			return false
+			return nil, false
 		}
 	}
 }
 
-const s3AbsenceNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"
-
-func isS3AbsenceRootDeclaration(root xml.StartElement) bool {
-	if len(root.Attr) != 1 || root.Name.Space != s3AbsenceNamespace || root.Attr[0].Value != s3AbsenceNamespace {
+func isS3ProofErrorRoot(root xml.StartElement) bool {
+	const ns = "http://s3.amazonaws.com/doc/2006-03-01/"
+	prefix := root.Name.Space
+	if root.Name.Local != "Error" {
 		return false
 	}
-	name := root.Attr[0].Name
-	return name == (xml.Name{Local: "xmlns"}) ||
-		(name.Space == "xmlns" && name.Local != "xml" && name.Local != "xmlns")
+	if len(root.Attr) == 0 {
+		return prefix == ""
+	}
+	if len(root.Attr) != 1 || root.Attr[0].Value != ns {
+		return false
+	}
+	if prefix == "" {
+		return root.Attr[0].Name == (xml.Name{Local: "xmlns"})
+	}
+	return prefix != "xml" && prefix != "xmlns" && isS3ProofName(prefix) &&
+		root.Attr[0].Name == (xml.Name{Space: "xmlns", Local: prefix})
+}
+
+// The supported provider grammar uses ASCII NCNames, including in ignored
+// diagnostics. RawToken checks the XML Name as a whole, not each QName part.
+func isS3ProofName(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !('A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || c == '_' ||
+			i > 0 && ('0' <= c && c <= '9' || c == '-' || c == '.')) {
+			return false
+		}
+	}
+	return len(s) != 0
 }
 
 func hasStaleOrVersionMetadata(h http.Header) bool {
@@ -281,6 +322,6 @@ func (c *Client) VerifyPrivateImportObjectAbsent(ctx context.Context, key string
 		return false
 	}
 	var response minio.ErrorResponse
-	return ctx.Err() == nil && probe.qualified && errors.As(err, &response) &&
+	return ctx.Err() == nil && probe.exact404 && !probe.tainted && errors.As(err, &response) &&
 		response.StatusCode == http.StatusNotFound && response.Code == "NoSuchKey"
 }

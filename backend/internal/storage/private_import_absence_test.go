@@ -32,6 +32,8 @@ func TestPrivateImportAbsenceRequiresExplicitExactKeyS3Response(t *testing.T) {
 		{"explicit_resource", `<Error><Code>NoSuchKey</Code><Resource>` + resource + `</Resource></Error>`, "", 404, true},
 		{"explicit_bucket_key", `<Error><Code>NoSuchKey</Code><BucketName>` + putFixtureBucket + `</BucketName><Key>` + putFixtureKey + `</Key></Error>`, "", 404, true},
 		{"present", "", "", 206, false},
+		{"present_missing_object_metadata", "", "", 200, false},
+		{"unexpected_success_can_carry_payload", "", "", 203, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			present := new(absencePresentBody)
@@ -52,10 +54,12 @@ func TestPrivateImportAbsenceRequiresExplicitExactKeyS3Response(t *testing.T) {
 				if tc.override != "" {
 					res.Header.Set("X-Minio-Error-Code", tc.override)
 				}
-				if tc.status == http.StatusPartialContent {
-					res.Header.Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
-					res.Header.Set("Content-Length", "1")
+				if tc.status/100 == 2 {
 					res.Body, res.ContentLength = present, 1
+					if tc.status == http.StatusPartialContent {
+						res.Header.Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+						res.Header.Set("Content-Length", "1")
+					}
 				} else {
 					res.Body = io.NopCloser(strings.NewReader(tc.body))
 				}
@@ -71,7 +75,7 @@ func TestPrivateImportAbsenceRequiresExplicitExactKeyS3Response(t *testing.T) {
 			if !reflect.DeepEqual(calls, []string{http.MethodHead, http.MethodGet}) {
 				t.Fatalf("unexpected requests: %v", calls)
 			}
-			if tc.status == http.StatusPartialContent && (present.read || !present.closed) {
+			if tc.status/100 == 2 && (present.read || !present.closed) {
 				t.Fatal("probe read or leaked a present object's body")
 			}
 		})
