@@ -68,6 +68,21 @@ class DependencySourcesTest(unittest.TestCase):
         self.assertIn("-mod=readonly", dockerfile)
         self.assertEqual(re.findall(r"^FROM .+ AS (\S+)", dockerfile, re.M)[-1], "server-runtime")
 
+    def test_compose_on_demand_preview_is_an_explicit_backend_opt_in(self):
+        flag = "DISCOVERY_PREVIEW_ON_DEMAND"
+        clean_env = {key: value for key, value in os.environ.items()
+                     if key != flag and not key.startswith("COMPOSE_")}
+        for filename in ("docker-compose.yml", "docker-compose.local-low-memory.yml"):
+            for requested in (None, "true"):
+                with self.subTest(compose=filename, requested=requested):
+                    env = clean_env if requested is None else {**clean_env, flag: requested}
+                    config = json.loads(subprocess.check_output([
+                        "docker", "compose", "--env-file", "/dev/null", "-f",
+                        str(ROOT / filename), "config", "--format", "json",
+                    ], env=env))
+                    self.assertEqual(config["services"]["backend"]["environment"].get(flag),
+                                     requested or "false")
+
 
 if __name__ == "__main__":
     unittest.main()

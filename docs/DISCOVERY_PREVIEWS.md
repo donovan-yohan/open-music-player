@@ -18,9 +18,13 @@ has a separate write budget. It does not queue requests or search for another
 recording when a source is unavailable. A canceled request stops acquisition.
 There is no promise of provider availability or instant playback.
 
-The two modes are mutually exclusive and read at server startup. Unset both
-variables and restart the Go server to disable previews. Set the on-demand mode
-only on a deployment permitted to fetch and serve those excerpts.
+The two modes are mutually exclusive and read at server startup. The bundled
+Compose profiles pass through `DISCOVERY_PREVIEW_ON_DEMAND` with a default of
+`false`. Set the flag in the Compose environment and recreate `backend` to apply
+it; restarting an existing container does not update its environment. For a
+direct server deployment, unset both variables and restart to disable previews.
+Set the on-demand mode only on a deployment permitted to fetch and serve those
+excerpts.
 
 ## Source keys
 
@@ -127,5 +131,5 @@ versions, matching settings, negotiated HTTP protocol, and passing output in
 the operator's private evidence. A health check, direct-origin pass, buffering
 timeout, or proof through a different proxy is not a pass for the receiving
 route. If the route cannot be qualified, leave previews off; if enablement is
-later rolled back, unset the selected mode and restart only the preview-owning Go
-service through its normal operational procedure.
+later rolled back, unset the selected mode and apply the changed environment to
+the preview-owning Go service through its normal operational procedure.
