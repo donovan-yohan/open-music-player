@@ -13,13 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openmusicplayer/backend/internal/storage"
-
 	"github.com/google/uuid"
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/stems"
+	"github.com/openmusicplayer/backend/internal/storage"
 )
 
 type fakeStemsRepo struct {
@@ -32,6 +31,8 @@ type fakeStemsRepo struct {
 	requests int
 
 	seenIdentity   db.StemsIdentity
+	readTrackID    int64
+	readIdentity   db.StemsIdentity
 	seenStorageKey string
 	seenSourceHash string
 	seenProvenance json.RawMessage
@@ -64,7 +65,8 @@ func (f *fakeStemsRepo) RequestSeparation(
 	return row, f.queued, f.reason, nil
 }
 
-func (f *fakeStemsRepo) GetByTrackAndIdentity(_ context.Context, _ int64, _ db.StemsIdentity) (*db.TrackStems, error) {
+func (f *fakeStemsRepo) GetByTrackAndIdentity(_ context.Context, id int64, identity db.StemsIdentity) (*db.TrackStems, error) {
+	f.readTrackID, f.readIdentity = id, identity
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -192,8 +194,9 @@ func TestRequestStemsDurableRedisOutageIsAccepted(t *testing.T) {
 }
 
 type stemDownloadStore struct {
-	signed []string
-	sizes  map[string]int64
+	signed     []string
+	sizes      map[string]int64
+	signErrKey string
 }
 
 func (s *stemDownloadStore) StatObject(_ context.Context, key string) (*storage.ObjectInfo, error) {
@@ -204,6 +207,9 @@ func (s *stemDownloadStore) StatObject(_ context.Context, key string) (*storage.
 	return &storage.ObjectInfo{Size: n}, nil
 }
 func (s *stemDownloadStore) PresignGetObject(_ context.Context, key string, _ time.Duration) (string, error) {
+	if key == s.signErrKey {
+		return "", errors.New("cannot sign")
+	}
 	s.signed = append(s.signed, key)
 	return "https://objects.invalid/" + key, nil
 }
@@ -234,51 +240,116 @@ func downloadableStemRow(t *testing.T) db.TrackStems {
 	return row
 }
 func TestGetStemsSignsOnlyValidatedCurrentMembers(t *testing.T) {
-	for _, kind := range []string{"valid", "arbitrary-key", "missing-member", "missing-object", "changed-source", "pending"} {
-		t.Run(kind, func(t *testing.T) {
+	for _, tc := range []struct {
+		kind       string
+		wantStatus int
+		wantCode   string
+	}{
+		{"valid", http.StatusOK, ""},
+		{"legacy-status", http.StatusOK, ""},
+		{"worker-admitted", http.StatusOK, ""},
+		{"arbitrary-key", http.StatusConflict, "STEMS_MANIFEST_INVALID"},
+		{"missing-member", http.StatusConflict, "STEMS_MANIFEST_INVALID"},
+		{"missing-object", http.StatusConflict, "STEMS_MEMBER_UNAVAILABLE"},
+		{"wrong-size", http.StatusConflict, "STEMS_MEMBER_UNAVAILABLE"},
+		{"changed-source", http.StatusConflict, "STEMS_MANIFEST_INVALID"},
+		{"pending", http.StatusConflict, "STEMS_NOT_READY"},
+		{"signing-failed", http.StatusServiceUnavailable, "STEMS_DOWNLOAD_UNAVAILABLE"},
+		{"non-member", http.StatusNotFound, "TRACK_NOT_FOUND"},
+		{"unauthenticated", http.StatusUnauthorized, "UNAUTHORIZED"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
 			row := downloadableStemRow(t)
 			store := &stemDownloadStore{sizes: map[string]int64{}}
 			var a stems.Artifacts
-			_ = json.Unmarshal(row.ArtifactsJSON, &a)
+			if err := json.Unmarshal(row.ArtifactsJSON, &a); err != nil {
+				t.Fatal(err)
+			}
 			for _, m := range a.Objects {
 				store.sizes[m.Key] = m.Bytes
 			}
 			var m stems.Manifest
-			_ = json.Unmarshal(row.PublishedManifestJSON, &m)
-			switch kind {
+			if err := json.Unmarshal(row.PublishedManifestJSON, &m); err != nil {
+				t.Fatal(err)
+			}
+			hash := row.SourceFileHash
+			var queue stemsQueue
+			wantPosition := -1
+			query := "?includeUrls=1"
+			switch tc.kind {
+			case "worker-admitted":
+				queue = &fakeStemsQueue{position: 2}
+				wantPosition = 2
+			case "legacy-status":
+				query = ""
 			case "arbitrary-key":
 				a.Objects[0].Key = "tracks/private"
 			case "missing-member":
 				a.Objects = a.Objects[:5]
 			case "missing-object":
 				delete(store.sizes, a.Objects[5].Key)
+			case "wrong-size":
+				store.sizes[a.Objects[5].Key]++
+			case "changed-source":
+				hash = "sha256:" + strings.Repeat("b", 64)
 			case "pending":
 				row.Status = db.StemsStatusPending
+			case "signing-failed":
+				store.signErrKey = a.Objects[5].Key
 			}
 			m.Artifacts, _ = json.Marshal(a)
 			row.PublishedManifestJSON, _ = json.Marshal(m)
-			hash := row.SourceFileHash
-			if kind == "changed-source" {
-				hash = "sha256:" + strings.Repeat("b", 64)
+			repo := &fakeStemsRepo{getRow: &row}
+			h := NewStemsHandlers(repo, queue, &fakeStemsTrackRepo{track: stemsTestTrack(), sourceHash: hash}, &fakeStemsLibraryRepo{inLibrary: tc.kind != "non-member"}, store)
+			rec := serveStemsRoute(t, newStemsTestRouter(h), http.MethodGet, query, tc.kind != "unauthenticated")
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status=%d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
 			}
-			h := NewStemsHandlers(&fakeStemsRepo{getRow: &row}, &fakeStemsQueue{}, &fakeStemsTrackRepo{track: stemsTestTrack(), sourceHash: hash}, &fakeStemsLibraryRepo{inLibrary: true}, store)
-			r := newStemsRequest(t, http.MethodGet, "", true)
-			r.URL.RawQuery = "includeUrls=1"
-			rec := httptest.NewRecorder()
-			h.GetStems(rec, r)
-			if kind == "valid" {
-				if rec.Header().Get("Cache-Control") != "no-store" {
-					t.Fatal("signed stem downloads must never be cached")
+			payload := decodeStemsBody(t, rec)
+			if tc.wantCode != "" {
+				if payload["code"] != tc.wantCode || payload["memberDownloads"] != nil || payload["publishedManifest"] != nil {
+					t.Fatalf("unexpected refusal: %s", rec.Body.String())
 				}
-				if rec.Code != 200 || len(store.signed) != 6 {
-					t.Fatalf("status=%d signed=%d body=%s", rec.Code, len(store.signed), rec.Body.String())
+				if tc.kind != "signing-failed" && len(store.signed) != 0 {
+					t.Fatalf("invalid publication signed: %v", store.signed)
 				}
-				payload := decodeStemsBody(t, rec)
-				if len(payload["memberDownloads"].([]any)) != 6 {
-					t.Fatal("missing downloads")
+				if (tc.kind == "unauthenticated" || tc.kind == "non-member") && repo.readTrackID != 0 {
+					t.Fatal("publication looked up before authorization")
 				}
-			} else if rec.Code < 400 || len(store.signed) != 0 {
-				t.Fatalf("invalid manifest signed: status=%d keys=%v", rec.Code, store.signed)
+				return
+			}
+			if rec.Header().Get("Cache-Control") != "no-store" {
+				t.Fatal("stem status and signed downloads must never be cached")
+			}
+			wantIdentity := db.StemsIdentity{ChannelSet: stems.DefaultChannelSet, StemModelVersion: stems.StemModelVersionStems5}
+			if repo.readTrackID != row.TrackID || repo.readIdentity != wantIdentity {
+				t.Fatalf("read track/identity = %d/%+v", repo.readTrackID, repo.readIdentity)
+			}
+			if payload["trackId"] != float64(row.TrackID) || payload["generation"] != float64(row.Generation) ||
+				payload["channelSet"] != row.ChannelSet || payload["stemModelVersion"] != row.StemModelVersion ||
+				payload["sourceFileHash"] != row.SourceFileHash || payload["status"] != db.StemsStatusReady ||
+				payload["artifacts"] == nil || payload["publishedManifest"] == nil || payload["queuePosition"] != float64(wantPosition) {
+				t.Fatalf("unexpected status metadata: %s", rec.Body.String())
+			}
+			if query == "" {
+				if len(store.signed) != 0 || payload["memberDownloads"] != nil {
+					t.Fatal("legacy status unexpectedly signed download URLs")
+				}
+				return
+			}
+			var response StemsStatusResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if len(store.signed) != len(a.Objects) || len(response.MemberDownloads) != len(a.Objects) {
+				t.Fatalf("signed %d, returned %d, want %d downloads", len(store.signed), len(response.MemberDownloads), len(a.Objects))
+			}
+			for i, d := range response.MemberDownloads {
+				member := a.Objects[i]
+				if store.signed[i] != member.Key || d.Key != member.Key || d.Channel != member.Channel || d.SHA256 != member.SHA256 ||
+					d.Bytes != member.Bytes || d.URL != "https://objects.invalid/"+member.Key || d.ExpiresAt.IsZero() {
+					t.Fatalf("download %d does not match validated member: %+v", i, d)
+				}
 			}
 		})
 	}
@@ -722,19 +793,74 @@ func TestStemsHandlersReturnServiceDisabledWhenPartiallyWired(t *testing.T) {
 	}
 }
 
-func TestRouterServesUnavailableStemsRoutesWhenHandlersAreNil(t *testing.T) {
-	router := &Router{mux: http.NewServeMux()}
-	router.mux.HandleFunc("POST /api/v1/tracks/{track_id}/stems", unavailableHandler("Stem separation is unavailable"))
-	router.mux.HandleFunc("GET /api/v1/tracks/{track_id}/stems", unavailableHandler("Stem separation is unavailable"))
+const stemsRouteTestSecret = "stems-route-test-secret"
 
+func newStemsTestRouter(h *StemsHandlers) *Router {
+	return NewRouterWithConfig(&RouterConfig{
+		AuthHandlers:  auth.NewHandlers(nil),
+		AuthService:   auth.NewService(nil, nil, stemsRouteTestSecret),
+		StemsHandlers: h,
+	})
+}
+
+func serveStemsRoute(t *testing.T, router *Router, method, query string, authenticated bool) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, "/api/v1/tracks/42/stems"+query, nil)
+	if authenticated {
+		req.Header.Set("Authorization", "Bearer "+signedDJLineupToken(t, stemsRouteTestSecret, uuid.New()))
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestRouterStemsUnavailableWhenDisabled(t *testing.T) {
+	router := newStemsTestRouter(nil)
 	for _, method := range []string{http.MethodPost, http.MethodGet} {
-		recorder := httptest.NewRecorder()
-		router.mux.ServeHTTP(recorder, httptest.NewRequest(method, "/api/v1/tracks/42/stems", nil))
-		if recorder.Code != http.StatusServiceUnavailable {
-			t.Fatalf("%s status = %d, want 503", method, recorder.Code)
+		if rec := serveStemsRoute(t, router, method, "", false); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated %s: status=%d, want 401", method, rec.Code)
 		}
-		if payload := decodeStemsBody(t, recorder); payload["code"] != "SERVICE_DISABLED" {
-			t.Fatalf("%s code = %v, want SERVICE_DISABLED", method, payload["code"])
-		}
+		assertStemsRouteUnavailable(t, serveStemsRoute(t, router, method, "?includeUrls=1", true))
+	}
+}
+
+func assertStemsRouteUnavailable(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	payload := decodeStemsBody(t, rec)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Content-Type") != "application/json" ||
+		len(payload) != 2 || payload["code"] != "SERVICE_DISABLED" || payload["message"] != "Stem separation is unavailable" {
+		t.Fatalf("unexpected service-disabled response: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRouterRequestStemsRequiresWorkerAdmission(t *testing.T) {
+	for _, name := range []string{"read-only", "worker-admitted"} {
+		t.Run(name, func(t *testing.T) {
+			admitted := name == "worker-admitted"
+			repo := &fakeStemsRepo{row: db.TrackStems{Status: db.StemsStatusPending}, queued: true, reason: "missing_stems_row"}
+			trackRepo := &fakeStemsTrackRepo{track: stemsTestTrack()}
+			var queue stemsQueue
+			workerQueue := &fakeStemsQueue{position: 3}
+			if admitted {
+				queue = workerQueue
+			}
+			router := newStemsTestRouter(NewStemsHandlers(repo, queue, trackRepo, &fakeStemsLibraryRepo{inLibrary: true}))
+			if rec := serveStemsRoute(t, router, http.MethodPost, "", false); rec.Code != http.StatusUnauthorized || repo.requests != 0 {
+				t.Fatalf("unauthenticated POST: status=%d, durable requests=%d", rec.Code, repo.requests)
+			}
+			rec := serveStemsRoute(t, router, http.MethodPost, "", true)
+			if !admitted {
+				assertStemsRouteUnavailable(t, rec)
+				if repo.requests != 0 || trackRepo.sourceHashReads != 0 {
+					t.Fatalf("disabled POST touched write path: requests=%d source reads=%d", repo.requests, trackRepo.sourceHashReads)
+				}
+				return
+			}
+			payload := decodeStemsBody(t, rec)
+			if rec.Code != http.StatusAccepted || repo.requests != 1 || len(workerQueue.enqueued) != 1 ||
+				payload["queued"] != true || payload["queuePosition"] != float64(3) {
+				t.Fatalf("admitted POST: status=%d requests=%d queued=%d body=%s", rec.Code, repo.requests, len(workerQueue.enqueued), rec.Body.String())
+			}
+		})
 	}
 }

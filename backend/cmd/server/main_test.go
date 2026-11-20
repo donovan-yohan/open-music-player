@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"net/http"
@@ -25,35 +26,81 @@ import (
 	"github.com/openmusicplayer/backend/internal/research"
 )
 
-func TestStemsProductionCompositionIncludesMemberStorage(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+func TestStemsProductionCompositionKeepsReadsIndependentOfWorkerAdmission(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	calls := 0
-	ast.Inspect(file, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
+	source := func(node ast.Node) string {
+		var b strings.Builder
+		if err := format.Node(&b, fset, node); err != nil {
+			t.Fatal(err)
 		}
-		selector, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || selector.Sel.Name != "NewStemsHandlers" {
-			return true
-		}
-		calls++
-		if len(call.Args) != 5 {
-			t.Errorf("stem handlers require existing member storage, got %d constructor arguments", len(call.Args))
-			return true
-		}
-		storage, ok := call.Args[4].(*ast.Ident)
-		if !ok || storage.Name != "storageClient" {
-			t.Error("stem member signing must use the existing storage client")
-		}
-		return true
-	})
-	if calls != 1 {
-		t.Fatalf("expected one production stem handler composition, got %d", calls)
+		return b.String()
 	}
+	compose := func(queue string) string {
+		return "stemsHandlers = api.NewStemsHandlers(stemsRepo, " + queue + ", trackRepo, libraryRepo, storageClient)"
+	}
+	var startup *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "runServer" {
+			startup = fn
+			break
+		}
+	}
+	if startup == nil || startup.Body == nil {
+		t.Fatal("missing production startup")
+	}
+	fallbackIndex, routerIndex := -1, -1
+	for i, stmt := range startup.Body.List {
+		if branch, ok := stmt.(*ast.IfStmt); ok && source(branch.Cond) == "cfg.StemsEnabled && stemsHandlers == nil" {
+			if branch.Init != nil || branch.Else != nil || len(branch.Body.List) != 1 || source(branch.Body.List[0]) != compose("nil") {
+				t.Fatal("the enabled fallback must wire the durable repositories and existing storage with a literal nil queue")
+			}
+			fallbackIndex = i
+		}
+		for node := range ast.Preorder(stmt) {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) != 1 || source(call.Fun) != "api.NewRouterWithConfig" {
+				continue
+			}
+			ptr, ok := call.Args[0].(*ast.UnaryExpr)
+			if !ok || ptr.Op != token.AND {
+				continue
+			}
+			cfg, ok := ptr.X.(*ast.CompositeLit)
+			if !ok {
+				continue
+			}
+			for _, field := range cfg.Elts {
+				if pair, ok := field.(*ast.KeyValueExpr); ok && source(pair.Key) == "StemsHandlers" && source(pair.Value) == "stemsHandlers" {
+					routerIndex = i
+				}
+			}
+		}
+	}
+	if fallbackIndex < 1 || routerIndex <= fallbackIndex {
+		t.Fatal("startup must compose the enabled read fallback before wiring the production router")
+	}
+	admission, ok := startup.Body.List[fallbackIndex-1].(*ast.SwitchStmt)
+	if !ok || len(admission.Body.List) == 0 {
+		t.Fatal("read fallback must run after the worker admission switch")
+	}
+	first, ok := admission.Body.List[0].(*ast.CaseClause)
+	if !ok || len(first.List) != 1 || source(first.List[0]) != "!cfg.StemsEnabled" {
+		t.Fatal("explicit global off must bypass worker admission")
+	}
+	for node := range ast.Preorder(admission) {
+		if clause, ok := node.(*ast.CaseClause); ok && len(clause.List) == 0 {
+			for i, stmt := range clause.Body {
+				if i > 0 && source(stmt) == compose("stemsQueue") && source(clause.Body[i-1]) == "stemsWorkers.Start(ctx)" {
+					return
+				}
+			}
+		}
+	}
+	t.Fatal("queue-backed stem handlers must wire existing member storage only after starting the admitted worker")
 }
 
 func TestMaintenanceStartupConfiguration(t *testing.T) {
