@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -139,7 +140,7 @@ func newPrivateLibraryUploads(mode string, database *db.DB, tracks *db.TrackRepo
 	}
 	scratch, err := os.MkdirTemp("", "soundq-private-library-")
 	if err != nil {
-		return nil, func() {}, errors.New("private Library fixture scratch unavailable")
+		return nil, func() {}, fmt.Errorf("private Library fixture scratch unavailable: %w", err)
 	}
 	cleanup := func() { _ = os.Remove(scratch) }
 	intake, err := processor.NewPrivateImportIntake(tracks, objects, scratch, ffmpeg)

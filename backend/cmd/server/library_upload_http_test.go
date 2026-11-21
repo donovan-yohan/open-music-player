@@ -188,7 +188,7 @@ func TestPrivateLibraryUploadHTTPRestartLostACK(t *testing.T) {
 			"MINIO_ACCESS_KEY=" + key, "MINIO_SECRET_KEY=" + secret, "ANALYZER_BASE_URL=" + analyzerURL,
 		}
 	}
-	launch := func(mode, analyzerURL string) (string, func()) {
+	launch := func(t *testing.T, mode, analyzerURL string) (string, func()) {
 		t.Helper()
 		return startPrivateLibraryHTTPChild(t, ctx, childEnv(mode, analyzerURL), grant)
 	}
@@ -214,7 +214,7 @@ func TestPrivateLibraryUploadHTTPRestartLostACK(t *testing.T) {
 			t.Errorf("remove and verify exact committed fixture rows: %v", err)
 		}
 	})
-	baseline, stopBaseline := launch("", "")
+	baseline, stopBaseline := launch(t, "", "")
 	c := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	call := func(method, base, path, token, op, media string, body io.Reader) (int, []byte, http.Header, error) {
 		req, e := http.NewRequestWithContext(ctx, method, base+path, body)
@@ -248,7 +248,7 @@ func TestPrivateLibraryUploadHTTPRestartLostACK(t *testing.T) {
 		t.Fatalf("default POST status=%d", status)
 	}
 	stopBaseline()
-	base, stop := launch(privateLibraryFixtureMode, "")
+	base, stop := launch(t, privateLibraryFixtureMode, "")
 	owner, other := f.newOwner(t, ctx, pg), f.newOwner(t, ctx, pg)
 	token := func(id uuid.UUID) string {
 		credential, err := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.Claims{UserID: id.String(), RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))}}).SignedString([]byte(jwtKey))
@@ -450,7 +450,7 @@ func TestPrivateLibraryUploadHTTPRestartLostACK(t *testing.T) {
 
 	stop()
 
-	readback, stopReadback := launch(privateLibraryFixtureReadback, analyzerServer.URL)
+	readback, stopReadback := launch(t, privateLibraryFixtureReadback, analyzerServer.URL)
 	// No recovery request triggers analysis: the next production startup drains
 	// the durable obligation on the ordinary queue before the first status GET.
 	select {
@@ -520,7 +520,7 @@ func TestPrivateLibraryUploadHTTPRestartLostACK(t *testing.T) {
 
 	// Separate contract controls after the one-POST journey. Replay lacks even
 	// the audio headers; it must not re-add removed membership or issue a PUT.
-	replayBase, stopReplay := launch(privateLibraryFixtureMode, "")
+	replayBase, stopReplay := launch(t, privateLibraryFixtureMode, "")
 	replay := request(t, http.MethodPost, replayBase, uploads, ownerToken, op.String(), media, bytes.NewReader(body[:prefix]), 200)
 	if !bytes.Equal(replay, recovered) {
 		t.Fatal("committed replay disagrees with durable receipt")
@@ -545,7 +545,7 @@ func TestPrivateLibraryUploadHTTPRestartLostACK(t *testing.T) {
 		t.Fatal("unacknowledged PUT prematurely committed")
 	}
 	stopReplay()
-	checking, stopChecking := launch(privateLibraryFixtureReadback, "")
+	checking, stopChecking := launch(t, privateLibraryFixtureReadback, "")
 	uncertainPath := uploads + "/" + uncertain.String()
 	if code, _, _, _ := call(http.MethodHead, checking, uncertainPath, otherToken, "", "", nil); code != 405 {
 		t.Fatalf("HEAD adopted recovery: %d", code)
@@ -576,7 +576,7 @@ func TestPrivateLibraryUploadHTTPRestartLostACK(t *testing.T) {
 	t.Log("separate fault: signed S3 success with its ACK dropped; HEAD left it uncommitted; GET after restart verified bytes and committed without a second PUT")
 
 	t.Run("stored_verification_is_not_ingress", func(t *testing.T) {
-		base, stop := launch(privateLibraryFixtureMode, "")
+		base, stop := launch(t, privateLibraryFixtureMode, "")
 		defer stop()
 		user, id := f.newOwner(t, ctx, pg), uuid.New()
 		bearer := token(user)
@@ -627,7 +627,7 @@ func TestPrivateLibraryUploadHTTPRestartLostACK(t *testing.T) {
 				http.Redirect(w, r, sink.URL, http.StatusTemporaryRedirect)
 			}))
 			defer origin.Close()
-			_, stop := launch(mode, origin.URL)
+			_, stop := launch(t, mode, origin.URL)
 			defer stop()
 			requireUploadEventually(t, ctx, "both real startup analyzer probes offered redirect", func() bool { return offered.Load() >= 2 })
 			select {
@@ -692,7 +692,7 @@ func TestPrivateLibraryUploadHTTPRestartLostACK(t *testing.T) {
 				t.Fatal("expiry did not name exactly one attempt")
 			}
 		}
-		next, stopNext := launch(privateLibraryFixtureMode, "")
+		next, stopNext := launch(t, privateLibraryFixtureMode, "")
 		defer stopNext()
 		after := func(method string, i int) (int, []byte) {
 			op := held[i]
@@ -706,15 +706,20 @@ func TestPrivateLibraryUploadHTTPRestartLostACK(t *testing.T) {
 		if code, _ := after(http.MethodPost, 0); code != 409 {
 			t.Errorf("expired matching POST status=%d; want closed 409", code)
 		}
+		// Read the durable result before another upload request can settle this row.
+		requireIntakeAttempt(t, ctx, pg, db.PrivateImportManifest{OwnerID: held[0].owner, OperationID: held[0].operation}, "refused")
 		if code, raw := after(http.MethodGet, 0); code != 200 || !bytes.Contains(raw, []byte(`"status":"closed"`)) {
 			t.Errorf("expired matching GET status=%d; want closed 200", code)
 		}
 		if code, raw := after(http.MethodGet, 1); code != 200 || !bytes.Contains(raw, []byte(`"status":"closed"`)) {
 			t.Errorf("expired exact GET did not close: %d", code)
 		}
+		requireIntakeAttempt(t, ctx, pg, db.PrivateImportManifest{OwnerID: held[1].owner, OperationID: held[1].operation}, "refused")
 		if code, _ := after(http.MethodPost, 1); code != 409 {
 			t.Errorf("expired POST after GET status=%d", code)
 		}
+		// No recovery request has targeted row 2; the fresh POST must free its slot.
+		requireIntakeAttempt(t, ctx, pg, db.PrivateImportManifest{OwnerID: held[2].owner, OperationID: held[2].operation}, "reserved")
 		slot := durableImportOperation{held[2].owner, uuid.New()}
 		f.operations[slot] = struct{}{}
 		code, _, _, _ := call(http.MethodPost, next, uploads, token(slot.owner), slot.operation.String(), media, bytes.NewReader(body))
@@ -780,6 +785,8 @@ func requireUnboundLibraryRefusal(t *testing.T, env []string, optionalGrant ...f
 	}
 	child := exec.Command(exe, "-test.run=^TestPrivateLibraryUploadServerChild$")
 	child.Env = append(append([]string{}, env...), "SERVER_ADDR="+addr)
+	var stdout bytes.Buffer
+	child.Stdout = &stdout
 	if len(optionalGrant) == 1 {
 		defer attachFixtureBucketGrant(t, child, optionalGrant[0])()
 	}
@@ -799,6 +806,11 @@ func requireUnboundLibraryRefusal(t *testing.T, env []string, optionalGrant ...f
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != 1 {
 				t.Fatal("unbound mode did not refuse with startup exit 1")
+			}
+			// Match the fixed structured reason after Wait, without printing child output.
+			const bindingDiagnostic = `"error":"private Library import requires the controlled provisioner's exact S3 fixture binding"`
+			if !bytes.Contains(stdout.Bytes(), []byte(bindingDiagnostic)) {
+				t.Fatal("unbound mode did not report the exact S3 fixture binding requirement")
 			}
 			return
 		case <-deadline.C:

@@ -17,7 +17,10 @@ import (
 )
 
 const libraryUploadsPath = "/api/v1/library/uploads"
-const libraryUploadBodyDeadline = 65 * time.Second
+const (
+	libraryUploadAdmissionDeadline = 3 * time.Second
+	libraryUploadBodyDeadline      = 65 * time.Second
+)
 
 // LibraryUploadHandlers adapts #582's existing SQL receipt/stage and
 // processor intake. It owns no durable state or storage cleanup worker.
@@ -55,6 +58,12 @@ func privateLibraryResponse(next http.HandlerFunc, upload bool) http.HandlerFunc
 		if upload && r.ProtoMajor == 1 {
 			// A refusal/replay must not drain an untrusted original to send the ACK.
 			w.Header().Set("Connection", "close")
+			// net/http can still read during final body close. Bound that work
+			// even when auth or admission refuses before the upload handler reads.
+			if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(libraryUploadAdmissionDeadline)); err != nil {
+				uploadUnavailable(w)
+				return
+			}
 		}
 		next(w, r)
 	}
