@@ -13,12 +13,13 @@ internal fun main() {
         try {body();tests++;println("PASS $name")}
         catch(error:Throwable) {failures+=name;println("FAIL $name: $error")}
     }
-    fun fixture(current:()->Boolean={true},route:()->Boolean={true}):OriginalAudioReadLease {
-        val fd=FileDescriptor();val stamp=StructStat().apply {st_size=4_000_000_000L}
+    fun fixture(current:()->Boolean={true},route:()->Boolean={true},frames:Long?=null,payloadChunk:Int=Int.MAX_VALUE):OriginalAudioReadLease {
+        val fd=FileDescriptor();val stamp=StructStat().apply {st_size=frames?.let { (it+1)*960 } ?: 4_000_000_000L}
         val a=ByteArray(960).apply {this[0]=0xff.toByte();this[1]=0xfb.toByte();this[2]=0xe4.toByte()}
         val tag=a.copyOf().apply {"Xing".toByteArray().copyInto(this,36)}
         val entry=Os.Entry(ByteArray(0),stamp) {p,b,o,n ->
-            repeat(n){i -> val at=p+i;b[o+i]=if(at<960)tag[at.toInt()]else a[((at-960)%960).toInt()]};n
+            val count=minOf(n,payloadChunk)
+            repeat(count){i -> val at=p+i;b[o+i]=if(at<960)tag[at.toInt()]else a[((at-960)%960).toInt()]};count
         }
         Os.entries[fd]=entry;Os.paths["/synthetic/mp3"]=entry
         return OriginalAudioReadLease.borrow(fd,0,stamp.st_size,"/synthetic/mp3",current,routeCurrent=route).also {it.beginOperation()}
@@ -230,6 +231,66 @@ internal fun main() {
     }
     run("normalPayloadCallBudgetUnchanged") {
         fixture().use {lease ->repeat(8192){lease.readAt(0,ByteArray(1),0,1)};refused(lease,"call budget") {lease.readAt(0,ByteArray(1),0,1)}}
+    }
+    run("cachedPacketsDoNotRepeatFullValidationBeforeCheckedPayloadRead") {
+        var routes=0
+        fixture(route={routes++;true}).use {lease ->
+            val parser=Mp3OriginalFrames(lease.length,lease::readAt,48000,2,lease)
+            val page=ByteBuffer.allocate(960)
+            val packets=42
+            routes=0;val reads=lease.totalReadCalls
+            lease.beginOperation()
+            repeat(packets) {
+                check(parser.sampleFrame==it*1152L)
+                page.clear();check(parser.read(page)==960 && page.position()==960)
+                check(page[0]==0xff.toByte());parser.advance()
+            }
+            lease.checkCurrent()
+            check(lease.totalReadCalls-reads==2L*packets)
+            println("42 packets: $routes full validations; ${lease.totalReadCalls-reads} preads")
+            check(routes==2+4*packets) {"Redundant full route validations: $routes"}
+        }
+    }
+    run("cachedPacketStillValidatesAfterTheLastShortPayloadRead") {
+        var valid=true
+        fixture(route={valid},payloadChunk=480).use {lease ->
+            val parser=Mp3OriginalFrames(lease.length,lease::readAt,48000,2,lease)
+            val output=ByteBuffer.allocate(960)
+            check(parser.read(output)==960 && output[0]==0xff.toByte())
+            output.clear()
+            var reads=0
+            Os.beforeRead={if(++reads==2)valid=false}
+            try {
+                refused(lease,"changed") {parser.read(output)}
+                check(reads==2 && output.position()==0)
+                check(runCatching {parser.sampleFrame}.isFailure)
+                check(runCatching {parser.advance()}.isFailure)
+            } finally {Os.beforeRead=null}
+        }
+    }
+    run("cachedEofStillValidatesTheOriginal") {
+        var valid=true
+        fixture(route={valid},frames=1).use {lease ->
+            val parser=Mp3OriginalFrames(lease.length,lease::readAt,48000,2,lease)
+            val output=ByteBuffer.allocate(960)
+            check(parser.read(output)==960);parser.advance();output.clear()
+            check(parser.read(output)==-1)
+            valid=false
+            refused(lease,"changed") {parser.read(output)}
+            check(output.position()==0 && runCatching {parser.sampleFrame}.isFailure)
+        }
+    }
+    run("invalidDestinationStillValidatesBeforeRefusal") {
+        var valid=true
+        fixture(route={valid}).use {lease ->
+            val parser=Mp3OriginalFrames(lease.length,lease::readAt,48000,2,lease)
+            val output=ByteBuffer.allocate(959)
+            val reads=lease.totalReadCalls
+            valid=false
+            refused(lease,"changed") {parser.read(output)}
+            check(output.position()==0 && lease.totalReadCalls==reads)
+            check(runCatching {parser.sampleFrame}.isFailure)
+        }
     }
     run("aggregateCountersIncludeMetadataAndPayloadExactly") {
         fixture().use {lease ->

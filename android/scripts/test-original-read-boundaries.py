@@ -140,6 +140,7 @@ internal class Drain {
  val dispatcher=Dispatchers.Unconfined
  private val borrowed=mutableSetOf<String>();private val ordinaryFiles=mutableMapOf<Int,String>()
  private val borrowedOriginals=mutableSetOf<RetainedSource>();private val ordinaryOriginals=mutableMapOf<Int,RetainedSource>()
+ private val previews=mutableMapOf<Int,Unit>() // Only occupancy is used by sourcesDrained.
  fun descriptorsDrained(id:String?):Boolean=DESCRIPTOR_DRAIN
 DRAIN
 }

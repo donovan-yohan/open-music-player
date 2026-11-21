@@ -164,9 +164,12 @@ internal class Mp3OriginalFrames(private val length:Long,private val readAt:(Lon
         }
     }
     fun read(destination:ByteBuffer):Int {
-        // Even cached/EOF paths cross current full validation. Packet bytes never
-        // use the structural capability or its separate allowance.
-        val f=scan {requireNotNull(batch).step();current} ?: return -1
+        val f=current
+        // A valid packet already crosses full validation before and after every
+        // payload read. Only paths that do not read payload need a separate fence.
+        if(f==null || destination.remaining()<f.bytes || f.bytes>payload.size)
+            scan {requireNotNull(batch).step()}
+        if(f==null)return -1
         try {
             require(destination.remaining()>=f.bytes && f.bytes<=payload.size)
             var got=0
