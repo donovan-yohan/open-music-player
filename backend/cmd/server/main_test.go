@@ -170,12 +170,21 @@ func TestStemsProductionCompositionKeepsReadsIndependentOfWorkerAdmission(t *tes
 	compose := func(queue string) string {
 		return "stemsHandlers = api.NewStemsHandlers(stemsRepo, " + queue + ", trackRepo, libraryRepo, storageClient)"
 	}
-	var startup *ast.FuncDecl
+	var entry, startup *ast.FuncDecl
 	for _, decl := range file.Decls {
-		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "runServer" {
-			startup = fn
-			break
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil {
+			continue
 		}
+		switch fn.Name.Name {
+		case "runServer":
+			entry = fn
+		case "runServerWithPrivateLibraryFixture":
+			startup = fn
+		}
+	}
+	if entry == nil || entry.Body == nil || len(entry.Body.List) != 1 || source(entry.Body.List[0]) != "return runServerWithPrivateLibraryFixture(nil)" {
+		t.Fatal("production startup must delegate without a private Library fixture binding")
 	}
 	if startup == nil || startup.Body == nil {
 		t.Fatal("missing production startup")

@@ -49,7 +49,7 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 	}
 
 	// Build query with optional search filter
-	baseCondition := "ul.user_id = $1"
+	baseCondition := "ul.user_id = $1 AND (t.private_owner_id IS NULL OR t.private_owner_id = $1)"
 	args := []interface{}{userID}
 	argIndex := 2
 	// Use full-text search for search queries (sanitized; see buildPrefixTSQuery).
@@ -258,8 +258,9 @@ func (r *LibraryRepository) AddTrackToLibrary(ctx context.Context, userID uuid.U
 // RemoveTrackFromLibrary removes a track from a user's library.
 func (r *LibraryRepository) RemoveTrackFromLibrary(ctx context.Context, userID uuid.UUID, trackID int64) error {
 	query := `
-		DELETE FROM user_library
-		WHERE user_id = $1 AND track_id = $2
+		DELETE FROM user_library ul USING tracks t
+		WHERE ul.user_id = $1 AND ul.track_id = $2 AND t.id = ul.track_id
+		  AND (t.private_owner_id IS NULL OR t.private_owner_id = $1)
 	`
 
 	result, err := r.db.ExecContext(ctx, query, userID, trackID)
@@ -283,8 +284,9 @@ func (r *LibraryRepository) RemoveTrackFromLibrary(ctx context.Context, userID u
 func (r *LibraryRepository) IsTrackInLibrary(ctx context.Context, userID uuid.UUID, trackID int64) (bool, error) {
 	query := `
 		SELECT EXISTS(
-			SELECT 1 FROM user_library
-			WHERE user_id = $1 AND track_id = $2
+			SELECT 1 FROM user_library ul JOIN tracks t ON t.id = ul.track_id
+			WHERE ul.user_id = $1 AND ul.track_id = $2
+			  AND (t.private_owner_id IS NULL OR t.private_owner_id = $1)
 		)
 	`
 
@@ -302,12 +304,23 @@ func (r *LibraryRepository) IsTrackInLibrary(ctx context.Context, userID uuid.UU
 // timestamp only and do NOT change user_library membership.
 func (r *LibraryRepository) AddFavorite(ctx context.Context, userID uuid.UUID, trackID int64) error {
 	query := `
-		INSERT INTO track_favorites (user_id, track_id, created_at)
-		VALUES ($1, $2, NOW())
-		ON CONFLICT (user_id, track_id) DO NOTHING
+		WITH visible AS (
+			SELECT id FROM tracks WHERE id = $2 AND (private_owner_id IS NULL OR private_owner_id = $1)
+		), added AS (
+			INSERT INTO track_favorites (user_id, track_id, created_at)
+			SELECT $1, id, NOW() FROM visible
+			ON CONFLICT (user_id, track_id) DO NOTHING
+		)
+		SELECT EXISTS (SELECT 1 FROM visible)
 	`
-	_, err := r.db.ExecContext(ctx, query, userID, trackID)
-	return err
+	var visible bool
+	if err := r.db.QueryRowContext(ctx, query, userID, trackID).Scan(&visible); err != nil {
+		return err
+	}
+	if !visible {
+		return ErrTrackNotFound
+	}
+	return nil
 }
 
 // RemoveFavorite unlikes a track for a user. Idempotent: unliking a track that

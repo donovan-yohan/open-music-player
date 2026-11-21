@@ -126,7 +126,7 @@ func (r *Repository) Create(ctx context.Context, o Owner, in CreateInput) (Snaps
 		var c catalogRecord
 		c.TrackID = id
 		c.CatalogItemID = uuid.New()
-		if e = tx.QueryRowContext(ctx, `SELECT t.title,COALESCE(t.artist,''),COALESCE(t.duration_ms,0) FROM tracks t JOIN user_library l ON l.track_id=t.id WHERE l.user_id=$1 AND t.id=$2 FOR SHARE OF t,l`, o.UserID, id).Scan(&c.Title, &c.Artist, &c.DurationMS); e != nil {
+		if e = tx.QueryRowContext(ctx, `SELECT t.title,COALESCE(t.artist,''),COALESCE(t.duration_ms,0) FROM tracks t JOIN user_library l ON l.track_id=t.id WHERE l.user_id=$1 AND t.id=$2 AND t.private_owner_id IS NULL FOR SHARE OF t,l`, o.UserID, id).Scan(&c.Title, &c.Artist, &c.DurationMS); e != nil {
 			return Snapshot{}, deniedMissing(e)
 		}
 		if !text(c.Title, 200) || !text(c.Artist, 200) || c.DurationMS < 0 || c.DurationMS > 86400000 {

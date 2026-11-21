@@ -28,7 +28,7 @@ func (r *PlayEventRepository) RecentArtistSeeds(ctx context.Context, user uuid.U
  WITH listened AS (
   SELECT p.track_id,p.played_at,t.mb_artist_id,t.mb_verified
   FROM play_events p JOIN tracks t ON t.id=p.track_id
-  WHERE p.user_id=$1 AND NOT p.skipped AND p.played_at >= $2 AND p.played_at <= $3
+  WHERE p.user_id=$1 AND t.private_owner_id IS NULL AND NOT p.skipped AND p.played_at >= $2 AND p.played_at <= $3
  ), artists AS (
   SELECT mb_artist_id,MAX(played_at) AS latest FROM listened
   WHERE mb_verified AND mb_artist_id IS NOT NULL AND mb_artist_id <> '00000000-0000-0000-0000-000000000000'::uuid
@@ -36,7 +36,7 @@ func (r *PlayEventRepository) RecentArtistSeeds(ctx context.Context, user uuid.U
  ), selected AS (SELECT * FROM artists ORDER BY latest DESC,mb_artist_id LIMIT $4)
  SELECT selected.mb_artist_id,(SELECT COUNT(*) FROM artists),(SELECT COUNT(*) FROM listened),
   (SELECT COUNT(DISTINCT track_id) FROM listened WHERE NOT mb_verified OR mb_artist_id IS NULL OR mb_artist_id='00000000-0000-0000-0000-000000000000'::uuid),
-  (SELECT COUNT(*) FROM user_library ul JOIN tracks t ON t.id=ul.track_id WHERE ul.user_id=$1 AND (t.mb_recording_id IS NULL OR t.mb_recording_id='00000000-0000-0000-0000-000000000000'::uuid))
+  (SELECT COUNT(*) FROM user_library ul JOIN tracks t ON t.id=ul.track_id WHERE ul.user_id=$1 AND t.private_owner_id IS NULL AND (t.mb_recording_id IS NULL OR t.mb_recording_id='00000000-0000-0000-0000-000000000000'::uuid))
  FROM (SELECT 1) anchor LEFT JOIN selected ON TRUE ORDER BY selected.latest DESC,selected.mb_artist_id`, user, since, through, limit)
 	if err != nil {
 		return out, fmt.Errorf("read radar seeds: %w", err)
@@ -54,7 +54,7 @@ func (r *PlayEventRepository) RecentArtistSeeds(ctx context.Context, user uuid.U
 	return out, rows.Err()
 }
 
-// Ownership is ANY linked current-account row, irrespective of verification,
+// Discovery membership is any linked shared current-account row, irrespective of verification,
 // edition, numeric copies or resolver ambiguity. No global catalog projection.
 func (r *LibraryRepository) OwnedRecordingIDs(ctx context.Context, user uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
 	if user == uuid.Nil || len(ids) > 200 {
@@ -71,7 +71,7 @@ func (r *LibraryRepository) OwnedRecordingIDs(ctx context.Context, user uuid.UUI
 		}
 		values[i] = id.String()
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT t.mb_recording_id FROM user_library ul JOIN tracks t ON t.id=ul.track_id WHERE ul.user_id=$1 AND t.mb_recording_id=ANY($2::uuid[])`, user, pq.Array(values))
+	rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT t.mb_recording_id FROM user_library ul JOIN tracks t ON t.id=ul.track_id WHERE ul.user_id=$1 AND t.private_owner_id IS NULL AND t.mb_recording_id=ANY($2::uuid[])`, user, pq.Array(values))
 	if err != nil {
 		return nil, fmt.Errorf("read radar membership: %w", err)
 	}

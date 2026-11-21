@@ -191,7 +191,7 @@ func TestPlaylistGetByIDWithTracksRejectsMalformedPresentTrack(t *testing.T) {
 	if _, err := repo.AddTracks(ctx, playlist.ID, []int64{id}); err != nil {
 		t.Fatal(err)
 	}
-	columns := strings.Split("id identity_hash title artist album duration_ms version mb_recording_id mb_release_id mb_artist_id mb_verified source_url source_type storage_key file_size_bytes codec bitrate_kbps sample_rate_hz channels content_type metadata_json created_at updated_at", " ")
+	columns := strings.Split("id identity_hash title artist album duration_ms version mb_recording_id mb_release_id mb_artist_id mb_verified source_url source_type storage_key file_size_bytes codec bitrate_kbps sample_rate_hz channels content_type metadata_json created_at updated_at private_owner_id", " ")
 	for _, column := range []string{"identity_hash", "title", "mb_verified", "created_at", "updated_at", "channels"} {
 		t.Run(column, func(t *testing.T) {
 			projection := append([]string(nil), columns...)

@@ -31,6 +31,21 @@ func (r *Repository) Heartbeat(ctx context.Context, o Owner, id uuid.UUID, in He
 		j.State.HostDigest = d
 		j.State.HostSeen = now
 		j.State.NowPlaying = in.NowPlaying
+		if in.NowPlaying != nil {
+			// The legacy heartbeat carries text and timing, not a track
+			// identity. For private-bearing accounts it cannot authorize
+			// guest publication. Keep the heartbeat and shared catalog live;
+			// do not guess from canonical or overridden display text.
+			var hasPrivate bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+				SELECT 1 FROM tracks WHERE private_owner_id = $1
+			)`, j.Owner).Scan(&hasPrivate); err != nil {
+				return err
+			}
+			if hasPrivate {
+				j.State.NowPlaying = nil
+			}
+		}
 		if e := save(ctx, tx, j); e != nil {
 			return e
 		}

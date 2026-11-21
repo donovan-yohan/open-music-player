@@ -501,9 +501,10 @@ func (r *TrackSourceRepository) FindTrackBySource(ctx context.Context, provider,
 		       t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at
 		FROM tracks t
 		LEFT JOIN track_sources ts ON ts.track_id = t.id
-		WHERE (ts.provider = $1 AND ts.source_id <> '' AND ts.source_id = $2)
+		WHERE t.private_owner_id IS NULL AND (
+		      (ts.provider = $1 AND ts.source_id <> '' AND ts.source_id = $2)
 		   OR (ts.provider = $1 AND ts.source_url <> '' AND ts.source_url = $3)
-		   OR (t.source_type = $1 AND t.source_url = $3)
+		   OR (t.source_type = $1 AND t.source_url = $3))
 		ORDER BY t.created_at ASC
 		LIMIT 1
 	`
@@ -538,13 +539,20 @@ func (r *TrackSourceRepository) UpsertTrackSource(ctx context.Context, trackID i
 	if provider == "" || (sourceID == "" && sourceURL == "") {
 		return nil
 	}
-	_, err := r.db.ExecContext(ctx, `
+	result, err := r.db.ExecContext(ctx, `
 		INSERT INTO track_sources (track_id, provider, source_id, source_url)
-		VALUES ($1, $2, $3, $4)
+		SELECT id, $2, $3, $4 FROM tracks WHERE id = $1 AND private_owner_id IS NULL
 		ON CONFLICT (provider, source_id) WHERE source_id <> '' DO UPDATE
 		SET track_id = EXCLUDED.track_id,
 		    source_url = COALESCE(NULLIF(EXCLUDED.source_url, ''), track_sources.source_url),
 		    updated_at = NOW()
 	`, trackID, provider, sourceID, sourceURL)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err == nil && rows == 0 {
+		return db.ErrTrackNotFound
+	}
 	return err
 }

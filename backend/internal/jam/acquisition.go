@@ -387,7 +387,7 @@ func admissible(j *row, q *requestRecord, now time.Time) bool {
 }
 func ownedPlayable(ctx context.Context, tx *sql.Tx, owner uuid.UUID, track int64) error {
 	var id int64
-	e := tx.QueryRowContext(ctx, `SELECT t.id FROM tracks t JOIN user_library l ON l.track_id=t.id WHERE l.user_id=$1 AND t.id=$2 AND COALESCE(t.storage_key,'')<>'' FOR SHARE OF t,l`, owner, track).Scan(&id)
+	e := tx.QueryRowContext(ctx, `SELECT t.id FROM tracks t JOIN user_library l ON l.track_id=t.id WHERE l.user_id=$1 AND t.id=$2 AND t.private_owner_id IS NULL AND COALESCE(t.storage_key,'')<>'' FOR SHARE OF t,l`, owner, track).Scan(&id)
 	return deniedMissing(e)
 }
 func reconcile(ctx context.Context, tx *sql.Tx, j *row, now time.Time) error {

@@ -23,6 +23,7 @@ type Handlers struct {
 	service         queueHandlerService
 	downloadService queueDownloadService
 	analysisRepo    *db.AnalysisRepository
+	trackRepo       queueTrackAdmission
 	selectionRepo   sourceDecisionRepository
 	database        durableDownloadJobStore
 	playlistRepo    playlistOwnershipRepository
@@ -41,6 +42,10 @@ type queueHandlerService interface {
 	RetryQueueItem(context.Context, string, string) (*QueueState, string, error)
 	ReorderQueueItem(context.Context, string, string, int) (*QueueState, error)
 	ClearQueue(context.Context, string) error
+}
+
+type queueTrackAdmission interface {
+	IsTrackVisibleTo(context.Context, uuid.UUID, int64) (bool, error)
 }
 
 type queueDownloadService interface {
@@ -77,21 +82,21 @@ func NewHandlers(service queueHandlerService, downloadServices ...queueDownloadS
 	return &Handlers{service: service, downloadService: downloadService}
 }
 
-func NewHandlersWithAnalysis(service queueHandlerService, downloadService queueDownloadService, analysisRepo *db.AnalysisRepository) *Handlers {
-	return &Handlers{service: service, downloadService: downloadService, analysisRepo: analysisRepo}
+func NewHandlersWithAnalysis(service queueHandlerService, downloadService queueDownloadService, analysisRepo *db.AnalysisRepository, trackRepo queueTrackAdmission) *Handlers {
+	return &Handlers{service: service, downloadService: downloadService, analysisRepo: analysisRepo, trackRepo: trackRepo}
 }
 
 // NewHandlersWithSourceSelections enables the decision-gated source ingress.
-// Library-track insertion remains independent of this dependency.
+// It does not grant numeric track admission without a track repository.
 func NewHandlersWithSourceSelections(service queueHandlerService, downloadService queueDownloadService, analysisRepo *db.AnalysisRepository, selectionRepo sourceDecisionRepository, database durableDownloadJobStore) *Handlers {
-	return NewHandlersWithPlaylistTargets(service, downloadService, analysisRepo, selectionRepo, database, nil)
+	return NewHandlersWithPlaylistTargets(service, downloadService, analysisRepo, selectionRepo, database, nil, nil)
 }
 
 // NewHandlersWithPlaylistTargets additionally accepts the playlist repository
 // that authorizes an optional playlistId on queue insertion. A nil playlistRepo
 // keeps the endpoint working and simply rejects requests that name a playlist.
-func NewHandlersWithPlaylistTargets(service queueHandlerService, downloadService queueDownloadService, analysisRepo *db.AnalysisRepository, selectionRepo sourceDecisionRepository, database durableDownloadJobStore, playlistRepo playlistOwnershipRepository) *Handlers {
-	return &Handlers{service: service, downloadService: downloadService, analysisRepo: analysisRepo, selectionRepo: selectionRepo, database: database, playlistRepo: playlistRepo}
+func NewHandlersWithPlaylistTargets(service queueHandlerService, downloadService queueDownloadService, analysisRepo *db.AnalysisRepository, selectionRepo sourceDecisionRepository, database durableDownloadJobStore, playlistRepo playlistOwnershipRepository, trackRepo queueTrackAdmission) *Handlers {
+	return &Handlers{service: service, downloadService: downloadService, analysisRepo: analysisRepo, selectionRepo: selectionRepo, database: database, playlistRepo: playlistRepo, trackRepo: trackRepo}
 }
 
 // ErrorResponse represents an error response
@@ -215,6 +220,19 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 		}
 		if *req.TrackID <= 0 {
 			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "trackId must be positive")
+			return
+		}
+		if h.trackRepo == nil || h.service == nil {
+			writeError(w, http.StatusServiceUnavailable, "SERVICE_DISABLED", "queue track admission is unavailable")
+			return
+		}
+		visible, err := h.trackRepo.IsTrackVisibleTo(r.Context(), userCtx.UserID, *req.TrackID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to verify queue track")
+			return
+		}
+		if !visible {
+			writeError(w, http.StatusNotFound, "TRACK_NOT_FOUND", "track not found")
 			return
 		}
 		state, err := h.service.AddToQueue(r.Context(), userCtx.UserID.String(), *req.TrackID, req.Position)
@@ -638,7 +656,8 @@ func (h *Handlers) buildQueueResponse(ctx context.Context, state *QueueState, jo
 }
 
 func (h *Handlers) compactAnalysisForState(ctx context.Context, state *QueueState, jobs map[string]*download.DownloadJob) map[int64]db.AnalysisCompact {
-	if h.analysisRepo == nil || state == nil {
+	user := auth.GetUserFromContext(ctx)
+	if h.analysisRepo == nil || state == nil || user == nil || user.UserID == uuid.Nil {
 		return nil
 	}
 	seen := map[int64]bool{}
@@ -654,7 +673,7 @@ func (h *Handlers) compactAnalysisForState(ctx context.Context, state *QueueStat
 	for id := range seen {
 		trackIDs = append(trackIDs, id)
 	}
-	analysis, err := h.analysisRepo.GetCompactByTrackIDs(ctx, trackIDs)
+	analysis, err := h.analysisRepo.GetCompactByTrackIDs(ctx, user.UserID, trackIDs)
 	if err != nil {
 		return nil
 	}

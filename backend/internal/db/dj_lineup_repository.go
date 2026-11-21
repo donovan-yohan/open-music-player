@@ -90,7 +90,7 @@ func (r *DJLineupRepository) ListDJLineupTracks(ctx context.Context, userID uuid
 			ON tmo.user_id = ul.user_id AND tmo.track_id = ul.track_id
 		LEFT JOIN track_analysis ta ON ta.track_id = t.id
 		LEFT JOIN play_stats ps ON ps.track_id = t.id
-		WHERE ul.user_id = $1
+		WHERE ul.user_id = $1 AND (t.private_owner_id IS NULL OR t.private_owner_id = $1)
 	`
 
 	rows, err := r.db.QueryContext(ctx, query, userID)

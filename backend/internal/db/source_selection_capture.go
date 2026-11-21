@@ -65,7 +65,7 @@ func CreateCapturedSourceDownloadTx(ctx context.Context, tx *sql.Tx, userID, ses
 		return 0, false, err
 	}
 	var track int64
-	err = tx.QueryRowContext(ctx, `SELECT t.id FROM tracks t JOIN track_sources s ON s.track_id=t.id WHERE s.provider=$1 AND (($2<>'' AND s.source_id=$2) OR s.source_url=$3) AND COALESCE(t.storage_key,'')<>'' ORDER BY t.id LIMIT 1 FOR SHARE OF t,s`, candidate.Provider, candidate.SourceID, candidate.SourceURL).Scan(&track)
+	err = tx.QueryRowContext(ctx, `SELECT t.id FROM tracks t JOIN track_sources s ON s.track_id=t.id WHERE t.private_owner_id IS NULL AND s.provider=$1 AND (($2<>'' AND s.source_id=$2) OR s.source_url=$3) AND COALESCE(t.storage_key,'')<>'' ORDER BY t.id LIMIT 1 FOR SHARE OF t,s`, candidate.Provider, candidate.SourceID, candidate.SourceURL).Scan(&track)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, false, err
 	}

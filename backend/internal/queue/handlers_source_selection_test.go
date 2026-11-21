@@ -504,9 +504,15 @@ func TestSourceDecisionQueueReturnsErrorWhenQueueResponseCannotLoad(t *testing.T
 	}
 }
 
+type fixtureQueueTrack int64
+
+func (f fixtureQueueTrack) IsTrackVisibleTo(_ context.Context, _ uuid.UUID, trackID int64) (bool, error) {
+	return int64(f) == trackID, nil
+}
+
 func TestExistingTrackQueueResponseIsUnchanged(t *testing.T) {
 	service := &fakeQueueHandlerService{state: &QueueState{Items: []QueueItem{}}}
-	h := NewHandlers(service)
+	h := NewHandlersWithAnalysis(service, nil, nil, fixtureQueueTrack(7))
 	rec := httptest.NewRecorder()
 	h.AddQueueItem(rec, queueDecisionRequest(`{"trackId":7,"position":"last"}`))
 	var response map[string]any
