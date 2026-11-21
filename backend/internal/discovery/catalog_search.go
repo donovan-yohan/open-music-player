@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	catalogSearchPageSize  = 8
-	catalogSearchMaxOffset = 1000
-	catalogSearchTimeout   = 4 * time.Second
+	catalogSearchPageSize   = 8
+	catalogSearchMaxResults = musicbrainz.DiscoverSearchMaxResults
+	catalogSearchTimeout    = 4 * time.Second
 )
 
 var catalogSearchQuotes = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
@@ -61,7 +61,7 @@ func (h *Handlers) CatalogSearch(w http.ResponseWriter, r *http.Request) {
 	var offset int
 	if params.Has("offset") {
 		offset, err = strconv.Atoi(params.Get("offset"))
-		if err != nil || offset < 0 || offset > catalogSearchMaxOffset {
+		if err != nil || offset < 0 || offset >= catalogSearchMaxResults {
 			writeError(w, http.StatusBadRequest, "INVALID_OFFSET", "Catalog offset out of range")
 			return
 		}
@@ -104,19 +104,20 @@ func catalogSearchQuery(kind string, words []string) string {
 func catalogPage(ctx context.Context, catalog interactiveMusicCatalog, kind, query string, offset int) (catalogSearchPage, error) {
 	var page catalogSearchPage
 	var total int
+	limit := min(catalogSearchPageSize, catalogSearchMaxResults-offset)
 	if kind == "artist" {
-		response, err := catalog.SearchInteractiveArtists(ctx, query, catalogSearchPageSize, offset)
+		response, err := catalog.SearchInteractiveArtists(ctx, query, limit, offset)
 		if err != nil {
 			return page, err
 		}
 		page.Results, total = artistItems(response), response.Total
 	} else {
-		response, err := catalog.SearchInteractiveAlbums(ctx, query, catalogSearchPageSize, offset)
+		response, err := catalog.SearchInteractiveAlbums(ctx, query, limit, offset)
 		if err != nil {
 			return page, err
 		}
 		page.Results, total = albumItems(response), response.Total
 	}
-	page.HasMore = len(page.Results) > 0 && offset+len(page.Results) < total && offset+len(page.Results) <= catalogSearchMaxOffset
+	page.HasMore = len(page.Results) > 0 && offset+len(page.Results) < min(total, catalogSearchMaxResults)
 	return page, nil
 }

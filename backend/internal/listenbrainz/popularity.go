@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -22,6 +23,8 @@ const (
 	// The v1 cache did not establish credit evidence for empty results.
 	popularityCachePrefix = "lb:artist-popularity:v2:"
 )
+
+var errPopularityUnconfigured = errors.New("listenbrainz popularity is not configured")
 
 type PopularTrack struct {
 	RecordingMBID string `json:"recordingMbid"`
@@ -42,6 +45,7 @@ type PopularityCache interface {
 // fail fast rather than queuing a backlog for an optional shelf.
 type PopularityService struct {
 	baseURL string
+	token   string
 	client  *http.Client
 	cache   PopularityCache
 	mu      sync.Mutex
@@ -56,14 +60,19 @@ type popularityRead struct {
 	err    error
 }
 
-func NewPopularityService(cache PopularityCache) *PopularityService {
-	return &PopularityService{baseURL: "https://api.listenbrainz.org", cache: cache,
+// NewPopularityService takes an operator-supplied ListenBrainz token, never an
+// incoming API credential. An empty token disables the shelf, including cache reads.
+func NewPopularityService(cache PopularityCache, token string) *PopularityService {
+	return &PopularityService{baseURL: "https://api.listenbrainz.org", token: token, cache: cache,
 		client: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
 func (s *PopularityService) TopTracks(ctx context.Context, artist uuid.UUID) ([]PopularTrack, error) {
 	if artist == uuid.Nil {
 		return nil, ErrBadPayload
+	}
+	if s.token == "" {
+		return nil, errPopularityUnconfigured
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -131,27 +140,37 @@ func validPopularityMBID(raw string) bool {
 	return err == nil && id != uuid.Nil && raw == id.String()
 }
 
+// Keep errors.Is classification without exposing upstream-controlled error
+// text (for example, a malformed Location that reflects the auth header).
+type popularityIOError struct{ cause error }
+
+func (e popularityIOError) Error() string { return ErrUnreachable.Error() }
+func (e popularityIOError) Is(target error) bool {
+	return target == ErrUnreachable || errors.Is(e.cause, target)
+}
+
 func (s *PopularityService) fetchTopTracks(ctx context.Context, artist uuid.UUID) ([]PopularTrack, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/1/popularity/top-recordings-for-artist/"+artist.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build ListenBrainz popularity request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "SoundQ (https://github.com/donovan-yohan/open-music-player)")
+	req.Header.Set("Authorization", "Token "+s.token)
 	response, err := s.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("send ListenBrainz popularity request: %w", popularityIOError{cause: err})
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusTooManyRequests {
 		return nil, ErrRateLimited
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, ErrUpstreamStatus
+		return nil, fmt.Errorf("%w: %d", ErrUpstreamStatus, response.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, popularityMaxBytes+1))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read ListenBrainz popularity response: %w", popularityIOError{cause: err})
 	}
 	// Keep the literal IDs until validated; UUID unmarshalling accepts aliases.
 	var rows []struct {

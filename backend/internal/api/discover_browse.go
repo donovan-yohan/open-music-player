@@ -62,7 +62,7 @@ func (h *BrowseHandlers) GetArtistCatalogSearch(w http.ResponseWriter, r *http.R
 		return
 	}
 	kind, title := q.Get("kind"), q.Get("q")
-	if (kind != "song" && kind != "album") || title == "" {
+	if (kind != "song" && kind != "album") || title == "" || offset >= musicbrainz.DiscoverSearchMaxResults {
 		writeDiscoverBrowseResult(w, nil, musicbrainz.ErrInvalidDiscoverBrowse)
 		return
 	}

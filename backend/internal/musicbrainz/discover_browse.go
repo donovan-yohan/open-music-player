@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -76,7 +77,7 @@ func (c *Client) BrowseArtistDiscography(ctx context.Context, id uuid.UUID, kind
 	if kind != "" {
 		params.Set("type", string(kind))
 	}
-	return readDiscoverPage(ctx, c, "/release-group", params, "release-group-count", "release-group-offset", "release-groups", limit, offset, func(row discoverGroupProviderRow) (DiscoverReleaseGroup, error) {
+	return readDiscoverPage(ctx, c, "/release-group", params, "release-group-count", "release-group-offset", "release-groups", limit, offset, 0, func(row discoverGroupProviderRow) (DiscoverReleaseGroup, error) {
 		// Check the provider's full credit list before its display projection is capped.
 		if !discoverHasCredit(row.ArtistCredit, id) || (kind != "" && !strings.EqualFold(row.PrimaryType, string(kind))) {
 			return DiscoverReleaseGroup{}, errInvalidDiscoverResponse
@@ -127,7 +128,7 @@ type discoverGroupProviderRow struct {
 }
 
 func (c *Client) discoverGroupRow(row discoverGroupProviderRow) (DiscoverReleaseGroup, error) {
-	if !validDiscoverID(row.ID) || row.Title == "" {
+	if !validDiscoverID(row.ID) || strings.TrimSpace(row.Title) == "" {
 		return DiscoverReleaseGroup{}, errInvalidDiscoverResponse
 	}
 	artist, credits, truncated := projectDiscoverCredits(row.ArtistCredit)
@@ -148,12 +149,22 @@ func validDiscoverPage(id uuid.UUID, limit, offset int) bool {
 	return id != uuid.Nil && limit >= 1 && limit <= DiscoverBrowseMaxLimit && offset >= 0 && offset <= DiscoverBrowseMaxOffset
 }
 
-func readDiscoverPage[P, T any](ctx context.Context, c *Client, path string, params url.Values, countKey, offsetKey, rowsKey string, limit, offset int, project func(P) (T, error)) (*DiscoverBrowsePage[T], error) {
+func readDiscoverPage[P, T any](ctx context.Context, c *Client, path string, params url.Values, countKey, offsetKey, rowsKey string, limit, offset, resultWindow int, project func(P) (T, error)) (*DiscoverBrowsePage[T], error) {
+	providerLimit, lastOffset := limit, DiscoverBrowseMaxOffset
+	if resultWindow > 0 {
+		lastOffset = min(lastOffset, resultWindow-1)
+		if offset > lastOffset {
+			return nil, ErrInvalidDiscoverBrowse
+		}
+		providerLimit = min(limit, resultWindow-offset)
+	}
 	params.Set("fmt", "json")
-	params.Set("limit", strconv.Itoa(limit))
+	params.Set("limit", strconv.Itoa(providerLimit))
 	params.Set("offset", strconv.Itoa(offset))
 	reqURL := baseURL + path + "?" + params.Encode()
 	return readDiscoverBrowse(ctx, c, reqURL, discoverBrowseMaxBytes, searchTTL, func(ctx context.Context) ([]byte, error) {
+		// Browse already owns a full fill. Reuse paced transport without
+		// joining a doRequest flight with another caller's lifetime.
 		return c.requestWithRetry(ctx, reqURL)
 	}, func(body []byte) (*DiscoverBrowsePage[T], error) {
 		var envelope map[string]json.RawMessage
@@ -169,9 +180,9 @@ func readDiscoverPage[P, T any](ctx context.Context, c *Client, path string, par
 		if open, err := rows.Token(); err != nil || open != json.Delim('[') {
 			return nil, errInvalidDiscoverResponse
 		}
-		out := &DiscoverBrowsePage[T]{Results: make([]T, 0, limit), Total: *count, Limit: limit, Offset: offset}
+		out := &DiscoverBrowsePage[T]{Results: make([]T, 0, providerLimit), Total: *count, Limit: limit, Offset: offset}
 		for rows.More() {
-			if len(out.Results) >= limit {
+			if len(out.Results) >= providerLimit {
 				return nil, errInvalidDiscoverResponse
 			}
 			var row *P
@@ -192,7 +203,7 @@ func readDiscoverPage[P, T any](ctx context.Context, c *Client, path string, par
 			return nil, errInvalidDiscoverResponse
 		}
 		if next < *count {
-			out.Truncated = next > DiscoverBrowseMaxOffset
+			out.Truncated = next > lastOffset
 			out.HasMore = !out.Truncated
 			if out.HasMore {
 				out.NextOffset = &next
@@ -205,57 +216,98 @@ func readDiscoverPage[P, T any](ctx context.Context, c *Client, path string, par
 // Cache only complete, validated public responses. Each request decodes its
 // own DTO under the same byte and shape rules whether cold or warm.
 func readDiscoverBrowse[T any](ctx context.Context, c *Client, reqURL string, maxBytes int, ttl time.Duration, fetch func(context.Context) ([]byte, error), decode func([]byte) (*T, error)) (*T, error) {
-	ctx = WithInteractiveCatalogRead(ctx)
+	return readDiscoverBrowseWithCache(ctx, c, c, reqURL, maxBytes, ttl, fetch, decode)
+}
+
+type discoverBrowseCache interface {
+	cacheGet(context.Context, string) (string, bool)
+	cacheSet(context.Context, string, string, time.Duration)
+}
+
+type discoverBrowseFlightKey struct {
+	client   *Client
+	url      string
+	maxBytes int
+}
+
+type discoverBrowseFlight struct {
+	done    chan struct{}
+	cancel  context.CancelFunc
+	callers int // protected by discoverBrowseFlights
+	body    []byte
+	err     error
+}
+
+// Unlike the transport-only doRequest registry, a browse flight owns the cache
+// read, provider read, validation and cache write. Retain only active fills,
+// partitioned by Client; the underlying provider pacing is still process-wide.
+var discoverBrowseFlights = struct {
+	sync.Mutex
+	active map[discoverBrowseFlightKey]*discoverBrowseFlight
+}{active: make(map[discoverBrowseFlightKey]*discoverBrowseFlight)}
+
+func readDiscoverBrowseWithCache[T any](ctx context.Context, c *Client, store discoverBrowseCache, reqURL string, maxBytes int, ttl time.Duration, fetch func(context.Context) ([]byte, error), decode func([]byte) (*T, error)) (*T, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// Unlike ordinary transport-only flights, this owner spans the cache
-	// check, upstream read, validation and cache write. Admitting before the
-	// cache check leaves no miss-to-flight gap after another fill completes.
-	flightKey := "discover-browse-fill\x00" + strconv.Itoa(maxBytes) + "\x00" + reqURL
-	c.requestsMu.Lock()
-	if active := c.requests[flightKey]; active != nil {
-		c.requestsMu.Unlock()
-		// The earlier owner's browse deadline also bounds the shared work; a
-		// follower with a shorter deadline can always leave on its own context.
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-active.done:
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if active.err != nil {
-			return nil, active.err
-		}
-		value, err := decode(active.body)
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return value, err
+	key := discoverBrowseFlightKey{client: c, url: reqURL, maxBytes: maxBytes}
+	var firstValue *T // the first caller alone can use the fill's decoded DTO
+	discoverBrowseFlights.Lock()
+	flight := discoverBrowseFlights.active[key]
+	first := flight == nil
+	if first {
+		// This is public metadata, so the fill carries the browse policy, not
+		// the first caller's deadline, cancellation, values or private budgets.
+		fillCtx, cancel := context.WithTimeout(WithInteractiveCatalogRead(context.Background()), discoverBrowseTimeout)
+		flight = &discoverBrowseFlight{done: make(chan struct{}), cancel: cancel}
+		discoverBrowseFlights.active[key] = flight
+		go func() {
+			defer cancel()
+			cacheKey := c.buildCacheKey("discover-browse-v1", reqURL, 0, 0)
+			flight.body, firstValue, flight.err = fillDiscoverBrowse(fillCtx, store, cacheKey, maxBytes, ttl, fetch, decode)
+			discoverBrowseFlights.Lock()
+			if discoverBrowseFlights.active[key] == flight {
+				delete(discoverBrowseFlights.active, key)
+			}
+			close(flight.done)
+			discoverBrowseFlights.Unlock()
+		}()
 	}
-	active := &inflightRequest{done: make(chan struct{})}
-	if c.requests == nil {
-		c.requests = make(map[string]*inflightRequest)
-	}
-	c.requests[flightKey] = active
-	c.requestsMu.Unlock()
+	flight.callers++
+	discoverBrowseFlights.Unlock()
+	defer leaveDiscoverBrowseFlight(key, flight)
 
-	ctx, cancel := context.WithTimeout(ctx, discoverBrowseTimeout)
-	defer cancel()
-	body, value, err := fillDiscoverBrowse(ctx, c, reqURL, maxBytes, ttl, fetch, decode)
-	c.requestsMu.Lock()
-	active.body, active.err = body, err
-	delete(c.requests, flightKey)
-	close(active.done)
-	c.requestsMu.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-flight.done:
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if flight.err != nil || first {
+		return firstValue, flight.err
+	}
+	value, err := decode(flight.body)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	return value, err
 }
 
-func fillDiscoverBrowse[T any](ctx context.Context, c *Client, reqURL string, maxBytes int, ttl time.Duration, fetch func(context.Context) ([]byte, error), decode func([]byte) (*T, error)) ([]byte, *T, error) {
-	key := c.buildCacheKey("discover-browse-v1", reqURL, 0, 0)
-	if cached, ok := c.cacheGet(ctx, key); ok && len(cached) <= maxBytes {
+func leaveDiscoverBrowseFlight(key discoverBrowseFlightKey, flight *discoverBrowseFlight) {
+	discoverBrowseFlights.Lock()
+	defer discoverBrowseFlights.Unlock()
+	flight.callers--
+	if flight.callers == 0 && discoverBrowseFlights.active[key] == flight {
+		// Stop abandoned work and don't make a later caller join its failure.
+		flight.cancel()
+		delete(discoverBrowseFlights.active, key)
+	}
+}
+
+func fillDiscoverBrowse[T any](ctx context.Context, store discoverBrowseCache, key string, maxBytes int, ttl time.Duration, fetch func(context.Context) ([]byte, error), decode func([]byte) (*T, error)) ([]byte, *T, error) {
+	if cached, ok := store.cacheGet(ctx, key); ok && len(cached) <= maxBytes {
 		body := []byte(cached)
 		value, err := decode(body)
 		if ctx.Err() != nil {
@@ -285,9 +337,8 @@ func fillDiscoverBrowse[T any](ctx context.Context, c *Client, reqURL string, ma
 	if err != nil {
 		return nil, nil, fmt.Errorf("decode catalog browse: %w", err)
 	}
-	c.cacheSet(ctx, key, string(body), ttl)
-	if ctx.Err() != nil {
-		return nil, nil, ctx.Err()
-	}
+	// A best-effort SET can exhaust the remaining fill budget without
+	// invalidating the result. Each caller still checks its own context.
+	store.cacheSet(ctx, key, string(body), ttl)
 	return body, value, nil
 }

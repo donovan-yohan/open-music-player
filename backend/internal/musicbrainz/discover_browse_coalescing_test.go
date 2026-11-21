@@ -2,144 +2,158 @@ package musicbrainz
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
-
-	"github.com/google/uuid"
 )
+
+var discoverFixtureOrigin atomic.Uint64
 
 func TestDiscoverBrowseCoalescesThroughBodyAndCacheWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name, path, body string
-		read             func(context.Context, *Client) (any, error)
+		maxBytes         int
+		fetch            func(*Client, context.Context, string) ([]byte, error)
 	}{
-		{"small_page", "/ws/2/release-group", `{"release-group-count":1,"release-group-offset":0,"release-groups":[{"id":"` + discoverBrowseGroup + `","title":"An EP","primary-type":"EP",` + discoverBrowseCredit + `}]}`, func(ctx context.Context, c *Client) (any, error) {
-			return c.BrowseArtistDiscography(ctx, uuid.MustParse(discoverBrowseArtist), DiscographyEP, 5, 0)
-		}},
-		{"tracklist", "/ws/2/release/" + browseEdition, `{"id":"` + browseEdition + `","release-group":{"id":"` + discoverBrowseGroup + `"},"title":"Fixture","media":[{"position":1,"track-count":0,"tracks":[]}]}`, func(ctx context.Context, c *Client) (any, error) {
-			return c.GetEditionTracklist(ctx, uuid.MustParse(browseEdition))
-		}},
+		{"small_page", "/ws/2/release-group", discoverEmptyGroups, discoverBrowseMaxBytes, (*Client).requestWithRetry},
+		{"tracklist", "/ws/2/release/" + browseEdition, `{` + discoverFixtureRelease + `,"title":"Fixture","media":[]}`, discoverTracklistMaxBytes, (*Client).fetchDiscoverTracklist},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var calls, reads, writes atomic.Int32
-			bodyEntered, releaseBody := make(chan struct{}), make(chan struct{})
-			setEntered, releaseSet := make(chan struct{}), make(chan struct{})
-			secondGet := make(chan struct{})
-			store := fixturePublicCacheWithCommand(t, func(cmd string) {
-				switch cmd {
-				case "get":
-					if reads.Add(1) == 2 {
-						close(secondGet)
+			synctest.Test(t, func(t *testing.T) {
+				var calls, reads, writes atomic.Int32
+				var mu sync.Mutex
+				cache := make(map[string]string)
+				bodyEntered, releaseBody := make(chan struct{}), make(chan struct{})
+				setEntered, releaseSet := make(chan struct{}), make(chan struct{})
+				resumeWaiter := make(chan struct{})
+				openBody := sync.OnceFunc(func() { close(releaseBody) })
+				openSet := sync.OnceFunc(func() { close(releaseSet) })
+				openWaiter := sync.OnceFunc(func() { close(resumeWaiter) })
+				defer openBody()
+				defer openSet()
+				defer openWaiter()
+				// Hold this test-local SET explicitly, independent of Redis's
+				// socket deadline. The fake clock also removes scheduler timing.
+				store := discoverFixtureCache{
+					get: func(_ context.Context, key string) (string, bool) {
+						reads.Add(1)
+						mu.Lock()
+						defer mu.Unlock()
+						v, ok := cache[key]
+						return v, ok
+					},
+					set: func(ctx context.Context, key, value string, _ time.Duration) {
+						if writes.Add(1) == 1 {
+							close(setEntered)
+							select {
+							case <-releaseSet:
+							case <-ctx.Done():
+								return
+							}
+						}
+						mu.Lock()
+						cache[key] = value
+						mu.Unlock()
+					},
+				}
+				client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
+					if req.Method != http.MethodGet || req.URL.Path != tc.path || !interactiveCatalogRead(req.Context()) {
+						t.Errorf("unexpected provider request/policy: %s %s", req.Method, req.URL)
 					}
-				case "set":
-					if writes.Add(1) == 1 {
-						close(setEntered)
-						<-releaseSet
+					resp := fixtureResponse(http.StatusOK, tc.body)
+					if calls.Add(1) == 1 {
+						resp.Body = &discoverHeldBody{ReadCloser: resp.Body, entered: bodyEntered, release: releaseBody}
 					}
+					return resp, nil
+				}))
+				// Give each fake-clock bubble its own key in the real pacer.
+				url := fmt.Sprintf("https://browse-%d.fixture.invalid%s", discoverFixtureOrigin.Add(1), tc.path)
+				type payload map[string]json.RawMessage
+				read := func(ctx context.Context) (*payload, error) {
+					return readDiscoverBrowseWithCache(ctx, client, store, url, tc.maxBytes, searchTTL, func(ctx context.Context) ([]byte, error) {
+						return tc.fetch(client, ctx, url)
+					}, func(body []byte) (*payload, error) {
+						var out payload
+						if err := json.Unmarshal(body, &out); err != nil {
+							return nil, err
+						}
+						return &out, nil
+					})
+				}
+				type result struct {
+					value *payload
+					err   error
+				}
+				start := func(ctx context.Context) <-chan result {
+					out := make(chan result, 1)
+					go func() {
+						v, err := read(ctx)
+						out <- result{v, err}
+					}()
+					return out
+				}
+				join := func(ctx context.Context, parked <-chan struct{}) <-chan result {
+					joined := &discoverJoinContext{Context: ctx, waiting: make(chan struct{}), parked: parked}
+					out := start(joined)
+					awaitDiscoverEvent(t, joined.waiting)
+					return out
+				}
+				leader := start(t.Context())
+				awaitDiscoverEvent(t, bodyEntered)
+				short, cancelShort := context.WithTimeout(t.Context(), time.Second)
+				defer cancelShort()
+				if got := awaitDiscoverEvent(t, join(short, nil)); !errors.Is(got.err, context.DeadlineExceeded) || got.value != nil {
+					t.Fatalf("expired follower returned %+v", got)
+				}
+				bodyFollower := join(t.Context(), nil)
+				openBody()
+				awaitDiscoverEvent(t, setEntered)
+				writeFollower := join(t.Context(), nil)
+				delayedCtx, cancelDelayed := context.WithCancel(t.Context())
+				defer cancelDelayed()
+				delayedFollower := join(delayedCtx, resumeWaiter)
+				synctest.Wait()
+				for _, out := range []<-chan result{leader, bodyFollower, writeFollower} {
+					select {
+					case got := <-out:
+						t.Fatalf("read returned before held SET: %+v", got)
+					default:
+					}
+				}
+				openSet()
+				got := awaitDiscoverEvent(t, leader)
+				if got.err != nil || got.value == nil {
+					t.Fatalf("leader returned %+v", got)
+				}
+				for _, out := range []<-chan result{bodyFollower, writeFollower} {
+					peer := awaitDiscoverEvent(t, out)
+					if peer.err != nil || peer.value == got.value || !reflect.DeepEqual(peer.value, got.value) {
+						t.Fatalf("follower must own an equal, independent result: %+v, leader %+v", peer, got)
+					}
+				}
+				// Valid publication must not wait for all callers. Also refuse a
+				// stale caller when both result-ready and cancellation are ready.
+				cancelDelayed()
+				openWaiter()
+				if got := awaitDiscoverEvent(t, delayedFollower); !errors.Is(got.err, context.Canceled) || got.value != nil {
+					t.Fatalf("canceled delayed follower returned %+v", got)
+				}
+				if reads.Load() != 1 || writes.Load() != 1 || calls.Load() != 1 {
+					t.Fatalf("cold fill: %d cache reads, %d writes, %d provider calls", reads.Load(), writes.Load(), calls.Load())
+				}
+				warm, err := read(t.Context())
+				if err != nil || !reflect.DeepEqual(warm, got.value) || reads.Load() != 2 || writes.Load() != 1 || calls.Load() != 1 {
+					t.Fatalf("warm read: %+v %v, %d cache reads, %d writes, %d provider calls", warm, err, reads.Load(), writes.Load(), calls.Load())
 				}
 			})
-			openBody := sync.OnceFunc(func() { close(releaseBody) })
-			openSet := sync.OnceFunc(func() { close(releaseSet) })
-			defer openBody()
-			defer openSet()
-			client := NewClientWithTransport(store, fixtureTransport(func(req *http.Request) (*http.Response, error) {
-				if req.Method != http.MethodGet || req.URL.Path != tc.path {
-					t.Errorf("unexpected provider request: %s %s", req.Method, req.URL)
-				}
-				if !interactiveCatalogRead(req.Context()) {
-					t.Error("browse provider request lost the interactive context")
-				}
-				resp := fixtureResponse(200, tc.body)
-				if calls.Add(1) == 1 {
-					resp.Body = &discoverHeldBody{ReadCloser: resp.Body, entered: bodyEntered, release: releaseBody}
-				}
-				return resp, nil
-			}))
-			type result struct {
-				value any
-				err   error
-			}
-			var callers sync.WaitGroup
-			t.Cleanup(callers.Wait)
-			start := func(ctx context.Context) <-chan result {
-				out := make(chan result, 1)
-				callers.Go(func() {
-					v, err := tc.read(ctx, client)
-					out <- result{v, err}
-				})
-				return out
-			}
-			receive := func(out <-chan result) result {
-				t.Helper()
-				select {
-				case got := <-out:
-					return got
-				case <-time.After(3 * time.Second):
-					t.Fatal("browse caller did not return")
-					return result{}
-				}
-			}
-			wait := func(event <-chan struct{}, name string) {
-				t.Helper()
-				select {
-				case <-event:
-				case <-secondGet:
-					t.Fatalf("duplicate cold cache read instead of %s", name)
-				case <-time.After(3 * time.Second):
-					t.Fatalf("did not observe %s", name)
-				}
-			}
-			leader := start(context.Background())
-			wait(bodyEntered, "leader body read")
-			join := func(name string) (context.CancelFunc, <-chan result) {
-				t.Helper()
-				ctx, cancel := context.WithCancel(context.Background())
-				t.Cleanup(cancel)
-				joining := &discoverJoinContext{Context: ctx, waiting: make(chan struct{})}
-				out := start(joining)
-				wait(joining.waiting, name)
-				return cancel, out
-			}
-			cancel, canceled := join("follower while body held")
-			cancel()
-			if got := receive(canceled); !errors.Is(got.err, context.Canceled) {
-				t.Fatalf("canceled follower returned %+v", got)
-			}
-			_, bodyFollower := join("live follower while body held")
-			openBody()
-			wait(setEntered, "validated cache write")
-			_, writeFollower := join("live follower while cache write held")
-			for _, out := range []<-chan result{leader, bodyFollower, writeFollower} {
-				select {
-				case got := <-out:
-					t.Fatalf("read returned before the held cache fill: %+v", got)
-				default:
-				}
-			}
-			openSet()
-			got := receive(leader)
-			if got.err != nil || got.value == nil {
-				t.Fatalf("leader returned %+v", got)
-			}
-			for _, out := range []<-chan result{bodyFollower, writeFollower} {
-				peer := receive(out)
-				if peer.err != nil || peer.value == got.value || !reflect.DeepEqual(peer.value, got.value) {
-					t.Fatalf("follower must own an equal, independent result: %+v, leader %+v", peer, got)
-				}
-			}
-			if reads.Load() != 1 || writes.Load() != 1 || calls.Load() != 1 {
-				t.Fatalf("cold fill: %d cache reads, %d writes, %d provider calls", reads.Load(), writes.Load(), calls.Load())
-			}
-			warm, err := tc.read(context.Background(), client)
-			if err != nil || !reflect.DeepEqual(warm, got.value) || reads.Load() != 2 || writes.Load() != 1 || calls.Load() != 1 {
-				t.Fatalf("warm read: %+v %v, %d cache reads, %d writes, %d provider calls", warm, err, reads.Load(), writes.Load(), calls.Load())
-			}
 		})
 	}
 }
@@ -157,11 +171,12 @@ func (b *discoverHeldBody) Read(p []byte) (int, error) {
 	return b.ReadCloser.Read(p)
 }
 
-// Observe the caller's direct cancellable wait, excluding Done() consulted by
-// context.WithTimeout during creation of a new owner's context.
+// Observe the caller reaching its cancellable wait. The deadline check
+// distinguishes that from propagation in the synchronous predecessor.
 type discoverJoinContext struct {
 	context.Context
 	waiting         chan struct{}
+	parked          <-chan struct{}
 	deadlineChecked atomic.Bool
 	once            sync.Once
 }
@@ -174,6 +189,9 @@ func (c *discoverJoinContext) Deadline() (time.Time, bool) {
 func (c *discoverJoinContext) Done() <-chan struct{} {
 	if !c.deadlineChecked.Load() {
 		c.once.Do(func() { close(c.waiting) })
+		if c.parked != nil {
+			<-c.parked
+		}
 	}
 	return c.Context.Done()
 }

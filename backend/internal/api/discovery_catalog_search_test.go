@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,10 +31,10 @@ func (p *discoveryCatalogSource) Search(context.Context, string, int) ([]discove
 
 func TestDiscoveryCatalogSearchOnlyReadsRequestedFamily(t *testing.T) {
 	var requests atomic.Int32
-	received := make(chan *url.URL, 4)
+	var received atomic.Pointer[url.URL]
 	mb := musicbrainz.NewClientWithTransport(nil, discoveryCatalogTransport(func(r *http.Request) (*http.Response, error) {
 		requests.Add(1)
-		received <- r.URL
+		received.CompareAndSwap(nil, r.URL)
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"count":17,"offset":8,"artists":[{"id":"6f12404a-c015-4b05-bc96-33594ade1227","name":"Tiffany Day","score":100}]}`))}, nil
 	}))
 	provider := &discoveryCatalogSource{}
@@ -90,9 +91,72 @@ func TestDiscoveryCatalogSearchOnlyReadsRequestedFamily(t *testing.T) {
 	if calls := requests.Load(); calls != 1 || provider.calls.Load() != 0 || len(store) != 0 {
 		t.Fatalf("provider calls: metadata=%d source=%d, selection saves=%d", calls, provider.calls.Load(), len(store))
 	}
-	upstream := <-received
-	if upstream.Path != "/ws/2/artist" || upstream.Query().Get("limit") != "8" || upstream.Query().Get("offset") != "8" {
-		t.Fatalf("upstream catalog request = %s", upstream)
+	upstream := received.Load()
+	if upstream == nil || upstream.Path != "/ws/2/artist" || upstream.Query().Get("limit") != "8" || upstream.Query().Get("offset") != "8" {
+		t.Fatalf("upstream catalog request = %v", upstream)
+	}
+}
+
+func TestDiscoveryCatalogSearchRespectsPublicSearchDepth(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind                 string
+		offset, limit, count, rows int
+		hasMore                    bool
+	}{
+		{name: "before final page", kind: "artist", offset: 488, limit: 8, count: 2000, rows: 8, hasMore: true},
+		{name: "short provider page", kind: "artist", offset: 496, limit: 4, count: 2000, rows: 2, hasMore: true},
+		{name: "final album page", kind: "album", offset: 496, limit: 4, count: 2000, rows: 4},
+		{name: "last reachable artist", kind: "artist", offset: 499, limit: 1, count: 2000, rows: 1},
+		{name: "provider count exhausted first", kind: "artist", offset: 8, limit: 8, count: 12, rows: 4},
+		{name: "at cap", kind: "artist", offset: 500},
+		{name: "past cap", kind: "album", offset: 501},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entity, collection, titleField := "artist", "artists", "name"
+			if tc.kind == "album" {
+				entity, collection, titleField = "release-group", "release-groups", "title"
+			}
+			rows := make([]string, tc.rows)
+			for i := range rows {
+				rows[i] = fmt.Sprintf(`{"id":"e21cddee-813b-4937-ba3b-%012d","%s":"Fixture %d"}`, tc.offset+i, titleField, i)
+			}
+			body := fmt.Sprintf(`{"count":%d,"offset":%d,"%s":[%s]}`, tc.count, tc.offset, collection, strings.Join(rows, ","))
+			var calls atomic.Int32
+			var upstream atomic.Pointer[url.URL]
+			mb := musicbrainz.NewClientWithTransport(nil, discoveryCatalogTransport(func(r *http.Request) (*http.Response, error) {
+				calls.Add(1)
+				upstream.CompareAndSwap(nil, r.URL)
+				if r.URL.Path != "/ws/2/"+entity || r.URL.Query().Get("limit") != fmt.Sprint(tc.limit) || r.URL.Query().Get("offset") != fmt.Sprint(tc.offset) {
+					return &http.Response{StatusCode: http.StatusBadRequest, Body: http.NoBody}, nil
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+			}))
+			cfg, token := previewRouterConfig(t)
+			cfg.DiscoveryHandlers = discovery.NewHandlersWithAssistAndSelectionStore(discovery.NewService(discovery.ServiceConfig{MusicCatalog: mb}), nil, nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, fmt.Sprintf("/api/v1/discovery/catalog?q=Fixture&kind=%s&offset=%d", tc.kind, tc.offset), nil)
+			r.Header.Set("Authorization", "Bearer "+token)
+			w := httptest.NewRecorder()
+			NewRouterWithConfig(&cfg).ServeHTTP(w, r)
+			if tc.limit == 0 {
+				if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"INVALID_OFFSET"`) || calls.Load() != 0 {
+					t.Fatalf("offset %d: status=%d body=%s upstream calls=%d; want 400 INVALID_OFFSET without upstream work", tc.offset, w.Code, w.Body, calls.Load())
+				}
+				return
+			}
+			if w.Code != http.StatusOK || calls.Load() != 1 {
+				t.Fatalf("offset %d: status=%d body=%s upstream calls=%d request=%v; want 200 with one %s request at limit %d", tc.offset, w.Code, w.Body, calls.Load(), upstream.Load(), entity, tc.limit)
+			}
+			var page struct {
+				Results []discovery.SearchItem
+				HasMore bool
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Results) != tc.rows || page.HasMore != tc.hasMore {
+				t.Fatalf("offset %d: rows=%d hasMore=%t; want rows=%d hasMore=%t", tc.offset, len(page.Results), page.HasMore, tc.rows, tc.hasMore)
+			}
+		})
 	}
 }
 

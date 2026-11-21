@@ -77,6 +77,37 @@ func TestDiscoverBrowseWireRefusesInvalidInputBeforeProvider(t *testing.T) {
 	}
 }
 
+func TestDiscoverBrowseWireScopedSearchStopsAtPublicResultWindow(t *testing.T) {
+	artist := "/api/v1/artists/" + browseWireID
+	row := `{"id":"` + browseWireID + `","title":"Title","artist-credit":[{"artist":{"id":"` + browseWireID + `","name":"Artist"}}]}`
+	for _, tc := range []struct{ kind, path, list string }{
+		{"song", "/ws/2/recording", "recordings"},
+		{"album", "/ws/2/release-group", "release-groups"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			calls := 0
+			mux := discoverBrowseWireMux(NewBrowseHandlers(musicbrainz.NewClientWithTransport(nil, discoverBrowseWireTransport(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.URL.Path != tc.path || r.URL.Query().Get("limit") != "4" || r.URL.Query().Get("offset") != "496" {
+					t.Errorf("unexpected provider request: %s", r.URL)
+				}
+				body := `{"count":600,"offset":496,"` + tc.list + `":[` + strings.Repeat(row+",", 3) + row + `]}`
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+			}))))
+			route := artist + "/search?kind=" + tc.kind + "&q=title&limit=20&offset="
+			w := discoverBrowseWireRequest(mux, "GET", route+"496", true)
+			var got musicbrainz.DiscoverBrowsePage[json.RawMessage]
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || w.Code != 200 || len(got.Results) != 4 || got.Total != 600 || got.Limit != 20 || got.Offset != 496 || got.HasMore || got.NextOffset != nil || !got.Truncated {
+				t.Fatalf("unexpected terminal page: %d %s (%v)", w.Code, w.Body, err)
+			}
+			w = discoverBrowseWireRequest(mux, "GET", route+"500", true)
+			if w.Code != 400 || calls != 1 {
+				t.Fatalf("out-of-window request: status %d, total calls %d", w.Code, calls)
+			}
+		})
+	}
+}
+
 func TestDiscoverBrowseWireEmptyIsNotUnavailableOrNotFound(t *testing.T) {
 	var paths []string
 	mux := discoverBrowseWireMux(NewBrowseHandlers(musicbrainz.NewClientWithTransport(nil, discoverBrowseWireTransport(func(r *http.Request) (*http.Response, error) {

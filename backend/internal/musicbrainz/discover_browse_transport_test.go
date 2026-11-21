@@ -33,11 +33,11 @@ func TestDiscoverBrowseArtistSearchEachKindUsesLiteralAndExactCredit(t *testing.
 			field, list = "releasegroup", "release-groups"
 			body = `{"id":"` + discoverBrowseGroup + `","title":"Same album","primary-type":"Album",` + discoverBrowseCredit + `}`
 		default:
-			t.Fatalf("unrelated provider request: %s", req.URL)
+			return nil, errors.New("unexpected provider path: " + req.URL.Path)
 		}
 		want := url.Values{"query": {field + `:"same\" OR arid:*\\name" AND arid:` + discoverBrowseArtist}, "fmt": {"json"}, "limit": {"20"}, "offset": {"0"}}
 		if !reflect.DeepEqual(req.URL.Query(), want) {
-			t.Fatalf("wrong scoped query: %v", req.URL.Query())
+			t.Errorf("wrong scoped query: %v", req.URL.Query())
 		}
 		return fixtureResponse(200, `{"count":1,"offset":0,"`+list+`":[`+body+`]}`), nil
 	}))
@@ -57,20 +57,20 @@ func TestDiscoverBrowseEditionsPageAndExactTrackPlacements(t *testing.T) {
 	client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
 		starts = append(starts, time.Now())
 		if deadline, ok := req.Context().Deadline(); !ok || time.Until(deadline) > discoverBrowseTimeout {
-			t.Fatalf("unbounded provider context: %s", req.URL)
+			t.Errorf("unbounded provider context: %s", req.URL)
 		}
 		summary := `"id":"` + browseEdition + `","release-group":{"id":"` + discoverBrowseGroup + `"},"title":"Box Set","date":"2025-06","country":"GB","status":"Official",` + discoverBrowseCredit
 		switch req.URL.Path {
 		case "/ws/2/release":
 			want := url.Values{"release-group": {discoverBrowseGroup}, "inc": {"artist-credits media release-groups"}, "fmt": {"json"}, "limit": {"5"}, "offset": {"7"}}
 			if !reflect.DeepEqual(req.URL.Query(), want) {
-				t.Fatalf("wrong editions query: %v", req.URL.Query())
+				t.Errorf("wrong editions query: %v", req.URL.Query())
 			}
 			return fixtureResponse(200, `{"release-count":12,"release-offset":7,"releases":[{`+summary+`,"media":[{"position":1,"format":"Vinyl","track-count":2},{"position":2,"format":"Vinyl","track-count":1}]}]}`), nil
 		case "/ws/2/release/" + browseEdition:
 			want := url.Values{"inc": {"artist-credits recordings release-groups"}, "fmt": {"json"}}
 			if !reflect.DeepEqual(req.URL.Query(), want) {
-				t.Fatalf("wrong tracklist query: %v", req.URL.Query())
+				t.Errorf("wrong tracklist query: %v", req.URL.Query())
 			}
 			return fixtureResponse(200, `{`+summary+`,"media":[
 				{"position":2,"format":"Vinyl","track-count":1,"track-offset":0,"tracks":[
@@ -81,8 +81,7 @@ func TestDiscoverBrowseEditionsPageAndExactTrackPlacements(t *testing.T) {
 				"pregap":{"id":"88888888-8888-4888-8888-888888888888","position":0,"title":"Hidden","recording":{"id":"`+browseRecording+`"}},
 				"data-tracks":[{"id":"99999999-9999-4999-8999-999999999999","position":3,"title":"Data"}]}]}`), nil
 		default:
-			t.Fatalf("unrelated provider request: %s", req.URL)
-			return nil, nil
+			return nil, errors.New("unexpected provider path: " + req.URL.Path)
 		}
 	}))
 	page, err := client.BrowseReleaseGroupEditions(context.Background(), uuid.MustParse(discoverBrowseGroup), 5, 7)
@@ -170,31 +169,47 @@ func TestDiscoverBrowseTracklistWireBudgetAndNoRedirect(t *testing.T) {
 
 func TestDiscoverBrowseCancellationStopsProviderAndKeepsContextError(t *testing.T) {
 	entered := make(chan struct{})
+	stopped := make(chan error, 1)
+	var calls atomic.Int32
 	client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
+		if calls.Add(1) != 1 {
+			return fixtureResponse(http.StatusOK, discoverEmptyGroups), nil
+		}
 		close(entered)
 		<-req.Context().Done()
+		stopped <- req.Context().Err()
 		return nil, req.Context().Err()
 	}))
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	returned := make(chan error, 1)
-	go func() {
-		_, err := client.BrowseArtistDiscography(ctx, uuid.MustParse(discoverBrowseArtist), "", 20, 0)
-		returned <- err
-	}()
-	select {
-	case <-entered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("no provider request")
+	start := func(ctx context.Context) <-chan error {
+		returned := make(chan error, 1)
+		go func() {
+			_, err := client.BrowseArtistDiscography(ctx, uuid.MustParse(discoverBrowseArtist), "", 20, 0)
+			returned <- err
+		}()
+		return returned
 	}
+	owner := start(ctx)
+	awaitDiscoverEvent(t, entered)
+	followerCtx, cancelFollower := context.WithCancel(t.Context())
+	defer cancelFollower()
+	joining := &discoverJoinContext{Context: followerCtx, waiting: make(chan struct{})}
+	follower := start(joining)
+	awaitDiscoverEvent(t, joining.waiting)
 	cancel()
-	select {
-	case err := <-returned:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("wrong cancellation error: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("canceled provider request did not return")
+	if err := awaitDiscoverEvent(t, owner); !errors.Is(err, context.Canceled) {
+		t.Fatalf("wrong owner cancellation: %v", err)
+	}
+	cancelFollower()
+	if err := awaitDiscoverEvent(t, follower); !errors.Is(err, context.Canceled) {
+		t.Fatalf("wrong follower cancellation: %v", err)
+	}
+	if err := awaitDiscoverEvent(t, stopped); !errors.Is(err, context.Canceled) || calls.Load() != 1 {
+		t.Fatalf("last caller did not cancel the single provider dispatch: %v, calls=%d", err, calls.Load())
+	}
+	if err := awaitDiscoverEvent(t, start(t.Context())); err != nil || calls.Load() != 2 {
+		t.Fatalf("fresh caller joined the abandoned flight: %v, calls=%d", err, calls.Load())
 	}
 }
 
@@ -204,7 +219,7 @@ func TestDiscoverBrowseTracklistRequiresExplicitCompleteMediaBeforeCache(t *test
 	for _, tc := range []struct{ name, medium string }{
 		{"missing_count", `"tracks":[]`},
 		{"null_count", `"track-count":null,"tracks":[]`},
-		{"missing_array", `"track-count":0`},
+		{"missing_nonempty_array", `"track-count":1`},
 		{"null_array", `"track-count":0,"tracks":null`},
 		{"partial_array", `"track-count":2,"tracks":[` + firstTrack + `]`},
 		{"nonzero_offset", `"track-count":0,"track-offset":1,"tracks":[]`},

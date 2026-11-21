@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -74,9 +75,20 @@ type discoverMedium struct {
 	Format      string                  `json:"format"`
 	TrackCount  *int                    `json:"track-count"`
 	TrackOffset int                     `json:"track-offset"`
-	Tracks      []discoverProviderTrack `json:"tracks"`
+	Tracks      discoverAudioTracks     `json:"tracks"`
 	Pregap      *discoverProviderTrack  `json:"pregap"`
 	DataTracks  []discoverProviderTrack `json:"data-tracks"`
+}
+
+// Keep omission distinct from an explicit null without loosening array decoding.
+type discoverAudioTracks struct {
+	present bool
+	rows    []discoverProviderTrack
+}
+
+func (tracks *discoverAudioTracks) UnmarshalJSON(b []byte) error {
+	tracks.present = true
+	return json.Unmarshal(b, &tracks.rows)
 }
 
 type discoverProviderTrack struct {
@@ -99,7 +111,7 @@ func (c *Client) BrowseReleaseGroupEditions(ctx context.Context, id uuid.UUID, l
 		return nil, ErrInvalidDiscoverBrowse
 	}
 	params := url.Values{"release-group": {id.String()}, "inc": {"artist-credits media release-groups"}}
-	return readDiscoverPage(ctx, c, "/release", params, "release-count", "release-offset", "releases", limit, offset, func(row discoverReleaseProviderRow) (DiscoverEdition, error) {
+	return readDiscoverPage(ctx, c, "/release", params, "release-count", "release-offset", "releases", limit, offset, 0, func(row discoverReleaseProviderRow) (DiscoverEdition, error) {
 		if row.ReleaseGroup.ID != id.String() {
 			return DiscoverEdition{}, errInvalidDiscoverResponse
 		}
@@ -132,15 +144,13 @@ func (c *Client) GetEditionTracklist(ctx context.Context, id uuid.UUID) (*Discov
 func (c *Client) fetchDiscoverTracklist(ctx context.Context, reqURL string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create MusicBrainz tracklist request: %w", err)
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/json")
-	client := *c.httpClient
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := doPacedRequestWithClient(req, client)
+	resp, err := c.doPacedRequest(req) // the interactive browse policy refuses redirects
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("execute MusicBrainz tracklist request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
@@ -154,7 +164,7 @@ func (c *Client) fetchDiscoverTracklist(ctx context.Context, reqURL string) ([]b
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, discoverTracklistMaxBytes+1))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read MusicBrainz tracklist response body: %w", err)
 	}
 	if len(body) > discoverTracklistMaxBytes {
 		return nil, fmt.Errorf("MusicBrainz tracklist exceeds body budget")
@@ -163,7 +173,7 @@ func (c *Client) fetchDiscoverTracklist(ctx context.Context, reqURL string) ([]b
 }
 
 func (c *Client) discoverEditionRow(row discoverReleaseProviderRow) (DiscoverEdition, error) {
-	if !validDiscoverID(row.ID) || !validDiscoverID(row.ReleaseGroup.ID) || row.Title == "" || row.Media == nil || len(row.Media) > discoverTracklistMaxMedia {
+	if !validDiscoverID(row.ID) || !validDiscoverID(row.ReleaseGroup.ID) || strings.TrimSpace(row.Title) == "" || row.Media == nil || len(row.Media) > discoverTracklistMaxMedia {
 		return DiscoverEdition{}, errInvalidDiscoverResponse
 	}
 	formats := make([]string, 0, len(row.Media))
@@ -190,17 +200,18 @@ func (c *Client) discoverTracklist(row discoverReleaseProviderRow) (*DiscoverEdi
 	mediaPositions := make(map[int]bool, len(row.Media))
 	trackIDs := make(map[string]bool)
 	for _, medium := range row.Media {
-		// Omitted/null fields are not evidence of an empty medium. An explicit
-		// zero count and empty audio array are valid (pregap/data are separate).
+		// The MusicBrainz JSON Medium serializer omits tracks when its audio
+		// list is empty. Require the explicit count and reject explicit null.
 		// MusicBrainz's track-offset describes where loaded tracks start, not
 		// whether their positions are contiguous (and a pregap forces offset 0).
+		audio := medium.Tracks.rows
 		if medium.Position < 1 || medium.Position > len(row.Media) || mediaPositions[medium.Position] || medium.TrackOffset != 0 ||
-			medium.TrackCount == nil || medium.Tracks == nil || *medium.TrackCount != len(medium.Tracks) {
+			medium.TrackCount == nil || *medium.TrackCount != len(audio) || (medium.Tracks.present && audio == nil) {
 			return nil, errInvalidDiscoverResponse
 		}
 		mediaPositions[medium.Position] = true
 		// Audio and data together occupy positions 1..N; only the pregap is 0.
-		positiveTrackCount := len(medium.Tracks) + len(medium.DataTracks)
+		positiveTrackCount := len(audio) + len(medium.DataTracks)
 		rowCount := positiveTrackCount
 		if medium.Pregap != nil {
 			rowCount++
@@ -218,10 +229,10 @@ func (c *Client) discoverTracklist(row discoverReleaseProviderRow) (*DiscoverEdi
 				return errInvalidDiscoverResponse
 			}
 			title := track.Title
-			if title == "" {
+			if strings.TrimSpace(title) == "" {
 				title = track.Recording.Title
 			}
-			if title == "" {
+			if strings.TrimSpace(title) == "" {
 				return errInvalidDiscoverResponse
 			}
 			credits := track.ArtistCredit
@@ -245,7 +256,7 @@ func (c *Client) discoverTracklist(row discoverReleaseProviderRow) (*DiscoverEdi
 		for _, tracks := range []struct {
 			kind string
 			rows []discoverProviderTrack
-		}{{"track", medium.Tracks}, {"data", medium.DataTracks}} {
+		}{{"track", audio}, {"data", medium.DataTracks}} {
 			for _, track := range tracks.rows {
 				if err := appendTrack(track, tracks.kind); err != nil {
 					return nil, err

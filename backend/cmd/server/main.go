@@ -1072,8 +1072,8 @@ func runServerWithPrivateLibraryFixture(binding *privateLibraryFixtureBinding) i
 
 	// Create router with all handlers
 	var artistPopularity *listenbrainz.PopularityService
-	if redisCache != nil {
-		artistPopularity = listenbrainz.NewPopularityService(redisCache.Interactive())
+	if redisCache != nil && cfg.ListenBrainzPopularityToken != "" {
+		artistPopularity = listenbrainz.NewPopularityService(redisCache.Interactive(), cfg.ListenBrainzPopularityToken)
 	}
 	router := api.NewRouterWithConfig(&api.RouterConfig{
 		Telemetry:               telemetry,

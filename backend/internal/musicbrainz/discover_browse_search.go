@@ -12,6 +12,10 @@ import (
 
 const discoverArtistSearchMaxQueryBytes = 160
 
+// DiscoverSearchMaxResults is the public MusicBrainz search window; unlike
+// browse endpoints, search rejects offset + limit above this value.
+const DiscoverSearchMaxResults = 500
+
 var discoverTitleLiteral = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 
 type DiscoverRecording struct {
@@ -40,8 +44,8 @@ func (c *Client) SearchArtistRecordings(ctx context.Context, id uuid.UUID, query
 	if err != nil {
 		return nil, err
 	}
-	return readDiscoverPage(ctx, c, "/recording", params, "count", "offset", "recordings", limit, offset, func(row discoverRecordingProviderRow) (DiscoverRecording, error) {
-		if !validDiscoverID(row.ID) || row.Title == "" || !discoverHasCredit(row.ArtistCredit, id) || row.Length < 0 {
+	return readDiscoverPage(ctx, c, "/recording", params, "count", "offset", "recordings", limit, offset, DiscoverSearchMaxResults, func(row discoverRecordingProviderRow) (DiscoverRecording, error) {
+		if !validDiscoverID(row.ID) || strings.TrimSpace(row.Title) == "" || !discoverHasCredit(row.ArtistCredit, id) || row.Length < 0 {
 			return DiscoverRecording{}, errInvalidDiscoverResponse
 		}
 		artist, credits, truncated := projectDiscoverCredits(row.ArtistCredit)
@@ -59,7 +63,7 @@ func (c *Client) SearchArtistReleaseGroups(ctx context.Context, id uuid.UUID, qu
 	if err != nil {
 		return nil, err
 	}
-	return readDiscoverPage(ctx, c, "/release-group", params, "count", "offset", "release-groups", limit, offset, func(row discoverGroupProviderRow) (DiscoverReleaseGroup, error) {
+	return readDiscoverPage(ctx, c, "/release-group", params, "count", "offset", "release-groups", limit, offset, DiscoverSearchMaxResults, func(row discoverGroupProviderRow) (DiscoverReleaseGroup, error) {
 		if !discoverHasCredit(row.ArtistCredit, id) {
 			return DiscoverReleaseGroup{}, errInvalidDiscoverResponse
 		}
