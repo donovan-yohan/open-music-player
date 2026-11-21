@@ -1071,6 +1071,10 @@ func runServerWithPrivateLibraryFixture(binding *privateLibraryFixtureBinding) i
 	defer stopJamCleanup()
 
 	// Create router with all handlers
+	var artistPopularity *listenbrainz.PopularityService
+	if redisCache != nil {
+		artistPopularity = listenbrainz.NewPopularityService(redisCache.Interactive())
+	}
 	router := api.NewRouterWithConfig(&api.RouterConfig{
 		Telemetry:               telemetry,
 		Logger:                  log,
@@ -1082,6 +1086,7 @@ func runServerWithPrivateLibraryFixture(binding *privateLibraryFixtureBinding) i
 		SearchHandlers:          searchHandlers,
 		MBClient:                mbClient,
 		MBHandlers:              mbHandlers,
+		ArtistPopularity:        artistPopularity,
 		LocalEnrichmentEnabled:  cfg.LocalEnrichmentEnabled,
 		WSHandler:               wsHandler,
 		MatcherHandlers:         matcherHandlers,

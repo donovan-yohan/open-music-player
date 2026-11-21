@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/listenbrainz"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 )
 
@@ -17,7 +18,8 @@ var uuidRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 // BrowseHandlers contains handlers for browse/discovery endpoints
 type BrowseHandlers struct {
-	mbClient *musicbrainz.Client
+	mbClient   *musicbrainz.Client
+	popularity *listenbrainz.PopularityService
 }
 
 // NewBrowseHandlers creates a new BrowseHandlers instance

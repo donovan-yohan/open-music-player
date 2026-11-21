@@ -12,6 +12,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/health"
+	"github.com/openmusicplayer/backend/internal/listenbrainz"
 	"github.com/openmusicplayer/backend/internal/logger"
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/metrics"
@@ -88,6 +89,7 @@ type RouterConfig struct {
 	SearchHandlers          *search.Handlers
 	MBClient                *musicbrainz.Client
 	MBHandlers              *musicbrainz.Handlers
+	ArtistPopularity        *listenbrainz.PopularityService
 	LocalEnrichmentEnabled  bool
 	WSHandler               *websocket.Handler
 	MatcherHandlers         *matcher.Handler
@@ -160,7 +162,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		authHandlers:            cfg.AuthHandlers,
 		authService:             cfg.AuthService,
 		searchHandlers:          cfg.SearchHandlers,
-		browseHandlers:          NewBrowseHandlers(cfg.MBClient),
+		browseHandlers:          &BrowseHandlers{mbClient: cfg.MBClient, popularity: cfg.ArtistPopularity},
 		musicbrainzHandlers:     cfg.MBHandlers,
 		wsHandler:               cfg.WSHandler,
 		validatorHandlers:       validators.NewHandlers(validatorRegistry),
@@ -319,10 +321,12 @@ func (r *Router) setupRoutes() {
 	}
 	if r.discoveryHandlers != nil {
 		r.mux.HandleFunc("GET /api/v1/discovery/search", r.withAuth(r.discoveryHandlers.Search))
+		r.mux.HandleFunc("GET /api/v1/discovery/catalog", r.withAuth(r.discoveryHandlers.CatalogSearch))
 		r.mux.HandleFunc("POST /api/v1/discovery/resolve-url", r.withAuth(r.discoveryHandlers.ResolveURL))
 		r.mux.HandleFunc("POST /api/v1/discovery/assist", r.withAuth(r.discoveryHandlers.Assist))
 	} else {
 		r.mux.HandleFunc("GET /api/v1/discovery/search", r.withAuth(unavailableHandler("Discovery search is unavailable")))
+		r.mux.HandleFunc("GET /api/v1/discovery/catalog", r.withAuth(unavailableHandler("Catalog search is unavailable")))
 		r.mux.HandleFunc("POST /api/v1/discovery/resolve-url", r.withAuth(unavailableHandler("Discovery URL resolver is unavailable")))
 		r.mux.HandleFunc("POST /api/v1/discovery/assist", r.withAuth(unavailableHandler("Discovery assist is unavailable")))
 	}
@@ -356,7 +360,12 @@ func (r *Router) setupRoutes() {
 		r.mux.HandleFunc("POST /api/v1/research-jobs/{id}/reviews", researchUnavailable)
 	}
 	r.mux.HandleFunc("GET /api/v1/artists/{mb_id}", r.withAuth(r.browseHandlers.GetArtist))
+	r.mux.HandleFunc("GET /api/v1/artists/{mb_id}/discography", r.withAuth(r.browseHandlers.GetArtistDiscography))
+	r.mux.HandleFunc("GET /api/v1/artists/{mb_id}/top-tracks", r.withAuth(r.browseHandlers.GetArtistTopTracks))
+	r.mux.HandleFunc("GET /api/v1/artists/{mb_id}/search", r.withAuth(r.browseHandlers.GetArtistCatalogSearch))
+	r.mux.HandleFunc("GET /api/v1/release-groups/{mb_id}/editions", r.withAuth(r.browseHandlers.GetReleaseGroupEditions))
 	r.mux.HandleFunc("GET /api/v1/albums/{mb_id}", r.withAuth(r.browseHandlers.GetAlbum))
+	r.mux.HandleFunc("GET /api/v1/albums/{mb_id}/tracklist", r.withAuth(r.browseHandlers.GetAlbumTracklist))
 	r.mux.HandleFunc("GET /api/v1/tracks/{mb_id}", r.withAuth(r.browseHandlers.GetTrack))
 
 	// WebSocket route (auth via query param)

@@ -31,6 +31,9 @@ func (c *Client) doRequest(ctx context.Context, reqURL string) ([]byte, error) {
 	if recordingSourceRead(ctx) {
 		flightKey += "\x00recording-source"
 	}
+	if interactiveCatalogRead(ctx) {
+		flightKey += "\x00interactive-catalog"
+	}
 	if budget := weeklyBudget(ctx); budget != nil {
 		flightKey += fmt.Sprintf("\x00weekly-4requests-2mib-%p", budget)
 	}
