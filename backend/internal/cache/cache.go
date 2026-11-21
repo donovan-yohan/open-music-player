@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -10,8 +11,9 @@ import (
 )
 
 type Cache struct {
-	client *redis.Client
-	log    *logger.Logger
+	client      *redis.Client
+	interactive *redis.Client
+	log         *logger.Logger
 }
 
 // CacheConfig holds configuration for the cache
@@ -38,6 +40,7 @@ func NewWithConfig(cfg *CacheConfig) (*Cache, error) {
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
 		return nil, err
 	}
 
@@ -50,11 +53,20 @@ func NewWithConfig(cfg *CacheConfig) (*Cache, error) {
 		"addr": cfg.Addr,
 	})
 
-	return &Cache{client: client, log: log}, nil
+	interactive := redis.NewClient(&redis.Options{
+		Addr:                  cfg.Addr,
+		ContextTimeoutEnabled: true,
+		MaxRetries:            -1,
+		DialTimeout:           interactiveBudget,
+		ReadTimeout:           interactiveBudget,
+		WriteTimeout:          interactiveBudget,
+		PoolTimeout:           interactiveBudget,
+	})
+	return &Cache{client: client, interactive: interactive, log: log}, nil
 }
 
 func (c *Cache) Close() error {
-	return c.client.Close()
+	return errors.Join(c.client.Close(), c.interactive.Close())
 }
 
 // Client returns the underlying Redis client for health checks and metrics.

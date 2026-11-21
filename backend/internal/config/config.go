@@ -120,6 +120,9 @@ type Config struct {
 	// serves pinned-algorithm candidates from the labs cache/upstream.
 	EnableListenBrainzMix bool
 
+	// Operator-supplied token scoped to the optional artist top-tracks shelf.
+	ListenBrainzPopularityToken string
+
 	// Durable research jobs always create a deterministic baseline. This flag
 	// controls only optional model enhancement; a disabled runner records the
 	// model-disabled degradation while retaining that baseline.
@@ -287,6 +290,8 @@ func Load() *Config {
 
 		// ListenBrainz similar-artist expansion (default OFF, issue #392)
 		EnableListenBrainzMix: parseBoolEnv("ENABLE_LISTENBRAINZ_MIX", false),
+
+		ListenBrainzPopularityToken: strings.TrimSpace(os.Getenv("LISTENBRAINZ_POPULARITY_TOKEN")),
 
 		ResearchEnabled:       parseBoolEnv("RESEARCH_ENABLED", false),
 		ResearchWorkerEnabled: parseBoolEnv("RESEARCH_WORKER_ENABLED", true),

@@ -62,11 +62,18 @@ func (c *Client) cacheGet(ctx context.Context, key string) (string, bool) {
 	if c.cache == nil {
 		return "", false
 	}
+	if interactiveCatalogRead(ctx) {
+		return c.cache.Interactive().Get(ctx, key)
+	}
 	return c.cache.Get(ctx, key)
 }
 
 func (c *Client) cacheSet(ctx context.Context, key string, value string, ttl time.Duration) {
 	if c.cache == nil {
+		return
+	}
+	if interactiveCatalogRead(ctx) {
+		_ = c.cache.Interactive().Set(ctx, key, value, ttl)
 		return
 	}
 	_ = c.cache.Set(ctx, key, value, ttl)
@@ -696,6 +703,7 @@ func (c *Client) releaseGroupCoverArtURL(groupID releaseGroupID) string {
 func (c *Client) requestWithRetry(ctx context.Context, reqURL string) ([]byte, error) {
 	log := logger.Default().WithComponent("musicbrainz")
 	cfg := apperrors.MusicBrainzRetryConfig()
+	interactive := interactiveCatalogRead(ctx)
 	var maxBody int64
 	if radarReadBounded(ctx) {
 		cfg.MaxRetries = 1
@@ -704,6 +712,10 @@ func (c *Client) requestWithRetry(ctx context.Context, reqURL string) ([]byte, e
 	if recordingSourceRead(ctx) {
 		cfg.MaxRetries = 0
 		maxBody = recordingSourceMaxBytes
+	}
+	if interactive {
+		cfg.MaxRetries = 0
+		maxBody = 1 << 20
 	}
 
 	var result []byte
@@ -721,10 +733,12 @@ func (c *Client) requestWithRetry(ctx context.Context, reqURL string) ([]byte, e
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			log.Warn(ctx, "MusicBrainz request failed, may retry", map[string]interface{}{
-				"url":   reqURL,
-				"error": err.Error(),
-			})
+			if !interactive {
+				log.Warn(ctx, "MusicBrainz request failed, may retry", map[string]interface{}{
+					"url":   reqURL,
+					"error": err.Error(),
+				})
+			}
 			return apperrors.MusicBrainzError(fmt.Sprintf("request failed: %v", err))
 		}
 		defer resp.Body.Close()
@@ -735,18 +749,22 @@ func (c *Client) requestWithRetry(ctx context.Context, reqURL string) ([]byte, e
 
 		// Check for rate limiting (429)
 		if resp.StatusCode == http.StatusTooManyRequests {
-			log.Warn(ctx, "MusicBrainz rate limited, will retry", map[string]interface{}{
-				"url": reqURL,
-			})
+			if !interactive {
+				log.Warn(ctx, "MusicBrainz rate limited, will retry", map[string]interface{}{
+					"url": reqURL,
+				})
+			}
 			return apperrors.MusicBrainzError("rate limited")
 		}
 
 		// Check for retryable server errors
 		if apperrors.HTTPRetryableStatus(resp.StatusCode) {
-			log.Warn(ctx, "MusicBrainz server error, will retry", map[string]interface{}{
-				"url":    reqURL,
-				"status": resp.StatusCode,
-			})
+			if !interactive {
+				log.Warn(ctx, "MusicBrainz server error, will retry", map[string]interface{}{
+					"url":    reqURL,
+					"status": resp.StatusCode,
+				})
+			}
 			return apperrors.MusicBrainzError(fmt.Sprintf("server error: %d", resp.StatusCode))
 		}
 
@@ -771,9 +789,11 @@ func (c *Client) requestWithRetry(ctx context.Context, reqURL string) ([]byte, e
 	})
 
 	if err != nil {
-		log.Error(ctx, "MusicBrainz request failed after retries", map[string]interface{}{
-			"url": reqURL,
-		}, err)
+		if !interactive {
+			log.Error(ctx, "MusicBrainz request failed after retries", map[string]interface{}{
+				"url": reqURL,
+			}, err)
+		}
 		return nil, err
 	}
 
