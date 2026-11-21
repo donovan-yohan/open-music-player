@@ -170,6 +170,8 @@ class OriginalImportCompositionTest {
                     assertTrue(g.trackDetails.state.value.missing)
                     assertEquals(readOnly, Files.getPosixFilePermissions(path))
                 }
+                assertEquals(if (confirmed) "ConfirmedLocalSettleFailed" else "Unconfirmed", g.trackDetails.state.value.removalIssue?.name)
+                assertTrue(g.trackDetails.state.value.removalBlocked)
                 g.trackDetails.execute(command) // a consumed action never sends again
                 assertNull(f.server.takeRequest(150, java.util.concurrent.TimeUnit.MILLISECONDS))
                 g.trackDetails.state.value.outcome
@@ -271,15 +273,19 @@ class OriginalImportCompositionTest {
         }
     }
 
-    @Test fun unreadableAtomicFenceNeverReachesTheOwnedDeleteEndpoint() = Fixture().use { f ->
+    @Test fun unreadableAtomicFenceNeverReachesTheOwnedDeleteEndpoint() = unreadableAtomicFence(recover = false)
+
+    @Test fun unreadableAtomicPrepareCanBeRetractedOnlyByItsLiveOwner() = unreadableAtomicFence(recover = true)
+
+    private fun unreadableAtomicFence(recover: Boolean) = Fixture().use { f ->
         val journal = File(f.directory, "original-import.v1.json")
         val before = journal.readBytes()
         val writable = Files.getPosixFilePermissions(journal.toPath())
         val stageWasMadeUnreadable = AtomicBoolean(false)
-        f.graph(null).use { g ->
+        f.graph(null).use graph@ { g ->
             val scope = f.signIn(g)
             try {
-                assertEquals("RemovalNotSent", assertThrows(SafeFailure::class.java) {
+                assertEquals("RemovalNotSentLocalCleanupFailed", assertThrows(SafeFailure::class.java) {
                     g.api.trackDetailsRemove(scope, f.track) {
                         // The final pre-rename route check runs after the staged bytes were fsynced.
                         // Keep the rename possible but make the renamed file unreadable to the real journal.
@@ -295,7 +301,23 @@ class OriginalImportCompositionTest {
                 assertTrue(g.originalImports.state.value.rejected)
                 assertEquals(0, f.server.requestCount)
             } finally { Files.setPosixFilePermissions(journal.toPath(), writable) }
+            if (recover) {
+                assertEquals(LibraryRemovalFenceStatus.NotSentLocalCleanupFailed, g.api.libraryRemovalFenceStatus(scope, f.track))
+                assertEquals(OriginalImportPhase.RemovalPending, OriginalImportJournal(journal).apply { load() }.state.value.rows.single().phase)
+                assertFalse(g.api.retryUnenteredLibraryRemoval(scope, f.track) { false })
+                assertTrue(g.originalImports.state.value.rejected)
+                assertTrue(g.api.retryUnenteredLibraryRemoval(scope, f.track) { true })
+                assertArrayEquals(before, journal.readBytes())
+                assertEquals(OriginalImportPhase.Added, g.originalImports.entries(scope).single().phase)
+                assertEquals(0, f.server.requestCount)
+                return@graph
+            }
+            // A same-account re-entry does not inherit the old scope's retry authority.
+            val newScope = f.signIn(g)
+            assertFalse(g.api.retryUnenteredLibraryRemoval(scope, f.track) { true })
+            assertFalse(g.api.retryUnenteredLibraryRemoval(newScope, f.track) { true })
         }
+        if (recover) return@use
         assertFalse(before.contentEquals(journal.readBytes()))
         f.graph("fixture").use { g ->
             val scope = f.signIn(g)
@@ -304,6 +326,43 @@ class OriginalImportCompositionTest {
             assertTrue(g.originalImports.associations(scope).isEmpty())
         }
         assertEquals(0, f.server.requestCount)
+    }
+
+    @Test fun ambiguousRetractionRequiresExactDiskVerificationBeforePublishing() = Fixture().use { f ->
+        val file = File(f.directory, "original-import.v1.json")
+        val before = file.readBytes()
+        val journal = OriginalImportJournal(file)
+        val owner = f.intent.destination
+        val operation = UUID.randomUUID()
+        assertTrue(journal.prepareRemoval(owner, f.track, operation) { true })
+        val permissions = Files.getPosixFilePermissions(file.toPath())
+        var injected = false
+        try {
+            assertThrows(java.io.IOException::class.java) {
+                journal.finishRemoval(owner, f.track, operation, acknowledged = false) {
+                    f.directory.listFiles().orEmpty().singleOrNull { it.name.endsWith(".pending") }?.let {
+                        Files.setPosixFilePermissions(it.toPath(), emptySet())
+                        injected = true
+                    }
+                    true
+                }
+            }
+            assertTrue(injected)
+            assertTrue(journal.state.value.rejected)
+            assertTrue(journal.state.value.rows.isEmpty())
+        } finally { Files.setPosixFilePermissions(file.toPath(), permissions) }
+        assertArrayEquals(before, file.readBytes()) // Atomic replacement landed; its readback did not.
+        val wrong = before + byteArrayOf(0x20) // Parseable but not the owned replacement.
+        file.writeBytes(wrong)
+        assertThrows(IllegalStateException::class.java) {
+            journal.finishRemoval(owner, f.track, operation, acknowledged = false) { true }
+        }
+        assertArrayEquals(wrong, file.readBytes())
+        assertTrue(journal.state.value.rejected)
+        file.writeBytes(before)
+        journal.finishRemoval(owner, f.track, operation, acknowledged = false) { true }
+        assertArrayEquals(before, file.readBytes())
+        assertEquals(OriginalImportPhase.Added, journal.state.value.rows.single().phase)
     }
 
     @Test fun staleRouteAfterVerifiedFenceButBeforeWireRetractsOnlyItsUnenteredAdmission() = Fixture().use { f ->
@@ -444,6 +503,351 @@ class OriginalImportCompositionTest {
                 println("deliberate removal after reopen: TLS DELETE=1 POST=0; exact 204 and both readbacks; unrelated receipt unchanged")
             }
         } finally { app.denyPermissions(permission) }
+    }
+
+    @Test fun canceledDeleteWithFailedRetractionRecoversOnlyOnDetailsReloadAndFreshMembership() = Fixture(seedReceipt = false).use { f ->
+        val app = shadowOf(RuntimeEnvironment.getApplication())
+        val permission = Manifest.permission.READ_EXTERNAL_STORAGE
+        app.grantPermissions(permission)
+        val journal = File(f.directory, "original-import.v1.json")
+        val path = f.directory.toPath()
+        val writable = Files.getPosixFilePermissions(path)
+        val member = AtomicBoolean(true)
+        val exactReadHealthy = AtomicBoolean(true)
+        val deletes = AtomicInteger()
+        val posts = AtomicInteger()
+        f.server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.method == "POST") posts.incrementAndGet()
+                return when (request.method to request.url.encodedPath) {
+                    "GET" to f.memberPath -> if (exactReadHealthy.get()) f.member() else f.reply(503, "{}")
+                    "GET" to "/api/v1/library" -> f.libraryPage(member.get(), request)
+                    "GET" to "/api/v1/tracks/77/analysis" -> f.reply(404, "{}")
+                    "DELETE" to f.memberPath -> {
+                        deletes.incrementAndGet()
+                        check(member.compareAndSet(true, false))
+                        MockResponse.Builder().code(204).build()
+                    }
+                    else -> f.reply(500, "{}")
+                }
+            }
+        }
+        var deleteCall: Call? = null
+        var headerStarts = 0
+        val listener = object : EventListener() {
+            override fun callStart(call: Call) { if (call.request().method == "DELETE") deleteCall = call }
+            override fun requestHeadersStart(call: Call) { if (call.request().method == "DELETE") headerStarts++ }
+        }
+        fun persisted() = OriginalImportJournal(journal).apply { load() }.state.value.also { assertTrue(it.ready) }
+        try {
+            f.graph("fixture", listener = listener).use { g ->
+                val scope = f.signIn(g)
+                val intent = f.intent.copy(original = f.phoneSource(g))
+                f.seed(intent)
+                val peer = intent.copy(destination = intent.destination.copy(endpoint = f.otherEndpoint.identity), operation = UUID.randomUUID())
+                f.seed(peer)
+                val peerFence = UUID.randomUUID()
+                OriginalImportJournal(journal).prepareRemoval(peer.destination, f.track, peerFence) { true }
+                val peerEntry = persisted().entry(peer.operation)
+                assertEquals(peerFence, peerEntry?.removal)
+                val before = journal.readBytes()
+                val original = g.originalImports.admitOnlinePlayback(scope, f.track).single()
+                assertEquals("GET", f.next(f.memberPath).method)
+                val operation = intent.operation.toString()
+                assertSame(original, g.originalImports.admitExplicitOriginal(scope, f.track, operation).single())
+                fun assertAliasesFenced() {
+                    assertFalse(g.originalImports.owns(scope, original))
+                    assertTrue(g.originalImports.admitOnlinePlayback(scope, f.track).isEmpty())
+                    assertTrue(g.originalImports.admitExplicitOriginal(scope, f.track, operation).isEmpty())
+                }
+                var fenced: ByteArray? = null
+                // Use Track Details' real source-validity callback to cancel only after the pending row
+                // is visible both in memory and on disk. The route and account both remain current.
+                val route = checkNotNull(g.trackDetails.open(com.soundq.android.data.trackdetails.PlayerDetailsCapture(scope, f.track) {
+                    val entry = g.originalImports.state.value.entry(intent.operation)
+                    if (fenced == null && entry?.phase == OriginalImportPhase.RemovalPending) {
+                        assertEquals(entry, persisted().entry(intent.operation))
+                        assertEquals(peerEntry, persisted().entry(peer.operation))
+                        assertTrue(g.session.remoteCurrent(scope))
+                        fenced = journal.readBytes()
+                        Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("r-x------"))
+                        checkNotNull(deleteCall).cancel()
+                    }
+                    true
+                }))
+                fun reloadDetails() {
+                    g.trackDetails.load(route)
+                    assertEquals("GET", f.next("/api/v1/library").method)
+                    assertEquals("GET", f.next("/api/v1/tracks/77/analysis").method)
+                }
+                fun claimRemove() = g.trackDetails.claim(route, checkNotNull(g.trackDetails.state.value.detail), DetailsAction.Remove)
+                reloadDetails()
+                val command = checkNotNull(claimRemove())
+                val beforeCancel = f.server.requestCount
+                g.trackDetails.execute(command)
+                assertNotNull(fenced)
+                assertEquals(beforeCancel, f.server.requestCount)
+                assertEquals(0, headerStarts)
+                assertArrayEquals(fenced, journal.readBytes())
+                assertAliasesFenced()
+                assertEquals("NotSentLocalCleanupFailed", g.trackDetails.state.value.removalIssue?.name)
+                assertEquals(MutationOutcome.Refused, g.trackDetails.state.value.outcome)
+                assertTrue(g.trackDetails.state.value.removalBlocked)
+                assertNull(claimRemove())
+                reloadDetails()
+                assertEquals("NotSentLocalCleanupFailed", g.trackDetails.state.value.removalIssue?.name)
+                assertArrayEquals(fenced, journal.readBytes())
+                assertAliasesFenced()
+                assertNull(claimRemove())
+
+                Files.setPosixFilePermissions(path, writable)
+                // A reconstructed graph sees the same v2 fence, but has no pre-entry witness.
+                // The live graph still owns the exclusive phone store; reopen a snapshot of it.
+                val reopenedPhone = File(f.directory, "reopened-phone-listening.v1.json")
+                File(f.directory, "phone-listening.v1.json").copyTo(reopenedPhone)
+                f.graph("fixture", openPhoneAudioStore = { DeviceListeningStore(reopenedPhone) }).use { restarted ->
+                    val restartedScope = f.signIn(restarted)
+                    assertEquals(intent.original, f.phoneSource(restarted))
+                    f.openDetails(restarted)
+                    assertEquals(OriginalImportPhase.RemovalPending, restarted.originalImports.entries(restartedScope).single().phase)
+                    assertEquals("Unconfirmed", restarted.trackDetails.state.value.removalIssue?.name)
+                    assertTrue(restarted.trackDetails.state.value.removalBlocked)
+                    assertTrue(restarted.originalImports.admitOnlinePlayback(restartedScope, f.track).isEmpty())
+                    assertTrue(restarted.originalImports.admitExplicitOriginal(restartedScope, f.track, operation).isEmpty())
+                    assertArrayEquals(fenced, journal.readBytes())
+                }
+
+                reloadDetails()
+                assertNull(g.trackDetails.state.value.removalIssue)
+                assertFalse(g.trackDetails.state.value.removalBlocked)
+                assertArrayEquals(before, journal.readBytes())
+                assertEquals(peerEntry, persisted().entry(peer.operation))
+                assertFalse(g.originalImports.owns(scope, original))
+                assertTrue(g.originalImports.admitExplicitOriginal(scope, f.track, operation).isEmpty())
+                exactReadHealthy.set(false)
+                assertTrue(g.originalImports.admitOnlinePlayback(scope, f.track).isEmpty())
+                assertEquals("GET", f.next(f.memberPath).method)
+                assertTrue(g.originalImports.admitExplicitOriginal(scope, f.track, operation).isEmpty())
+                exactReadHealthy.set(true)
+                val fresh = g.originalImports.admitOnlinePlayback(scope, f.track).single()
+                assertEquals("GET", f.next(f.memberPath).method)
+                assertEquals(intent, fresh.intent)
+                assertNotSame(original, fresh)
+                assertSame(fresh, g.originalImports.admitExplicitOriginal(scope, f.track, operation).single())
+                assertEquals(0, deletes.get())
+                assertEquals(0, posts.get())
+                assertEquals(0, headerStarts)
+                assertTrue(member.get())
+
+                g.trackDetails.execute(command) // Consumed old intent cannot send after recovery.
+                g.trackDetails.execute(checkNotNull(claimRemove()))
+                assertEquals("DELETE", f.next(f.memberPath).method)
+                repeat(2) { assertEquals("GET", f.next("/api/v1/library").method) }
+                assertEquals(1, headerStarts)
+                assertEquals(1, deletes.get())
+                assertEquals(0, posts.get())
+                assertEquals(MutationOutcome.Confirmed, g.trackDetails.state.value.outcome)
+                assertEquals(OriginalImportPhase.Removed, persisted().entry(intent.operation)?.phase)
+                assertEquals(peerEntry, persisted().entry(peer.operation))
+            }
+        } finally {
+            Files.setPosixFilePermissions(path, writable)
+            app.denyPermissions(permission)
+        }
+    }
+
+    @Test fun replacementDetailsClearsItsUnconfirmedNoticeOnlyAfterExactUnenteredRetraction() =
+        replacementDetailsReload()
+
+    @Test fun replacementDetailsReloadKeepsALaterOperationFenced() =
+        replacementDetailsReload(laterFence = true)
+
+    @Test fun replacementDetailsReloadPreservesAnUnrelatedRefusal() =
+        replacementDetailsReload(refuseMetadata = true)
+
+    private fun replacementDetailsReload(laterFence: Boolean = false, refuseMetadata: Boolean = false) = Fixture().use { f ->
+        val disk = File(f.directory, "original-import.v1.json")
+        val path = f.directory.toPath()
+        val writable = Files.getPosixFilePermissions(path)
+        val before = disk.readBytes()
+        val heldAtDispatch = CountDownLatch(1)
+        val releaseDispatch = CountDownLatch(1)
+        val holdAnalysis = AtomicBoolean(false)
+        val analysisEntered = CountDownLatch(1)
+        val releaseAnalysis = CountDownLatch(1)
+        val laterDispatch = CountDownLatch(1)
+        val releaseLaterDispatch = CountDownLatch(1)
+        val holding = AtomicBoolean(false)
+        val deleteCalls = AtomicInteger()
+        val mutationHeaders = AtomicInteger()
+        val mutationRequests = AtomicInteger()
+        val listener = object : EventListener() {
+            override fun callStart(call: Call) { if (call.request().method == "DELETE") deleteCalls.incrementAndGet() }
+            override fun requestHeadersStart(call: Call) {
+                if (call.request().method in setOf("DELETE", "POST")) mutationHeaders.incrementAndGet()
+            }
+        }
+        f.server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.method in setOf("DELETE", "POST")) mutationRequests.incrementAndGet()
+                return when (request.method to request.url.encodedPath) {
+                    "GET" to "/api/v1/library" -> f.libraryPage(true, request)
+                    "GET" to "/api/v1/tracks/77/analysis" -> {
+                        if (holdAnalysis.get()) {
+                            analysisEntered.countDown()
+                            check(releaseAnalysis.await(10, SECONDS))
+                        }
+                        f.reply(404, "{}")
+                    }
+                    "PUT" to "/api/v1/tracks/77/metadata-override" -> f.reply(403, "{}")
+                    else -> f.reply(500, "{}")
+                }
+            }
+        }
+        fun persisted() = OriginalImportJournal(disk).apply { load() }.state.value.also { assertTrue(it.ready) }
+            .entry(f.intent.operation)!!
+        f.graph(null, listener = listener).use { g ->
+            val scope = f.signIn(g)
+            val details = g.trackDetails
+            val playing = PlaybackProjection(connection = PlaybackProjection.Connection.Connected,
+                queue = listOf(QueueOccurrence("occ-77", f.track.value, "Known original", "", false)),
+                selectedOccurrence = "occ-77", accountEpoch = scope.epoch,
+                sessionIdentity = "fixture-player", sourceQueueIncarnation = "fixture-queue")
+            val latest = java.util.concurrent.atomic.AtomicReference(playing)
+            val capture = checkNotNull(details.capturePlayer(scope, playing) {
+                if (g.originalImports.state.value.entry(f.intent.operation)?.phase == OriginalImportPhase.RemovalPending &&
+                    holding.compareAndSet(false, true)) {
+                    // Hold the final source check in the real network interceptor, after prepareRemoval
+                    // and outside the membership lock, so the replacement can observe the fence.
+                    heldAtDispatch.countDown()
+                    check(releaseDispatch.await(10, SECONDS))
+                }
+                latest.get()
+            })
+            val oldRoute = checkNotNull(details.open(capture))
+            details.load(oldRoute)
+            assertEquals("GET", f.next("/api/v1/library").method)
+            assertEquals("GET", f.next("/api/v1/tracks/77/analysis").method)
+            val oldCommand = checkNotNull(details.claim(oldRoute, details.state.value.detail!!, DetailsAction.Remove))
+            val pool = Executors.newFixedThreadPool(2)
+            try {
+                val removed = pool.submit { details.execute(oldCommand) }
+                assertTrue("old DELETE did not reach held pre-entry admission", heldAtDispatch.await(5, SECONDS))
+                val pending = persisted()
+                assertEquals(OriginalImportPhase.RemovalPending, pending.phase)
+                assertNotNull(pending.removal)
+                assertEquals(pending, g.originalImports.state.value.entry(f.intent.operation))
+                val fenced = disk.readBytes()
+                assertEquals(2, Json.parseToJsonElement(fenced.decodeToString()).jsonObject.getValue("version").jsonPrimitive.int)
+                assertEquals(1, deleteCalls.get())
+                assertEquals(0, mutationHeaders.get())
+                assertEquals(0, mutationRequests.get())
+                assertTrue(details.current(oldRoute))
+
+                val replacement = f.openDetails(g)
+                val beforeReload = details.state.value
+                assertFalse(details.current(oldRoute))
+                assertTrue(details.current(replacement))
+                assertTrue(g.session.remoteCurrent(scope))
+                assertEquals("Unconfirmed", beforeReload.removalIssue?.name)
+                assertTrue(beforeReload.removalBlocked)
+                assertNull(details.claim(replacement, beforeReload.detail!!, DetailsAction.Remove))
+                assertFalse(removed.isDone)
+
+                // Force immediate pre-entry retraction to fail, not the preceding prepare/readback.
+                Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("r-x------"))
+                // The captured Player selection also retires while the source read is held. The
+                // old route's pre-call current check has already run inside the interceptor.
+                latest.set(playing.copy(selectionIncarnation = playing.selectionIncarnation + 1))
+                releaseDispatch.countDown()
+                removed.get(10, SECONDS)
+                assertSame(beforeReload, details.state.value) // The old command cannot publish into this route.
+                assertEquals(pending, persisted())
+                assertArrayEquals(fenced, disk.readBytes())
+                assertEquals(LibraryRemovalFenceStatus.NotSentLocalCleanupFailed, g.api.libraryRemovalFenceStatus(scope, f.track))
+                Files.setPosixFilePermissions(path, writable)
+
+                // An independent graph has the same bytes, not the live process's unentered witness.
+                f.graph(null, listener = listener).use { restarted ->
+                    f.signIn(restarted)
+                    val coldRoute = f.openDetails(restarted)
+                    val cold = restarted.trackDetails.state.value
+                    assertEquals("Unconfirmed", cold.removalIssue?.name)
+                    assertTrue(cold.removalBlocked)
+                    assertNull(restarted.trackDetails.claim(coldRoute, cold.detail!!, DetailsAction.Remove))
+                    assertArrayEquals(fenced, disk.readBytes())
+                }
+
+                if (refuseMetadata) {
+                    val metadata = DetailsAction.Metadata(com.soundq.android.data.trackdetails.MetadataDraft("Unrelated draft"))
+                    details.execute(checkNotNull(details.claim(replacement, details.state.value.detail!!, metadata)))
+                    assertEquals("PUT", f.next("/api/v1/tracks/77/metadata-override").method)
+                    assertEquals(MutationOutcome.Refused, details.state.value.outcome)
+                }
+                val beforeRecovery = f.server.requestCount
+                if (laterFence) {
+                    holdAnalysis.set(true)
+                    val reload = pool.submit { details.load(replacement) }
+                    assertTrue("Reload did not reach its analysis GET", analysisEntered.await(5, SECONDS))
+                    assertTrue(details.state.value.loading)
+                    assertArrayEquals(before, disk.readBytes()) // A was verified local-only cleanup.
+                    val competingRemoval = pool.submit<SafeFailure.Reason?> {
+                        assertThrows(SafeFailure::class.java) {
+                            g.api.trackDetailsRemove(scope, f.track) {
+                                if (g.originalImports.state.value.entry(f.intent.operation)?.phase != OriginalImportPhase.RemovalPending) true
+                                else {
+                                    laterDispatch.countDown()
+                                    check(releaseLaterDispatch.await(10, SECONDS))
+                                    false
+                                }
+                            }
+                        }.reason
+                    }
+                    assertTrue("later DELETE did not prepare a real pre-entry fence", laterDispatch.await(5, SECONDS))
+                    val newer = persisted()
+                    assertEquals(OriginalImportPhase.RemovalPending, newer.phase)
+                    assertNotNull(newer.removal)
+                    assertNotEquals(pending.removal, newer.removal)
+                    releaseAnalysis.countDown()
+                    reload.get(10, SECONDS)
+                    val reloaded = details.state.value
+                    assertFalse(reloaded.loading)
+                    assertEquals("Unconfirmed", reloaded.removalIssue?.name)
+                    assertTrue("cleanup of A must not enable Remove while B owns the fence", reloaded.removalBlocked)
+                    assertNull(details.claim(replacement, reloaded.detail!!, DetailsAction.Remove))
+                    assertEquals(newer, persisted())
+                    releaseLaterDispatch.countDown()
+                    assertEquals(SafeFailure.Reason.Retired, competingRemoval.get(10, SECONDS))
+                } else details.load(replacement)
+                assertEquals("GET", f.next("/api/v1/library").method)
+                assertEquals("GET", f.next("/api/v1/tracks/77/analysis").method)
+                assertEquals(beforeRecovery + 2, f.server.requestCount)
+                assertArrayEquals(before, disk.readBytes())
+                assertEquals(OriginalImportPhase.Added, persisted().phase)
+                details.execute(oldCommand)
+                assertEquals(if (laterFence) 2 else 1, deleteCalls.get())
+                assertEquals(0, mutationHeaders.get())
+                assertEquals(0, mutationRequests.get())
+                val recovered = details.state.value
+                assertFalse(recovered.loading)
+                if (!laterFence) {
+                    assertEquals(if (refuseMetadata) MutationOutcome.Refused else null, recovered.outcome)
+                    assertFalse(recovered.removalBlocked)
+                    assertNotNull("fresh deliberate Remove must be eligible without being executed",
+                        details.claim(replacement, recovered.detail!!, DetailsAction.Remove))
+                    println("exact verified unentered retraction; replacement Remove claim accepted; " +
+                        "mutation headers=${mutationHeaders.get()}, requests=${mutationRequests.get()}, notice=${recovered.removalIssue}, outcome=${recovered.outcome}")
+                    assertNull("eligible Remove must not retain the retracted operation's Unconfirmed notice", recovered.removalIssue)
+                }
+            } finally {
+                releaseDispatch.countDown()
+                releaseAnalysis.countDown()
+                releaseLaterDispatch.countDown()
+                pool.shutdownNow()
+                pool.awaitTermination(10, SECONDS)
+                Files.setPosixFilePermissions(path, writable)
+            }
+        }
     }
 
     @Test fun oldAccountEpochCannotSettleEntered204OrChangeOtherReceipts() = Fixture().use { f ->
@@ -931,7 +1335,7 @@ class OriginalImportCompositionTest {
         }
     }
 
-    private class Fixture(seedReceipt: Boolean = true) : AutoCloseable {
+    internal class Fixture(seedReceipt: Boolean = true) : AutoCloseable {
         val server = MockWebServer()
         private val cert = HeldCertificate.Builder().addSubjectAlternativeName("127.0.0.1").addSubjectAlternativeName("localhost").build()
         private val trust = HandshakeCertificates.Builder().addTrustedCertificate(cert.certificate).build()

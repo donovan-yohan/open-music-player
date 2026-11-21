@@ -2,6 +2,7 @@ package com.soundq.android.data.trackdetails
 
 import com.soundq.android.data.*
 import com.soundq.android.data.playlists.LibraryTrackCapture
+import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -17,8 +18,11 @@ sealed interface DetailsAction {data class Metadata(val draft:MetadataDraft):Det
 class PlayerDetailsCapture internal constructor(val scope:AccountScope,val trackId:TrackId,internal val valid:()->Boolean)
 class DetailsRoute internal constructor(val scope:AccountScope,val trackId:TrackId,internal val sourceValid:()->Boolean={true},val fromPlayer:Boolean=false) {@Volatile internal var active=true}
 class DetailsTicket internal constructor(val route:DetailsRoute,val observed:TrackDetails,val action:DetailsAction,internal val libraryState:LibraryState) {internal var consumed=false}
-enum class RemovalIssue { NotSent, Unconfirmed, ConfirmedLocalSettleFailed }
-data class TrackDetailsState(val detail:TrackDetails?=null,val outcome:MutationOutcome?=null,val loading:Boolean=false,val error:SafeFailure.Reason?=null,val missing:Boolean=false,val analysis:AnalysisDetail?=null,val analysisError:SafeFailure.Reason?=null,val analysisAbsent:Boolean=false,val reconciled:Boolean=false,val removalBlocked:Boolean=false,val removalIssue:RemovalIssue?=null)
+enum class RemovalIssue { NotSent, NotSentLocalCleanupFailed, Unconfirmed, ConfirmedLocalSettleFailed }
+data class TrackDetailsState(val detail:TrackDetails?=null,val outcome:MutationOutcome?=null,val loading:Boolean=false,val error:SafeFailure.Reason?=null,val missing:Boolean=false,val analysis:AnalysisDetail?=null,val analysisError:SafeFailure.Reason?=null,val analysisAbsent:Boolean=false,val reconciled:Boolean=false,val removalBlocked:Boolean=false,val removalIssue:RemovalIssue?=null,private val outcomeDescribedByRemovalNotice:Boolean=false) {
+    // A retained removal notice can outlive the command whose result it described.
+    internal val genericOutcome get()=outcome.takeUnless {outcomeDescribedByRemovalNotice}
+}
 /** One observation and one non-replayable command per mounted, account-qualified route. */
 class TrackDetailsRepository(private val api:SoundQApi,private val library:LibraryRepository) {
     private val mutable=MutableStateFlow(TrackDetailsState())
@@ -26,6 +30,26 @@ class TrackDetailsRepository(private val api:SoundQApi,private val library:Libra
     @Volatile private var selected:DetailsRoute?=null
     private var ticket:DetailsTicket?=null
     private var readVersion=0L
+    // Only the matching local retraction can retire a fence already shown to this route.
+    private var presentedFence:LibraryRemovalFence?=null
+    private var outcomeFence:UUID?=null
+    private var removalResult:RemovalIssue?=null
+    private fun resetRemoval() {presentedFence=null;outcomeFence=null;removalResult=null}
+
+    private fun TrackDetailsState.withOutcome(value:MutationOutcome?,describedByRemovalNotice:Boolean=false)=
+        copy(outcome=value,outcomeDescribedByRemovalNotice=describedByRemovalNotice)
+
+    private fun TrackDetailsState.withRemovalNotice()=copy(
+        removalBlocked=presentedFence!=null||removalResult==RemovalIssue.ConfirmedLocalSettleFailed,
+        removalIssue=when {
+            outcome==MutationOutcome.Pending -> null
+            removalResult==RemovalIssue.ConfirmedLocalSettleFailed -> removalResult
+            else -> when(presentedFence?.status) {
+                LibraryRemovalFenceStatus.NotSentLocalCleanupFailed -> RemovalIssue.NotSentLocalCleanupFailed
+                LibraryRemovalFenceStatus.Unconfirmed -> RemovalIssue.Unconfirmed
+                null -> removalResult
+            }
+        })
     fun open(capture:LibraryTrackCapture):DetailsRoute? {
         if(!library.owns(capture)||!api.session.remoteCurrent(capture.scope))return null
         return admit(DetailsRoute(capture.scope,capture.track.id))
@@ -52,61 +76,80 @@ class TrackDetailsRepository(private val api:SoundQApi,private val library:Libra
     @Synchronized private fun admit(route:DetailsRoute):DetailsRoute? {
         if(!api.session.remoteCurrent(route.scope)||!route.sourceValid())return null
         selected?.active=false
-        return route.also {selected=it;ticket=null;readVersion++;mutable.value=TrackDetailsState()}
+        return route.also {selected=it;ticket=null;readVersion++;resetRemoval();mutable.value=TrackDetailsState()}
     }
     fun current(route:DetailsRoute)=selected===route&&route.active&&api.session.remoteCurrent(route.scope)&&route.sourceValid()
-    @Synchronized fun close(route:DetailsRoute) {route.active=false;if(selected===route){selected=null;ticket=null;readVersion++;mutable.value=TrackDetailsState()}}
+    @Synchronized fun close(route:DetailsRoute) {route.active=false;if(selected===route){selected=null;ticket=null;readVersion++;resetRemoval();mutable.value=TrackDetailsState()}}
     @Synchronized fun retire(){selected?.let(::close)}
     fun load(route:DetailsRoute) {
         val version=synchronized(this){if(!current(route)||ticket!=null||mutable.value.loading)return;readVersion++;mutable.value=mutable.value.copy(loading=true,error=null);readVersion}
+        var retracted:UUID?=null
         try {
+            retracted=api.retractUnenteredLibraryRemoval(route.scope,route.trackId){current(route)}
             val detail=api.trackDetailsSnapshot(route.scope,route.trackId){current(route)}
-            val pendingRemoval=detail!=null&&api.libraryRemovalPending(route.scope,route.trackId)
-            synchronized(this){if(current(route)&&version==readVersion) {
-                val prior=mutable.value
-                mutable.value=prior.copy(detail=detail,missing=detail==null,error=null,
-                    removalBlocked=prior.removalBlocked||pendingRemoval,
-                    removalIssue=prior.removalIssue ?: RemovalIssue.Unconfirmed.takeIf {pendingRemoval&&prior.outcome==null})
-            }}
+            publishLoad(route,version,retracted) {it.copy(detail=detail,missing=detail==null,error=null)}
             var analysis:AnalysisDetail?=null;var analysisError:SafeFailure.Reason?=null
             if(detail!=null)try {analysis=api.trackDetailsAnalysis(route.scope,route.trackId){current(route)}}catch(e:Exception){analysisError=(e as? SafeFailure)?.reason?:SafeFailure.Reason.Network}
-            synchronized(this){if(current(route)&&version==readVersion)mutable.value=mutable.value.copy(loading=false,analysis=analysis,analysisError=analysisError,analysisAbsent=analysis==null&&analysisError==null,reconciled=true)}
-        } catch(e:Exception){synchronized(this){if(current(route)&&version==readVersion)mutable.value=mutable.value.copy(loading=false,error=(e as? SafeFailure)?.reason?:SafeFailure.Reason.Network)}}
+            publishLoad(route,version,null) {it.copy(loading=false,analysis=analysis,analysisError=analysisError,analysisAbsent=analysis==null&&analysisError==null,reconciled=true)}
+        } catch(e:Exception){publishLoad(route,version,retracted) {it.copy(loading=false,error=(e as? SafeFailure)?.reason?:SafeFailure.Reason.Network)}}
+    }
+    private fun publishLoad(route:DetailsRoute,version:Long,retracted:UUID?,update:(TrackDetailsState)->TrackDetailsState) {
+        // Journal observation occurs before taking the Details monitor. Keep the live fence
+        // stable through the paired notice/block publication, including when loading ends.
+        api.observeLibraryRemovalFence(route.scope,route.trackId) {live->synchronized(this) {
+            if(!current(route)||version!=readVersion)return@synchronized
+            var next=update(mutable.value)
+            if(retracted!=null) {
+                if(presentedFence?.operation==retracted)presentedFence=null
+                if(outcomeFence==retracted) {outcomeFence=null;next=next.withOutcome(null)}
+            }
+            if(live!=null)presentedFence=live
+            mutable.value=next.withRemovalNotice()
+        }}
     }
     @Synchronized fun claim(route:DetailsRoute,observed:TrackDetails,action:DetailsAction):DetailsTicket? {
         if(!current(route)||ticket!=null||mutable.value.loading||mutable.value.error!=null||mutable.value.detail!==observed||mutable.value.missing||(mutable.value.outcome in listOf(MutationOutcome.Uncertain,MutationOutcome.ReadbackFailed)&&!mutable.value.reconciled))return null
         if(action==DetailsAction.Remove&&mutable.value.removalBlocked)return null
         if(action is DetailsAction.Analysis&&mutable.value.analysis!==action.observed)return null
         if(action is DetailsAction.Verification&&action.action is VerificationAction.Confirm&&observed.suggestions.none {it===action.action.suggestion})return null
-        return DetailsTicket(route,observed,action,library.state.value).also {ticket=it;readVersion++;mutable.value=mutable.value.copy(outcome=MutationOutcome.Pending,error=null,reconciled=false,removalIssue=null)}
+        return DetailsTicket(route,observed,action,library.state.value).also {
+            ticket=it;readVersion++;outcomeFence=null
+            if(removalResult==RemovalIssue.NotSent)removalResult=null
+            mutable.value=mutable.value.copy(error=null,reconciled=false).withOutcome(MutationOutcome.Pending).withRemovalNotice()
+        }
     }
     fun execute(command:DetailsTicket) {
         synchronized(this){if(ticket!==command||!current(command.route)||command.consumed)return;command.consumed=true}
         val route=command.route;val scope=route.scope;val id=route.trackId
         var outcome=MutationOutcome.Confirmed
-        var removalIssue:RemovalIssue?=null
+        var result:RemovalIssue?=null
+        var fence:LibraryRemovalFence?=null
         try {
             when(val action=command.action) {
                 is DetailsAction.Metadata->api.trackDetailsMetadata(scope,id,action.draft){current(route)}
                 DetailsAction.Remove->if(api.trackDetailsRemove(scope,id){current(route)}==LibraryRemovalReceipt.ConfirmedLocalSettleFailed)
-                    removalIssue=RemovalIssue.ConfirmedLocalSettleFailed
+                    result=RemovalIssue.ConfirmedLocalSettleFailed
                 is DetailsAction.Analysis->api.trackDetailsCorrectAnalysis(scope,id,action.observed,action.correction){current(route)}
                 is DetailsAction.Verification->api.trackDetailsVerify(scope,id,action.action){current(route)}
             }
         } catch(e:Exception){
-            outcome=when((e as? SafeFailure)?.reason) {
+            val failure=e as? SafeFailure
+            fence=failure?.removalFence
+            outcome=when(failure?.reason) {
                 SafeFailure.Reason.Refused->MutationOutcome.Refused
-                SafeFailure.Reason.RemovalNotSent->{removalIssue=RemovalIssue.NotSent;MutationOutcome.Refused}
-                SafeFailure.Reason.RemovalUnconfirmed->{removalIssue=RemovalIssue.Unconfirmed;MutationOutcome.Uncertain}
+                SafeFailure.Reason.RemovalNotSent->{result=RemovalIssue.NotSent;MutationOutcome.Refused}
+                SafeFailure.Reason.RemovalNotSentLocalCleanupFailed->MutationOutcome.Refused
                 else->MutationOutcome.Uncertain
             }
         }
         synchronized(this){
             if(ticket!==command||!current(route))return
-            if(outcome!=MutationOutcome.Confirmed||removalIssue!=null)mutable.value=mutable.value.copy(
-                outcome=if(removalIssue==RemovalIssue.ConfirmedLocalSettleFailed)MutationOutcome.ReadbackFailed else outcome,
-                removalIssue=removalIssue,removalBlocked=mutable.value.removalBlocked||removalIssue in
-                    setOf(RemovalIssue.ConfirmedLocalSettleFailed,RemovalIssue.Unconfirmed))
+            if(outcome!=MutationOutcome.Confirmed||result!=null) {
+                if(result!=null)removalResult=result
+                if(fence!=null) {presentedFence=fence;outcomeFence=fence.operation}
+                mutable.value=mutable.value.withOutcome(if(result==RemovalIssue.ConfirmedLocalSettleFailed)
+                    MutationOutcome.ReadbackFailed else outcome,describedByRemovalNotice=result!=null||fence!=null).withRemovalNotice()
+            }
         }
         if(outcome==MutationOutcome.Confirmed) {
             try {
@@ -126,8 +169,8 @@ class TrackDetailsRepository(private val api:SoundQApi,private val library:Libra
                     synchronized(this){if(ticket===command&&current(route))mutable.value=mutable.value.copy(detail=observed,missing=observed==null,error=null)}
                     if(current(route))library.refreshObserved(scope,command.libraryState){current(route)}
                 }
-                synchronized(this){if(ticket===command&&current(route))mutable.value=mutable.value.copy(outcome=if(removalIssue==null)MutationOutcome.Confirmed else MutationOutcome.ReadbackFailed)}
-            } catch(_:Exception){synchronized(this){if(ticket===command&&current(route))mutable.value=mutable.value.copy(outcome=MutationOutcome.ReadbackFailed)}}
+                synchronized(this){if(ticket===command&&current(route))mutable.value=mutable.value.withOutcome(if(result==null)MutationOutcome.Confirmed else MutationOutcome.ReadbackFailed,describedByRemovalNotice=result!=null).withRemovalNotice()}
+            } catch(_:Exception){synchronized(this){if(ticket===command&&current(route))mutable.value=mutable.value.withOutcome(MutationOutcome.ReadbackFailed,describedByRemovalNotice=result!=null).withRemovalNotice()}}
         }
         synchronized(this){if(ticket===command)ticket=null}
     }

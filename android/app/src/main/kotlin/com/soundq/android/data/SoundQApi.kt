@@ -322,7 +322,16 @@ class SoundQApi internal constructor(
         val body=authorized(scope,"/tracks/${id.value}/$path","POST",payload,readOnly=false,valid=valid,expectedStatus=200)
         return com.soundq.android.data.trackdetails.TrackDetailsJson.verificationAck(body,id,action)
     }
-    internal fun libraryRemovalPending(scope: AccountScope, id: TrackId) = originalImports()?.removalPending(scope, id) == true
+    internal fun libraryRemovalFenceStatus(scope: AccountScope, id: TrackId) =
+        observeLibraryRemovalFence(scope, id) { it?.status }
+    internal fun <T> observeLibraryRemovalFence(scope: AccountScope, id: TrackId, publish: (LibraryRemovalFence?) -> T): T {
+        val imports = originalImports() ?: return publish(null)
+        return imports.observeRemovalFence(scope, id, publish)
+    }
+    internal fun retryUnenteredLibraryRemoval(scope: AccountScope, id: TrackId, valid: () -> Boolean) =
+        retractUnenteredLibraryRemoval(scope, id, valid) != null
+    internal fun retractUnenteredLibraryRemoval(scope: AccountScope, id: TrackId, valid: () -> Boolean) =
+        originalImports()?.retryUnenteredRemoval(scope, id, valid)
 
     fun trackDetailsRemove(scope: AccountScope, id: TrackId, valid: () -> Boolean): LibraryRemovalReceipt {
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
@@ -344,13 +353,15 @@ class SoundQApi internal constructor(
             if (!entered) throw SafeFailure(SafeFailure.Reason.RemovalNotSent)
         } catch (failure: Exception) {
             fence?.let {
-                if (!entered) imports?.finishRemoval(it, acknowledged = false)
-                else if (session.remoteCurrent(scope)) throw SafeFailure(SafeFailure.Reason.RemovalUnconfirmed)
+                if (!entered) {
+                    if (!checkNotNull(imports).retractUnenteredRemoval(it) && session.remoteCurrent(scope))
+                        throw LibraryRemovalFence(it.operation, LibraryRemovalFenceStatus.NotSentLocalCleanupFailed).failure()
+                } else if (session.remoteCurrent(scope)) throw LibraryRemovalFence(it.operation, LibraryRemovalFenceStatus.Unconfirmed).failure()
             }
             throw failure
         }
         val admitted = fence
-        return if (admitted == null || checkNotNull(imports).finishRemoval(admitted, acknowledged = true)) LibraryRemovalReceipt.Confirmed
+        return if (admitted == null || checkNotNull(imports).confirmRemoval(admitted)) LibraryRemovalReceipt.Confirmed
             else LibraryRemovalReceipt.ConfirmedLocalSettleFailed
     }
     fun trackDetailsMetadata(scope:AccountScope,id:TrackId,draft:com.soundq.android.data.trackdetails.MetadataDraft,valid:()->Boolean) {

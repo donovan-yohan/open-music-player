@@ -63,16 +63,23 @@ import com.soundq.designsystem.*
         state.error?.let {SoundQFeedback("Could not load song details",FeedbackKind.Error,it.message,"Reload song details",onReload)}
         when(state.removalIssue) {
             RemovalIssue.NotSent->SoundQFeedback("Removal not sent",FeedbackKind.Error,"Couldn’t save local original protection. Your Library was not changed by this action.")
+            RemovalIssue.NotSentLocalCleanupFailed->SoundQFeedback("Removal not sent",FeedbackKind.Error,"Couldn’t clear local original protection. Reload song details to try clearing it.","Reload song details",onReload)
             RemovalIssue.Unconfirmed->SoundQFeedback("Removal not confirmed",FeedbackKind.Error,"Reload to check your Library. This removal won’t be sent again from this device.","Reload song details",onReload)
             RemovalIssue.ConfirmedLocalSettleFailed->SoundQFeedback("Removed from Library",FeedbackKind.Notice,"Your phone original is protected, but its removal status couldn’t be saved locally. Don’t repeat the removal.")
-            null->when(state.outcome) {
-                MutationOutcome.Pending->SoundQFeedback("Saving change",FeedbackKind.Loading)
-                MutationOutcome.Confirmed->SoundQFeedback("Change saved",FeedbackKind.Notice)
-                MutationOutcome.Refused->SoundQFeedback("Change refused",FeedbackKind.Error,"Your changes were not saved.")
-                MutationOutcome.Uncertain->SoundQFeedback("Change not confirmed",FeedbackKind.Error,"Reload to check before saving again.","Reload song details",onReload)
-                MutationOutcome.ReadbackFailed->SoundQFeedback("Change accepted, refresh failed",FeedbackKind.Error,"Reload to check the saved details.","Reload song details",onReload)
-                null->Unit
-            }
+            null->Unit
+        }
+        // Independent notices can share the same explicit reload action.
+        val changeReload=when(state.removalIssue) {
+            RemovalIssue.NotSentLocalCleanupFailed,RemovalIssue.Unconfirmed->null
+            else->"Reload song details"
+        }
+        when(state.genericOutcome) {
+            MutationOutcome.Pending->SoundQFeedback("Saving change",FeedbackKind.Loading)
+            MutationOutcome.Confirmed->SoundQFeedback("Change saved",FeedbackKind.Notice)
+            MutationOutcome.Refused->SoundQFeedback("Change refused",FeedbackKind.Error,"Your changes were not saved.")
+            MutationOutcome.Uncertain->SoundQFeedback("Change not confirmed",FeedbackKind.Error,"Reload to check before saving again.",changeReload,onReload)
+            MutationOutcome.ReadbackFailed->SoundQFeedback("Change accepted, refresh failed",FeedbackKind.Error,"Reload to check the saved details.",changeReload,onReload)
+            null->Unit
         }
         if(state.missing)SoundQFeedback("Track is not in your Library",FeedbackKind.Notice)
         if(editor.invalidField==null)editor.error?.let {SoundQFeedback(it,FeedbackKind.Error)}

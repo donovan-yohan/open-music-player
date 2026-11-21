@@ -48,6 +48,9 @@ internal class OriginalImportJournal(private val file: File) {
     private val mutable = MutableStateFlow(OriginalImportSnapshot())
     val state: StateFlow<OriginalImportSnapshot> = mutable
     private var loadedBytes: ByteArray? = null
+    private var loadedRows = emptyList<OriginalImportEntry>()
+    private data class UnverifiedRemoval(val operation: UUID, val bytes: ByteArray, val rows: List<OriginalImportEntry>)
+    private var unverifiedRemoval: UnverifiedRemoval? = null
 
     @Synchronized fun load() {
         if (state.value.ready || state.value.rejected) return
@@ -104,23 +107,40 @@ internal class OriginalImportJournal(private val file: File) {
                 row.copy(phase = OriginalImportPhase.RemovalPending, removal = operation) else row
         }
         if (next == rows) return false
-        replace(next, current)
+        replace(next, current, operation)
         return true
     }
 
+    @Synchronized fun removalWriteUnverified(operation: UUID) = unverifiedRemoval?.operation == operation
+
     @Synchronized fun finishRemoval(destination: ServerAccount, track: TrackId, operation: UUID, acknowledged: Boolean, current: () -> Boolean) {
-        check(state.value.ready && current())
-        val rows = state.value.rows
+        check(current())
+        val unverified = unverifiedRemoval
+        if (!state.value.ready) {
+            // Only a positively unentered operation can reconcile its own ambiguous replacement.
+            // Do not reload or publish arbitrary disk contents while deciding which write landed.
+            check(!acknowledged && unverified != null && unverified.operation == operation)
+            val disk = read()
+            if (disk.contentEquals(unverified.bytes)) {
+                loadedBytes = unverified.bytes
+                loadedRows = unverified.rows
+            } else check(disk.contentEquals(loadedBytes))
+        }
+        val rows = loadedRows
         val next = rows.map { row ->
             if (!row.matches(destination, track) || row.removal != operation || row.phase != OriginalImportPhase.RemovalPending) row
             else if (acknowledged) row.copy(phase = OriginalImportPhase.Removed, membership = null)
             else row.copy(phase = if (row.membership == null) OriginalImportPhase.ReadbackRequired else OriginalImportPhase.Added, removal = null)
         }
-        check(next != rows)
-        replace(next, current)
+        if (next == rows) {
+            // The prepare never landed, or the retraction landed but its readback failed.
+            check(!acknowledged && unverified?.operation == operation && rows.none { it.removal == operation } && current())
+            publish(rows)
+        } else replace(next, current, operation.takeUnless { acknowledged })
+        unverifiedRemoval = null
     }
 
-    private fun replace(next: List<OriginalImportEntry>, current: () -> Boolean) {
+    private fun replace(next: List<OriginalImportEntry>, current: () -> Boolean, unenteredOperation: UUID? = null) {
         require(next.size <= MAX_ROWS)
         validate(next)
         // Keep writing v1 until a DELETE operation exists. Older clients must reject, not ignore, v2.
@@ -137,8 +157,10 @@ internal class OriginalImportJournal(private val file: File) {
                 check(read().contentEquals(bytes)) { "Original import journal replacement could not be verified" }
             } catch (failure: Exception) {
                 // An ambiguous replacement must not leave cached Added rows authorizing reads.
-                if (!runCatching { read().contentEquals(loadedBytes) }.getOrDefault(false))
+                if (!runCatching { read().contentEquals(loadedBytes) }.getOrDefault(false)) {
+                    unverifiedRemoval = unenteredOperation?.let { UnverifiedRemoval(it, bytes, next) }
                     mutable.value = OriginalImportSnapshot(rejected = true)
+                }
                 throw failure
             }
         } finally { runCatching { Files.deleteIfExists(stage) } }
@@ -147,7 +169,8 @@ internal class OriginalImportJournal(private val file: File) {
     }
 
     private fun publish(rows: List<OriginalImportEntry>) {
-        mutable.value = OriginalImportSnapshot(ready = true, rows = java.util.Collections.unmodifiableList(rows))
+        loadedRows = java.util.Collections.unmodifiableList(rows)
+        mutable.value = OriginalImportSnapshot(ready = true, rows = loadedRows)
     }
 
     private fun read(): ByteArray? {

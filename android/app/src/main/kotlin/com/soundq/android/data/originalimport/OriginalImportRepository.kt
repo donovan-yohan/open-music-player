@@ -27,6 +27,9 @@ internal class OriginalImportRepository(
     private val membershipLock = Any()
     private val reads = mutableMapOf<Member, Any>()
     private val failedRetirements = mutableSetOf<Member>()
+    // Only this account epoch can attest that these exact fences never entered DELETE.
+    private val unenteredRemovals = mutableMapOf<Member, RemovalFence>()
+    private var unenteredEpoch: Long? = null
     private val proofs = MutableStateFlow<Map<Member, Proof>>(emptyMap())
     private val proofSequence = MutableStateFlow(0L)
     val membershipRevision: StateFlow<Long> = proofSequence
@@ -110,39 +113,91 @@ internal class OriginalImportRepository(
     class RemovalFence internal constructor(internal val scope: AccountScope, internal val owner: ServerAccount,
         internal val track: TrackId, internal val operation: UUID)
 
-    fun removalPending(scope: AccountScope, track: TrackId): Boolean {
+    private fun pendingRemovalOperation(scope: AccountScope, track: TrackId): UUID? {
         load()
-        return entries(scope).any { it.matches(owner(scope), track) && it.phase == OriginalImportPhase.RemovalPending }
+        return entries(scope).firstOrNull { it.matches(owner(scope), track) && it.phase == OriginalImportPhase.RemovalPending }?.removal
+    }
+
+    private fun removalPending(scope: AccountScope, track: TrackId) = pendingRemovalOperation(scope, track) != null
+
+    private fun useUnenteredEpoch(scope: AccountScope) {
+        if (unenteredEpoch != scope.epoch) {
+            unenteredRemovals.clear()
+            unenteredEpoch = scope.epoch
+        }
+    }
+
+    private fun removalFence(scope: AccountScope, track: TrackId): LibraryRemovalFence? {
+        if (!session.remoteCurrent(scope)) return null
+        useUnenteredEpoch(scope)
+        return unenteredRemovals[Member(owner(scope), track)]?.let {
+            LibraryRemovalFence(it.operation, LibraryRemovalFenceStatus.NotSentLocalCleanupFailed)
+        } ?: pendingRemovalOperation(scope, track)?.let { LibraryRemovalFence(it, LibraryRemovalFenceStatus.Unconfirmed) }
+    }
+
+    /** Order the in-memory Details publication with prepare/settlement. The consumer must not do IO. */
+    fun <T> observeRemovalFence(scope: AccountScope, track: TrackId, publish: (LibraryRemovalFence?) -> T): T =
+        synchronized(membershipLock) { publish(removalFence(scope, track)) }
+
+    /** At most one exact local retraction per Details load. No transport or playback proof. */
+    fun retryUnenteredRemoval(scope: AccountScope, track: TrackId, mounted: () -> Boolean): UUID? = synchronized(membershipLock) {
+        fun current() = mounted() && session.remoteCurrent(scope)
+        if (!session.remoteCurrent(scope)) return@synchronized null
+        useUnenteredEpoch(scope)
+        val key = Member(owner(scope), track)
+        val fence = unenteredRemovals[key] ?: return@synchronized null
+        if (!finishRemoval(fence, acknowledged = false, current = ::current)) return@synchronized null
+        unenteredRemovals.remove(key)
+        fence.operation
     }
 
     /** Called at the authenticated DELETE's dispatch boundary, even when import is disabled. */
     fun prepareRemoval(scope: AccountScope, track: TrackId, mounted: () -> Boolean): RemovalFence? = synchronized(membershipLock) {
         fun current() = session.remoteCurrent(scope) && mounted()
         if (!current()) throw SafeFailure(SafeFailure.Reason.Retired)
-        if (removalPending(scope, track)) throw SafeFailure(SafeFailure.Reason.RemovalUnconfirmed)
+        removalFence(scope, track)?.let { throw it.failure() }
         val key = Member(owner(scope), track)
         val fence = RemovalFence(scope, key.owner, track, UUID.randomUUID())
         val prepared = try { journal.prepareRemoval(key.owner, track, fence.operation, ::current) }
         catch (_: Exception) {
+            if (journal.removalWriteUnverified(fence.operation)) {
+                invalidateRemovalProof(key)
+                rememberUnentered(fence)
+                if (current()) throw LibraryRemovalFence(fence.operation, LibraryRemovalFenceStatus.NotSentLocalCleanupFailed).failure()
+            }
             if (!current()) throw SafeFailure(SafeFailure.Reason.Retired)
             throw SafeFailure(SafeFailure.Reason.RemovalNotSent)
         }
         if (!prepared) return@synchronized null
-        reads.remove(key)
-        publishProof(key, null)
+        invalidateRemovalProof(key)
         fence
     }
 
-    /** Only the exact current 204 confirms. Only the caller that never entered may retract. */
-    fun finishRemoval(fence: RemovalFence, acknowledged: Boolean): Boolean = synchronized(membershipLock) {
+    private fun invalidateRemovalProof(key: Member) {
+        reads.remove(key)
+        publishProof(key, null)
+    }
+
+    private fun rememberUnentered(fence: RemovalFence) {
+        if (!session.remoteCurrent(fence.scope)) return
+        useUnenteredEpoch(fence.scope)
+        unenteredRemovals[Member(fence.owner, fence.track)] = fence
+    }
+
+    fun retractUnenteredRemoval(fence: RemovalFence): Boolean = synchronized(membershipLock) {
+        finishRemoval(fence, acknowledged = false) { true }.also { if (!it) rememberUnentered(fence) }
+    }
+
+    fun confirmRemoval(fence: RemovalFence): Boolean = synchronized(membershipLock) {
+        finishRemoval(fence, acknowledged = true) { session.remoteCurrent(fence.scope) }
+    }
+
+    private fun finishRemoval(fence: RemovalFence, acknowledged: Boolean, current: () -> Boolean): Boolean =
         try {
-            journal.finishRemoval(fence.owner, fence.track, fence.operation, acknowledged) {
-                !acknowledged || session.remoteCurrent(fence.scope)
-            }
+            journal.finishRemoval(fence.owner, fence.track, fence.operation, acknowledged, current)
             if (acknowledged) failedRetirements.remove(Member(fence.owner, fence.track))
             true
         } catch (_: Exception) { false }
-    }
 
     class Choice internal constructor(internal val repository: OriginalImportRepository, internal val scope: AccountScope,
         val intent: OriginalImportIntent, internal val stamp: OriginalSourceStamp, internal val mounted: () -> Boolean) {
