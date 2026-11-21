@@ -421,6 +421,10 @@ func (h *LibraryHandlers) LikeTrack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.libraryRepo.AddFavorite(r.Context(), userCtx.UserID, trackID); err != nil {
+		if errors.Is(err, db.ErrTrackNotFound) {
+			writeLibraryError(w, http.StatusNotFound, "TRACK_NOT_FOUND", "track not found")
+			return
+		}
 		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to like track")
 		return
 	}

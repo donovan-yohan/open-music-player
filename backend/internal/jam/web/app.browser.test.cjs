@@ -20,7 +20,8 @@ const item = {catalogItemId: catalogId, title, artist, durationMs: 241000};
 const source = {selectionSessionId: selectionId, candidateId: 'synthetic-candidate', title, artist, provider: 'youtube', sourceId: 'synthetic-exact-live', durationMs: 241000, expiresAt: '2099-01-01T00:00:00Z'};
 function fixture() {
   return {state: 'open', requests: [], operations: [], lost: false, deny: false, searchFailure: false, expired: false, hold: null,
-    snapshot() {return {jamId, version: 1, state: this.state, allowOutsideDiscovery: true, catalog: [item, {...item,catalogItemId: selectionId,title: 'Night Drive (radio edit)'}], requests: this.requests, nowPlaying: {title,artist,playing:false,durationMs:241000}};}};
+    nowPlaying: {title,artist,playing:false,durationMs:241000},
+    snapshot() {return {jamId, version: 1, state: this.state, allowOutsideDiscovery: true, catalog: [item, {...item,catalogItemId: selectionId,title: 'Night Drive (radio edit)'}], requests: this.requests, nowPlaying: this.nowPlaying};}};
 }
 let f = fixture();
 const server = http.createServer(async (req,res) => {
@@ -100,6 +101,16 @@ async function refresh(page){await page.reload();await page.locator('#state').fi
         await page.locator('#name').fill('Nori');await page.locator('#name').press('Enter');await page.locator('#session').waitFor();
         check(`${width}: join strips invitation`,new URL(page.url()).hash==='');
         await geometry(page,'offered',width);await shot(page,width,'offered');
+        if(width===390) {
+          check('open Jam shows accepted playback details',await page.locator('#playing').innerText()===`${title} · ${artist} — Paused`);
+          const previous=f.nowPlaying;f.nowPlaying=null;await refresh(page);
+          check('open Jam with no playback details has a neutral label',await page.locator('#playing').innerText()==='Now playing unavailable');
+          check('open Jam with no playback details still enables requests',await page.locator('#state').innerText()==='Approval on'&&await page.locator('#catalog button').first().isEnabled());
+          await shot(page,width,'no-playback-details');
+          await page.locator('#catalog button').first().click();await page.locator('#review').waitFor();
+          check('shared offered track still opens its review', (await page.locator('#review').innerText()).includes(title));
+          await page.keyboard.press('Escape');f.nowPlaying=previous;await refresh(page);
+        }
         // Keyboard activation, modal Escape, and return focus use actual controls.
         await page.locator('#filter').fill('Night Drive');check(`${width}: offered filter uses actual rows`,await page.locator('#catalog .track').count()===1);
         await page.locator('#filter').fill('');await page.locator('#filter').press('Tab');

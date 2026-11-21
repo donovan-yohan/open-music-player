@@ -172,6 +172,10 @@ func (h *PlayEventHandlers) RecordPlay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.playEventRepo.RecordPlay(r.Context(), userCtx.UserID, req.TrackID, req.ContextType, req.ContextID); err != nil {
+		if errors.Is(err, db.ErrTrackNotFound) {
+			writePlayEventError(w, http.StatusNotFound, "TRACK_NOT_FOUND", "track not found")
+			return
+		}
 		writePlayEventError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to record play")
 		return
 	}
@@ -215,6 +219,10 @@ func (h *PlayEventHandlers) RecordSkip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.playEventRepo.RecordSkip(r.Context(), userCtx.UserID, req.TrackID); err != nil {
+		if errors.Is(err, db.ErrTrackNotFound) {
+			writePlayEventError(w, http.StatusNotFound, "TRACK_NOT_FOUND", "track not found")
+			return
+		}
 		writePlayEventError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to record skip")
 		return
 	}

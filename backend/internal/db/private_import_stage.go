@@ -65,6 +65,7 @@ func privateStageSQL(action string, cause error) error {
 }
 
 const privateImportStageBatchLimit = 16
+const privateImportStageSlots = 4
 
 func lockPrivateImportOperation(ctx context.Context, tx *sql.Tx, owner, operation uuid.UUID) error {
 	op := "private-import/v1:" + owner.String() + ":" + operation.String()
@@ -93,17 +94,27 @@ func (r *TrackRepository) ReservePrivateImportStage(ctx context.Context, m Priva
 		return nil, receipt, privateStageSQL("read reservation receipt", err)
 	}
 	var phase, storedFingerprint string
-	err = tx.QueryRowContext(ctx, `SELECT phase,intent_hash FROM private_import_attempts WHERE owner_id=$1 AND operation_id=$2`, in.OwnerID, in.OperationID).Scan(&phase, &storedFingerprint)
+	var live bool
+	err = tx.QueryRowContext(ctx, `SELECT phase,intent_hash,expires_at>clock_timestamp() FROM private_import_attempts WHERE owner_id=$1 AND operation_id=$2`, in.OwnerID, in.OperationID).Scan(&phase, &storedFingerprint, &live)
 	if err == nil {
 		if fingerprint != storedFingerprint {
 			return nil, nil, ErrPrivateImportIntentConflict
 		}
-		switch phase {
-		case "reserved", "putting", "observed", "stored":
-			return nil, nil, ErrPrivateImportStagePending
-		default:
-			return nil, nil, ErrPrivateImportStageClosed
+		if live {
+			switch phase {
+			case "reserved", "putting", "observed", "stored":
+				return nil, nil, ErrPrivateImportStagePending
+			}
 		}
+		if phase == "reserved" {
+			if err := settleExpiredPrivateImportReservation(ctx, tx, in.OwnerID, in.OperationID); err != nil {
+				return nil, nil, err
+			}
+			if err := tx.Commit(); err != nil {
+				return nil, nil, privateStageSQL("commit expired reservation", err)
+			}
+		}
+		return nil, nil, ErrPrivateImportStageClosed
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, privateStageSQL("read reservation attempt", err)
@@ -112,6 +123,16 @@ func (r *TrackRepository) ReservePrivateImportStage(ctx context.Context, m Priva
 	// section across instances bounds aggregate bytes without serializing Put.
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('private-import/v1:stage-capacity',0))`); err != nil {
 		return nil, nil, privateStageSQL("lock capacity", err)
+	}
+	// Demand-driven, SQL-only capacity release. Skip overlapping exact-owner
+	// operations instead of waiting on their row locks under the global lock.
+	// No phase that could have dispatched a PUT is eligible, even if expired.
+	if _, err := tx.ExecContext(ctx, `WITH expired AS MATERIALIZED (
+		SELECT attempt_id FROM private_import_attempts WHERE phase='reserved' AND expires_at<=clock_timestamp()
+		ORDER BY expires_at,attempt_id LIMIT $1 FOR UPDATE SKIP LOCKED
+	) UPDATE private_import_attempts a SET phase='refused',title='',artist='',album=''
+		FROM expired e WHERE a.attempt_id=e.attempt_id AND a.phase='reserved' AND a.expires_at<=clock_timestamp()`, privateImportStageSlots); err != nil {
+		return nil, nil, privateStageSQL("settle expired reservations for capacity", err)
 	}
 	var active, owned int
 	var allowed bool
@@ -122,7 +143,10 @@ func (r *TrackRepository) ReservePrivateImportStage(ctx context.Context, m Priva
 	if !allowed {
 		return nil, nil, ErrPrivateImportStageClosed
 	}
-	if active >= 4 || owned >= 1 {
+	if active >= privateImportStageSlots || owned >= 1 {
+		if err := tx.Commit(); err != nil {
+			return nil, nil, privateStageSQL("commit reservation capacity check", err)
+		}
 		return nil, nil, ErrPrivateImportStageCapacity
 	}
 	in.AttemptID, err = uuid.NewRandom()
@@ -239,6 +263,43 @@ func (r *TrackRepository) ReadPrivateImportStageReceipt(ctx context.Context, in 
 	return receipt, privateStageSQL("read exact historical receipt", err)
 }
 
+// The exact operation lock belongs to the caller. Acquire the current row
+// before checking the database clock in a fresh statement. A grant that won
+// authorization before we acquired the row is never treated as undispatched.
+func settleExpiredPrivateImportReservation(ctx context.Context, tx *sql.Tx, owner, operation uuid.UUID) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var attempt uuid.UUID
+	err := tx.QueryRowContext(ctx, `SELECT attempt_id FROM private_import_attempts
+		WHERE owner_id=$1 AND operation_id=$2 AND phase='reserved' FOR UPDATE`, owner, operation).Scan(&attempt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return privateStageSQL("lock expired reservation", err)
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE private_import_attempts SET phase='refused',title='',artist='',album=''
+		WHERE attempt_id=$1 AND phase='reserved' AND expires_at<=clock_timestamp()`, attempt)
+	return privateStageSQL("settle expired reservation", err)
+}
+
+func (r *TrackRepository) closeExpiredPrivateImportReservation(ctx context.Context, owner, operation uuid.UUID) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return privateStageSQL("begin expired reservation", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockPrivateImportOperation(ctx, tx, owner, operation); err != nil {
+		return err
+	}
+	if err := settleExpiredPrivateImportReservation(ctx, tx, owner, operation); err != nil {
+		return err
+	}
+	return privateStageSQL("commit expired reservation", tx.Commit())
+}
+
 func (r *TrackRepository) LoadPrivateImportStage(ctx context.Context, owner, operation uuid.UUID) (PrivateImportStage, *PrivateImportReceipt, error) {
 	var stage PrivateImportStage
 	receipt, err := r.GetPrivateImportReceipt(ctx, owner, operation)
@@ -267,6 +328,10 @@ func (r *TrackRepository) LoadPrivateImportStage(ctx context.Context, owner, ope
 			return stage, nil, nil
 		case "stored":
 			return stage, nil, nil
+		}
+	} else if phase == "reserved" {
+		if err := r.closeExpiredPrivateImportReservation(ctx, owner, operation); err != nil {
+			return stage, nil, err
 		}
 	}
 	// A concurrent canonical transaction may have sealed the stage between

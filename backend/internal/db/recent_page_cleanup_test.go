@@ -115,7 +115,7 @@ func (c *recentCleanupConn) QueryContext(_ context.Context, query string, _ []dr
 		d.violation = "query outside transaction"
 	}
 	if d.queries == 1 {
-		if !strings.HasPrefix(query, "SELECT track_id, MAX(played_at)") {
+		if !strings.HasPrefix(query, "SELECT pe.track_id, MAX(pe.played_at)") {
 			d.violation = "revision query order changed"
 		}
 		return &recentCleanupRows{fixture: d, revision: true}, nil

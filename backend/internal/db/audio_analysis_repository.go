@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
 
@@ -823,7 +824,7 @@ func (r *AnalysisRepository) GetByTrackID(ctx context.Context, trackID int64) (*
 	return &analysis, nil
 }
 
-func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs []int64) (map[int64]AnalysisCompact, error) {
+func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, userID uuid.UUID, trackIDs []int64) (map[int64]AnalysisCompact, error) {
 	result := make(map[int64]AnalysisCompact, len(trackIDs))
 	if len(trackIDs) == 0 {
 		return result, nil
@@ -834,9 +835,12 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 		       updated_at, manual_override_revision, manual_override_updated_at
 		FROM track_analysis
 		AS ta
-		WHERE track_id = ANY($1)
+		WHERE track_id = ANY($1) AND EXISTS (
+			SELECT 1 FROM tracks t WHERE t.id = ta.track_id
+			  AND (t.private_owner_id IS NULL OR t.private_owner_id = $2)
+		)
 	`
-	rows, err := r.db.QueryContext(ctx, query, pq.Array(trackIDs))
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(trackIDs), userID)
 	if err != nil {
 		return nil, err
 	}

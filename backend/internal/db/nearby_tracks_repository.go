@@ -106,7 +106,7 @@ func (r *LibraryRepository) NearbyTracks(
 		JOIN tracks t ON t.id = ta.track_id
 		LEFT JOIN track_metadata_overrides tmo
 			ON tmo.track_id = t.id AND tmo.user_id = ul.user_id
-		WHERE ul.user_id = $1
+		WHERE ul.user_id = $1 AND (t.private_owner_id IS NULL OR t.private_owner_id = $1)
 			AND ta.status = $2
 			AND ta.effective_camelot = ANY($3)
 			AND ta.effective_bpm BETWEEN $4 AND $5

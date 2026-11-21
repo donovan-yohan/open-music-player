@@ -92,6 +92,7 @@ type RouterConfig struct {
 	WSHandler               *websocket.Handler
 	MatcherHandlers         *matcher.Handler
 	LibraryHandlers         *LibraryHandlers
+	LibraryUploadHandlers   *LibraryUploadHandlers
 	TrackOverrideHandlers   *TrackMetadataOverrideHandlers
 	AnalysisHandlers        *AnalysisHandlers
 	StemsHandlers           *StemsHandlers
@@ -196,6 +197,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		corsAllowedOrigins:      corsAllowedOrigins,
 	}
 	r.setupRoutes()
+	cfg.LibraryUploadHandlers.register(r)
 	if cfg.LocalEnrichmentEnabled && cfg.AuthService != nil {
 		h := &localEnrichmentHandler{client: cfg.MBClient, active: make(map[uuid.UUID]struct{})}
 		r.mux.HandleFunc("POST "+localEnrichmentPath, h.endpoint(r.withAuth))

@@ -105,7 +105,7 @@ function render(value) {
   rowFocusKey = null;
   $('state').textContent = value.state === 'open' ? 'Approval on' : value.state === 'hostOffline' ? 'Host offline · Requests paused' : 'Jam ended';
   const playing = value.nowPlaying;
-  $('playing').textContent = playing ? playing.title + ' · ' + playing.artist + (playing.playing ? ' — Playing' : ' — Paused') : 'Waiting for host';
+  $('playing').textContent = playing ? playing.title + ' · ' + playing.artist + (playing.playing ? ' — Playing' : ' — Paused') : 'Now playing unavailable';
   $('catalog').replaceChildren();
   const filter = $('filter').value.trim().toLocaleLowerCase();
   for (const item of value.catalog.filter(item => (item.title + ' ' + item.artist).toLocaleLowerCase().includes(filter))) {

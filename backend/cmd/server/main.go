@@ -553,7 +553,9 @@ func queueAnalyzerRepairBatch(ctx context.Context, repairs analyzerMaintenancePr
 
 func main() { os.Exit(runServer()) }
 
-func runServer() int {
+func runServer() int { return runServerWithPrivateLibraryFixture(nil) }
+
+func runServerWithPrivateLibraryFixture(binding *privateLibraryFixtureBinding) int {
 	// Initialize structured logger
 	log := logger.Default()
 	ctx := context.Background()
@@ -582,6 +584,19 @@ func runServer() int {
 		}
 	}()
 	cfg := config.Load()
+	privateLibraryMode, privateLibraryMarker := os.Getenv("PRIVATE_LIBRARY_UPLOAD_MODE"), os.Getenv("OMP_PRIVATE_FENCE_TEST_MARKER")
+	if err := validatePrivateLibraryFixture(cfg, privateLibraryMode, privateLibraryMarker, binding); err != nil {
+		log.Error(ctx, "Invalid private Library upload configuration", nil, err)
+		return 1
+	}
+	fixtureAnalyzerHTTP, err := privateLibraryAnalyzerHTTPClient(cfg, privateLibraryMode)
+	if err != nil {
+		log.Error(ctx, "Invalid private Library analyzer configuration", nil, err)
+		return 1
+	}
+	if fixtureAnalyzerHTTP != nil {
+		defer fixtureAnalyzerHTTP.CloseIdleConnections()
+	}
 	discoveryPreview, err := preview.Configure(os.Getenv("DISCOVERY_PREVIEW_DIR"), os.Getenv("DISCOVERY_PREVIEW_ON_DEMAND"))
 	if err != nil {
 		log.Warn(ctx, "Discovery previews disabled", map[string]interface{}{"reason": err.Error()})
@@ -607,6 +622,12 @@ func runServer() int {
 		return 1
 	}
 	defer database.Close()
+	if privateLibraryMode != "" {
+		if err := attestPrivateLibraryFixture(database, cfg, privateLibraryMarker); err != nil {
+			log.Error(ctx, "Private Library database fixture refused", nil, err)
+			return 1
+		}
+	}
 	log.Info(ctx, "Connected to database", map[string]interface{}{
 		"host": cfg.DBHost,
 		"port": cfg.DBPort,
@@ -618,6 +639,12 @@ func runServer() int {
 		return 1
 	}
 	log.Info(ctx, "Database migrations completed", nil)
+	if privateLibraryMode != "" {
+		if err := attestPrivateLibraryFixture(database, cfg, privateLibraryMarker); err != nil {
+			log.Error(ctx, "Migrated private Library database fixture refused", nil, err)
+			return 1
+		}
+	}
 
 	// Initialize optional Redis cache/queue support.
 	var redisCache *cache.Cache
@@ -764,6 +791,13 @@ func runServer() int {
 		"bucket":          cfg.MinioBucket,
 	})
 
+	libraryUploadHandlers, closeLibraryUploads, err := newPrivateLibraryUploads(privateLibraryMode, database, trackRepo, storageClient)
+	if err != nil {
+		log.Error(ctx, "Failed to initialize private Library upload fixture", nil, err)
+		return 1
+	}
+	defer closeLibraryUploads()
+
 	// Initialize playback URL handlers. Normal audio bytes are served by object
 	// storage/CDN through short-lived signed URLs; the backend does not register a
 	// byte-proxy streaming route in the normal playback path.
@@ -794,6 +828,7 @@ func runServer() int {
 		BaseURL:   cfg.AnalyzerBaseURL,
 		AuthToken: cfg.AnalyzerAuthToken,
 		Timeout:   cfg.AnalyzerTimeout,
+		Client:    fixtureAnalyzerHTTP,
 	})
 	if err != nil {
 		log.Error(ctx, "Failed to initialize analyzer client", map[string]interface{}{
@@ -1007,7 +1042,7 @@ func runServer() int {
 		playlistImportHandlers = api.NewPlaylistImportHandlers(playlistImportService)
 		go playlistImportService.RunManualSync(ctx)
 
-		queueHandlers = queue.NewHandlersWithPlaylistTargets(queueService, downloadService, analysisRepo, sourceSelectionRepo, database, playlistRepo)
+		queueHandlers = queue.NewHandlersWithPlaylistTargets(queueService, downloadService, analysisRepo, sourceSelectionRepo, database, playlistRepo, trackRepo)
 	}
 
 	var redisClient *redis.Client
@@ -1051,6 +1086,7 @@ func runServer() int {
 		WSHandler:               wsHandler,
 		MatcherHandlers:         matcherHandlers,
 		LibraryHandlers:         libraryHandlers,
+		LibraryUploadHandlers:   libraryUploadHandlers,
 		TrackOverrideHandlers:   trackOverrideHandlers,
 		AnalysisHandlers:        analysisHandlers,
 		StemsHandlers:           stemsHandlers,

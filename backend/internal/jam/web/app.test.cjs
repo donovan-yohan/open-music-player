@@ -17,7 +17,18 @@ function boot(options={}) {
 test('guest joins without account credentials and strips fragment',async()=>{const b=boot();await b.context.testApi.join();assert.equal(b.calls.length,1);assert.match(b.calls[0].url,/^\/api\/v1\/guest\/jams\//);assert.equal(b.calls[0].opt.credentials,'omit');assert.equal(b.calls[0].opt.headers.Authorization,undefined);const body=JSON.parse(b.calls[0].opt.body);assert.equal(Buffer.from(body.memberSecret,'base64url').length,32);assert.equal(body.joinToken,b.token);assert.equal(b.hist.at(-1)[2],'/join');assert.ok(!b.hist.at(-1)[2].includes(b.token));});
 test('request uses member capability and opaque catalog identifier only',async()=>{const b=boot();await b.context.testApi.join();await b.context.testApi.requestTrack('c');assert.equal(b.calls.length,2);const c=b.calls[1];assert.match(c.url,/\/requests$/);assert.match(c.opt.headers.Authorization,/^Bearer /);assert.deepEqual(Object.keys(JSON.parse(c.opt.body)).sort(),['catalogItemId','expectedVersion','requestId']);});
 test('catalog request is enabled after joining',async()=>{const b=boot();await b.context.testApi.join();const row=b.nodes.get('catalog').children[0];assert.equal(row.children.at(-1).disabled,false);});
-test('polling leaves request controls enabled',async()=>{const b=boot();await b.context.testApi.join();b.context.fetch=async()=>({ok:true,status:200,json:async()=>({version:1,state:'open',catalog:[{catalogItemId:'c',title:'T',artist:'A'}],requests:[],nowPlaying:null})});await b.context.testApi.poll();assert.equal(b.nodes.get('catalog').children[0].children.at(-1).disabled,false);});
+test('an open Jam without playback details still accepts shared requests',async()=>{
+ const b=boot();await b.context.testApi.join();
+ const snapshot={version:2,state:'open',catalog:[{catalogItemId:'c',title:'T',artist:'A'}],requests:[],nowPlaying:{title:'Shared song',artist:'Shared artist',playing:true}};
+ b.context.fetch=async()=>({ok:true,status:200,json:async()=>snapshot});
+ await b.context.testApi.poll();
+ assert.equal(b.nodes.get('playing').textContent,'Shared song · Shared artist — Playing');
+ snapshot.nowPlaying=null;snapshot.version++;
+ await b.context.testApi.poll();
+ assert.equal(b.nodes.get('state').textContent,'Approval on');
+ assert.equal(b.nodes.get('catalog').children[0].children.at(-1).disabled,false);
+ assert.equal(b.nodes.get('playing').textContent,'Now playing unavailable');
+});
 test('revoked capability disables request controls',async()=>{const b=boot();await b.context.testApi.join();b.context.fetch=async()=>({ok:false,status:403});await b.context.testApi.poll();assert.equal(b.nodes.get('catalog').children[0].children.at(-1).disabled,true);});
 test('source has no HTML injection, durable origin-wide storage, account client or audio',()=>{const s=fs.readFileSync(__dirname+'/app.js','utf8');for(const unsafe of ['innerHTML','localStorage','/auth','/playback','new Audio','navigator.mediaDevices','document.cookie'])assert.ok(!s.includes(unsafe),unsafe);assert.match(s,/visibilityState/);assert.match(s,/30000/);assert.match(s,/textContent/);assert.match(s,/replaceState/);});
 test('reload restores scoped membership without another join or invitation',async()=>{const first=boot();await first.context.testApi.join();const second=boot({storage:first.storage,hash:''});second.context.fetch=async(url,opt)=>{second.calls.push({url,opt});return {ok:true,status:200,json:async()=>({version:1,state:'open',catalog:[],requests:[],nowPlaying:null})}};await second.context.testApi.poll();assert.equal(second.calls.length,1);assert.equal(second.calls[0].opt.method,'GET');assert.match(second.calls[0].opt.headers.Authorization,/^Bearer /);assert.ok(!second.calls.some(c=>c.url.endsWith('/members')));});

@@ -328,6 +328,10 @@ func (h *PlaylistHandlers) UpdatePlaylist(w http.ResponseWriter, r *http.Request
 	playlist.IsPublic = req.IsPublic
 
 	if err := h.playlistRepo.Update(r.Context(), playlist); err != nil {
+		if errors.Is(err, db.ErrPlaylistPrivateTracks) {
+			writePlaylistError(w, http.StatusConflict, "PRIVATE_TRACKS", "a playlist containing private tracks cannot be made public")
+			return
+		}
 		writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update playlist")
 		return
 	}
@@ -421,9 +425,11 @@ func (h *PlaylistHandlers) AddTracks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify tracks exist
+	// Check the shared prefix for legacy missing-ID errors. Once a private
+	// candidate is seen, the locked batch must choose the first unavailable
+	// ID; probing later IDs here would disclose that the private one exists.
 	for _, trackID := range req.TrackIDs {
-		_, err := h.trackRepo.GetByID(r.Context(), trackID)
+		track, err := h.trackRepo.GetByID(r.Context(), trackID)
 		if err != nil {
 			if errors.Is(err, db.ErrTrackNotFound) {
 				writePlaylistError(w, http.StatusBadRequest, "VALIDATION_ERROR", "track not found: "+strconv.FormatInt(trackID, 10))
@@ -432,10 +438,18 @@ func (h *PlaylistHandlers) AddTracks(w http.ResponseWriter, r *http.Request) {
 			writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to verify track")
 			return
 		}
+		if track.Private {
+			break
+		}
 	}
 
 	report, err := h.playlistRepo.AddTracks(r.Context(), playlistID, req.TrackIDs)
 	if err != nil {
+		var unavailable db.PlaylistTrackUnavailableError
+		if errors.As(err, &unavailable) {
+			writePlaylistError(w, http.StatusBadRequest, "VALIDATION_ERROR", "track not found: "+strconv.FormatInt(unavailable.TrackID, 10))
+			return
+		}
 		writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to add tracks")
 		return
 	}

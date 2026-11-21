@@ -104,7 +104,13 @@ func (s *PrivateImportIntake) Import(ctx context.Context, m db.PrivateImportMani
 	if err != nil {
 		return nil, err // Exact readback can still recover the uncertain stage.
 	}
-	return s.Recover(ctx, in.OwnerID, in.OperationID)
+	receipt, err = s.Recover(ctx, in.OwnerID, in.OperationID)
+	if errors.Is(err, ErrPrivateImportBytes) {
+		// We have acknowledged the PUT, but have not verified its stored
+		// source. This is an owned recovery outcome, never an ingress refusal.
+		return nil, errors.Join(db.ErrPrivateImportStagePending, err)
+	}
+	return receipt, err
 }
 
 // Recover never reads the original or issues a Put. It can commit the exact
