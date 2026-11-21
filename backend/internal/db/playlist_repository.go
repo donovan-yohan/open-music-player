@@ -116,6 +116,7 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 		FROM playlists p
 		LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
 		LEFT JOIN tracks t ON pt.track_id = t.id
+		  AND (t.private_owner_id IS NULL OR (NOT p.is_public AND t.private_owner_id = p.user_id))
 		LEFT JOIN track_analysis ta ON ta.track_id = t.id
 		WHERE p.id = $1
 		ORDER BY pt.position ASC
@@ -243,12 +244,13 @@ func (r *PlaylistRepository) GetByUserID(ctx context.Context, userID uuid.UUID, 
 	// $2 is the case-insensitive name filter ("" => match all).
 	selectQuery := `
 		SELECT p.id, p.user_id, p.name, p.description, p.cover_url, p.is_public, p.created_at, p.updated_at,
-			   COALESCE(COUNT(pt.track_id), 0) as track_count,
+			   COALESCE(COUNT(t.id), 0) as track_count,
 			   COALESCE(SUM(t.duration_ms), 0) as total_duration,
 			   COUNT(*) OVER() as total_playlists
 		FROM playlists p
 		LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
 		LEFT JOIN tracks t ON pt.track_id = t.id
+		  AND (t.private_owner_id IS NULL OR (NOT p.is_public AND t.private_owner_id = p.user_id))
 		WHERE p.user_id = $1
 		  AND ($2 = '' OR p.name ILIKE '%' || $2 || '%')
 		GROUP BY p.id
@@ -283,8 +285,58 @@ func (r *PlaylistRepository) GetByUserID(ctx context.Context, userID uuid.UUID, 
 	return playlists, total, nil
 }
 
-// Update updates a playlist's name and description.
+// ErrPlaylistPrivateTracks is returned when a playlist containing private
+// tracks is made public. Public status and track admission share the same lock.
+var ErrPlaylistPrivateTracks = errors.New("playlist contains private tracks")
+
+// PlaylistTrackUnavailableError carries the refused caller-provided ID, not any
+// evidence that the track exists. The HTTP route uses its existing missing shape.
+type PlaylistTrackUnavailableError struct{ TrackID int64 }
+
+func (e PlaylistTrackUnavailableError) Error() string { return ErrTrackNotFound.Error() }
+func (e PlaylistTrackUnavailableError) Unwrap() error { return ErrTrackNotFound }
+
+// checkPlaylistTrackAdmission must run after lockPlaylistMutation.
+func checkPlaylistTrackAdmission(ctx context.Context, tx *sql.Tx, playlistID int64, ids []int64) error {
+	var unavailable int64
+	err := tx.QueryRowContext(ctx, `
+		SELECT requested.id
+		FROM playlists p CROSS JOIN unnest($2::bigint[]) WITH ORDINALITY AS requested(id, ord)
+		LEFT JOIN tracks t ON t.id = requested.id
+		  AND (t.private_owner_id IS NULL OR (NOT p.is_public AND t.private_owner_id = p.user_id))
+		WHERE p.id = $1 AND t.id IS NULL ORDER BY requested.ord LIMIT 1
+	`, playlistID, pq.Array(ids)).Scan(&unavailable)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return PlaylistTrackUnavailableError{TrackID: unavailable}
+}
+
+// Update updates a playlist's metadata and sharing flag.
 func (r *PlaylistRepository) Update(ctx context.Context, playlist *Playlist) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := lockPlaylistMutation(ctx, tx, playlist.ID); err != nil {
+		return err
+	}
+	if playlist.IsPublic {
+		var containsPrivate bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id
+			WHERE pt.playlist_id = $1 AND t.private_owner_id IS NOT NULL
+		)`, playlist.ID).Scan(&containsPrivate); err != nil {
+			return err
+		}
+		if containsPrivate {
+			return ErrPlaylistPrivateTracks
+		}
+	}
 	query := `
 		UPDATE playlists
 		SET name = $1, description = $2, cover_url = $3, is_public = $4, updated_at = NOW()
@@ -292,7 +344,7 @@ func (r *PlaylistRepository) Update(ctx context.Context, playlist *Playlist) err
 		RETURNING updated_at
 	`
 
-	err := r.db.QueryRowContext(ctx, query,
+	err = tx.QueryRowContext(ctx, query,
 		playlist.Name, playlist.Description, playlist.CoverURL, playlist.IsPublic, playlist.ID,
 	).Scan(&playlist.UpdatedAt)
 
@@ -303,7 +355,7 @@ func (r *PlaylistRepository) Update(ctx context.Context, playlist *Playlist) err
 		return err
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 // Delete removes a playlist and all its track associations.
@@ -337,6 +389,10 @@ func (r *PlaylistRepository) AddTrackAtPosition(ctx context.Context, playlistID,
 	}
 	defer tx.Rollback()
 	if err = lockPlaylistMutation(ctx, tx, playlistID); err != nil {
+		return err
+	}
+
+	if err := checkPlaylistTrackAdmission(ctx, tx, playlistID, []int64{trackID}); err != nil {
 		return err
 	}
 
@@ -397,6 +453,10 @@ func (r *PlaylistRepository) AddTracks(ctx context.Context, playlistID int64, tr
 	}
 	defer tx.Rollback()
 	if err = lockPlaylistMutation(ctx, tx, playlistID); err != nil {
+		return result, err
+	}
+
+	if err := checkPlaylistTrackAdmission(ctx, tx, playlistID, trackIDs); err != nil {
 		return result, err
 	}
 

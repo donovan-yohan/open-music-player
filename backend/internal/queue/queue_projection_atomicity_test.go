@@ -155,7 +155,7 @@ func TestRedisQueueReadOnlyProjection(t *testing.T) {
 		if err := downloads.UpdateJobProgress(ctx, job.ID, download.StatusComplete, 100); err != nil {
 			t.Fatal(err)
 		}
-		h := NewHandlers(s, downloads)
+		h := NewHandlersWithAnalysis(s, downloads, nil, fixtureQueueTrack(9))
 		get := httptest.NewRequest(http.MethodGet, "/api/v1/queue", nil)
 		get = get.WithContext(context.WithValue(ctx, auth.UserContextKey, &auth.UserContext{UserID: user}))
 		h.GetQueue(httptest.NewRecorder(), get)

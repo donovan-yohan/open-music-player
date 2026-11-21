@@ -62,7 +62,7 @@ func (r *WeeklyRepository) Update(ctx context.Context, user uuid.UUID, fn func(*
 }
 func (r *WeeklyRepository) ArtistEvidence(ctx context.Context, user uuid.UUID, id string) (string, error) {
 	var name string
-	e := r.db.QueryRowContext(ctx, `SELECT t.artist FROM tracks t JOIN user_library ul ON ul.track_id=t.id WHERE ul.user_id=$1 AND t.mb_verified AND t.mb_artist_id=$2 AND t.artist IS NOT NULL AND length(t.artist) BETWEEN 1 AND 500 ORDER BY t.id LIMIT 1`, user, id).Scan(&name)
+	e := r.db.QueryRowContext(ctx, `SELECT t.artist FROM tracks t JOIN user_library ul ON ul.track_id=t.id WHERE ul.user_id=$1 AND t.private_owner_id IS NULL AND t.mb_verified AND t.mb_artist_id=$2 AND t.artist IS NOT NULL AND length(t.artist) BETWEEN 1 AND 500 ORDER BY t.id LIMIT 1`, user, id).Scan(&name)
 	if e == sql.ErrNoRows {
 		return "", nil
 	}
@@ -72,7 +72,7 @@ func (r *WeeklyRepository) History(ctx context.Context, user uuid.UUID, now time
 	out := weekly.History{Short: map[string]string{}, Long: map[string]string{}}
 	rows, e := r.db.QueryContext(ctx, `WITH eligible AS (
  SELECT t.mb_artist_id,t.artist,p.played_at,t.mb_verified FROM play_events p JOIN tracks t ON t.id=p.track_id
- WHERE p.user_id=$1 AND NOT p.skipped AND p.played_at >= $2 AND p.played_at <= $3
+ WHERE p.user_id=$1 AND t.private_owner_id IS NULL AND NOT p.skipped AND p.played_at >= $2 AND p.played_at <= $3
  ), grouped AS (SELECT mb_artist_id,MIN(artist) AS name,MAX(played_at) AS latest FROM eligible
  WHERE mb_verified AND mb_artist_id IS NOT NULL AND mb_artist_id<>'00000000-0000-0000-0000-000000000000'::uuid GROUP BY mb_artist_id)
  SELECT selected.mb_artist_id,selected.name,selected.latest,(SELECT COUNT(*) FROM eligible WHERE NOT mb_verified OR mb_artist_id IS NULL OR mb_artist_id='00000000-0000-0000-0000-000000000000'::uuid)
@@ -106,7 +106,7 @@ func (r *WeeklyRepository) Eligibility(ctx context.Context, user uuid.UUID, ids 
 	if len(ids) > 200 {
 		return out, fmt.Errorf("weekly eligibility candidate bound")
 	}
-	rows, e := r.db.QueryContext(ctx, `SELECT DISTINCT t.mb_recording_id FROM user_library ul JOIN tracks t ON t.id=ul.track_id WHERE ul.user_id=$1 AND t.mb_recording_id=ANY($2::uuid[])`, user, pq.Array(ids))
+	rows, e := r.db.QueryContext(ctx, `SELECT DISTINCT t.mb_recording_id FROM user_library ul JOIN tracks t ON t.id=ul.track_id WHERE ul.user_id=$1 AND t.private_owner_id IS NULL AND t.mb_recording_id=ANY($2::uuid[])`, user, pq.Array(ids))
 	if e != nil {
 		return out, e
 	}
@@ -123,7 +123,7 @@ func (r *WeeklyRepository) Eligibility(ctx context.Context, user uuid.UUID, ids 
 	if e != nil {
 		return out, e
 	}
-	rows, e = r.db.QueryContext(ctx, `SELECT DISTINCT t.mb_recording_id FROM play_events p JOIN tracks t ON t.id=p.track_id WHERE p.user_id=$1 AND NOT p.skipped AND p.played_at >= $2 AND p.played_at <= $3 AND t.mb_recording_id=ANY($4::uuid[])`, user, now.AddDate(0, 0, -30), now, pq.Array(ids))
+	rows, e = r.db.QueryContext(ctx, `SELECT DISTINCT t.mb_recording_id FROM play_events p JOIN tracks t ON t.id=p.track_id WHERE p.user_id=$1 AND t.private_owner_id IS NULL AND NOT p.skipped AND p.played_at >= $2 AND p.played_at <= $3 AND t.mb_recording_id=ANY($4::uuid[])`, user, now.AddDate(0, 0, -30), now, pq.Array(ids))
 	if e != nil {
 		return out, e
 	}
@@ -140,6 +140,6 @@ func (r *WeeklyRepository) Eligibility(ctx context.Context, user uuid.UUID, ids 
 	if e != nil {
 		return out, e
 	}
-	e = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_library ul JOIN tracks t ON t.id=ul.track_id WHERE ul.user_id=$1 AND (t.mb_recording_id IS NULL OR t.mb_recording_id='00000000-0000-0000-0000-000000000000'::uuid)`, user).Scan(&out.UnresolvedOwned)
+	e = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_library ul JOIN tracks t ON t.id=ul.track_id WHERE ul.user_id=$1 AND t.private_owner_id IS NULL AND (t.mb_recording_id IS NULL OR t.mb_recording_id='00000000-0000-0000-0000-000000000000'::uuid)`, user).Scan(&out.UnresolvedOwned)
 	return out, e
 }

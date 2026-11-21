@@ -56,7 +56,7 @@ func (r *MixExchangeRepository) CreateVerified(ctx context.Context, plan *MixPla
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT t.id, t.source_file_hash, t.duration_ms
  FROM user_library ul JOIN tracks t ON t.id = ul.track_id
- WHERE ul.user_id = $1 ORDER BY t.id FOR SHARE OF ul, t`, plan.UserID)
+ WHERE ul.user_id = $1 AND t.private_owner_id IS NULL ORDER BY t.id FOR SHARE OF ul, t`, plan.UserID)
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func (r *MixExchangeRepository) FindSourcesByTrackIDs(ctx context.Context, userI
 	}
 	return r.findSources(ctx, `SELECT t.id, t.source_file_hash, t.duration_ms
  FROM user_library ul JOIN tracks t ON t.id = ul.track_id
- WHERE ul.user_id = $1 AND t.id = ANY($2) ORDER BY t.id`, userID, pq.Array(trackIDs))
+ WHERE ul.user_id = $1 AND t.private_owner_id IS NULL AND t.id = ANY($2) ORDER BY t.id`, userID, pq.Array(trackIDs))
 }
 
 // Return every recipient-owned match, not an arbitrary first row: the caller
@@ -123,7 +123,7 @@ func (r *MixExchangeRepository) FindSourcesByHashes(ctx context.Context, userID 
 	}
 	return r.findSources(ctx, `SELECT t.id, t.source_file_hash, t.duration_ms
  FROM user_library ul JOIN tracks t ON t.id = ul.track_id
- WHERE ul.user_id = $1 AND t.source_file_hash = ANY($2) ORDER BY t.id`, userID, pq.Array(hashes))
+ WHERE ul.user_id = $1 AND t.private_owner_id IS NULL AND t.source_file_hash = ANY($2) ORDER BY t.id`, userID, pq.Array(hashes))
 }
 
 func (r *MixExchangeRepository) findSources(ctx context.Context, query string, userID uuid.UUID, values any) ([]MixExchangeSource, error) {

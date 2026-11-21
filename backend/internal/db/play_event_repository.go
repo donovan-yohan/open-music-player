@@ -63,6 +63,14 @@ type PlayHistoryEvent struct {
 // shape LibraryRepository.IsTrackInLibrary enforces at the playback gate.
 const libraryMembershipProjection = `EXISTS(SELECT 1 FROM user_library ul WHERE ul.user_id = $1 AND ul.track_id = t.id)`
 
+// Revision and paging must see the same event set without hydrating tracks.
+// The play_events foreign key guarantees the track exists; anti-join just the
+// foreign private subset using only identity and scope.
+const visibleRecentPlay = `NOT EXISTS (
+	SELECT 1 FROM tracks hidden WHERE hidden.id = pe.track_id
+	  AND hidden.private_owner_id IS NOT NULL AND hidden.private_owner_id <> $1
+)`
+
 // ErrRecentChanged means an opt-in traversal no longer names the current corpus.
 var ErrRecentChanged = errors.New("recent plays changed")
 
@@ -81,15 +89,15 @@ func NewPlayEventRepository(db *DB) *PlayEventRepository {
 func (r *PlayEventRepository) RecordPlay(ctx context.Context, userID uuid.UUID, trackID int64, contextType, contextID string) error {
 	query := `
 		INSERT INTO play_events (user_id, track_id, context_type, context_id)
-		VALUES ($1, $2, $3, $4)
+		SELECT $1, id, $3, $4 FROM tracks WHERE id = $2 AND (private_owner_id IS NULL OR private_owner_id = $1)
 	`
-	_, err := r.db.ExecContext(ctx, query,
+	result, err := r.db.ExecContext(ctx, query,
 		userID,
 		trackID,
 		sql.NullString{String: contextType, Valid: contextType != ""},
 		sql.NullString{String: contextID, Valid: contextID != ""},
 	)
-	return err
+	return checkPlayEventInsert(result, err)
 }
 
 // RecordSkip inserts a play event marked skipped=true with a server-set played_at.
@@ -99,9 +107,20 @@ func (r *PlayEventRepository) RecordPlay(ctx context.Context, userID uuid.UUID, 
 func (r *PlayEventRepository) RecordSkip(ctx context.Context, userID uuid.UUID, trackID int64) error {
 	query := `
 		INSERT INTO play_events (user_id, track_id, skipped)
-		VALUES ($1, $2, TRUE)
+		SELECT $1, id, TRUE FROM tracks WHERE id = $2 AND (private_owner_id IS NULL OR private_owner_id = $1)
 	`
-	_, err := r.db.ExecContext(ctx, query, userID, trackID)
+	result, err := r.db.ExecContext(ctx, query, userID, trackID)
+	return checkPlayEventInsert(result, err)
+}
+
+func checkPlayEventInsert(result sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err == nil && count == 0 {
+		return ErrTrackNotFound
+	}
 	return err
 }
 
@@ -130,12 +149,13 @@ func (r *PlayEventRepository) ListSkipStats(ctx context.Context, userID uuid.UUI
 		days = 30
 	}
 	query := `
-		SELECT track_id,
-		       COUNT(*) FILTER (WHERE skipped)::bigint AS skips,
-		       COUNT(*) FILTER (WHERE NOT skipped)::bigint AS plays
-		FROM play_events
-		WHERE user_id = $1 AND played_at >= NOW() - make_interval(days => $2)
-		GROUP BY track_id
+		SELECT pe.track_id,
+		       COUNT(*) FILTER (WHERE pe.skipped)::bigint AS skips,
+		       COUNT(*) FILTER (WHERE NOT pe.skipped)::bigint AS plays
+		FROM play_events pe JOIN tracks t ON t.id = pe.track_id
+		WHERE pe.user_id = $1 AND pe.played_at >= NOW() - make_interval(days => $2)
+		  AND (t.private_owner_id IS NULL OR t.private_owner_id = $1)
+		GROUP BY pe.track_id
 	`
 	rows, err := r.db.QueryContext(ctx, query, userID, days)
 	if err != nil {
@@ -159,8 +179,9 @@ func (r *PlayEventRepository) ListSkipStats(ctx context.Context, userID uuid.UUI
 func (r *PlayEventRepository) CountRecentSkips(ctx context.Context, userID uuid.UUID, window time.Duration) (int64, error) {
 	query := `
 		SELECT COUNT(*)
-		FROM play_events
-		WHERE user_id = $1 AND skipped AND played_at >= NOW() - make_interval(secs => $2)
+		FROM play_events pe JOIN tracks t ON t.id = pe.track_id
+		WHERE pe.user_id = $1 AND pe.skipped AND pe.played_at >= NOW() - make_interval(secs => $2)
+		  AND (t.private_owner_id IS NULL OR t.private_owner_id = $1)
 	`
 	var count int64
 	err := r.db.QueryRowContext(ctx, query, userID, window.Seconds()).Scan(&count)
@@ -205,8 +226,9 @@ func (r *PlayEventRepository) RecentPage(ctx context.Context, userID uuid.UUID, 
 		return nil, "", false, fmt.Errorf("begin recent page: %w", err)
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT track_id, MAX(played_at) FROM play_events
-		WHERE user_id=$1 AND NOT skipped GROUP BY track_id ORDER BY track_id`, userID)
+	rows, err := tx.QueryContext(ctx, `SELECT pe.track_id, MAX(pe.played_at) FROM play_events pe
+		WHERE pe.user_id=$1 AND NOT pe.skipped AND `+visibleRecentPlay+`
+		GROUP BY pe.track_id ORDER BY pe.track_id`, userID)
 	if err != nil {
 		return nil, "", false, fmt.Errorf("read recent revision: %w", err)
 	}
@@ -255,19 +277,19 @@ func recentlyPlayedRows(ctx context.Context, q recentQueryer, userID uuid.UUID, 
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
 			   ta.updated_at,
-			   pe.last_played_at,
+			   recent.last_played_at,
 			   ` + libraryMembershipProjection + `
 			   FROM (
-			   SELECT track_id, MAX(played_at) AS last_played_at
-			   FROM play_events
-			   WHERE user_id = $1 AND NOT skipped
-			   GROUP BY track_id
-			   ORDER BY last_played_at DESC, track_id DESC
+			   SELECT pe.track_id, MAX(pe.played_at) AS last_played_at
+			   FROM play_events pe
+			   WHERE pe.user_id = $1 AND NOT pe.skipped AND ` + visibleRecentPlay + `
+			   GROUP BY pe.track_id
+			   ORDER BY last_played_at DESC, pe.track_id DESC
 			   LIMIT $2 OFFSET $3
-			   ) pe
-			   JOIN tracks t ON t.id = pe.track_id
+			   ) recent
+			   JOIN tracks t ON t.id = recent.track_id
 			   LEFT JOIN track_analysis ta ON ta.track_id = t.id
-			   ORDER BY pe.last_played_at DESC, t.id DESC
+			   ORDER BY recent.last_played_at DESC, t.id DESC
 			   `
 
 	rows, err := q.QueryContext(ctx, query, userID, limit, offset)
@@ -336,7 +358,7 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 			   FROM play_events pe
 			   JOIN tracks t ON t.id = pe.track_id
 			   LEFT JOIN track_analysis ta ON ta.track_id = t.id
-			   WHERE pe.user_id = $1
+			   WHERE pe.user_id = $1 AND (t.private_owner_id IS NULL OR t.private_owner_id = $1)
 			   ORDER BY pe.played_at DESC, pe.id DESC
 		LIMIT $2 OFFSET $3
 	`
@@ -405,7 +427,7 @@ func (r *PlayEventRepository) topTracks(ctx context.Context, userID uuid.UUID, d
 
 	membershipFilter := ""
 	if ownedOnly {
-		membershipFilter = "WHERE " + libraryMembershipProjection
+		membershipFilter = " AND " + libraryMembershipProjection
 	}
 	query := `
 		SELECT t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
@@ -427,7 +449,7 @@ func (r *PlayEventRepository) topTracks(ctx context.Context, userID uuid.UUID, d
 		   ) agg
 		   JOIN tracks t ON t.id = agg.track_id
 		   LEFT JOIN track_analysis ta ON ta.track_id = t.id
-		   ` + membershipFilter + `
+			   WHERE (t.private_owner_id IS NULL OR t.private_owner_id = $1)` + membershipFilter + `
 		   ORDER BY agg.play_count DESC, agg.last_played_at DESC, t.id DESC
 		   LIMIT $3
 	`

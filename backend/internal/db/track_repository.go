@@ -716,7 +716,17 @@ func (r *TrackRepository) UpdateMetadata(ctx context.Context, trackID int64, upd
 	return nil
 }
 
-// GetByIdentityHash retrieves a track by its identity hash.
+// IsTrackVisibleTo checks numeric admission without loading any track fields.
+// Shared tracks retain their existing availability without Library membership.
+func (r *TrackRepository) IsTrackVisibleTo(ctx context.Context, userID uuid.UUID, trackID int64) (bool, error) {
+	var visible bool
+	err := r.db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM tracks WHERE id = $2 AND (private_owner_id IS NULL OR private_owner_id = $1)
+	)`, userID, trackID).Scan(&visible)
+	return visible, err
+}
+
+// GetByIdentityHash retrieves a shared track by its URL-ingest identity hash.
 func (r *TrackRepository) GetByIdentityHash(ctx context.Context, identityHash string) (*Track, error) {
 	return getByIdentityHash(ctx, r.db, identityHash)
 }
@@ -730,7 +740,7 @@ func getByIdentityHash(ctx context.Context, queryRower trackQueryRower, identity
 			   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
 			   cover_art_url, metadata_user_edited, created_at, updated_at
 		FROM tracks
-		WHERE identity_hash = $1
+		WHERE identity_hash = $1 AND private_owner_id IS NULL
 	`
 
 	var t Track
@@ -1197,7 +1207,7 @@ func (r *TrackRepository) GetUnverifiedTracks(ctx context.Context, limit, offset
 		limit = 100
 	}
 
-	countQuery := `SELECT COUNT(*) FROM tracks WHERE mb_verified = FALSE`
+	countQuery := `SELECT COUNT(*) FROM tracks WHERE mb_verified = FALSE AND private_owner_id IS NULL`
 	var total int
 	if err := r.db.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
 		return nil, 0, err
@@ -1210,7 +1220,7 @@ func (r *TrackRepository) GetUnverifiedTracks(ctx context.Context, limit, offset
 			   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
 			   cover_art_url, metadata_user_edited, created_at, updated_at
 		FROM tracks
-		WHERE mb_verified = FALSE
+		WHERE mb_verified = FALSE AND private_owner_id IS NULL
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2
 	`

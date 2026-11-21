@@ -37,7 +37,7 @@ func playlistTargetHandlers(t *testing.T, playlists playlistOwnershipRepository)
 	downloads := &fakeQueueDownloadService{}
 	store := &fakeDurableDownloadJobStore{}
 	repo := &fakeSourceDecisionRepository{decision: sourceDecisionForQueue(t, sourceDecisionSnapshot(t, "https://www.youtube.com/watch?v=dQw4w9WgXcQ", ""))}
-	return NewHandlersWithPlaylistTargets(service, downloads, nil, repo, store, playlists), downloads, store, repo
+	return NewHandlersWithPlaylistTargets(service, downloads, nil, repo, store, playlists, nil), downloads, store, repo
 }
 
 // durableTargetPlaylistArg returns the target_playlist_id bound to the durable

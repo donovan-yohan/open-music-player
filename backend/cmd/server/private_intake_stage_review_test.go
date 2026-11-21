@@ -184,7 +184,11 @@ func (c stageAuthLossConn) ExecContext(ctx context.Context, query string, args [
 		c.hooks.authorized() // The actual SQL autocommit succeeded; withhold its ACK from the repository.
 		return nil, errStageAuthLost
 	}
-	if c.hooks.settlement != nil && strings.Contains(query, "SET phase='refused'") {
+	// Inject faults only into the surviving producer's exact authorize-ACK
+	// settlement. SQL-only reservation expiry can now also set 'refused',
+	// but never carries the producer's fingerprint and measured duration.
+	if c.hooks.settlement != nil && strings.Contains(query, "SET phase='refused'") &&
+		strings.Contains(query, "intent_hash=$4") && strings.Contains(query, "duration_ms=$5") {
 		err = c.hooks.settlement(ctx, result, err)
 	}
 	return result, err

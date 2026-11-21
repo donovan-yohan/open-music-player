@@ -39,7 +39,7 @@ func TestTrackAnalysisProjectsIntoSongListingsAgainstPostgres(t *testing.T) {
 	}`), 0); err != nil {
 		t.Fatalf("set analysis overrides: %v", err)
 	}
-	compactByID, err := analysisRepo.GetCompactByTrackIDs(ctx, []int64{trackID})
+	compactByID, err := analysisRepo.GetCompactByTrackIDs(ctx, userID, []int64{trackID})
 	if err != nil {
 		t.Fatalf("get compact analysis: %v", err)
 	}

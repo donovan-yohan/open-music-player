@@ -162,8 +162,9 @@ func (r *MixPlanRepository) FindMissingTrackIDs(ctx context.Context, userID uuid
 	uniqueTrackIDs := dedupeInt64(trackIDs)
 	query := `
 		SELECT DISTINCT track_id
-		FROM user_library
-		WHERE user_id = $1 AND track_id = ANY($2)
+		FROM user_library ul JOIN tracks t ON t.id = ul.track_id
+		WHERE ul.user_id = $1 AND ul.track_id = ANY($2)
+		  AND (t.private_owner_id IS NULL OR t.private_owner_id = $1)
 	`
 	rows, err := r.db.QueryContext(ctx, query, userID, pq.Array(uniqueTrackIDs))
 	if err != nil {
