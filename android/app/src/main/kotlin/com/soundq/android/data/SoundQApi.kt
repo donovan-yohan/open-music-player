@@ -1,10 +1,16 @@
 package com.soundq.android.data
 
 import kotlinx.serialization.json.*
+import com.soundq.android.data.device.LOCAL_ENRICHMENT_PATH
+import com.soundq.android.data.device.LocalEnrichmentReply
+import com.soundq.android.data.device.LocalEnrichmentTerms
 import com.soundq.android.data.discovery.DiscoveryCalls
 import com.soundq.android.data.discovery.SourceProvider
 import com.soundq.android.data.catalog.RecordingMbid
 import com.soundq.android.data.imports.*
+import com.soundq.android.data.originalimport.OriginalImportRepository
+import com.soundq.android.data.originalimport.OriginalImportTransport
+import com.soundq.android.data.originalimport.WireOriginalImportTransport
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
@@ -13,8 +19,22 @@ import java.time.Instant
 import java.util.concurrent.TimeUnit
 
 /** Only authenticated HTTP path. Response bodies/credentials/signed URLs never enter errors or logs. */
-class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient(), val intakeReceipts:com.soundq.android.data.acquisition.IntakeReceipts = com.soundq.android.data.acquisition.IntakeReceipts(), private val libraryOwnershipReadback:(AccountScope)->Unit = {}) {
-    private class WireGuard(val valid: () -> Boolean)
+class SoundQApi internal constructor(
+    val session: AccountSession,
+    client: OkHttpClient,
+    val intakeReceipts: com.soundq.android.data.acquisition.IntakeReceipts,
+    private val libraryOwnershipReadback: (AccountScope) -> Unit,
+    private val originalImports: () -> OriginalImportRepository?,
+) {
+    constructor(session: AccountSession, client: OkHttpClient = OkHttpClient(),
+        intakeReceipts: com.soundq.android.data.acquisition.IntakeReceipts = com.soundq.android.data.acquisition.IntakeReceipts(),
+        libraryOwnershipReadback: (AccountScope) -> Unit = {},
+    ) : this(session, client, intakeReceipts, libraryOwnershipReadback, { null })
+    private class WireGuard(val originalImport: Boolean = false, val valid: () -> Boolean)
+    // Carried by the existing dispatch slot, but only the network chain may admit it.
+    private class LibraryDeleteAdmission(val admit: (() -> Boolean) -> Boolean) : () -> Boolean {
+        override fun invoke(): Boolean = false
+    }
     private val http = client.newBuilder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
         .callTimeout(20, TimeUnit.SECONDS)
         .addInterceptor { chain ->
@@ -23,14 +43,22 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
             // Keep total calls bounded and leave ordinary request deadlines alone.
             val discoveryRead=r.method=="GET"&&r.url.encodedPath=="/api/v1/discovery/search"
             val previewRead=r.method=="POST"&&r.url.encodedPath=="/api/v1/discovery/preview"
-            val readChain=if(discoveryRead||previewRead)chain.withReadTimeout(20,TimeUnit.SECONDS)else chain
+            val readChain=when {
+                r.tag(WireGuard::class.java)?.originalImport==true -> if(r.method=="POST")
+                    chain.withReadTimeout(95,TimeUnit.SECONDS).withWriteTimeout(66,TimeUnit.SECONDS)
+                    else chain.withReadTimeout(30,TimeUnit.SECONDS)
+                discoveryRead||previewRead -> chain.withReadTimeout(20,TimeUnit.SECONDS)
+                else -> chain
+            }
             readChain.proceed(r)
         }
         .addNetworkInterceptor { chain ->
             val r = chain.request()
-            if (r.tag(WireGuard::class.java)?.valid?.invoke() != true) throw SafeFailure(SafeFailure.Reason.Retired)
             val base = session.endpoint.base
             if (r.url.scheme != base.scheme || r.url.host != base.host || r.url.port != base.port || !r.url.encodedPath.startsWith("/api/v1/")) throw SafeFailure(SafeFailure.Reason.Endpoint)
+            val guard = r.tag(WireGuard::class.java)?.valid
+            val admitted = if (guard is LibraryDeleteAdmission) guard.admit(chain.call()::isCanceled) else guard?.invoke() == true
+            if (!admitted) throw SafeFailure(SafeFailure.Reason.Retired)
             chain.proceed(r)
         }.build()
     private val json = Json { ignoreUnknownKeys = true }
@@ -39,7 +67,7 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         SecretTokens(body.getValue("accessToken").jsonPrimitive.content,body.getValue("refreshToken").jsonPrimitive.content,body.getValue("user").jsonObject.getValue("id").jsonPrimitive.content)
     } catch (_: Exception) { throw SafeFailure(SafeFailure.Reason.InvalidResponse) }
     private class Reply(val code: Int, val body: JsonObject, val text: String = "")
-    private fun wire(path: String, method: String = "GET", body: JsonObject? = null, access: String? = null, dispatchValid: (() -> Boolean)? = null, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, rawJson:String?=null, calls:DiscoveryCalls?=null, responseValid:(()->Boolean)?=null, valid: () -> Boolean): Reply {
+    private fun wire(path: String, method: String = "GET", body: JsonObject? = null, access: String? = null, dispatchValid: (() -> Boolean)? = null, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, rawJson:String?=null, calls:DiscoveryCalls?=null, responseValid:(()->Boolean)?=null, originalImport:Boolean=false, originalBody:RequestBody?=null, valid: () -> Boolean): Reply {
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
         val pathOnly=path.substringBefore('?')
         require(path.startsWith("/") && !path.startsWith("//") && '#' !in path && '\\' !in pathOnly)
@@ -48,21 +76,52 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
             segment in setOf(".","..") || "%2f" in segment || "%5c" in segment
         })
         val url = (session.endpoint.identity + path).toHttpUrlOrNull() ?: throw SafeFailure(SafeFailure.Reason.Endpoint)
-        val request = Request.Builder().url(url).tag(WireGuard::class.java,WireGuard { valid() && (dispatchValid?.invoke() ?: true) }).header("Accept","application/json")
+        val guard: () -> Boolean = if (dispatchValid is LibraryDeleteAdmission) {
+            LibraryDeleteAdmission { isCanceled -> valid() && dispatchValid.admit(isCanceled) }
+        } else {
+            { valid() && (dispatchValid?.invoke() ?: true) }
+        }
+        val request = Request.Builder().url(url).tag(WireGuard::class.java,WireGuard(originalImport, guard)).header("Accept","application/json")
+        val enrichment = method == "POST" && path == LOCAL_ENRICHMENT_PATH
+        if (enrichment) request.header("Cache-Control", "no-store")
         if (access != null) request.header("Authorization","Bearer $access")
         headers.forEach {(name,value)->
             require(name=="Idempotency-Key" || name=="X-SoundQ-Radar-Policy"&&value=="recording-radar-v2"&&path=="/me/discovery/releases"&&method=="GET")
             request.header(name,value)
         }
         require(rawJson==null || path=="/mix-plans/import" && method=="POST" && body==null && !emptyBody)
-        request.method(method, if (method in listOf("GET","HEAD")) null else (rawJson ?: if(emptyBody)"" else body?.toString() ?: "{}").toRequestBody("application/json".toMediaType()))
+        require(originalBody==null || originalImport && path=="/library/uploads" && method=="POST" && body==null && rawJson==null && !emptyBody)
+        val content = if (method in listOf("GET","HEAD")) null else originalBody ?: (rawJson ?: if(emptyBody)"" else body?.toString() ?: "{}").toRequestBody("application/json".toMediaType())
+        // OkHttp can follow up a 503 Retry-After: 0 even with connection retries disabled.
+        // A reviewed Enrich lookup authorizes one request body, including under that response.
+        request.method(method, if (enrichment) object : RequestBody() {
+            private val delegate = requireNotNull(content)
+            override fun contentType() = delegate.contentType()
+            override fun contentLength() = delegate.contentLength()
+            override fun isOneShot() = true
+            override fun writeTo(sink: okio.BufferedSink) = delegate.writeTo(sink)
+        } else content)
         val call=http.newCall(request.build())
+        if(originalImport)call.timeout().timeout(if(method=="POST")100 else 32,TimeUnit.SECONDS)
         val cancel=call::cancel
         if(calls!=null&&!calls.track(cancel))throw SafeFailure(SafeFailure.Reason.Retired)
         try {
             call.execute().use { response ->
                 if (!(responseValid?.invoke() ?: valid())) throw SafeFailure(SafeFailure.Reason.Retired)
                 if (response.code in 300..399) throw SafeFailure(SafeFailure.Reason.Endpoint)
+                if(originalImport && response.code!=401) {
+                    if(!response.cacheControl.isPrivate||!response.cacheControl.noStore||response.header("ETag")!=null||
+                        response.body.contentType()?.let {it.type=="application"&&it.subtype=="json"}!=true)throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+                    val source=response.body.source()
+                    if(source.request(8193))throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+                    val parsed=json.parseToJsonElement(source.readByteArray().decodeToString(throwOnInvalidSequence=true)).jsonObject
+                    if(!valid())throw SafeFailure(SafeFailure.Reason.Retired)
+                    if(response.code in 200..299)return Reply(response.code,parsed)
+                    // Do not retain server messages or any other error fields.
+                    val code=(parsed["code"] as? JsonPrimitive)?.takeIf {it.isString}?.content
+                        ?.takeIf {it in setOf("NOT_FOUND","INVALID_UPLOAD","UPLOAD_TOO_LARGE","UPLOAD_MEDIA")}
+                    return Reply(response.code,buildJsonObject {code?.let {put("code",it)}})
+                }
                 // Never parse/display server error text, which can echo sensitive input.
                 if (response.code !in 200..299) {
                     // Only exchange admits a bounded declared code. No message/hash/body survives.
@@ -85,7 +144,7 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
                 // Full signed RGB/tier artifacts are larger than metadata. This bounded
                 // exception belongs ONLY to canonical analysis GETs, never arbitrary URLs,
                 // queries, overrides or writes. Auth/endpoint/retirement fences above stay shared.
-                val responseLimit = if(method=="GET"&&path=="/me/discovery/releases")262144L else if (method == "GET" && Regex("^/tracks/[1-9][0-9]*/analysis$").matches(path)) 16L * 1024 * 1024 else 2_000_000L
+                val responseLimit = if(enrichment) 32768L else if(method=="GET"&&path=="/me/discovery/releases")262144L else if (method == "GET" && Regex("^/tracks/[1-9][0-9]*/analysis$").matches(path)) 16L * 1024 * 1024 else 2_000_000L
                 if (source.request(responseLimit + 1)) throw SafeFailure(SafeFailure.Reason.InvalidResponse)
                 val text = source.readUtf8()
                 val parsed = if (text.isBlank()) buildJsonObject {} else json.parseToJsonElement(text).jsonObject
@@ -172,6 +231,46 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         require(path=="/me/devices" || Regex("^/me/devices/[0-9a-f-]{36}$").matches(path) || path=="/jams" || Regex("^/jams/[0-9a-f-]{36}(/(host|invites)|/requests/[0-9a-f-]{36}(/approval)?)?$").matches(path))
         return authorized(scope,path,method,body,valid=valid,expectedStatus=status,privateFeature=true)
     }
+    /** Released original import routes, admitted only for a disposable loopback fixture. */
+    internal fun originalImportTransport(writes:Boolean):OriginalImportTransport {
+        require(session.endpoint.base.host=="127.0.0.1")
+        return WireOriginalImportTransport(session.endpoint.identity) {scope,path,body,operation,current->
+            val upload=body!=null
+            require(if(upload) writes&&path=="/library/uploads"&&operation!=null&&current!=null else operation==null&&current==null&&
+                (Regex("^/library/uploads/[0-9a-f-]{36}$").matches(path)||Regex("^/library/tracks/[1-9][0-9]*$").matches(path)))
+            val entered=java.util.concurrent.atomic.AtomicBoolean()
+            fun exchange(access:String):Reply = wire(path,if(upload)"POST"else "GET",access=access,
+                headers=operation?.let {mapOf("Idempotency-Key" to it.toString())}.orEmpty(),
+                originalImport=true,originalBody=body,
+                dispatchValid=if(upload) {{requireNotNull(current).invoke()&&entered.compareAndSet(false,true)}} else null) {session.remoteCurrent(scope)}
+            val access=session.access(scope)
+            val first=exchange(access)
+            val result=if(!upload&&first.code==401&&refresh(scope,access))exchange(session.access(scope))else first
+            session.checkRemote(scope)
+            WireOriginalImportTransport.Reply(result.code,result.body)
+        }
+    }
+    /** One disclosed lookup, without a 401 refresh/replay or transport follow-up. */
+    internal fun localEnrichment(scope: AccountScope, terms: LocalEnrichmentTerms, calls: DiscoveryCalls, valid: () -> Boolean): LocalEnrichmentReply {
+        val dispatched = java.util.concurrent.atomic.AtomicBoolean(false)
+        return try {
+            val body = authorized(scope, LOCAL_ENRICHMENT_PATH, "POST", terms.json(), readOnly = false,
+                expectedStatus = 200, privateFeature = true, calls = calls, valid = valid,
+                dispatchValid = { dispatched.compareAndSet(false, true) })
+            LocalEnrichmentReply.decode(body)
+        } catch (error: com.soundq.android.data.connect.FeatureFailure) {
+            when (error.status) {
+                404 -> LocalEnrichmentReply.Disabled
+                401, 403 -> LocalEnrichmentReply.SignIn
+                400, 413, 415 -> LocalEnrichmentReply.InvalidTerms
+                429 -> LocalEnrichmentReply.Busy
+                else -> LocalEnrichmentReply.Unavailable
+            }
+        } catch (error: SafeFailure) {
+            if (error.reason == SafeFailure.Reason.Retired) throw error
+            LocalEnrichmentReply.Unavailable
+        }
+    }
     /** Narrow nearby metadata read through the sole authenticated client. */
     fun nearbyTracks(scope:AccountScope,query:com.soundq.android.data.harmonic.HarmonicQuery,valid:()->Boolean):com.soundq.android.data.harmonic.NearbyResult {
         require(query.bpm.isFinite()&&query.bpm>0&&query.bpm<=300&&query.tolerance.isFinite()&&query.tolerance in 0.0..50.0&&com.soundq.android.data.harmonic.normalizeHarmonicKey(query.camelot)==query.camelot)
@@ -223,8 +322,36 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         val body=authorized(scope,"/tracks/${id.value}/$path","POST",payload,readOnly=false,valid=valid,expectedStatus=200)
         return com.soundq.android.data.trackdetails.TrackDetailsJson.verificationAck(body,id,action)
     }
-    fun trackDetailsRemove(scope:AccountScope,id:TrackId,valid:()->Boolean) {
-        authorized(scope,"/library/tracks/${id.value}","DELETE",readOnly=false,valid=valid,expectedStatus=204)
+    internal fun libraryRemovalPending(scope: AccountScope, id: TrackId) = originalImports()?.removalPending(scope, id) == true
+
+    fun trackDetailsRemove(scope: AccountScope, id: TrackId, valid: () -> Boolean): LibraryRemovalReceipt {
+        if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
+        val imports = originalImports()
+        var fence: OriginalImportRepository.RemovalFence? = null
+        var entered = false
+        try {
+            // Admission belongs to the route until network entry; an entered 204 belongs to the account.
+            authorized(scope, "/library/tracks/${id.value}", "DELETE", readOnly = false,
+                valid = { session.remoteCurrent(scope) }, expectedStatus = 204, dispatchValid = LibraryDeleteAdmission { isCanceled ->
+                    if (entered || !valid() || !session.remoteCurrent(scope)) return@LibraryDeleteAdmission false
+                    fence = imports?.prepareRemoval(scope, id, valid)
+                    if (!valid() || !session.remoteCurrent(scope)) return@LibraryDeleteAdmission false
+                    // The Call can be canceled while the durable fence is being written and verified.
+                    if (isCanceled()) throw SafeFailure(SafeFailure.Reason.RemovalNotSent)
+                    entered = true
+                    true
+                })
+            if (!entered) throw SafeFailure(SafeFailure.Reason.RemovalNotSent)
+        } catch (failure: Exception) {
+            fence?.let {
+                if (!entered) imports?.finishRemoval(it, acknowledged = false)
+                else if (session.remoteCurrent(scope)) throw SafeFailure(SafeFailure.Reason.RemovalUnconfirmed)
+            }
+            throw failure
+        }
+        val admitted = fence
+        return if (admitted == null || checkNotNull(imports).finishRemoval(admitted, acknowledged = true)) LibraryRemovalReceipt.Confirmed
+            else LibraryRemovalReceipt.ConfirmedLocalSettleFailed
     }
     fun trackDetailsMetadata(scope:AccountScope,id:TrackId,draft:com.soundq.android.data.trackdetails.MetadataDraft,valid:()->Boolean) {
         val body=authorized(scope,"/tracks/${id.value}/metadata-override","PUT",com.soundq.android.data.trackdetails.TrackDetailsJson.metadata(draft),valid=valid,expectedStatus=200)

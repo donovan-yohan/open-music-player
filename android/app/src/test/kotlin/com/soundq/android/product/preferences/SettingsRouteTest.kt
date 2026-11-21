@@ -76,6 +76,12 @@ class SettingsRouteTest {
     @Test fun localAudioStatusIsThePlainAccessScanResultSet() {
         val empty=DeviceListeningSnapshot(1,emptyList(),emptyList(),emptyList())
         assertNull(localAudioStatus(PhoneAudioState()))
+        assertNull(localAudioStatus(PhoneAudioState(message="Storage could not be opened")))
+        val unpublished=PhoneAudioState(permission=true,message="Storage is unavailable")
+        assertEquals(LocalAudioStatus.Failed,localAudioStatus(unpublished))
+        assertNull("An unpublished catalog does not have a song count",localAudioSummary(unpublished))
+        assertEquals(LocalAudioStatus.Scanning,localAudioStatus(unpublished.copy(refreshing=true,message=null)))
+        assertEquals(LocalAudioStatus.Failed,localAudioStatus(unpublished.copy(message=null)))
         assertEquals(LocalAudioStatus.Off,localAudioStatus(PhoneAudioState(ready=true,snapshot=empty,permission=false)))
         assertEquals(LocalAudioStatus.Scanning,localAudioStatus(PhoneAudioState(ready=true,snapshot=empty,refreshing=true,permission=true)))
         assertEquals(LocalAudioStatus.Failed,localAudioStatus(PhoneAudioState(ready=true,snapshot=empty,permission=true,scan=PhoneScanObservation(false,true,true))))

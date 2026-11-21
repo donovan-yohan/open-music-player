@@ -24,6 +24,7 @@ data class LibraryQuery(val text: String = "", val sort: LibrarySort = LibrarySo
 data class LibraryAnalysisFacts(val status:String?=null,val bpm:Double?=null,val musicalKey:String?=null,val camelot:String?=null)
 data class LibraryPage(val tracks: List<Track>, val total: Int, val limit: Int, val offset: Int, internal val scannedIds:List<Long> = tracks.map {it.id.value}, val analysis:Map<TrackId,LibraryAnalysisFacts> = emptyMap())
 enum class MutationOutcome { Pending, Confirmed, Refused, Uncertain, ReadbackFailed }
+enum class LibraryRemovalReceipt { Confirmed, ConfirmedLocalSettleFailed }
 class SafeFailure(val reason: Reason) : java.io.IOException(reason.message) {
     enum class Reason(val message: String) {
         Retired("Session changed. Sign in again."), Endpoint("Server configuration is invalid."),
@@ -31,6 +32,8 @@ class SafeFailure(val reason: Reason) : java.io.IOException(reason.message) {
         Uncertain("Not confirmed. Reload before trying again."), Storage("Session could not be saved securely. Retry saving."),
         StoreRejected("Saved session is unreadable or belongs to another server. It has not been changed."),
         ServiceUnavailable("This server feature is disabled or temporarily unavailable."), Capacity("The server research capacity is exhausted. Try again later."),
+        RemovalNotSent("Removal was not sent because local protection could not be saved."),
+        RemovalUnconfirmed("Library removal is not confirmed and cannot be sent again from this device."),
         InvalidResponse("The server returned an invalid response."), AudioUnavailable("Audio is unavailable for this track.")
     }
     override fun toString(): String = "SoundQ: ${reason.message}"

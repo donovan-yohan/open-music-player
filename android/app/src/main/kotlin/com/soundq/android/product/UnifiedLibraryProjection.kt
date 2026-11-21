@@ -2,6 +2,7 @@ package com.soundq.android.product
 
 import com.soundq.android.data.*
 import com.soundq.android.data.deviceaudio.*
+import com.soundq.android.data.originalimport.OriginalAssociation
 import com.soundq.android.playback.PlaybackRef
 import java.util.Locale
 
@@ -9,7 +10,8 @@ import java.util.Locale
 internal enum class LibrarySource { All, Server, Local }
 
 /** A presentation of existing acknowledged owners, not a second Library/queue repository. */
-internal data class UnifiedLibraryRow(val ref:PlaybackRef,val title:String,val artist:String,val album:String,val durationMs:Long,val local:Boolean,val phone:DeviceAudio?=null,val server:Track?=null) {
+internal data class UnifiedLibraryRow(val ref:PlaybackRef,val title:String,val artist:String,val album:String,val durationMs:Long,val local:Boolean,val phone:DeviceAudio?=null,val server:Track?=null,
+    val original:OriginalAssociation?=null,val originalRow:DeviceAudio?=null) {
     val key:HistoryKey get()=when(val r=ref){is PlaybackRef.Device->HistoryKey.Device(DeviceFileId(java.util.UUID.fromString(r.id)));is PlaybackRef.Server->HistoryKey.Server(ServerAccount(r.endpoint,r.account),ServerAudioId(r.id))}
     val stable:String get()=stableSourceIdentity(key)
 }
@@ -20,20 +22,36 @@ internal fun phoneRowUnavailableLabel(row:DeviceAudio):String {
     if(row.aliases.isNotEmpty()&&row.aliases.all {it.state==AccessState.REVOKED})return "Unavailable · File access is off"
     return "Unavailable"
 }
-internal fun unifiedLibraryRows(endpoint:String,account:String?,server:List<Track>,downloads:List<Track>,phone:DeviceListeningSnapshot?,query:LibraryQuery,source:LibrarySource,recent:Boolean):List<UnifiedLibraryRow> {
+internal fun unifiedLibraryRows(endpoint:String,account:String?,server:List<Track>,downloads:List<Track>,phone:DeviceListeningSnapshot?,query:LibraryQuery,source:LibrarySource,recent:Boolean,
+    associations:List<OriginalAssociation> = emptyList(), deviceOnly:Boolean=false):List<UnifiedLibraryRow> {
     fun matches(title:String,artist:String,album:String,filename:String="")=query.text.trim().let {it.isEmpty()||listOf(title,artist,album,filename).any {field->field.contains(it,true)}}
     val downloaded=downloads.associateBy {it.id}
-    val acknowledged=server.associateBy {it.id}
-    val remote=if(account==null)emptyList() else (server+downloads.filter {it.id !in acknowledged}).distinctBy {it.id}.filter {
+    val acknowledged=if(deviceOnly)emptyMap() else server.associateBy {it.id}
+    val linked=if(deviceOnly)emptyMap() else associations.filter {it.intent.destination.endpoint==endpoint&&it.intent.destination.account==account}.groupBy {it.track}
+    val representedOriginals=mutableSetOf<DeviceFileId>()
+    val remote=if(account==null)emptyList() else (acknowledged.values+downloads.filter {it.id !in acknowledged}).distinctBy {it.id}.filter {
         (it.id in acknowledged||matches(it.title,it.artist,it.album))&&(!query.liked||it.liked==true)&&query.collection?.contains(it)!=false&&((query.genre.isBlank()&&query.verified==null)||it.id in acknowledged)
-    }.map {track->UnifiedLibraryRow(PlaybackRef.Server(endpoint,account,track.id.value),track.title,track.artist,track.album,track.durationMs,track.id in downloaded,server=track)}
+    }.map {track->
+        // A download alone is not evidence of current server membership or original association.
+        val group=linked[track.id].orEmpty().takeIf {track.id in acknowledged}.orEmpty()
+        val resolved=group.mapNotNull {binding->phone?.resolve(binding.intent.original)?.let {binding to it}}
+        val selected=resolved.firstOrNull()
+        val local=selected!=null||track.id in downloaded
+        if(source!=LibrarySource.Local||local)group.forEach {binding->
+            val owner=binding.intent.original
+            phone?.resolveRetained((owner.key as HistoryKey.Device).id,owner.revision,owner.incarnation)?.let {representedOriginals.add(it.id)}
+        }
+        UnifiedLibraryRow(PlaybackRef.Server(endpoint,account,track.id.value),track.title,track.artist,track.album,track.durationMs,local,server=track,
+            original=selected?.first ?: group.firstOrNull(),originalRow=selected?.second)
+    }
     val device=if(query.liked||query.verified!=null||query.genre.isNotBlank())emptyList() else phone?.files.orEmpty().filter {
-        it.libraryMember&&matches(it.metadata.displayTitle,it.metadata.artist.orEmpty(),it.metadata.album.orEmpty(),it.metadata.filename)&&query.collection?.let {c->(c.artist==null||c.artist==it.metadata.artist)&&(c.album==null||c.album==it.metadata.album)}!=false
-    }.map {row->UnifiedLibraryRow(PlaybackRef.Device(row.id.value.toString(),row.revision.sha256,row.revision.byteLength,row.incarnation),row.metadata.displayTitle,row.metadata.artist.orEmpty(),row.metadata.album.orEmpty(),row.durationMs ?: 0,row.available||row.unplayable,phone=row)}
+        it.id !in representedOriginals&&it.libraryMember&&matches(it.displayTitle,it.displayArtist.orEmpty(),it.displayAlbum.orEmpty(),it.metadata.filename)&&query.collection?.let {c->(c.artist==null||c.artist==it.displayArtist)&&(c.album==null||c.album==it.displayAlbum)}!=false
+    }.map {row->UnifiedLibraryRow(PlaybackRef.Device(row.id.value.toString(),row.revision.sha256,row.revision.byteLength,row.incarnation),row.displayTitle,row.displayArtist.orEmpty(),row.displayAlbum.orEmpty(),row.durationMs ?: 0,row.available||row.unplayable,phone=row)}
     val rows=(remote+device).filter {when(source){LibrarySource.All->true;LibrarySource.Server->it.ref is PlaybackRef.Server;LibrarySource.Local->it.local}}
     val times=phone?.history.orEmpty().associate {it.key to it.playedAtEpochMs}
     val tie=compareBy<UnifiedLibraryRow> {it.title.lowercase(Locale.ROOT)}.thenBy {it.stable}
-    if(recent)return rows.sortedWith(compareByDescending<UnifiedLibraryRow> {times[it.key] ?: Long.MIN_VALUE}.then(tie))
+    if(recent)return rows.sortedWith(compareByDescending<UnifiedLibraryRow> {row->maxOf(times[row.key] ?: Long.MIN_VALUE,
+        row.originalRow?.let {times[HistoryKey.Device(it.id)]} ?: Long.MIN_VALUE)}.then(tie))
     // Added order has no cross-source timestamp contract: retain acknowledged server order,
     // then stable phone discovery identity. Other sorts are global only on complete coverage.
     if(query.sort==LibrarySort.Added)return rows.filter {it.ref is PlaybackRef.Server}+rows.filter {it.ref is PlaybackRef.Device}.sortedWith(tie)

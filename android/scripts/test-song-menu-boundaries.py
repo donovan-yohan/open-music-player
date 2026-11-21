@@ -48,6 +48,8 @@ private class Uri(val value:String) {val authority:String? get()=value.substring
 private data class PhoneSourceAdmission(val row:DeviceAudio,val source:SourceCapture,val sessionVersion:Long,val resumeMs:Long=0)
 private data class PhoneAudioState(val ready:Boolean=false,val snapshot:DeviceListeningSnapshot?=null,val refreshing:Boolean=false,val permission:Boolean=true,val message:String?=null,val scan:Any?=null)
 private class Platform {var allowed=true;var publicationGate:java.util.concurrent.CountDownLatch?=null;val publishing=java.util.concurrent.CountDownLatch(1)
+ private val access=com.soundq.android.data.originalimport.OriginalAccessEpoch()
+ fun storageAccessStamp():Long?=access.observe(::storageAllowed)
  fun storageAllowed():Boolean {if(Thread.currentThread().name=="held-publish"){publishing.countDown();check(publicationGate?.await(5,java.util.concurrent.TimeUnit.SECONDS)!=false)};return allowed}}
 private class Session {var version=1L;var accountId="a";fun version()=version;fun owns(v:Long)=version==v;fun capture()=this;fun current(s:Session)=s===this}
 private class Endpoint {var identity="endpoint"}
@@ -83,6 +85,7 @@ MUTATIONS
 REPORT
 }
 private class Grant(val device:PlaybackRef.Device?,val version:Long,val audioRevision:Long,val scope:Session) {
+ val phoneAdmission:PhoneSourceAdmission?=null
 GRANT
 }
 private object Player {const val STATE_IDLE=1}
@@ -261,7 +264,10 @@ DRAIN
  suspend fun snapshot(current:()->Boolean)=if(current())Snapshot(decks.values.map(::Deck))else null
  data class Snapshot(val decks:List<Deck>)
 }
-private class RetirementCandidate(val item:Item,val outgoing:Item,val deck:Int=1,val identity:Long=222,val outgoingDeck:Int=0,val outgoingIdentity:Long=111,val armed:Boolean=true,val arming:Boolean=false)
+private class RetirementCandidate(val item:Item,val outgoing:Item,val deck:Int=1,val identity:Long=222,val outgoingDeck:Int=0,val outgoingIdentity:Long=111,val armed:Boolean=true,val arming:Boolean=false) {
+ // This legacy extracted cohort has no numeric borrowed grants; the real player cohort covers those.
+ val grant:Grant?=null;val outgoingGrant:Grant?=null
+}
 private class RetirementJournal {val retired=mutableListOf<Int>();fun retire(slot:Int,drain:Boolean=false){retired+=slot}}
 private class ParkedQueue(val items:List<Item>)
 private class Retirement(val graph:AppGraph,var items:List<Item>) {
@@ -275,6 +281,7 @@ private class Retirement(val graph:AppGraph,var items:List<Item>) {
  var stopped=0;var pauses=0;var retired=0;var prepares=0;var order=items.indices.toList();var queueScope:Session?=null
  val durations=mutableMapOf<String,Long>();val lifetime=CoroutineScope(SupervisorJob()+Dispatchers.Unconfined);val journal=RetirementJournal();val owner=RetirementHardware()
  val grants=items.associate {it.mediaId to Grant(it.ref as? PlaybackRef.Device,1,graph.phoneAudio.sourceAuthority(it.ref as PlaybackRef.Device),graph.session)}
+ val activeGrant:Grant?=null
  fun selected()=items.getOrNull(index)
  fun rebuilt(next:List<Item>,at:Int)=next.indices.toList()
  fun pause(){pauses++};fun stop(){stopped++;selectedLoaded=false;playback=Player.STATE_IDLE}
@@ -327,7 +334,7 @@ class SongFileRetirementBoundaryTest {
 ownerText=(src/'playback/nativeengine/NativeCallbackOwner.kt').read_text()
 drain=ownerText[ownerText.index('    suspend fun sourcesDrained('):ownerText.index('    suspend fun retainedBytes(')]
 retirement=retirement.replace('DRAIN',drain)
-retirement=retirement.replace('RETIRE',method('    internal suspend fun retirePhoneFile(')).replace('CANCEL',method('    private fun cancelSuccessor(')).replace('MUTATE',method('    private fun mutate('))
+retirement=retirement.replace('RETIRE',method('    internal suspend fun retirePhoneFile(').replace('grant: MediaGrant?', 'grant: Grant?')).replace('CANCEL',method('    private fun cancelSuccessor(')).replace('MUTATE',method('    private fun mutate('))
 text=header+retirement
 for name,value in [('AUTHORITY',authority),('PUBLISH',publish),('FAILURE',failure),('MUTATIONS',mutations),('REPORT',report),('GRANT',grant),('POLL',poll),('SPEED_CHANGED',speedChanged),('COMMAND',command)]:text=text.replace(name,value)
 (out/'SongMenuBoundaryTest.kt').write_text(text)

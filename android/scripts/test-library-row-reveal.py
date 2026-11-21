@@ -9,7 +9,7 @@ r=a.source_root or Path(__file__).resolve().parents[1]
 s=(r/'app/src/main/kotlin/com/soundq/android/product/ProductApp.kt').read_text()
 start=s.index('                            val mutation=library.mutations[track.id]')
 end=s.index('\n                        }',start)
-binding=s[start:end]
+binding=s[start:end].replace('com.soundq.android.product.artwork.PhoneArtwork(', 'PhoneArtworkBoundary(')
 vm=(r/'app/src/main/kotlin/com/soundq/android/product/ProductViewModel.kt').read_text()
 def block(text,needle):
  start=text.index(needle);opening=text.index('{',start);depth=1;end=opening+1
@@ -25,9 +25,14 @@ if '    fun likeLibrary(' in vm:
   begin=vm.index('    fun quickQueueLibrary(');end=vm.index('    fun quickQueuePlaylist(',begin);effects+='\n'+vm[begin:end]
 # Only the test registration and frame completion boundaries are replaced.
 pre='''package com.soundq.android.rowmetadatafixture
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.soundq.android.data.*
+import com.soundq.android.data.deviceaudio.DeviceAudio
+import com.soundq.android.data.originalimport.OriginalAssociation
 import com.soundq.android.data.playlists.*
 import com.soundq.android.product.LibraryRowLifetime
+import com.soundq.android.product.LibrarySource
 import com.soundq.android.product.RowIdentity
 import com.soundq.android.product.LibraryMetadataField
 import com.soundq.android.product.libraryRowMetadata
@@ -38,12 +43,21 @@ import org.junit.Test
 class Playback(val queue:List<Entry> = emptyList(),val selectedOccurrence:String?=null)
 class Entry(val occurrenceId:String,val trackId:Long)
 class Graph(val library:LibraryRepository) {
+ internal val originalImports=OriginalImportBoundary()
+ internal val phoneAudio=PhoneAudioBoundary()
  val swipeQueuePreferences=com.soundq.android.data.preferences.SwipeQueuePreferences(java.io.File(System.getProperty("java.io.tmpdir"),"unused-row-fixture"))
  val libraryArtwork=Unit
  val session get()=library.session
  fun rememberTracks(tracks:List<Track>){}
 }
-class Controller {var queued=0;fun enqueue(track:Track,next:Boolean){queued++}}
+internal class OriginalImportBoundary {fun canPlay(scope:AccountScope,binding:OriginalAssociation):Boolean=error("Verified originals outside this ordinary-row fixture")}
+internal class PhoneAudioBoundary {fun reference(row:DeviceAudio):com.soundq.android.playback.PlaybackRef.Device=error("Phone reference outside this ordinary-row fixture")}
+private fun PhoneArtworkBoundary(graph:Graph,ref:com.soundq.android.playback.PlaybackRef.Device,size:Dp,current:()->Boolean):Unit=error("Phone artwork outside this ordinary-row fixture")
+class Controller {
+ var queued=0;fun enqueue(track:Track,next:Boolean){queued++}
+ internal fun enqueueOriginal(binding:OriginalAssociation,next:Boolean,current:()->Boolean):Unit=error("Verified originals outside this ordinary-row fixture")
+ internal fun playOriginal(binding:OriginalAssociation,current:()->Boolean):Unit=error("Verified originals outside this ordinary-row fixture")
+}
 class Model(val graph:Graph) {
  var plays=0
  val controller=Controller()
@@ -90,6 +104,7 @@ class LibraryRowBindingExtractedTest {
   val keyNotation=com.soundq.android.data.preferences.KeyNotationState(ready=true)
   val track=library.rows.single();val index=0;val playback=Playback()
   val libraryScroll=Unit;val mixedRow=FixtureMixedRow(track.id.value)
+  val original:OriginalAssociation?=null;val originalPhone:DeviceAudio?=null;val librarySource=LibrarySource.All
   val libraryActions:LibraryPlaylistActions?=null
   val rowLifetime=LibraryRowLifetime {true};val revealOwner=RowRevealOwner()
   var trackCapture:LibraryTrackCapture?=null;var trackPlaylistActions:LibraryPlaylistActions?=null

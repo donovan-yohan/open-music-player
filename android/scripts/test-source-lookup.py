@@ -83,12 +83,19 @@ import java.util.UUID
  private var lastScan:PhoneScanObservation?=null
  private val mutable=MutableStateFlow(PhoneAudioState())
  val state:StateFlow<PhoneAudioState> = mutable.asStateFlow()
- private val fileMutations=java.util.concurrent.ConcurrentHashMap<String,UUID>()
+ // This probe runs exact physical-mutation admission, but never schedules a refresh.
+ private data class FileMutation(val token:UUID,val refresh:Long)
+ private val fileMutations=java.util.concurrent.ConcurrentHashMap<String,FileMutation>()
+ private data class RefreshScope(val version:Long,val storage:Boolean)
+ private var refreshScope:RefreshScope?=null
+ private var refreshRunning:(()->Unit)?=null
+ private var pendingRefresh:(()->Unit)?=null
+ private val refreshEpoch=java.util.concurrent.atomic.AtomicLong()
  private val refreshLock=java.util.concurrent.locks.ReentrantLock()
  private inline fun <T> refreshLocked(block:()->T):T {refreshLock.lock();try{return block()}finally{refreshLock.unlock()}}
 '''+fields+'\n'
 # Include expression-bodied methods verbatim as lines/ranges, block methods by brace parser.
-for start,end in [('    fun current(version:','    // One sequence'),('    fun sourceAuthority(','    private fun publish('),('    fun observed(','    suspend fun <T> journal(')]:repo+=s[s.index(start):s.index(end)]
+for start,end in [('    fun current(version:','    // One sequence'),('    fun sourceAuthority(','    /** An observed access ABA'),('    fun observed(','    suspend fun <T> journal(')]:repo+=s[s.index(start):s.index(end)]
 for marker in ['    fun sourceFileId(','    private fun publish(','    fun beginFileMutation(','    fun endFileMutation(','    fun sameFile(','    suspend fun <T> journal(','    suspend fun admit(','    suspend fun reportFailure(','    suspend fun openOriginal(']:repo+=block('data/device/PhoneAudioRepository.kt',marker)+'\n'
 repo+=''' fun setup(owner:DeviceListeningStore,accepted:AccessCapture) {store=owner;access=accepted;acceptedVersion=graph.session.version();publish()}
  fun install(snapshot:DeviceListeningSnapshot?) {mutable.value=mutable.value.copy(snapshot=snapshot)}
@@ -102,7 +109,8 @@ repo+=''' fun setup(owner:DeviceListeningStore,accepted:AccessCapture) {store=ow
 # Its production body remains present; scheduling/OS work is not the work-count subject.
 repo=repo.replace('private val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)', 'private val jobs=CoroutineScope(SupervisorJob()+object:CoroutineDispatcher(){override fun dispatch(context:kotlin.coroutines.CoroutineContext,block:Runnable){}})')
 repo=repo.replace('fun active()=live.get() && current(admission.sessionVersion) && valid()', 'fun active():Boolean {Work.callbackChecks++;return live.get() && current(admission.sessionVersion) && valid()}')
-repo=repo.replace('fun current(version: Long) = acceptedVersion == version && graph.session.owns(version) && graph.session.state.value !is AuthState.LocalLocked', 'fun current(version:Long):Boolean {Work.repositoryChecks++;return acceptedVersion == version && graph.session.owns(version) && graph.session.state.value !is AuthState.LocalLocked}')
+current_line=next(line for line in repo.splitlines() if line.strip().startswith('fun current(version: Long) = '))
+repo=repo.replace(current_line,'    fun current(version:Long):Boolean {Work.repositoryChecks++;return '+current_line.split(' = ',1)[1]+'}')
 put('Repository.kt',repo)
 wrapper=s=read('data/device/AndroidAudioAccess.kt');wrapper=s[s.index('    fun openOriginal('):s.index('    /** Exact-byte proof')]
 put('Platform.kt','''package com.soundq.android.data.device
@@ -135,7 +143,11 @@ grant=grant.replace('fun current(graph:AppGraph):Boolean=', 'fun current(graph:A
 grant=grant.replace('graph.phoneAudio.observed(device)!=null\n}', 'graph.phoneAudio.observed(device)!=null}\n}')
 put('Grant.kt','package com.soundq.android.playback\nimport com.soundq.android.AppGraph\nimport com.soundq.android.data.*\n'+grant)
 put('MediaItem.kt','''package androidx.media3.common
-class MediaItem(val uri:android.net.Uri) {class Local(val uri:android.net.Uri);val localConfiguration=Local(uri)}
+class MediaItem(val uri:android.net.Uri) {
+ class Local(val uri:android.net.Uri);val localConfiguration=Local(uri)
+ class Extras {fun getString(key:String):String?=null}
+ class Metadata {val extras:Extras?=null};val mediaMetadata=Metadata()
+}
 ''')
 put('Source.kt','''package com.soundq.android.playback.nativeengine
 import androidx.media3.common.MediaItem
@@ -168,6 +180,8 @@ internal class Hardware {
 }
 private class Journal {fun initialResume(s:NativePlaybackSource.BorrowedOriginal,g:MediaGrant,d:Int)=s.resumeMs}
 internal class CanonicalPrepare(val graph:AppGraph,val grants:ConcurrentHashMap<String,MediaGrant>,val items:List<MediaItem>,val lifetime:CoroutineScope) {
+ // Ordinary phone preparation has no parked or preview selection.
+ private var preview:Any?=null;private var restoredPark:Any?=null
  var intent=true;var released=false;var pending:Job?=null;var tail:Job?=null;var selectedLoaded=false;var arrangement:Any?=null;var activeGrant:MediaGrant?=null;var activeUri:String?=null;var queueScope:AccountScope?=null
  var epoch=1L;var sourceSequence=0L;var ordinaryDeck=0;var ordinaryIdentity=0L;var playback=Player.STATE_IDLE;var error:Any?=null;var eofCount=0L;var position=0L;val preparing=AtomicInteger();var explicitSeek=0L;var desiredSeek:Long?=null;var acknowledgedSeekPosition:Long?=null;var outputUnavailable=false;val volume=1f
  val source=GrantedNativeCallbackSource(graph,grants);val owner=Hardware();private val journal=Journal()

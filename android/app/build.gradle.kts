@@ -8,7 +8,7 @@ android {
     compileSdk = 37
     ndkVersion = "27.1.12297006"
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
-    testOptions { unitTests.all {
+    testOptions { unitTests.isIncludeAndroidResources = true; unitTests.all {
         it.maxParallelForks = 1
         it.jvmArgs("-XX:ActiveProcessorCount=1")
         providers.environmentVariable("SOUNDQ_MIX_HOST_LIBRARY").orNull?.let {path -> it.systemProperty("soundq.mix.library",path)}
@@ -381,6 +381,8 @@ dependencies {
     androidTestImplementation(libs.okhttp.tls)
     testImplementation(libs.junit)
     testImplementation("org.robolectric:robolectric:4.16")
+    testImplementation(libs.compose.test)
+    testImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.test)
     androidTestImplementation(libs.androidx.junit)

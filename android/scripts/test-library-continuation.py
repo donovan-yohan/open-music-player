@@ -64,7 +64,8 @@ private class MediaGrant(val scope:AccountScope,val id:TrackId,val localOnly:Boo
 private class Jam {fun replaceOwner(){}}
 private class TimelinePort {fun cancelAudition(){}}
 private class ContextStartsBoundary {fun retire(){}}
-private class Graph(val session:AccountSession,val api:SoundQApi,val listeningPreferences:EndOfQueuePreferences){val endpoint=session.endpoint;val contextStarts=ContextStartsBoundary();var trackRead:(()->Unit)?=null;val jamAdmission=Jam();val timeline=TimelinePort();val known=mutableMapOf<TrackId,Track>();fun rememberTracks(v:List<Track>){v.forEach{known[it.id]=it}};fun track(id:TrackId):Track? {trackRead?.invoke();return known[id]}}
+private class OriginalImportBoundary {fun playbackTrack(s:AccountScope,t:TrackId,operation:String):Track=error("Verified originals outside continuation fixture")}
+private class Graph(val session:AccountSession,val api:SoundQApi,val listeningPreferences:EndOfQueuePreferences){val originalImports=OriginalImportBoundary();val endpoint=session.endpoint;val contextStarts=ContextStartsBoundary();var trackRead:(()->Unit)?=null;val jamAdmission=Jam();val timeline=TimelinePort();val known=mutableMapOf<TrackId,Track>();fun rememberTracks(v:List<Track>){v.forEach{known[it.id]=it}};fun track(id:TrackId):Track? {trackRead?.invoke();return known[id]}}
 private class Transport {private val counter=AtomicLong();val revision get()=counter.get();var onIntentChanged:()->Unit={};fun retire(){counter.incrementAndGet();onIntentChanged()};fun pause(){retire()}}
 private class ArrangementIdentity(val install:String)
 private class AcceptedArrangement(val identity:ArrangementIdentity)

@@ -8,9 +8,9 @@ import com.soundq.android.AppGraph
 import com.soundq.android.data.*
 import java.util.concurrent.ConcurrentHashMap
 
-internal class MediaGrant private constructor(private val serverScope:AccountScope?,private val serverTrack:TrackId?,val localOnly:Boolean,val device:PlaybackRef.Device?,val version:Long,val audioRevision:Long) {
-    constructor(scope:AccountScope,track:TrackId,localOnly:Boolean=false):this(scope,track,localOnly,null,scope.owner.version(),0)
-    constructor(device:PlaybackRef.Device,version:Long,audioRevision:Long):this(null,null,true,device,version,audioRevision)
+internal class MediaGrant private constructor(private val serverScope:AccountScope?,private val serverTrack:TrackId?,val localOnly:Boolean,val device:PlaybackRef.Device?,val version:Long,val audioRevision:Long,val originalOnly:Boolean) {
+    constructor(scope:AccountScope,track:TrackId,localOnly:Boolean=false,originalOnly:Boolean=false):this(scope,track,localOnly,null,scope.owner.version(),0,originalOnly)
+    constructor(device:PlaybackRef.Device,version:Long,audioRevision:Long):this(null,null,true,device,version,audioRevision,false)
     @Volatile var phoneAdmission:com.soundq.android.data.device.PhoneSourceAdmission?=null
     val scope:AccountScope get()=requireNotNull(serverScope) { "Phone audio has no server scope" }
     val track:TrackId get()=requireNotNull(serverTrack) { "Phone audio has no server TrackId" }
@@ -37,6 +37,7 @@ internal class SignedAudioDataSource(private val graph:AppGraph,private val gran
         val uri=dataSpec.uri
         require(uri.scheme=="soundq" && dataSpec.httpRequestHeaders.keys.none {it.equals("Authorization",true)})
         val permit=grants[uri.toString()] ?: throw SafeFailure(SafeFailure.Reason.Retired)
+        if(permit.originalOnly)throw SafeFailure(SafeFailure.Reason.AudioUnavailable)
         grant=permit;internalUri=uri
         graph.session.checkScope(permit.scope)
         graph.downloads.load(permit.scope)

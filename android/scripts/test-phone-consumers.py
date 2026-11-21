@@ -71,7 +71,8 @@ private class Phone(val graph:Graph) {
  suspend fun reportFailure(admission:PhoneSourceAdmission,f:Exception) {available=false}
  suspend fun <T> journal(publishState:Boolean=false,block:(DeviceListeningStore,AccessCapture)->T):T?=withContext(Dispatchers.IO){journalGate?.let {journalEntered.countDown();it.await()};mutex.withLock {block(store,access)}}
 }
-private class Graph(val directory:File) {val endpoint=ApiEndpoint.parse("https://fixture.invalid/api/v1");val session=AccountSession(endpoint,Store()).apply{retire()};val phoneAudio=Phone(this);fun track(id:TrackId):Track?=null}
+private class OriginalImportBoundary {fun playbackTrack(s:AccountScope,t:TrackId,operation:String):Track=error("Imported originals outside ordinary phone fixture")}
+private class Graph(val directory:File) {val originalImports=OriginalImportBoundary();val endpoint=ApiEndpoint.parse("https://fixture.invalid/api/v1");val session=AccountSession(endpoint,Store()).apply{retire()};val phoneAudio=Phone(this);fun track(id:TrackId):Track?=null}
 private class Service(val graph:Graph) {val grants=ConcurrentHashMap<String,MediaGrant>();fun localAccess()=graph.phoneAudio.current(graph.session.version());fun validateSelection(items:List<MediaItem>,index:Int,position:Long){require(index in items.indices&&position>=0)}
 SERVICE
 }

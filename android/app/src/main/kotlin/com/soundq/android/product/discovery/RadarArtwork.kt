@@ -19,7 +19,7 @@ import kotlinx.coroutines.sync.withPermit
 import okhttp3.OkHttpClient
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Memory-only public pixels; each subscriber retains its own terminal accepted-Radar authority. */
+/** Memory-only public pixels; each subscriber retains its own terminal source authority. */
 internal class RadarArtworkPool(
     private val decode:(ByteArray)->Bitmap?={decodeArtwork(it,192)},
     private val reader:(OkHttpClient)->CaaArtworkRead={CaaArtworkRead(it)},
@@ -68,6 +68,8 @@ internal class RadarArtworkPool(
         private var work:Work?=null
         private val mutable=MutableStateFlow<Bitmap?>(null)
         val state:StateFlow<Bitmap?> = mutable
+        private val settled=MutableStateFlow(false)
+        val finished:StateFlow<Boolean> = settled
         fun current():Boolean=synchronized(this@RadarArtworkPool) {
             if(alive&&(key==null||!valid()))close()
             alive
@@ -90,7 +92,7 @@ internal class RadarArtworkPool(
             if(started||!current())return
             started=true
             val k=key!!
-            cache[k]?.takeIf {System.nanoTime()<it.until}?.let {mutable.value=it.pixels;return}
+            cache[k]?.takeIf {System.nanoTime()<it.until}?.let {mutable.value=it.pixels;finish();return}
             val shared=flights[k]?.takeIf {it.current()}
             if(shared!=null){work=shared;shared.subscribers.add(this);return}
             if(jobs.size>=MAX_JOBS){close();return}
@@ -102,11 +104,12 @@ internal class RadarArtworkPool(
         }
         override fun close():Unit=synchronized(this@RadarArtworkPool) {
             if(!alive)return
-            alive=false;mutable.value=null;leases.remove(this)
+            alive=false;mutable.value=null;finish();leases.remove(this)
             pendingLookahead.remove(this)
             work?.let {it.subscribers.remove(this);if(it.subscribers.isEmpty())it.cancel()};work=null
         }
         internal fun publish(image:Bitmap?){if(current())mutable.value=image}
+        internal fun finish(){settled.value=true}
     }
     private inner class Work(val key:Key) {
         val subscribers=mutableSetOf<Lease>()
@@ -136,7 +139,7 @@ internal class RadarArtworkPool(
                 }
             }catch(_:Exception){/* Stable note fallback; no URL-bearing diagnostic or automatic retry. */}
             finally {synchronized(this@RadarArtworkPool) {
-                read=null;task=null;jobs.remove(this);subscribers.clear()
+                read=null;task=null;jobs.remove(this);subscribers.forEach {it.finish()};subscribers.clear()
                 if(flights[key]===this)flights.remove(key)
                 if(lookaheadWork===this)lookaheadWork=null
                 drainLookahead()
@@ -146,7 +149,7 @@ internal class RadarArtworkPool(
     }
 }
 
-private val radarArtworkPool=RadarArtworkPool()
+internal val radarArtworkPool=RadarArtworkPool()
 
 @OptIn(ExperimentalFoundationApi::class)
 internal fun radarFullListState()=LazyListState(cacheWindow=LazyLayoutCacheWindow(aheadFraction=1f,behindFraction=0f))

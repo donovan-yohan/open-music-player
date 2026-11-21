@@ -185,6 +185,23 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
         c.addMediaItem(index,deviceRequest(ref,true))
     }
     private fun deviceRequest(ref:PlaybackRef.Device,manual:Boolean)=MediaItem.Builder().setMediaId("device:${ref.id}").setRequestMetadata(MediaItem.RequestMetadata.Builder().setExtras(Bundle().apply {putString("playbackRef",ref.wire());putBoolean("manual",manual);putBoolean("localOnly",true)}).build()).build()
+    internal fun playOriginal(binding:com.soundq.android.data.originalimport.OriginalAssociation,valid:()->Boolean) {
+        contextIntent++;contextError=null
+        val c=controller ?: return
+        if(!valid()||!connection.accepts(c))return
+        c.setMediaItems(listOf(originalRequest(binding,false)),0,0);c.prepare();c.play()
+    }
+    internal fun enqueueOriginal(binding:com.soundq.android.data.originalimport.OriginalAssociation,next:Boolean,valid:()->Boolean) {
+        contextIntent++;val c=controller ?: return
+        if(!valid()||!connection.accepts(c)||!QueuePolicy.acceptsAppend(c.mediaItemCount,1))return
+        val origins=(0 until c.mediaItemCount).map {c.getMediaItemAt(it).mediaMetadata.extras?.getBoolean("manual")==true}
+        val index=if(next)(c.currentMediaItemIndex+1).coerceIn(0,c.mediaItemCount)else QueuePolicy.manualInsert(origins,c.currentMediaItemIndex)
+        c.addMediaItem(index,originalRequest(binding,true))
+    }
+    private fun originalRequest(binding:com.soundq.android.data.originalimport.OriginalAssociation,manual:Boolean)=MediaItem.Builder()
+        .setMediaId(binding.track.value.toString()).setRequestMetadata(MediaItem.RequestMetadata.Builder().setExtras(Bundle().apply {
+            putString("originalImportOperation",binding.intent.operation.toString());putBoolean("manual",manual);putBoolean("localOnly",true)
+        }).build()).build()
     fun enqueue(track:Track,next:Boolean,localOnly:Boolean=false) {
         contextIntent++
         val c=controller ?: return

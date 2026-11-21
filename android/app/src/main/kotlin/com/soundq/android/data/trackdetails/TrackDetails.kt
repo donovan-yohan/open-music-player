@@ -17,7 +17,8 @@ sealed interface DetailsAction {data class Metadata(val draft:MetadataDraft):Det
 class PlayerDetailsCapture internal constructor(val scope:AccountScope,val trackId:TrackId,internal val valid:()->Boolean)
 class DetailsRoute internal constructor(val scope:AccountScope,val trackId:TrackId,internal val sourceValid:()->Boolean={true},val fromPlayer:Boolean=false) {@Volatile internal var active=true}
 class DetailsTicket internal constructor(val route:DetailsRoute,val observed:TrackDetails,val action:DetailsAction,internal val libraryState:LibraryState) {internal var consumed=false}
-data class TrackDetailsState(val detail:TrackDetails?=null,val outcome:MutationOutcome?=null,val loading:Boolean=false,val error:SafeFailure.Reason?=null,val missing:Boolean=false,val analysis:AnalysisDetail?=null,val analysisError:SafeFailure.Reason?=null,val analysisAbsent:Boolean=false,val reconciled:Boolean=false)
+enum class RemovalIssue { NotSent, Unconfirmed, ConfirmedLocalSettleFailed }
+data class TrackDetailsState(val detail:TrackDetails?=null,val outcome:MutationOutcome?=null,val loading:Boolean=false,val error:SafeFailure.Reason?=null,val missing:Boolean=false,val analysis:AnalysisDetail?=null,val analysisError:SafeFailure.Reason?=null,val analysisAbsent:Boolean=false,val reconciled:Boolean=false,val removalBlocked:Boolean=false,val removalIssue:RemovalIssue?=null)
 /** One observation and one non-replayable command per mounted, account-qualified route. */
 class TrackDetailsRepository(private val api:SoundQApi,private val library:LibraryRepository) {
     private val mutable=MutableStateFlow(TrackDetailsState())
@@ -60,7 +61,13 @@ class TrackDetailsRepository(private val api:SoundQApi,private val library:Libra
         val version=synchronized(this){if(!current(route)||ticket!=null||mutable.value.loading)return;readVersion++;mutable.value=mutable.value.copy(loading=true,error=null);readVersion}
         try {
             val detail=api.trackDetailsSnapshot(route.scope,route.trackId){current(route)}
-            synchronized(this){if(current(route)&&version==readVersion)mutable.value=mutable.value.copy(detail=detail,missing=detail==null,error=null)}
+            val pendingRemoval=detail!=null&&api.libraryRemovalPending(route.scope,route.trackId)
+            synchronized(this){if(current(route)&&version==readVersion) {
+                val prior=mutable.value
+                mutable.value=prior.copy(detail=detail,missing=detail==null,error=null,
+                    removalBlocked=prior.removalBlocked||pendingRemoval,
+                    removalIssue=prior.removalIssue ?: RemovalIssue.Unconfirmed.takeIf {pendingRemoval&&prior.outcome==null})
+            }}
             var analysis:AnalysisDetail?=null;var analysisError:SafeFailure.Reason?=null
             if(detail!=null)try {analysis=api.trackDetailsAnalysis(route.scope,route.trackId){current(route)}}catch(e:Exception){analysisError=(e as? SafeFailure)?.reason?:SafeFailure.Reason.Network}
             synchronized(this){if(current(route)&&version==readVersion)mutable.value=mutable.value.copy(loading=false,analysis=analysis,analysisError=analysisError,analysisAbsent=analysis==null&&analysisError==null,reconciled=true)}
@@ -68,18 +75,39 @@ class TrackDetailsRepository(private val api:SoundQApi,private val library:Libra
     }
     @Synchronized fun claim(route:DetailsRoute,observed:TrackDetails,action:DetailsAction):DetailsTicket? {
         if(!current(route)||ticket!=null||mutable.value.loading||mutable.value.error!=null||mutable.value.detail!==observed||mutable.value.missing||(mutable.value.outcome in listOf(MutationOutcome.Uncertain,MutationOutcome.ReadbackFailed)&&!mutable.value.reconciled))return null
+        if(action==DetailsAction.Remove&&mutable.value.removalBlocked)return null
         if(action is DetailsAction.Analysis&&mutable.value.analysis!==action.observed)return null
         if(action is DetailsAction.Verification&&action.action is VerificationAction.Confirm&&observed.suggestions.none {it===action.action.suggestion})return null
-        return DetailsTicket(route,observed,action,library.state.value).also {ticket=it;readVersion++;mutable.value=mutable.value.copy(outcome=MutationOutcome.Pending,error=null,reconciled=false)}
+        return DetailsTicket(route,observed,action,library.state.value).also {ticket=it;readVersion++;mutable.value=mutable.value.copy(outcome=MutationOutcome.Pending,error=null,reconciled=false,removalIssue=null)}
     }
     fun execute(command:DetailsTicket) {
         synchronized(this){if(ticket!==command||!current(command.route)||command.consumed)return;command.consumed=true}
         val route=command.route;val scope=route.scope;val id=route.trackId
         var outcome=MutationOutcome.Confirmed
+        var removalIssue:RemovalIssue?=null
         try {
-            when(val action=command.action){is DetailsAction.Metadata->api.trackDetailsMetadata(scope,id,action.draft){current(route)}; DetailsAction.Remove->api.trackDetailsRemove(scope,id){current(route)}; is DetailsAction.Analysis->api.trackDetailsCorrectAnalysis(scope,id,action.observed,action.correction){current(route)}; is DetailsAction.Verification->api.trackDetailsVerify(scope,id,action.action){current(route)}}
-        } catch(e:Exception){outcome=if((e as? SafeFailure)?.reason==SafeFailure.Reason.Refused)MutationOutcome.Refused else MutationOutcome.Uncertain}
-        synchronized(this){if(ticket!==command||!current(route))return;if(outcome!=MutationOutcome.Confirmed)mutable.value=mutable.value.copy(outcome=outcome)}
+            when(val action=command.action) {
+                is DetailsAction.Metadata->api.trackDetailsMetadata(scope,id,action.draft){current(route)}
+                DetailsAction.Remove->if(api.trackDetailsRemove(scope,id){current(route)}==LibraryRemovalReceipt.ConfirmedLocalSettleFailed)
+                    removalIssue=RemovalIssue.ConfirmedLocalSettleFailed
+                is DetailsAction.Analysis->api.trackDetailsCorrectAnalysis(scope,id,action.observed,action.correction){current(route)}
+                is DetailsAction.Verification->api.trackDetailsVerify(scope,id,action.action){current(route)}
+            }
+        } catch(e:Exception){
+            outcome=when((e as? SafeFailure)?.reason) {
+                SafeFailure.Reason.Refused->MutationOutcome.Refused
+                SafeFailure.Reason.RemovalNotSent->{removalIssue=RemovalIssue.NotSent;MutationOutcome.Refused}
+                SafeFailure.Reason.RemovalUnconfirmed->{removalIssue=RemovalIssue.Unconfirmed;MutationOutcome.Uncertain}
+                else->MutationOutcome.Uncertain
+            }
+        }
+        synchronized(this){
+            if(ticket!==command||!current(route))return
+            if(outcome!=MutationOutcome.Confirmed||removalIssue!=null)mutable.value=mutable.value.copy(
+                outcome=if(removalIssue==RemovalIssue.ConfirmedLocalSettleFailed)MutationOutcome.ReadbackFailed else outcome,
+                removalIssue=removalIssue,removalBlocked=mutable.value.removalBlocked||removalIssue in
+                    setOf(RemovalIssue.ConfirmedLocalSettleFailed,RemovalIssue.Unconfirmed))
+        }
         if(outcome==MutationOutcome.Confirmed) {
             try {
                 if(command.action is DetailsAction.Analysis) {
@@ -98,7 +126,7 @@ class TrackDetailsRepository(private val api:SoundQApi,private val library:Libra
                     synchronized(this){if(ticket===command&&current(route))mutable.value=mutable.value.copy(detail=observed,missing=observed==null,error=null)}
                     if(current(route))library.refreshObserved(scope,command.libraryState){current(route)}
                 }
-                synchronized(this){if(ticket===command&&current(route))mutable.value=mutable.value.copy(outcome=MutationOutcome.Confirmed)}
+                synchronized(this){if(ticket===command&&current(route))mutable.value=mutable.value.copy(outcome=if(removalIssue==null)MutationOutcome.Confirmed else MutationOutcome.ReadbackFailed)}
             } catch(_:Exception){synchronized(this){if(ticket===command&&current(route))mutable.value=mutable.value.copy(outcome=MutationOutcome.ReadbackFailed)}}
         }
         synchronized(this){if(ticket===command)ticket=null}
