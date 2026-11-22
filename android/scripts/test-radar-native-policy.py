@@ -189,6 +189,8 @@ class SoundQApi(val session:AccountSession) {
  internal fun discoveryCatalog(scope:AccountScope,q:String,type:DiscoveryResultType,calls:DiscoveryCalls,valid:()->Boolean,offset:Int):DiscoveryCatalogPage {
   check(offset==0&&session.remoteCurrent(scope)&&valid());catalogReads.add(type);return DiscoveryCatalogPage(catalogEntities.filter {it.type==type},false)
  }
+ internal fun legacyDiscoveryCatalog(scope:AccountScope,q:String,calls:DiscoveryCalls,valid:()->Boolean):SourceResults =
+  error("Legacy catalog transport is outside the radar facade")
 }
 ''')
 emit('Lifecycle.kt', '''package androidx.lifecycle

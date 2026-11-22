@@ -3,6 +3,7 @@ package com.soundq.android.data
 import com.soundq.android.data.catalog.CatalogActions
 import com.soundq.android.data.catalog.CatalogRepository
 import com.soundq.android.data.discovery.*
+import com.soundq.android.data.imports.ImportRepository
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
@@ -19,7 +20,172 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit.SECONDS
 
 class UnifiedDiscoverTest {
+    @Test fun missingCatalogUsesOneMetadataOnlyLegacyReadAndNextSearchSeesUpgrade() = HttpsFixture().use { f ->
+        val session = account(f)
+        val api = SoundQApi(session, f.client)
+        val repo = DiscoveryRepository(session, api, unifiedSearch = true)
+        val view = repo.open()!!
+        f.server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val query = request.url.queryParameter("q").orEmpty()
+                return when (request.family) {
+                    "artist", "album" -> if (query == "Genesis") missingRoute() else if (request.family == "artist")
+                        page("artist", CatalogContractTest.A, "Upgraded artist") else catalogPage(emptyList())
+                    "musicbrainz" -> MockResponse.Builder().body("""{"query":"$query","results":[],"sections":[{"kind":"artists","items":[${artistRow(0, "Genesis", 100)}]},{"kind":"albums","items":[{"kind":"album","id":"${CatalogContractTest.G}","title":"Genesis Live"}]}],"providers":[{"provider":"musicbrainz","status":"ok","resultCount":2}]}""").build()
+                    "youtube" -> songs(query, listOf(songRow(0, "Genesis", "Grimes")))
+                    "soundcloud" -> songEmpty(query, "soundcloud")
+                    else -> when (request.url.encodedPath) {
+                        "/api/v1/artists/${artistId(0)}" -> MockResponse.Builder().body("""{"id":"${artistId(0)}","name":"Genesis","releases":[]}""").build()
+                        "/api/v1/source-selections" -> MockResponse.Builder().code(400).build()
+                        else -> error("unexpected Discover request: ${request.url}")
+                    }
+                }
+            }
+        }
+        assertEquals(0, f.server.requestCount)
+        repo.edit(view, "Genesis")
+        val draft = repo.state.value.draft
+        repo.searchBlocking(view, draft)
+        assertEquals(setOf("Genesis", "Genesis Live"), repo.state.value.items.filterIsInstance<DiscoveryResultRow.Entity>().map { it.entity.title }.toSet())
+        assertEquals(5, f.server.requestCount)
+        val calls = List(5) { f.server.takeRequest(4, SECONDS)!! }
+        assertRequests("Genesis", calls.filter { it.family != "musicbrainz" })
+        val metadata = calls.single { it.family == "musicbrainz" }
+        assertEquals("/api/v1/discovery/search", metadata.url.encodedPath)
+        assertEquals("Bearer fixture", metadata.headers["Authorization"])
+        assertEquals("Genesis", metadata.url.queryParameter("q"))
+        val song = repo.state.value.items.filterIsInstance<DiscoveryResultRow.Source>().single()
+        repo.selectType(view, DiscoveryResultType.Song)
+        assertSame(song, repo.state.value.items.single())
+        val exact = repo.sourceRowChoice(view, song.batch, song.row) { true }!!
+        assertSame(song.row, exact.candidate)
+        assertSame(song.batch.selection, exact.selection)
+        assertEquals(SESSION, exact.selection.id)
+        assertEquals(listOf("Genesis"), repo.state.value.recent)
+        val intake = ImportRepository(session, api, LibraryRepository(session, api::library, api::like))
+        val importView = intake.open()!!
+        intake.submit(intake.claimSource(importView, exact)!!)
+        val add = f.server.takeRequest(4, SECONDS)!!
+        assertEquals("POST", add.method)
+        assertEquals("/api/v1/source-selections", add.url.encodedPath)
+        val decision = Json.parseToJsonElement(add.body!!.utf8()).jsonObject
+        assertEquals(JsonPrimitive(SESSION), decision["sessionId"])
+        assertEquals(JsonPrimitive(song.row.id), decision["candidateId"])
+        assertTrue(intake.sourceSessionConsumed(exact))
+
+        repo.selectType(view, DiscoveryResultType.Artist)
+        assertFalse(exact.valid())
+        assertSame(draft, repo.state.value.draft)
+        val artist = (repo.state.value.items.single() as DiscoveryResultRow.Entity).entity
+        val artistDetails = repo.details(view, artist)!!
+        val catalog = CatalogRepository(api)
+        CatalogActions(catalog) { it() }.use { actions ->
+            assertTrue(actions.discover(artistDetails))
+            assertEquals("/api/v1/artists/${artistId(0)}", f.server.takeRequest(4, SECONDS)!!.url.encodedPath)
+            assertEquals(artistId(0), catalog.state.value.artist!!.row.id.value)
+        }
+        repo.selectType(view, DiscoveryResultType.Album)
+        assertFalse(artistDetails.valid())
+        val album = (repo.state.value.items.single() as DiscoveryResultRow.Entity).entity
+        val albumDetails = repo.details(view, album)!!
+        CatalogActions(catalog) { it() }.use { actions ->
+            assertTrue(actions.discover(albumDetails))
+            assertEquals(CatalogContractTest.G, catalog.state.value.group!!.id.value)
+            assertNull(catalog.state.value.album)
+        }
+        assertEquals(7, f.server.requestCount) // No typed browse, continuation, or new source sessions.
+
+        repo.edit(view, "Upgrade")
+        assertFalse(albumDetails.valid())
+        repo.searchBlocking(view, repo.state.value.draft)
+        assertRequests("Upgrade", List(4) { f.server.takeRequest(4, SECONDS)!! })
+        assertEquals(listOf("Upgraded artist"), repo.state.value.items.filterIsInstance<DiscoveryResultRow.Entity>().map { it.entity.title })
+        assertEquals(11, f.server.requestCount)
+    }
+
     @Test fun genesisSongArrivesFirstWithoutBuryingTheBandBehindTheWholeProviderBatch() = genesisRace(songFirst = true)
+
+    @Test fun missingCatalogDoesNotTurnUnconfirmedLegacyFamiliesIntoEmptySuccess() = HttpsFixture().use { f ->
+        val repo = account(f).let { DiscoveryRepository(it, SoundQApi(it, f.client), unifiedSearch = true) }
+        val view = repo.open()!!
+        f.server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val q = checkNotNull(request.url.queryParameter("q"))
+                return when (request.family) {
+                    "artist", "album" -> if (q == "partial") missingRoute() else MockResponse.Builder().code(404)
+                        .addHeader("Content-Type", "application/json").body("""{"code":"NOT_FOUND"}""").build()
+                    "musicbrainz" -> MockResponse.Builder().body("""{"query":"$q","results":[],"sections":[{"kind":"artists","items":[${artistRow(0, q, 100)}]}],"providers":[{"provider":"musicbrainz","status":"failed","resultCount":1}]}""").build()
+                    "youtube", "soundcloud" -> songEmpty(q, request.family!!)
+                    else -> error("unexpected Discover request: ${request.url}")
+                }
+            }
+        }
+        repo.edit(view, "partial")
+        repo.searchBlocking(view, repo.state.value.draft)
+        val state = repo.state.value
+        assertEquals(DiscoveryCatalogStatus.Legacy(partial = true), state.catalog[DiscoveryResultType.Artist])
+        assertTrue((state.items.single() as DiscoveryResultRow.Entity).entity.legacyDetails)
+        repo.selectType(view, DiscoveryResultType.Album)
+        assertEquals(DiscoveryPhase.Failed, repo.state.value.phase)
+        assertTrue(repo.state.value.catalog[DiscoveryResultType.Album] is DiscoveryCatalogStatus.Unavailable)
+        assertEquals(5, f.server.requestCount)
+
+        repo.edit(view, "other-404")
+        repo.searchBlocking(view, repo.state.value.draft)
+        val attempts = List(9) { f.server.takeRequest(4, SECONDS)!! }.filter { it.url.queryParameter("q") == "other-404" }
+        assertRequests("other-404", attempts)
+        assertTrue(repo.state.value.catalog.values.all { it is DiscoveryCatalogStatus.Unavailable })
+        assertEquals(9, f.server.requestCount)
+    }
+
+    @Test fun accountReplacementCancelsHeldLegacyReadAndRetestsTypedRoutes() = HttpsFixture().use { f ->
+        val session = account(f)
+        val release = CountDownLatch(1)
+        val cancelled = CountDownLatch(1)
+        val worker = Executors.newSingleThreadExecutor()
+        val client = f.client.newBuilder().eventListener(object : EventListener() {
+            override fun callFailed(call: Call, ioe: IOException) {
+                if (call.isCanceled() && call.request().url.queryParameter("providers") == "musicbrainz") cancelled.countDown()
+            }
+        }).build()
+        val repo = DiscoveryRepository(session, SoundQApi(session, client), unifiedSearch = true)
+        val view = repo.open()!!
+        f.server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val q = checkNotNull(request.url.queryParameter("q"))
+                return when (request.family) {
+                    "artist", "album" -> if (q == "obsolete") missingRoute() else if (request.family == "album")
+                        page("album", CatalogContractTest.G, "Successor album") else catalogPage(emptyList())
+                    "musicbrainz" -> { check(release.await(10, SECONDS)); MockResponse.Builder().code(503).build() }
+                    "youtube", "soundcloud" -> songEmpty(q, request.family!!)
+                    else -> error("unexpected Discover request: ${request.url}")
+                }
+            }
+        }
+        try {
+            repo.edit(view, "obsolete")
+            val held = repo.claimSearch(view, repo.state.value.draft)!!
+            val retired = worker.submit { repo.searchBlocking(held) }
+            val received = List(5) { f.server.takeRequest(4, SECONDS)!! }
+            assertRequests("obsolete", received.filter { it.family != "musicbrainz" })
+            assertEquals("Bearer fixture", received.single { it.family == "musicbrainz" }.headers["Authorization"])
+            assertTrue(session.accept(session.beginIntent(), SecretTokens("successor", "new-refresh", CatalogContractTest.G)))
+            val replacement = repo.open()!!
+            assertTrue(cancelled.await(4, SECONDS))
+            retired.get(4, SECONDS)
+            assertEquals(1L, release.count)
+            assertEquals(5, f.server.requestCount)
+            assertNull(repo.claimSearch(view, held.draft))
+            repo.edit(replacement, "fresh")
+            repo.searchBlocking(replacement, repo.state.value.draft)
+            val next = List(4) { f.server.takeRequest(4, SECONDS)!! }
+            assertEquals(setOf("artist", "album", "youtube", "soundcloud"), next.map { it.family }.toSet())
+            assertTrue(next.all { it.headers["Authorization"] == "Bearer successor" && it.url.queryParameter("q") == "fresh" })
+            assertEquals(listOf("Successor album"), repo.state.value.items.map(::rowTitle))
+            assertEquals(listOf("fresh"), repo.state.value.recent)
+            assertEquals(9, f.server.requestCount)
+        } finally { release.countDown(); worker.shutdownNow() }
+    }
 
     @Test fun genesisBandArrivesFirstWithoutWaitingForTheGrimesSong() = genesisRace(songFirst = false)
 
@@ -531,6 +697,16 @@ class UnifiedDiscoverTest {
         }
     }
 
+    @Test fun legacyMetadataNeedsAnExplicitGroupedEnvelopeWithoutSourceAuthority() {
+        val envelope = """{"query":"seed","results":[],"sections":[],"providers":[{"provider":"musicbrainz","status":"ok"}]}"""
+        fun decode(body: String) = DiscoveryJson.legacyCatalog(Json.parseToJsonElement(body).jsonObject, "seed")
+        assertTrue(decode(envelope).entities.isEmpty())
+        for (bad in listOf(envelope.replace("\"sections\":[],", ""), envelope.replace("musicbrainz", "youtube"),
+            envelope.dropLast(1) + """, "selectionSessionId":"$SESSION", "selectionExpiresAt":"2099-01-01T00:00:00Z"}""")) {
+            assertEquals(SafeFailure.Reason.InvalidResponse, assertThrows(SafeFailure::class.java) { decode(bad) }.reason)
+        }
+    }
+
     private fun account(f: HttpsFixture) = AccountSession(f.endpoint, MemoryStore()).apply {
         accept(beginIntent(), SecretTokens("fixture", "refresh", CatalogContractTest.A))
     }
@@ -584,6 +760,9 @@ class UnifiedDiscoverTest {
     private fun catalogPage(rows: List<String>) = MockResponse.Builder().body(
         """{"results":[${rows.joinToString()}],"hasMore":false}"""
     ).build()
+
+    private fun missingRoute() = MockResponse.Builder().code(404)
+        .addHeader("Content-Type", "text/plain; charset=utf-8").body("404 page not found\n").build()
 
     companion object { private const val SESSION = "123e4567-e89b-12d3-a456-426614174010" }
 }

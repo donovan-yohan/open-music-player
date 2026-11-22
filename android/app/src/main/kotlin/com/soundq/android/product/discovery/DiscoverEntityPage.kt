@@ -41,16 +41,14 @@ internal fun DiscoverEntityPage(model: ProductViewModel, view: DiscoveryView, de
     intake: ImportView?, onExit: () -> Unit, artworkRoot: RadarArtworkRoute? = null, isVisible: () -> Boolean = { true },
 ) {
     val root = remember(details, artworkRoot) { artworkRoot ?: RadarArtworkRoute() }
-    val visible by rememberUpdatedState(isVisible)
-    val navigation = remember(view, details, root) {
-        val initial = when (val target = details.target) {
+    val navigation = rememberEntityBrowseNavigation(details, initial = {
+        when (val target = details.target) {
             is DiscoveryCatalogTarget.Artist -> EntityArtist(target.id, details.entity.title,
                 details.entity.subtitle.takeIf { it.isNotBlank() })
             is DiscoveryCatalogTarget.Group -> EntityAlbum(target.id, details.entity.title,
                 details.entity.artist.takeIf { it.isNotBlank() }, details.entity.releaseDate.takeIf { it.isNotBlank() })
         }
-        EntityBrowseNavigation(initial) { view.scope === details.scope && details.valid() && visible() && root.current() }
-    }
+    }) { view.scope === details.scope && details.valid() && isVisible() }
     val session = model.graph.session
     val auth by model.auth.collectAsStateWithLifecycle()
     val accountRevision by session.scopeRevision.collectAsStateWithLifecycle()
@@ -59,7 +57,7 @@ internal fun DiscoverEntityPage(model: ProductViewModel, view: DiscoveryView, de
     val visit = navigation.visit
     val actionRoot = remember(root, visit) { RadarArtworkRoute(root = root) }
     DisposableEffect(actionRoot) { onDispose { actionRoot.retire() } }
-    val rowActions = rememberDiscoveryRowActions(model, view, actionRoot, originCurrent && visit != null)
+    val rowActions = rememberDiscoveryRowActions(model, view, actionRoot, originCurrent && visit?.current() == true)
     val imports by model.imports.collectAsStateWithLifecycle()
     val rowSurface = rowActions.surface
     val playback = object : EntityBrowseActions {
@@ -78,6 +76,13 @@ internal fun DiscoverEntityPage(model: ProductViewModel, view: DiscoveryView, de
     DiscoverEntityBrowseContent(navigation, originCurrent, model.graph.mediaClient, playback, onExit, surfaceRoot = root) { route, calls, current ->
         model.graph.api.discoverBrowseBody(details.scope, route, calls, current)
     }
+}
+
+/** A shell overlay retires the visit and its actions, not the accepted navigation stack. */
+@Composable
+internal fun rememberEntityBrowseNavigation(entry: Any, initial: () -> EntityDestination, origin: () -> Boolean): EntityBrowseNavigation {
+    val currentOrigin by rememberUpdatedState(origin)
+    return remember(entry) { EntityBrowseNavigation(initial()) { currentOrigin() } }
 }
 
 /** Reads and actions are injected only at the composed subtree boundary; production uses the existing owners. */

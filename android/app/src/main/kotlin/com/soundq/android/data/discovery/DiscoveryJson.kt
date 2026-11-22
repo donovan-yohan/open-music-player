@@ -28,7 +28,7 @@ object DiscoveryJson {
                 if(c!=null)grouped+=candidate(c.jsonObject)
                 else DiscoveryResultType.entries.firstOrNull {it.catalogKind!=null&&it.section==kind}?.let {type->
                     require(text(i,"kind")==type.catalogKind)
-                    entities+=DiscoveryEntity(type,i["id"]?.let(::string).orEmpty(),text(i,"title"),i["subtitle"]?.let(::string).orEmpty(),i["artist"]?.let(::string).orEmpty(),i["releaseDate"]?.let(::string).orEmpty())
+                    entities+=DiscoveryEntity(type,i["id"]?.let(::string).orEmpty(),text(i,"title"),i["subtitle"]?.let(::string).orEmpty(),i["artist"]?.let(::string).orEmpty(),i["releaseDate"]?.let(::string).orEmpty(),legacyDetails=true)
                 }
             }
         }
@@ -47,6 +47,13 @@ object DiscoveryJson {
             require(rows.size==top.size&&top.size<=limit&&(top.isEmpty()||observation.status=="ok"))
         }
         SourceResults(query,rows,selection,providers,entities)
+    }
+    internal fun legacyCatalog(o:JsonObject,query:String):SourceResults=parse {
+        // The legacy producer always emits sections, including an explicit empty array.
+        require(o["sections"] is JsonArray)
+        search(o,query).also {results->
+            require(results.providers.single().provider==DiscoveryProvider.MusicBrainz&&results.rows.isEmpty()&&results.selection==null)
+        }
     }
     internal fun catalog(o:JsonObject,type:DiscoveryResultType):DiscoveryCatalogPage=parse {
         val kind=requireNotNull(type.catalogKind)

@@ -18,7 +18,7 @@ enum class DiscoveryResultType(val label:String,val section:String,val tabLabel:
     internal val catalogKind get()=when(this) {Artist->"artist";Album->"album";else->null}
 }
 /** Catalog items are read projections, never SourceChoice or playback identities. */
-class DiscoveryEntity internal constructor(val type:DiscoveryResultType,val id:String,val title:String,val subtitle:String,val artist:String="",val releaseDate:String="",val artistMbid:String?=null,val score:Int?=null) {
+class DiscoveryEntity internal constructor(val type:DiscoveryResultType,val id:String,val title:String,val subtitle:String,val artist:String="",val releaseDate:String="",val artistMbid:String?=null,val score:Int?=null,internal val legacyDetails:Boolean=false) {
     // Grouped MusicBrainz album search returns release groups, never editions.
     val catalogTarget:DiscoveryCatalogTarget? get()=runCatching {
         require(id!="00000000-0000-0000-0000-000000000000")
@@ -37,10 +37,12 @@ class DiscoveryDetails internal constructor(internal val scope:AccountScope,val 
 enum class DiscoveryProvider(val wire:String,val label:String) { YouTube("youtube","YouTube"),SoundCloud("soundcloud","SoundCloud"),MusicBrainz("musicbrainz","MusicBrainz") }
 class SourceResults internal constructor(val query:String,val rows:List<SourceCandidate>,val selection:SourceSession?,val providers:List<ProviderObservation>,val entities:List<DiscoveryEntity> = emptyList())
 internal class DiscoveryCatalogPage(val rows:List<DiscoveryEntity>,val hasMore:Boolean)
+internal class DiscoveryCatalogRouteMissing:Exception()
 sealed interface DiscoveryCatalogStatus {
     data object Loading:DiscoveryCatalogStatus
     class Unavailable internal constructor():DiscoveryCatalogStatus
     data class Ready(val hasMore:Boolean,val continuationFailed:Boolean=false):DiscoveryCatalogStatus
+    data class Legacy(val partial:Boolean):DiscoveryCatalogStatus
 }
 sealed interface DiscoveryResultRow {
     val key:String
@@ -63,7 +65,7 @@ class DiscoveryResults internal constructor(internal val batches:List<SourceResu
     val providers=batches.flatMap {it.providers}
     val entities=items.filterIsInstance<DiscoveryResultRow.Entity>().map {it.entity}
     internal fun append(batch:SourceResults)=append(batches+batch,batch.rows.map {DiscoveryResultRow.Source(batch,it)})
-    internal fun append(page:DiscoveryCatalogPage)=append(batches,page.rows.map {DiscoveryResultRow.Entity(it)})
+    internal fun appendCatalog(rows:List<DiscoveryEntity>)=append(batches,rows.map {DiscoveryResultRow.Entity(it)})
 
     internal fun continueCatalog(page:DiscoveryCatalogPage):DiscoveryResults {
         val keys=items.mapTo(mutableSetOf()) {it.key}

@@ -4,6 +4,8 @@ import androidx.compose.ui.text.input.TextFieldValue
 import com.soundq.android.data.SafeFailure
 import com.soundq.android.data.catalog.ArtistMbid
 import com.soundq.android.data.catalog.ReleaseGroupMbid
+import com.soundq.android.data.catalog.ReleaseMbid
+import com.soundq.android.data.discovery.DiscoverBrowseEdition
 import com.soundq.android.data.discovery.DiscoverBrowsePage
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -74,6 +76,32 @@ class DiscoverEntityVisitTest {
         navigation.back { exits++ }
         assertEquals(1, exits)
         assertNull(navigation.visit)
+    }
+
+    @Test fun replacingTheOverlaySurfaceRetiresTheVisitWithoutResettingTheExactEdition() {
+        val group = ReleaseGroupMbid("b139f140-6a40-4dd5-af24-d7df33beb6a9")
+        val album = EntityAlbum(group, "Fixture album", null, null)
+        val edition = DiscoverBrowseEdition(
+            ReleaseMbid("b0fe46b5-fd0c-466e-9a50-007a527c734a"), group, "Fixture edition",
+            null, emptyList(), null, null, null, null, 1, emptyList(),
+        )
+        album.select(edition)
+        val trackPage = checkNotNull(album.trackPage)
+        val nav = EntityBrowseNavigation(album) { true }
+        val first = RadarArtworkRoute()
+        nav.setResumed(true, first::current)
+        val previous = checkNotNull(nav.visit)
+        first.retire()
+        assertFalse(previous.current())
+        nav.setResumed(false)
+        val successor = RadarArtworkRoute()
+        nav.setResumed(true, successor::current)
+        assertNotSame(previous, nav.visit)
+        assertTrue(checkNotNull(nav.visit).current())
+        assertSame(album, nav.destination)
+        assertSame(trackPage, album.trackPage)
+        assertSame(trackPage.scroll, album.trackPage?.scroll)
+        assertFalse(previous.current())
     }
 
     @Test fun retirementCancelsHeldTransportBeforeReleaseAndDoesNotReviveOldVisit() = runBlocking {

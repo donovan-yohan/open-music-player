@@ -72,11 +72,18 @@ class DiscoverEntityJourneyTest {
     private fun mount(initial: EntityDestination, topGate: CountDownLatch? = null,
         visible: MutableState<Boolean>? = null, surface: MutableState<RadarArtworkRoute>? = null,
     ) {
-        val nav = EntityBrowseNavigation(initial) { true }
+        var navAtMount: EntityBrowseNavigation? = null
         compose.setContent {
             SoundQTheme {
-                DiscoverEntityBrowseContent(nav, originCurrent = visible?.value ?: true, mediaClient = null,
-                    actions, onExit = {}, surfaceRoot = surface?.value) { route, _, current ->
+                val currentSurface = surface?.value
+                val currentVisibility = visible?.value ?: true
+                val nav = rememberEntityBrowseNavigation(initial, initial = { initial }) { visible?.value != false }
+                androidx.compose.runtime.SideEffect {
+                    navAtMount?.let { assertSame(it, nav) }
+                    navAtMount = nav
+                }
+                DiscoverEntityBrowseContent(nav, originCurrent = currentVisibility, mediaClient = null,
+                    actions, onExit = {}, surfaceRoot = currentSurface) { route, _, current ->
                     check(current())
                     calls.add(route)
                     val body = when (route) {

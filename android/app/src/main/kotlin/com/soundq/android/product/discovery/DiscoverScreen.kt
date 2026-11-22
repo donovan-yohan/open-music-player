@@ -141,8 +141,18 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
     if(view!=null&&openedCatalog!=null) {
         fun exit() {if(catalogDetails===openedCatalog)catalogDetails=null}
         LaunchedEffect(openedCatalog,state,view) {if(!openedCatalog.valid())exit()}
-        DiscoverEntityPage(model,view,openedCatalog,intake,::exit,radarArtworkRoot) {
-            radarVisible()&&catalogDetails===openedCatalog
+        if(openedCatalog.entity.legacyDetails) {
+            val actions=remember(view,openedCatalog) {model.catalogActions()}
+            DisposableEffect(actions,openedCatalog) {
+                if(!actions.discover(openedCatalog))exit()
+                onDispose {actions.close()}
+            }
+            val catalog by model.graph.catalog.state.collectAsStateWithLifecycle()
+            com.soundq.android.product.catalog.CatalogScreen(catalog,actions,::exit)
+        } else {
+            DiscoverEntityPage(model,view,openedCatalog,intake,::exit,radarArtworkRoot) {
+                radarVisible()&&catalogDetails===openedCatalog
+            }
         }
         return
     }
@@ -261,14 +271,18 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
                 }
                 is DiscoveryResultRow.Entity -> {
                     val entity=item.entity
+                    val refine:()->Unit={view?.let {route->repository.refine(route,entity)?.let {model.searchSources(route,it)}}}
                     SoundQMediaRow(entity.title,entity.subtitle.ifBlank {entity.artist},false,onActivate={
-                        view?.let {route->repository.details(route,entity)?.let {details->
+                        if(entity.legacyDetails&&entity.title!=state.draft.text.trim())refine()
+                        else view?.let {route->repository.details(route,entity)?.let {details->
                             rows.renew();focus.clearFocus();catalogDetails=details
                         }}
-                    },onMore={entityDetails=entity},supporting=entity.type.label,enabled=view!=null&&entity.catalogTarget!=null)
+                    },onMore={entityDetails=entity},supporting=entity.type.label,enabled=view!=null&&(entity.legacyDetails||entity.catalogTarget!=null))
                 }
             }}
-            if(state.phase==DiscoveryPhase.Ready&&state.items.isEmpty())discoverHeader {
+            val allCovered=state.catalog.values.all {it is DiscoveryCatalogStatus.Ready||it is DiscoveryCatalogStatus.Legacy&&!it.partial}&&
+                results.providers.all {it.status=="ok"}
+            if(state.phase==DiscoveryPhase.Ready&&state.items.isEmpty()&&(state.resultType!=DiscoveryResultType.All||allCovered))discoverHeader {
                 val message=when(state.resultType) {
                     DiscoveryResultType.All->"No matches"
                     DiscoveryResultType.Song->"No song sources"
@@ -295,9 +309,15 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
             }
         }
         state.catalog.forEach { (type,status)->
-            if(status is DiscoveryCatalogStatus.Unavailable&&(state.resultType==DiscoveryResultType.All||state.resultType==type))discoverHeader {
-                SoundQFeedback("${type.tabLabel} unavailable",FeedbackKind.Error,action="Retry ${type.tabLabel.lowercase()}".takeIf {view!=null},
-                    onAction={view?.let {model.retryDiscoveryCatalog(it,state.draft,type,status)}})
+            if(state.resultType==DiscoveryResultType.All||state.resultType==type) {
+                if(status is DiscoveryCatalogStatus.Unavailable)discoverHeader {
+                    SoundQFeedback("${type.tabLabel} unavailable",FeedbackKind.Error,action="Retry ${type.tabLabel.lowercase()}".takeIf {view!=null},
+                        onAction={view?.let {model.retryDiscoveryCatalog(it,state.draft,type,status)}})
+                }
+                if(status is DiscoveryCatalogStatus.Legacy&&status.partial)discoverHeader {
+                    SoundQFeedback("${type.tabLabel} results may be incomplete",FeedbackKind.Notice,
+                        action="Search again".takeUnless {state.searchActive},onAction={search()})
+                }
             }
         }
         state.error?.takeUnless {state.catalog[state.resultType] is DiscoveryCatalogStatus.Unavailable}?.let {reason->discoverHeader {
@@ -317,6 +337,9 @@ private fun duration(ms:Long):String=if(ms<=0)"Duration unavailable" else format
         Text(entity.title,style=SoundQ.typography.title)
         if(entity.subtitle.isNotBlank())Text(entity.subtitle)
         if(entity.id.isNotBlank())Text("${if(entity.type==DiscoveryResultType.Album)"Release-group" else "Artist"} MusicBrainz ID: ${entity.id}",style=SoundQ.typography.mono)
+        if(entity.legacyDetails&&entity.catalogTarget!=null)SoundQButton("Details",{view?.let {route->repository.details(route,entity)?.let {
+            rows.renew();focus.clearFocus();catalogDetails=it;entityDetails=null
+        }}},variant=SoundQButtonVariant.Secondary)
         if(entity.title!=state.draft.text.trim())SoundQButton("Refine search",{view?.let {route->repository.refine(route,entity)?.let {draft->entityDetails=null;model.searchSources(route,draft)}}},variant=SoundQButtonVariant.Secondary)
     }}
 }

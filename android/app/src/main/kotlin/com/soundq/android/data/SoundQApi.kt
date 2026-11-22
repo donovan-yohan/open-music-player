@@ -2,6 +2,8 @@ package com.soundq.android.data
 
 import kotlinx.serialization.json.*
 import com.soundq.android.data.discovery.DiscoveryCalls
+import com.soundq.android.data.discovery.DiscoveryCatalogRouteMissing
+import com.soundq.android.data.discovery.DiscoveryProvider
 import com.soundq.android.data.discovery.DiscoveryResultType
 import com.soundq.android.data.discovery.SourceProvider
 import com.soundq.android.data.discovery.isDiscoverBrowsePath
@@ -49,7 +51,7 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
     private fun tokens(body: JsonObject): SecretTokens = try {
         SecretTokens(body.getValue("accessToken").jsonPrimitive.content,body.getValue("refreshToken").jsonPrimitive.content,body.getValue("user").jsonObject.getValue("id").jsonPrimitive.content)
     } catch (_: Exception) { throw SafeFailure(SafeFailure.Reason.InvalidResponse) }
-    private class Reply(val code: Int, val body: JsonObject, val text: String = "")
+    private class Reply(val code: Int, val body: JsonObject, val text: String = "", val missingDiscoverCatalogRoute:Boolean=false)
     private fun wire(path: String, method: String = "GET", body: JsonObject? = null, access: String? = null, dispatchValid: (() -> Boolean)? = null, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, rawJson:String?=null, calls:DiscoveryCalls?=null, responseValid:(()->Boolean)?=null, valid: () -> Boolean): Reply {
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
         val pathOnly=path.substringBefore('?')
@@ -78,6 +80,14 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
                 if (response.code in 300..399) throw SafeFailure(SafeFailure.Reason.Endpoint)
                 // Never parse/display server error text, which can echo sensitive input.
                 if (response.code !in 200..299) {
+                    // Only this collection GET recognizes the bounded Go ServeMux route-miss
+                    // marker. Entity 404s and other error bodies never grant fallback.
+                    if(method=="GET"&&pathOnly=="/discovery/catalog"&&response.code==404) {
+                        val marker="404 page not found\n"
+                        val missing=response.body.contentType()?.let {it.type=="text"&&it.subtype=="plain"}==true&&
+                            response.body.source().let {!it.request(marker.length+1L)&&it.readUtf8()==marker}
+                        return Reply(404,buildJsonObject {},missingDiscoverCatalogRoute=missing)
+                    }
                     // Only exchange admits a bounded declared code. No message/hash/body survives.
                     val membership=method=="POST" && Regex("^/catalog/recordings/[0-9a-f-]{36}/membership$").matches(path)
                     if(membership) {
@@ -163,6 +173,7 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         if(discoveryRead) {
             if(!session.awaitDiscoveryRead(scope)||!valid())throw SafeFailure(SafeFailure.Reason.Retired)
         } else session.checkScope(scope)
+        if(result.missingDiscoverCatalogRoute)throw DiscoveryCatalogRouteMissing()
         if (privateFeature && result.code !in 200..299) throw com.soundq.android.data.connect.FeatureFailure(result.code)
         if (allowMissing && result.code == 404) throw PlaylistMissing()
         if (result.code !in 200..299) {
@@ -450,12 +461,17 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
     fun radarMembership(scope:AccountScope,recording:com.soundq.android.data.catalog.RecordingMbid,valid:()->Boolean):Boolean =
         com.soundq.android.data.discovery.RadarJson.membership(authorized(scope,"/me/discovery/releases/${recording.value}/membership",valid=valid,expectedStatus=200),recording)
     internal fun discoverySearch(scope: AccountScope, query:String, valid:()->Boolean = {true},grouped:Boolean=false,provider:SourceProvider?=null,calls:DiscoveryCalls?=null): com.soundq.android.data.discovery.SourceResults {
-        require(query.isNotBlank() && query.toByteArray(Charsets.UTF_8).size<=512)
         require(provider==null||!grouped)
         val providers=provider?.wire ?: if(grouped)"youtube,soundcloud,musicbrainz" else "youtube,soundcloud"
-        val url=session.endpoint.base.newBuilder().addQueryParameter("q",query).addQueryParameter("limit",com.soundq.android.data.discovery.DiscoveryJson.SEARCH_SURFACE_LIMIT.toString()).addQueryParameter("providers",providers).build()
-        return com.soundq.android.data.discovery.DiscoveryJson.search(authorized(scope,"/discovery/search?"+url.encodedQuery,valid=valid,expectedStatus=200,calls=calls),query,provider)
+        return com.soundq.android.data.discovery.DiscoveryJson.search(discoverySearchBody(scope,query,providers,calls,valid),query,provider)
     }
+    private fun discoverySearchBody(scope:AccountScope,query:String,providers:String,calls:DiscoveryCalls?,valid:()->Boolean):JsonObject {
+        require(query.isNotBlank() && query.toByteArray(Charsets.UTF_8).size<=512)
+        val url=session.endpoint.base.newBuilder().addQueryParameter("q",query).addQueryParameter("limit",com.soundq.android.data.discovery.DiscoveryJson.SEARCH_SURFACE_LIMIT.toString()).addQueryParameter("providers",providers).build()
+        return authorized(scope,"/discovery/search?"+url.encodedQuery,valid=valid,expectedStatus=200,calls=calls)
+    }
+    internal fun legacyDiscoveryCatalog(scope:AccountScope,query:String,calls:DiscoveryCalls,valid:()->Boolean):com.soundq.android.data.discovery.SourceResults =
+        com.soundq.android.data.discovery.DiscoveryJson.legacyCatalog(discoverySearchBody(scope,query,DiscoveryProvider.MusicBrainz.wire,calls,valid),query)
     internal fun discoveryCatalog(scope:AccountScope,query:String,type:DiscoveryResultType,calls:DiscoveryCalls,valid:()->Boolean,offset:Int=0):com.soundq.android.data.discovery.DiscoveryCatalogPage {
         require(query.isNotBlank()&&query.toByteArray(Charsets.UTF_8).size<=512&&offset in 0..1000)
         val kind=requireNotNull(type.catalogKind)

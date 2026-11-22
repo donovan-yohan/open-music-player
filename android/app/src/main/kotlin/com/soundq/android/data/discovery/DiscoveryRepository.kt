@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.time.Instant
 
 /** Owns source reads and disposable inspection capabilities, never an intake/player. */
@@ -80,7 +82,7 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
             val all=state.resultType==DiscoveryResultType.All
             val families=if(all)lane.catalog.values else listOfNotNull(lane.catalog[state.resultType])
             val pending=families.any {it==DiscoveryCatalogStatus.Loading}||all&&lane.pendingProviders
-            val available=families.any {it is DiscoveryCatalogStatus.Ready}||all&&lane.phase==DiscoveryPhase.Ready
+            val available=families.any {it is DiscoveryCatalogStatus.Ready||it is DiscoveryCatalogStatus.Legacy}||all&&lane.phase==DiscoveryPhase.Ready
             val phase=when {
                 next.items.isNotEmpty()->DiscoveryPhase.Ready
                 pending->DiscoveryPhase.Loading
@@ -211,6 +213,15 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
                     }
                 }
                 SearchFamily.Song,SearchFamily.Unified -> coroutineScope {
+                    // Share the grouped metadata read only within this exact request. No
+                    // capability cache, duplicate source search, or fallback on a transient failure.
+                    val legacyLock=Mutex()
+                    var legacyRead:Result<SourceResults>?=null
+                    suspend fun legacyCatalog()=legacyLock.withLock {
+                        legacyRead ?: searchResult {
+                            searchCall(request) {api.legacyDiscoveryCatalog(scope,query,request.calls,::valid)}
+                        }.also {legacyRead=it}
+                    }
                     if(request.catalogOnly==null)for(provider in SourceProvider.entries)launch(Dispatchers.IO) {
                         val worker=currentCoroutineContext()[Job]!!
                         val response=searchResult {
@@ -239,19 +250,23 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
                         val worker=currentCoroutineContext()[Job]!!
                         val offset=request.catalogOffset
                         val response=searchResult {searchCall(request) {api.discoveryCatalog(scope,query,type,request.calls,::valid,offset)}}
+                        val legacy=if(offset==0&&response.exceptionOrNull() is DiscoveryCatalogRouteMissing)legacyCatalog().getOrNull() else null
+                        val legacyRows=legacy?.entities.orEmpty().filter {it.type==type}.distinctBy {it.id}
+                        val legacyOk=legacy?.providers?.single()?.status=="ok"
                         settleSearch(request,worker) {lane->
                             val page=response.getOrNull()
                             val next=offset+(page?.rows?.size ?: 0)
                             val status=when {
                                 page!=null->DiscoveryCatalogStatus.Ready(page.hasMore&&next in 1..1000)
                                 offset>0->DiscoveryCatalogStatus.Ready(hasMore=true,continuationFailed=true)
+                                legacyOk||legacyRows.isNotEmpty()->DiscoveryCatalogStatus.Legacy(partial=!legacyOk)
                                 else->DiscoveryCatalogStatus.Unavailable()
                             }
                             val catalog=lane.catalog+(type to status)
                             val results=when {
-                                page==null->lane.results
-                                offset>0->lane.results?.continueCatalog(page)
-                                else->(lane.results ?: emptyResults()).append(page)
+                                page!=null&&offset>0->lane.results?.continueCatalog(page)
+                                page!=null||legacyOk||legacyRows.isNotEmpty()->(lane.results ?: emptyResults()).appendCatalog(page?.rows ?: legacyRows)
+                                else->lane.results
                             }
                             val retry=request.catalogRetry
                             val primary=when {
