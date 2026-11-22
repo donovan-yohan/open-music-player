@@ -36,7 +36,8 @@ def block(value, anchor):
         end += 1
     return value[start:end]
 for p in ['data/AccountSession.kt', 'data/Contracts.kt', 'data/catalog/Catalog.kt',
-          'data/discovery/Discovery.kt', 'data/discovery/DiscoveryRepository.kt', 'data/imports/Imports.kt']:
+          'data/discovery/Discovery.kt', 'data/discovery/DiscoveryRepository.kt',
+          'data/discovery/DiscoveryShortlist.kt', 'data/imports/Imports.kt']:
     emit(Path(p).name, source(p).replace('import kotlinx.serialization.json.*\n', ''))
 radar = source('data/discovery/ReleaseRadar.kt')
 emit('ReleaseRadar.kt', radar[:radar.index('/** Strict Go wire projection.')].replace('import kotlinx.serialization.json.*\n', ''))

@@ -25,6 +25,7 @@ files = {name: (p / path).read_text() for name, path in {
     'discover': 'discovery/DiscoverScreen.kt', 'playlists': 'playlists/PlaylistsScreen.kt',
     'wrapper': 'MainPageComponents.kt'}.items()}
 files['components'] = (a.root / 'designsystem/src/main/kotlin/com/soundq/designsystem/ProductComponents.kt').read_text()
+files['discover_vm'] = (p / 'ProductViewModel.kt').read_text()
 
 
 def masked(text):
@@ -131,7 +132,7 @@ class Adoption(unittest.TestCase):
     def test_opt_in_tabs_media_and_parent_chrome_owners_retained(self):
         self.assertIn('SoundQTabsTreatment.MainPageCells', function(files['library'], 'LibraryFilters'))
         self.assertIn('SoundQTabsTreatment.MainPageCells', files['discover'])
-        self.assertIn('DiscoveryResultType.entries.map {it.label}', files['discover'])
+        self.assertIn('DiscoveryResultType.entries.map {it.tabLabel}', files['discover'])
         self.assertIn('SoundQTabsTreatment.Existing,onSelect=onSelect', files['components'])
         for key in ['library', 'home', 'discover', 'playlists']:
             self.assertIn('SoundQMediaRow(', files[key])
@@ -140,6 +141,12 @@ class Adoption(unittest.TestCase):
             self.assertNotIn('SoundQBottomNavigation(', files[key])
         self.assertIn('SoundQSwipeQueue(', files['home'])
         self.assertIn('model.home.recent.value.rows===acceptedRows', files['home'])
+
+    def test_discover_retry_uses_the_scoped_read_owner(self):
+        vm = files['discover_vm'].split('internal fun retryDiscoveryCatalog(', 1)[1].split('internal fun continueDiscoveryCatalog(', 1)[0]
+        self.assertIn('graph.discovery.claimCatalogRetry(view,draft,type,expected) ?: return', vm)
+        self.assertIn('graph.discovery.search(request)', vm)
+        self.assertIn('graph.discovery.abandonSearch(request)', vm)
 
 
 suite = unittest.defaultTestLoader.loadTestsFromTestCase(Adoption)
@@ -229,8 +236,15 @@ class RowActions {val surface:RadarArtworkRoute?=null;fun renew(){}}
 fun rememberDiscoveryRowActions(model:ProductViewModel,view:DiscoveryView?,root:RadarArtworkRoute,shown:Boolean)=RowActions()
 class Draft(val text:String)
 enum class DiscoveryPhase {Idle,Loading,Ready}
-enum class DiscoveryResultType {Song,Artist,Album}
-data class DiscoveryState(val draft:Draft=Draft(""),val phase:DiscoveryPhase=DiscoveryPhase.Idle,val resultType:DiscoveryResultType=DiscoveryResultType.Song,val results:SourceResults?=null)
+enum class DiscoveryResultType(val tabLabel:String) {All("All"),Song("Songs"),Artist("Artists"),Album("Albums")}
+sealed interface DiscoveryCatalogStatus {class Unavailable:DiscoveryCatalogStatus;data object Loading:DiscoveryCatalogStatus}
+data class DiscoveryState(val draft:Draft=Draft(""),val phase:DiscoveryPhase=DiscoveryPhase.Idle,val resultType:DiscoveryResultType=DiscoveryResultType.Song,val results:SourceResults?=null,val catalog:Map<DiscoveryResultType,DiscoveryCatalogStatus> = emptyMap())
+enum class FeedbackKind {Error}
+fun discoverHeader(content:()->Unit)=content()
+fun SoundQFeedback(title:String,kind:FeedbackKind,action:String?,onAction:()->Unit) {
+ if(action!=null)UI.actions[action]=Action(true,onAction)
+}
+data class CatalogRetry(val view:DiscoveryView,val draft:Draft,val type:DiscoveryResultType,val expected:DiscoveryCatalogStatus.Unavailable)
 class Repository {
  val state=State(DiscoveryState());val edits=mutableListOf<String>();var current:DiscoveryView?=null
  val radar=State(RadarState())
@@ -246,8 +260,10 @@ class Imports {fun close(route:Any){}}
 class Graph(val discovery:Repository=Repository(),val imports:Imports=Imports())
 class ProductViewModel {
  val graph=Graph();val imports=State(0);val sent=mutableListOf<String>()
+ val catalogRetries=mutableListOf<CatalogRetry>()
+ fun retryDiscoveryCatalog(view:DiscoveryView,draft:Draft,type:DiscoveryResultType,expected:DiscoveryCatalogStatus.Unavailable){catalogRetries.add(CatalogRetry(view,draft,type,expected))}
  fun loadReleaseRadar(view:DiscoveryView,refresh:Boolean=false,automatic:Boolean=false){}
- fun searchSources(route:DiscoveryView,draft:Draft){val repo=graph.discovery;if(route===repo.current&&draft===repo.state.value.draft){sent.add(draft.text);repo.state.value=repo.state.value.copy(phase=DiscoveryPhase.Loading)}}
+ fun searchSources(route:DiscoveryView,draft:Draft,retry:Boolean=false){val repo=graph.discovery;if(route===repo.current&&draft===repo.state.value.draft){sent.add(draft.text);repo.state.value=repo.state.value.copy(phase=DiscoveryPhase.Loading)}}
 }
 data class PlaylistQuery(val text:String="",val sort:Int=7,val ascending:Boolean=true)
 data class PlaylistState(val query:PlaylistQuery=PlaylistQuery())
@@ -276,7 +292,9 @@ header = function(files['components'], 'SoundQMainPageHeader').replace('@Composa
 wrapper = function(files['wrapper'], 'MainPageHeader').replace('@Composable ', '')
 discover = files['discover']
 prefix = discover[discover.index('    val repository=model.graph.discovery'):discover.index('    val openedCatalog=catalogDetails')]
-discover_body = 'class RadarArtworkRoute {fun retire(){}}\nfun DiscoverInput(model:ProductViewModel,view:DiscoveryView?,intake:Any?,radarVisible:()->Boolean={false},radarArtworkRoot:RadarArtworkRoute=RadarArtworkRoute()) {\n' + prefix + '\n' + call(discover, 'SoundQSearchStrip') + '\n}\n'
+retry_start = discover.rfind('\n', 0, discover.index('state.catalog.forEach'))
+retry_region = discover[retry_start:discover.index('        state.error?', retry_start)]
+discover_body = 'class RadarArtworkRoute {fun retire(){}}\nfun DiscoverInput(model:ProductViewModel,view:DiscoveryView?,intake:Any?,radarVisible:()->Boolean={false},radarArtworkRoot:RadarArtworkRoute=RadarArtworkRoute()) {\n' + prefix + '\n' + call(discover, 'SoundQSearchStrip') + '\n' + retry_region + '\n}\n'
 playlist = files['playlists']
 playlist_prefix = playlist[playlist.index('    var search by remember'):playlist.index('    var sorting by remember')]
 playlist_body = 'fun PlaylistInput(state:PlaylistState,capture:PlaylistCapture?,pending:Boolean,onRefine:(PlaylistQuery)->Unit) {\nval scope=capture?.scope\nvar sorting=false\n' + playlist_prefix + call(playlist, 'SoundQSearchStrip') + '\n}\n'
@@ -333,6 +351,20 @@ fun main(){
   D.model.graph.discovery.state.value=DiscoveryState(Draft("refined"));D.render();D.render();check(UI.editor.value.text=="refined")
   D.model.graph.discovery.state.value=D.model.graph.discovery.state.value.copy(phase=DiscoveryPhase.Loading);D.render()
   check("Search music" !in UI.actions);UI.editor.keyboard.onSearch();check(D.model.sent.isEmpty())
+ }
+ case("discover_all_retry_buttons_dispatch_only_their_captured_family") {
+  D.start();val draft=Draft("Genesis");val artist=DiscoveryCatalogStatus.Unavailable();val album=DiscoveryCatalogStatus.Unavailable()
+  val state=DiscoveryState(draft,DiscoveryPhase.Ready,DiscoveryResultType.All,catalog=mapOf(DiscoveryResultType.Artist to artist,DiscoveryResultType.Album to album))
+  D.model.graph.discovery.state.value=state;D.render()
+  check("Retry artists" in UI.actions && "Retry albums" in UI.actions)
+  check(D.model.catalogRetries.isEmpty()&&D.model.sent.isEmpty())
+  D.click("Retry albums")
+  check(D.model.catalogRetries.single()==CatalogRetry(D.route!!,draft,DiscoveryResultType.Album,album))
+  check(D.model.sent.isEmpty()&&Focus.clears==0)
+  D.model.graph.discovery.state.value=state.copy(resultType=DiscoveryResultType.Artist);D.render()
+  check("Retry artists" in UI.actions && "Retry albums" !in UI.actions)
+  D.click("Retry artists")
+  check(D.model.catalogRetries.last()==CatalogRetry(D.route!!,draft,DiscoveryResultType.Artist,artist))
  }
  case("playlist_native_selection_and_composition_stay_local_until_explicit_ime") {
   P.start();val value=TextFieldValue("  café 東京  ",TextRange(2,5),TextRange(7,9));P.edit(value)
