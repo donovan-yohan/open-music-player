@@ -26,8 +26,8 @@ object DiscoveryJson {
             section.getValue("items").jsonArray.forEach {item->val i=item.jsonObject
                 val c=i["candidate"]?.takeIf {it!=JsonNull}
                 if(c!=null)grouped+=candidate(c.jsonObject)
-                else DiscoveryResultType.entries.firstOrNull {it!=DiscoveryResultType.Song&&it.section==kind}?.let {type->
-                    require(text(i,"kind")==if(type==DiscoveryResultType.Artist)"artist" else "album")
+                else DiscoveryResultType.entries.firstOrNull {it.catalogKind!=null&&it.section==kind}?.let {type->
+                    require(text(i,"kind")==type.catalogKind)
                     entities+=DiscoveryEntity(type,i["id"]?.let(::string).orEmpty(),text(i,"title"),i["subtitle"]?.let(::string).orEmpty(),i["artist"]?.let(::string).orEmpty(),i["releaseDate"]?.let(::string).orEmpty())
                 }
             }
@@ -47,6 +47,24 @@ object DiscoveryJson {
             require(rows.size==top.size&&top.size<=limit&&(top.isEmpty()||observation.status=="ok"))
         }
         SourceResults(query,rows,selection,providers,entities)
+    }
+    internal fun catalog(o:JsonObject,type:DiscoveryResultType):DiscoveryCatalogPage=parse {
+        val kind=requireNotNull(type.catalogKind)
+        val rows=o.getValue("results").jsonArray.also {require(it.size<=8)}.map {item->
+            val row=item.jsonObject
+            require(text(row,"kind")==kind)
+            fun optional(key:String)=row[key]?.takeUnless {it==JsonNull}?.let(::string)
+            val id=uuid(text(row,"id"))
+            val title=text(row,"title").also {require(it.isNotBlank())}
+            val artistMbid=optional("artistMbid")?.let(::uuid)
+            val score=row["score"]?.takeUnless {it==JsonNull}?.jsonPrimitive?.let {require(!it.isString);it.int}
+            DiscoveryEntity(type,id,title,optional("subtitle").orEmpty(),optional("artist").orEmpty(),
+                optional("releaseDate").orEmpty(),artistMbid,score).also {require(it.catalogTarget!=null)}
+        }
+        require(rows.distinctBy {it.id}.size==rows.size)
+        val more=bool(o,"hasMore")
+        require(!more||rows.isNotEmpty())
+        DiscoveryCatalogPage(rows,more)
     }
     fun resolved(o:JsonObject,query:String):SourceResults=parse {
         require(bool(o,"selectionRequired"))

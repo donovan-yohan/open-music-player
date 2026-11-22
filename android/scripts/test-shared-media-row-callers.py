@@ -162,8 +162,10 @@ class SharedMediaRowCallersContract(unittest.TestCase):
 
     def test_discovery_rows_share_anatomy_and_split_preview_from_add(self):
         text = source('discovery/DiscoverScreen.kt')
-        rows = between(text, 'items(results.rows', '            } else {')
+        self.assertIn('items(state.items,key={it.key})', text)
+        rows = between(text, 'is DiscoveryResultRow.Source -> {', 'is DiscoveryResultRow.Entity -> {')
         self.shared(rows)
+        self.assertIn('val batch=item.batch', rows)
         self.assertIn('subtitle=row.artist', rows)
         self.assertIn('DiscoveryProviderMark(row.provider,', rows,
                       'the row must show the mark for its actual source provider')
@@ -171,7 +173,7 @@ class SharedMediaRowCallersContract(unittest.TestCase):
         self.assertIn('DiscoveryArtwork(model.graph.mediaClient,row.thumbnailUrl', rows)
         self.assertIn('repository.state.value.results?.identity===results.identity', rows)
         self.assertIn('SoundQSearchStrip(editor,', text)
-        self.assertIn('LazyColumn(Modifier.fillMaxWidth().weight(1f),state=scroll)', text)
+        self.assertIn('LazyColumn(Modifier.fillMaxWidth().weight(1f).testTag("discover-list"),state=scroll)', text)
         self.assertLess(text.index('SoundQSearchStrip('), text.index('LazyColumn('))
         self.assertIn('rows.preview(', rows)
         self.assertIn('rows.addSource(', rows)
@@ -180,10 +182,13 @@ class SharedMediaRowCallersContract(unittest.TestCase):
         self.shared(radar)
         self.assertIn('rows.preview(', radar)
         self.assertIn('rows.addRecording(', radar)
-        entities = text[text.index('items(entities)'):]
+        entities = between(text, 'is DiscoveryResultRow.Entity -> {', 'if(state.phase==DiscoveryPhase.Ready&&state.items.isEmpty())')
         self.shared(entities)
-        self.assertIn('repository.refine(route,entity)', entities)
+        self.assertIn('repository.details(route,entity)', entities)
+        self.assertIn('repository.refine(route,entity)', text)
         self.assertNotIn('submitSourceImport', entities)
+        self.assertNotIn('rows.preview(', entities)
+        self.assertNotIn('rows.addSource(', entities)
         self.assertNotIn('contentPadding=PaddingValues(SoundQ.spacing.gutter)', text)
         self.assertNotIn('SoundQSheet("Source details"', text)
         self.assertNotIn('SoundQSheet("Song evidence"', text)

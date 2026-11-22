@@ -137,8 +137,8 @@ class DiscoveryJourneyTest {
             compose.waitUntil(8000){compose.onAllNodesWithText("Cloud song").fetchSemanticsNodes().isNotEmpty()}
             assertBadge("Cloud song","SoundCloud","soundcloud")
             releaseYouTube.countDown()
-            compose.waitUntil(8000){compose.onAllNodesWithContentDescription("View YouTube results").fetchSemanticsNodes().isNotEmpty()}
-            compose.onNodeWithContentDescription("View YouTube results").assertIsDisplayed().performClick()
+            compose.waitUntil(8000){app.graph.discovery.state.value.results?.rows?.size==2}
+            compose.onNodeWithTag("discover-list").performScrollToNode(hasText("Video song") and hasClickAction())
             assertBadge("Video song","YouTube","youtube")
             if(InstrumentationRegistry.getArguments().getString("discoverCaptures")=="true") {
                 val frame=checkNotNull(instrumentation.uiAutomation.takeScreenshot())
@@ -271,7 +271,7 @@ class DiscoveryJourneyTest {
             assertEquals(listOf("https://www.youtube.com/watch?v=SQPreview01"),previewUrls.toList())
             compose.onNodeWithContentDescription("Close Import source").performClick()
             compose.onNode(spinner,useUnmergedTree=true).assertIsDisplayed()
-            compose.onNodeWithContentDescription("View SoundCloud results").assertIsDisplayed().performClick()
+            compose.onNodeWithTag("discover-list").performScrollToNode(hasText("Late source fixture") and hasClickAction())
             compose.onNodeWithText("Late source fixture").assertIsDisplayed().performClick()
             val model=compose.runOnIdle {ViewModelProvider(compose.activity)[ProductViewModel::class.java]}
             compose.waitUntil(8000){model.playback.value.let {it.title=="Late source fixture"&&it.isPlaying&&it.positionMs>0}}

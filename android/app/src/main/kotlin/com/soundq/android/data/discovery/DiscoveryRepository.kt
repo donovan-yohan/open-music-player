@@ -14,7 +14,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import java.time.Instant
 
 /** Owns source reads and disposable inspection capabilities, never an intake/player. */
-class DiscoveryRepository(private val session:AccountSession,private val api:SoundQApi,historyDirectory:java.io.File?=null,private val now:()->Instant={Instant.now()},private val radarAdmitted:Boolean=false) {
+class DiscoveryRepository(private val session:AccountSession,private val api:SoundQApi,historyDirectory:java.io.File?=null,private val now:()->Instant={Instant.now()},private val radarAdmitted:Boolean=false,private val unifiedSearch:Boolean=false) {
     private val radarMutable=MutableStateFlow(RadarState(if(radarAdmitted)RadarPhase.Idle else RadarPhase.Held))
     val radar:StateFlow<RadarState> = radarMutable
     private val radarInvalidationMutable=MutableStateFlow(0L)
@@ -32,37 +32,69 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
         }
         radarRead=null;radarAction=null;radarMutable.value=radarMutable.value.copy(finding=false,phase=if(!radarAdmitted)RadarPhase.Held else if(radarMutable.value.phase==RadarPhase.Failed)RadarPhase.Failed else if(radarMutable.value.page!=null)RadarPhase.Ready else RadarPhase.Idle)
     }
-    private val mutable=MutableStateFlow(DiscoveryState())
+    private val defaultType=if(unifiedSearch)DiscoveryResultType.All else DiscoveryResultType.Song
+    private val catalogTypes=listOf(DiscoveryResultType.Artist,DiscoveryResultType.Album)
+    private val mutable=MutableStateFlow(DiscoveryState(resultType=defaultType))
     val state:StateFlow<DiscoveryState> = mutable
     private var view:DiscoveryView?=null
     private var owner:AccountScope?=null
-    // One draft incarnation owns up to two independent search lanes (or one link
-    // resolution). The rendered StateFlow is only the selected lane's projection.
+    // A unified draft owns one admission with four peer reads, or one URL resolution.
+    // Legacy source/grouped callers can still exercise their explicit wire contract.
     private data class SearchLane(
         val request:DiscoverySearchRequest?=null,
         val phase:DiscoveryPhase=DiscoveryPhase.Idle,
         val results:DiscoveryResults?=null,
         val error:SafeFailure.Reason?=null,
         val pendingProviders:Boolean=false,
-        val providerFailure:SafeFailure.Reason?=null
+        val providerFailure:SafeFailure.Reason?=null,
+        val catalog:Map<DiscoveryResultType,DiscoveryCatalogStatus> = emptyMap(),
+        val catalogOffsets:Map<DiscoveryResultType,Int> = emptyMap(),
+        val catalogRetries:Map<DiscoveryResultType,DiscoverySearchRequest> = emptyMap()
     ) {
-        fun afterCancellation()=if(phase==DiscoveryPhase.Ready)copy(request=null,pendingProviders=false) else SearchLane()
+        val active get()=request!=null||catalogRetries.isNotEmpty()
+        fun cancelReads() {request?.calls?.cancel();catalogRetries.values.forEach {it.calls.cancel()}}
+        fun hasPrimaryCatalogWork(statuses:Map<DiscoveryResultType,DiscoveryCatalogStatus> = catalog)=
+            statuses.any {(type,status)->status==DiscoveryCatalogStatus.Loading&&type !in catalogRetries}
+        fun afterCancellation(keepRetries:Boolean=false):SearchLane {
+            if(catalog.isEmpty())return if(phase==DiscoveryPhase.Ready)copy(request=null,pendingProviders=false) else SearchLane()
+            if(!active)return this
+            val retainedRetries=if(keepRetries)catalogRetries else emptyMap()
+            if(results==null&&retainedRetries.isEmpty())return SearchLane()
+            val sourceAvailable=results?.providers?.any {it.status=="ok"}==true
+            return copy(request=null,phase=if(sourceAvailable)DiscoveryPhase.Ready else DiscoveryPhase.Failed,
+                error=if(sourceAvailable)null else SafeFailure.Reason.ServiceUnavailable,pendingProviders=false,
+                catalog=catalog.mapValues {(type,status)->if(status==DiscoveryCatalogStatus.Loading&&type !in retainedRetries)DiscoveryCatalogStatus.Unavailable() else status},
+                catalogRetries=retainedRetries)
+        }
     }
     private class PriorSearch(val state:DiscoveryState,val lanes:Map<SearchFamily,SearchLane>)
     private val lanes=mutableMapOf<SearchFamily,SearchLane>()
     private var detailsIncarnation=Any()
     private val history=mutableListOf<PriorSearch>()
     private val recentHistory=DiscoveryHistory(historyDirectory)
-    private fun selected(state:DiscoveryState=mutable.value)=state.draft.family(state.resultType)
+    private fun selected(state:DiscoveryState=mutable.value)=state.draft.family(state.resultType,unifiedSearch)
     private fun project(state:DiscoveryState=mutable.value) {
         val lane=lanes[selected(state)] ?: SearchLane()
-        mutable.value=state.copy(phase=lane.phase,results=lane.results,error=lane.error,pendingProviders=lane.pendingProviders)
+        val next=state.copy(phase=lane.phase,results=lane.results,error=lane.error,pendingProviders=lane.pendingProviders,catalog=lane.catalog,searchActive=lane.active)
+        mutable.value=if(lane.catalog.isEmpty()||state.resultType==DiscoveryResultType.Song)next else {
+            val all=state.resultType==DiscoveryResultType.All
+            val families=if(all)lane.catalog.values else listOfNotNull(lane.catalog[state.resultType])
+            val pending=families.any {it==DiscoveryCatalogStatus.Loading}||all&&lane.pendingProviders
+            val available=families.any {it is DiscoveryCatalogStatus.Ready}||all&&lane.phase==DiscoveryPhase.Ready
+            val phase=when {
+                next.items.isNotEmpty()->DiscoveryPhase.Ready
+                pending->DiscoveryPhase.Loading
+                available->DiscoveryPhase.Ready
+                else->DiscoveryPhase.Failed
+            }
+            next.copy(phase=phase,error=if(phase==DiscoveryPhase.Failed)SafeFailure.Reason.ServiceUnavailable else null,pendingProviders=pending)
+        }
     }
     private fun put(family:SearchFamily,lane:SearchLane) {
         lanes[family]=lane
         if(family==selected())project()
     }
-    private fun cancelSearches() {lanes.values.forEach {it.request?.calls?.cancel()};lanes.clear()}
+    private fun cancelSearches() {lanes.values.forEach {it.cancelReads()};lanes.clear()}
     private fun suspendSearches() {
         val retained=lanes.mapValues {(_,lane)->lane.afterCancellation()}.filterValues {it.phase!=DiscoveryPhase.Idle}
         cancelSearches();lanes.putAll(retained)
@@ -79,13 +111,22 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
     }
     @Synchronized fun current(candidate:DiscoveryView)=view===candidate&&session.discoveryCurrent(candidate.scope)
     @Synchronized fun close(candidate:DiscoveryView) {if(view===candidate){view=null;detailsIncarnation=Any();cancelRadar();radarLanding=null;suspendSearches()}}
-    @Synchronized fun retire() {view=null;owner=null;cancelSearches();detailsIncarnation=Any();history.clear();mutable.value=DiscoveryState();radarRead=null;radarLanding=null;radarVisitRead=null;radarAction=null;radarMutable.value=RadarState(if(radarAdmitted)RadarPhase.Idle else RadarPhase.Held)}
+    @Synchronized fun retire() {view=null;owner=null;cancelSearches();detailsIncarnation=Any();history.clear();mutable.value=DiscoveryState(resultType=defaultType);radarRead=null;radarLanding=null;radarVisitRead=null;radarAction=null;radarMutable.value=RadarState(if(radarAdmitted)RadarPhase.Idle else RadarPhase.Held)}
     private fun ownsSearch(request:DiscoverySearchRequest)=
-        view===request.view&&mutable.value.draft===request.draft&&lanes[request.family]?.request===request
+        view===request.view&&mutable.value.draft===request.draft&&lanes[request.family]?.let {lane->
+            val retry=request.catalogRetry
+            (if(retry==null)lane.request else lane.catalogRetries[retry])===request
+        }==true
     @Synchronized internal fun abandonSearch(request:DiscoverySearchRequest) {
         if(!ownsSearch(request))return
         request.calls.cancel()
-        val retained=lanes.getValue(request.family).afterCancellation()
+        val lane=lanes.getValue(request.family)
+        val retry=request.catalogRetry
+        if(retry!=null) {
+            put(request.family,lane.copy(catalog=lane.catalog+(retry to DiscoveryCatalogStatus.Unavailable()),catalogRetries=lane.catalogRetries-retry))
+            return
+        }
+        val retained=lane.afterCancellation(keepRetries=true)
         if(request.family==selected()) {
             lanes[request.family]=retained
             project(mutable.value.copy(inspected=null))
@@ -93,25 +134,52 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
     }
     @Synchronized fun edit(candidate:DiscoveryView,text:String) {
         if(!current(candidate))return
-        cancelRadar();cancelSearches();detailsIncarnation=Any();mutable.value=DiscoveryState(draft=DiscoveryDraft(text),resultType=mutable.value.resultType,canBack=history.isNotEmpty(),recent=mutable.value.recent)
+        if(unifiedSearch&&mutable.value.draft.text==text)return
+        cancelRadar();cancelSearches();detailsIncarnation=Any();mutable.value=DiscoveryState(draft=DiscoveryDraft(text),resultType=if(unifiedSearch)defaultType else mutable.value.resultType,canBack=history.isNotEmpty(),recent=mutable.value.recent)
     }
-    @Synchronized fun claimSearch(candidate:DiscoveryView,expected:DiscoveryDraft):DiscoverySearchRequest? {
-        if(!current(candidate)||mutable.value.draft!==expected||mutable.value.phase==DiscoveryPhase.Loading)return null
+    @Synchronized fun claimSearch(candidate:DiscoveryView,expected:DiscoveryDraft,retry:Boolean=false):DiscoverySearchRequest? {
+        val state=mutable.value
+        if(!current(candidate)||state.draft!==expected)return null
+        val unavailable=state.catalog[state.resultType] as? DiscoveryCatalogStatus.Unavailable
+        if(retry&&unavailable!=null)return claimCatalogRetry(candidate,expected,state.resultType,unavailable)
+        if(state.phase==DiscoveryPhase.Loading||unifiedSearch&&lanes[selected()]?.let {it.active||!retry&&it.phase!=DiscoveryPhase.Idle}==true)return null
         val q=expected.text.trim()
         if(q.isEmpty()||q.toByteArray(Charsets.UTF_8).size>512){mutable.value=mutable.value.copy(invalidQuery=true);return null}
         val recent=recentHistory.add(session.endpoint.identity,candidate.scope.accountId,q)
-        return startSearch(candidate,mutable.value.copy(recent=recent))
+        return startSearch(candidate,state.copy(recent=recent))
     }
     private fun startSearch(candidate:DiscoveryView,state:DiscoveryState):DiscoverySearchRequest {
         val family=selected(state)
         val request=DiscoverySearchRequest(candidate,state.draft,family)
-        lanes[family]?.request?.calls?.cancel()
-        lanes[family]=SearchLane(request,DiscoveryPhase.Loading,pendingProviders=family==SearchFamily.Song)
+        lanes[family]?.cancelReads()
+        lanes[family]=SearchLane(request,DiscoveryPhase.Loading,pendingProviders=family==SearchFamily.Song||family==SearchFamily.Unified,
+            catalog=if(family==SearchFamily.Unified)catalogTypes.associateWith {DiscoveryCatalogStatus.Loading} else emptyMap())
         detailsIncarnation=Any()
         project(state.copy(inspected=null,expired=false,invalidQuery=false))
         return request
     }
     suspend fun search(candidate:DiscoveryView,expected:DiscoveryDraft) {claimSearch(candidate,expected)?.let {search(it)}}
+    @Synchronized internal fun claimCatalogRetry(candidate:DiscoveryView,draft:DiscoveryDraft,type:DiscoveryResultType,expected:DiscoveryCatalogStatus.Unavailable):DiscoverySearchRequest? {
+        val state=mutable.value
+        if(!unifiedSearch||!current(candidate)||state.draft!==draft||type.catalogKind==null||
+            state.resultType!=DiscoveryResultType.All&&state.resultType!=type)return null
+        val lane=lanes[SearchFamily.Unified] ?: return null
+        if(lane.catalog[type]!==expected)return null
+        val request=DiscoverySearchRequest(candidate,draft,SearchFamily.Unified,type)
+        // Only this unavailable family gets new work. Keep the accepted query and action incarnation.
+        put(SearchFamily.Unified,lane.copy(catalog=lane.catalog+(type to DiscoveryCatalogStatus.Loading),catalogRetries=lane.catalogRetries+(type to request)))
+        return request
+    }
+    @Synchronized fun claimCatalogContinuation(candidate:DiscoveryView,draft:DiscoveryDraft,type:DiscoveryResultType,expected:DiscoveryCatalogStatus.Ready):DiscoverySearchRequest? {
+        val state=mutable.value
+        if(!unifiedSearch||!current(candidate)||state.draft!==draft||state.resultType!=type||!expected.hasMore||type.catalogKind==null)return null
+        val lane=lanes[SearchFamily.Unified] ?: return null
+        if(lane.active||lane.catalog[type]!==expected)return null
+        val offset=lane.catalogOffsets[type]?.takeIf {it in 1..1000} ?: return null
+        val request=DiscoverySearchRequest(candidate,draft,SearchFamily.Unified,type,offset)
+        put(SearchFamily.Unified,lane.copy(request=request))
+        return request
+    }
     suspend fun search(request:DiscoverySearchRequest) {
         val job=currentCoroutineContext()[Job]!!
         val candidate=request.view;val scope=candidate.scope
@@ -125,6 +193,7 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
         }
         try {
             val query=request.draft.text.trim()
+            fun emptyResults()=if(request.family==SearchFamily.Unified)DiscoveryResults.unified(query) else DiscoveryResults(emptyList(),query=query)
             when(request.family) {
                 SearchFamily.Link,SearchFamily.Grouped -> {
                     val response=searchResult {
@@ -141,8 +210,8 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
                         )
                     }
                 }
-                SearchFamily.Song -> coroutineScope {
-                    for(provider in SourceProvider.entries)launch(Dispatchers.IO) {
+                SearchFamily.Song,SearchFamily.Unified -> coroutineScope {
+                    if(request.catalogOnly==null)for(provider in SourceProvider.entries)launch(Dispatchers.IO) {
                         val worker=currentCoroutineContext()[Job]!!
                         val response=searchResult {
                             searchCall(request) {api.discoverySearch(scope,query,::valid,provider=provider,calls=request.calls)}
@@ -153,31 +222,61 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
                             val duplicateSession=received?.selection?.id?.let {id->previous?.batches?.any {it.selection?.id==id}}==true
                             val batch=if(received!=null&&!duplicateSession)received else
                                 SourceResults(query,emptyList(),null,listOf(ProviderObservation(provider,"failed")))
-                            val results=DiscoveryResults(previous?.batches.orEmpty()+batch,previous?.identity ?: Any())
+                            val results=(previous ?: emptyResults()).append(batch)
                             val pending=results.batches.size<SourceProvider.entries.size
                             val unavailable=!pending&&results.providers.none {it.status=="ok"}
                             val failure=lane.providerFailure ?: response.exceptionOrNull()?.let(::searchFailure)
                                 ?: if(duplicateSession)SafeFailure.Reason.InvalidResponse else null
-                            SearchLane(if(pending)request else null,when {
+                            lane.copy(request=if(pending||lane.hasPrimaryCatalogWork())request else null,phase=when {
                                 unavailable->DiscoveryPhase.Failed
                                 !pending||results.rows.isNotEmpty()->DiscoveryPhase.Ready
                                 else->DiscoveryPhase.Loading
-                            },results,if(unavailable)failure ?: SafeFailure.Reason.ServiceUnavailable else null,pending,failure)
+                            },results=results,error=if(unavailable)failure ?: SafeFailure.Reason.ServiceUnavailable else null,
+                                pendingProviders=pending,providerFailure=failure)
+                        }
+                    }
+                    if(request.family==SearchFamily.Unified)for(type in request.catalogOnly?.let(::listOf) ?: catalogTypes)launch(Dispatchers.IO) {
+                        val worker=currentCoroutineContext()[Job]!!
+                        val offset=request.catalogOffset
+                        val response=searchResult {searchCall(request) {api.discoveryCatalog(scope,query,type,request.calls,::valid,offset)}}
+                        settleSearch(request,worker) {lane->
+                            val page=response.getOrNull()
+                            val next=offset+(page?.rows?.size ?: 0)
+                            val status=when {
+                                page!=null->DiscoveryCatalogStatus.Ready(page.hasMore&&next in 1..1000)
+                                offset>0->DiscoveryCatalogStatus.Ready(hasMore=true,continuationFailed=true)
+                                else->DiscoveryCatalogStatus.Unavailable()
+                            }
+                            val catalog=lane.catalog+(type to status)
+                            val results=when {
+                                page==null->lane.results
+                                offset>0->lane.results?.continueCatalog(page)
+                                else->(lane.results ?: emptyResults()).append(page)
+                            }
+                            val retry=request.catalogRetry
+                            val primary=when {
+                                retry!=null->lane.request
+                                lane.pendingProviders||lane.hasPrimaryCatalogWork(catalog)->request
+                                else->null
+                            }
+                            lane.copy(request=primary,results=results,catalog=catalog,
+                                catalogOffsets=if(page==null)lane.catalogOffsets else lane.catalogOffsets+(type to next),
+                                catalogRetries=if(retry==null)lane.catalogRetries else lane.catalogRetries-retry)
                         }
                     }
                 }
             }
         } finally {abandonSearch(request)}
     }
-    private inline fun searchResult(load:()->SourceResults):Result<SourceResults> = try {Result.success(load())}
+    private inline fun <T> searchResult(load:()->T):Result<T> = try {Result.success(load())}
         catch(e:CancellationException){throw e}
         catch(e:Exception){Result.failure(e)}
     private fun searchFailure(error:Throwable)=(error as? SafeFailure)?.reason ?: SafeFailure.Reason.Network
 
-    private fun settleSearch(request:DiscoverySearchRequest,job:Job,response:Result<SourceResults>,prepare:(SearchLane)->SearchLane) {
+    private fun settleSearch(request:DiscoverySearchRequest,job:Job,response:Result<SourceResults>?=null,prepare:(SearchLane)->SearchLane) {
         val scope=request.view.scope
         job.ensureActive()
-        request.beforePublication?.invoke(response)
+        if(response!=null)request.beforePublication?.invoke(response)
         while(true) {
             val saving=synchronized(this) {
                 job.ensureActive()
@@ -216,7 +315,7 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
     }
     private fun failRetiredSearch(request:DiscoverySearchRequest,job:Job) {
         job.ensureActive()
-        request.calls.cancel()
+        lanes.getValue(request.family).cancelReads()
         job.ensureActive()
         lanes[request.family]=SearchLane(phase=DiscoveryPhase.Failed,error=SafeFailure.Reason.Retired)
         if(request.family==selected())project(mutable.value.copy(inspected=null,expired=false))
@@ -228,11 +327,11 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
         if(continuation.isActive)continuation.resumeWith(runCatching(load))
     }
     @Synchronized fun selectType(candidate:DiscoveryView,type:DiscoveryResultType):DiscoverySearchRequest? {
-        if(!current(candidate)||type==mutable.value.resultType)return null
+        if(!current(candidate)||type==mutable.value.resultType||unifiedSearch&&mutable.value.draft.source!=null)return null
         val next=mutable.value.copy(resultType=type,inspected=null,expired=false)
         detailsIncarnation=Any()
         // A tab change neither re-records the query nor replaces another lane's work.
-        if(lanes.isNotEmpty()&&selected(next) !in lanes)return startSearch(candidate,next)
+        if(!unifiedSearch&&lanes.isNotEmpty()&&selected(next) !in lanes)return startSearch(candidate,next)
         project(next)
         return null
     }
@@ -245,20 +344,29 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
     }
     @Synchronized fun details(candidate:DiscoveryView,entity:DiscoveryEntity):DiscoveryDetails? {
         val results=mutable.value.results ?: return null
-        if(!current(candidate)||mutable.value.phase!=DiscoveryPhase.Ready||results.entities.none {it===entity})return null
+        if(!current(candidate)||mutable.value.phase!=DiscoveryPhase.Ready||!visibleEntity(entity))return null
         val target=entity.catalogTarget ?: return null
         val incarnation=detailsIncarnation
-        return DiscoveryDetails(candidate.scope,entity,target) {synchronized(this){current(candidate)&&detailsIncarnation===incarnation&&mutable.value.results===results}}
+        // Preserve entered browse reads during an in-flight bearer save, without granting
+        // new wire dispatch or making a failed save/replacement the same account lifetime.
+        return DiscoveryDetails(candidate.scope,entity,target) {synchronized(this){
+            (if(unifiedSearch)view===candidate&&session.discoveryReadState(candidate.scope)!=DiscoveryReadState.Retired else current(candidate))&&detailsIncarnation===incarnation&&
+            (if(unifiedSearch)mutable.value.results?.identity===results.identity&&visibleEntity(entity) else mutable.value.results===results)}}
+    }
+    private fun visibleEntity(entity:DiscoveryEntity)=mutable.value.let {state->
+        (!unifiedSearch||state.resultType==DiscoveryResultType.All||state.resultType==entity.type)&&state.results?.entities?.any {it===entity}==true
     }
     @Synchronized fun refine(candidate:DiscoveryView,entity:DiscoveryEntity):DiscoveryDraft? {
-        if(!current(candidate)||mutable.value.results?.entities?.none {it===entity}!=false)return null
+        if(!current(candidate)||!visibleEntity(entity)||unifiedSearch&&mutable.value.draft.text.trim()==entity.title)return null
+        val type=mutable.value.resultType
         rememberSearch()
         edit(candidate,entity.title)
+        if(unifiedSearch)mutable.value=mutable.value.copy(resultType=type)
         return mutable.value.draft
     }
     private fun rememberSearch() {
         history+=PriorSearch(mutable.value.copy(inspected=null),lanes.mapValues {(_,lane)->
-            if(lane.request!=null)lane.afterCancellation() else lane
+            if(lane.active)lane.afterCancellation() else lane
         })
     }
     @Synchronized fun back(candidate:DiscoveryView):Boolean {
@@ -283,7 +391,7 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
         val incarnation=detailsIncarnation
         return {synchronized(this) {
             view===candidate&&(if(preview)session.previewOwnerCurrent(candidate.scope) else session.discoveryCurrent(candidate.scope))&&detailsIncarnation===incarnation&&
-                mutable.value.let {it.phase==DiscoveryPhase.Ready&&it.resultType==DiscoveryResultType.Song&&it.results?.batches?.any {batch->batch===results}==true}&&
+                mutable.value.let {it.phase==DiscoveryPhase.Ready&&it.resultType in setOf(DiscoveryResultType.All,DiscoveryResultType.Song)&&it.results?.batches?.any {batch->batch===results}==true}&&
                 results.rows.any {it===row}
         }}
     }
@@ -367,6 +475,7 @@ class DiscoveryRepository(private val session:AccountSession,private val api:Sou
     }
     @Synchronized fun inspect(candidate:DiscoveryView,row:SourceCandidate):SourceChoice? {
         if(!current(candidate)||mutable.value.phase!=DiscoveryPhase.Ready)return null
+        if(unifiedSearch&&mutable.value.resultType !in setOf(DiscoveryResultType.All,DiscoveryResultType.Song))return null
         val batch=mutable.value.results?.batches?.firstOrNull {batch->batch.rows.any {it===row}} ?: return null
         val selection=batch.selection ?: return null
         if(!selection.expires.isAfter(now())) {mutable.value=mutable.value.copy(expired=true);return null}

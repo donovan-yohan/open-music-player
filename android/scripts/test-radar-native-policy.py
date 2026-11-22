@@ -39,7 +39,8 @@ def block(text, anchor):
 
 # Unchanged domain bodies. No serialization runtime is needed for owner tests.
 for p in ['data/AccountSession.kt', 'data/Contracts.kt', 'data/catalog/Catalog.kt',
-          'data/discovery/Discovery.kt', 'data/discovery/DiscoveryRepository.kt', 'data/imports/Imports.kt']:
+          'data/discovery/Discovery.kt', 'data/discovery/DiscoveryRepository.kt',
+          'data/discovery/DiscoveryShortlist.kt', 'data/imports/Imports.kt']:
     emit(Path(p).name, source(p).replace('import kotlinx.serialization.json.*\n', ''))
 radar = source('data/discovery/ReleaseRadar.kt')
 emit('ReleaseRadar.kt', radar[:radar.index('/** Strict Go wire projection.')].replace('import kotlinx.serialization.json.*\n', ''))
@@ -177,6 +178,7 @@ class SoundQApi(val session:AccountSession) {
  var feed:(()->Boolean)->RadarPage={error("unconfigured synthetic feed")}
  var membership:(()->Boolean)->Boolean={false}
  var results:SourceResults?=null
+ var catalogEntities=emptyList<DiscoveryEntity>();val catalogReads=java.util.concurrent.ConcurrentLinkedQueue<DiscoveryResultType>()
  fun releaseRadar(scope:AccountScope,valid:()->Boolean):RadarPage {check(session.remoteCurrent(scope)&&valid());reads++;return feed(valid)}
  fun radarMembership(scope:AccountScope,id:com.soundq.android.data.catalog.RecordingMbid,valid:()->Boolean):Boolean {check(session.remoteCurrent(scope)&&valid());memberships++;return membership(valid)}
  internal fun discoverySearch(scope:AccountScope,q:String,valid:()->Boolean,grouped:Boolean=false,provider:SourceProvider?=null,calls:DiscoveryCalls?=null):SourceResults {
@@ -184,6 +186,9 @@ class SoundQApi(val session:AccountSession) {
   return if(provider==null)result else SourceResults(q,result.rows.filter {it.provider==provider},result.selection.takeIf {result.rows.any {row->row.provider==provider}},listOf(ProviderObservation(provider,"ok")))
  }
  internal fun resolveSource(scope:AccountScope,s:ImportSource,calls:DiscoveryCalls?=null,valid:()->Boolean):SourceResults {check(session.remoteCurrent(scope)&&valid());resolves++;return results!!}
+ internal fun discoveryCatalog(scope:AccountScope,q:String,type:DiscoveryResultType,calls:DiscoveryCalls,valid:()->Boolean,offset:Int):DiscoveryCatalogPage {
+  check(offset==0&&session.remoteCurrent(scope)&&valid());catalogReads.add(type);return DiscoveryCatalogPage(catalogEntities.filter {it.type==type},false)
+ }
 }
 ''')
 emit('Lifecycle.kt', '''package androidx.lifecycle
@@ -432,13 +437,13 @@ fun main(){
   val artist=DiscoveryEntity(DiscoveryResultType.Artist,"11111111-1111-4111-8111-111111111111","Exact artist","")
   val album=DiscoveryEntity(DiscoveryResultType.Album,"22222222-2222-4222-8222-222222222222","Exact album","")
   f.api.results=SourceResults(request.draft.text,listOf(candidate),selection,emptyList())
+  f.api.catalogEntities=listOf(artist,album)
   kotlinx.coroutines.runBlocking {r.search(request)};val choice=r.inspect(v,candidate)!!;check(r.preview(v,choice){})
-  val grouped=r.selectType(v,DiscoveryResultType.Artist)!!
-  f.api.results=SourceResults(request.draft.text,listOf(candidate),selection,emptyList(),listOf(artist,album))
-  kotlinx.coroutines.runBlocking {r.search(grouped)};check(r.details(v,artist)!!.valid())
+  check(r.selectType(v,DiscoveryResultType.Artist)==null);check(r.details(v,artist)!!.valid())
   val refined=r.refine(v,artist)!!;check(refined.text=="Exact artist"&&!choice.valid());check(r.back(v))
   r.selectType(v,DiscoveryResultType.Album);check(r.details(v,album)!=null)
   r.edit(v,"https://youtu.be/synthetic");kotlinx.coroutines.runBlocking {r.search(v,r.state.value.draft)};check(f.api.resolves==1)
+  check(f.api.catalogReads.groupingBy {it}.eachCount()==mapOf(DiscoveryResultType.Artist to 1,DiscoveryResultType.Album to 1))
   check(r.back(v));check(r.radar.value.page===p)
   f.close();println("canonical hidden-row Find/search/inspect/Preview/Artist/Album/refine/URL owners PASS")
  }

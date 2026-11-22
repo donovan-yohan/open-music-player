@@ -7,6 +7,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.soundq.android.data.catalog.RecordingMbid
 import com.soundq.android.data.discovery.*
 import com.soundq.android.data.imports.ImportSource
 import com.soundq.android.data.imports.ImportView
@@ -92,14 +93,17 @@ internal class DiscoveryRowActions(private val model:ProductViewModel,private va
         else if(!model.graph.imports.prepareDiscoverySource(intake,choice))feedback("Could not add song. Check Imports.")
     }
 
-    fun addRecording(view:DiscoveryView,intake:ImportView,song:RadarSong,current:()->Boolean) {
+    fun addRecording(view:DiscoveryView,intake:ImportView,song:RadarSong,current:()->Boolean) =
+        addRecording(view,intake,song,song.recording,current)
+
+    fun addRecording(view:DiscoveryView,intake:ImportView,row:Any,recording:RecordingMbid,current:()->Boolean) {
         if(!current()||adding||model.imports.value.pending)return
-        val request=Pending(song).also {resolvingAdd=it}
+        val request=Pending(row).also {resolvingAdd=it}
         request.job=work.launch(start=CoroutineStart.UNDISPATCHED) {
             val active=coroutineContext.job
             fun valid()=active.isActive&&current()
             try {
-                val source=withContext(Dispatchers.IO) {if(valid())model.graph.api.recordingSource(view.scope,song.recording,::valid) else null}
+                val source=withContext(Dispatchers.IO) {if(valid())model.graph.api.recordingSource(view.scope,recording,::valid) else null}
                 if(!valid()||resolvingAdd!==request)return@launch
                 if(source==null)feedback("Source unavailable for import")
                 // The independent route guard survives this read's successful completion.
