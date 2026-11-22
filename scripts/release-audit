@@ -202,7 +202,7 @@ def classify_pr(pr: dict[str, Any], checks: CheckSummary, base: str, merge_commi
         return Verdict("blocked", 1, reasons)
 
     reasons.append(f"PR #{pr['number']} is open, non-draft, mergeable, and checks are green.")
-    return Verdict("candidate ready", 0, reasons)
+    return Verdict("candidate ready", 1, reasons)
 
 
 def render_text(payload: dict[str, Any]) -> None:
@@ -266,7 +266,7 @@ def self_test() -> int:
         "main",
         False,
     )
-    if ready.status != "candidate ready" or ready.exit_status != 0:
+    if ready.status != "candidate ready" or ready.exit_status != 1:
         failures.append(f"ready PR classified as {ready}")
 
     blocked = classify_pr(
@@ -316,10 +316,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="exit nonzero when verdict is not shipped to main or candidate ready",
+        help="require --pr and exit zero only for a verified merge into the target branch",
     )
     parser.add_argument("--self-test", action="store_true", help="run local classifier tests")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.strict and args.pr is None and not args.self_test:
+        parser.error("--strict requires --pr")
+    return args
 
 
 def main(argv: list[str]) -> int:
@@ -341,7 +344,7 @@ def main(argv: list[str]) -> int:
         pr = pr_view(repo, args.pr)
         check_summary = summarize_checks(pr.get("statusCheckRollup") or [])
         merge_commit = (pr.get("mergeCommit") or {}).get("oid") or ""
-        verdict = classify_pr(pr, check_summary, args.base, is_ancestor(merge_commit, args.base))
+        verdict = classify_pr(pr, check_summary, args.base, fetch_status == "fetched" and is_ancestor(merge_commit, args.base))
         payload.update(
             {
                 "pr": pr,
@@ -352,7 +355,7 @@ def main(argv: list[str]) -> int:
     else:
         payload["verdict"] = {
             "status": "default branch audited",
-            "exit_status": 0,
+            "exit_status": 1,
             "reasons": [f"origin/{args.base} head was inspected."],
         }
 
