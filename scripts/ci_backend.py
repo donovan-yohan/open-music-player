@@ -67,6 +67,7 @@ REQUIRED = {
     "internal/stems": {"TestQueueAgainstRedisEnqueuesDedupesAndBackpressures"},
 }
 COVER_ROW = re.compile(r"(\S+\.go):(\d+)\.(\d+),(\d+)\.(\d+) ([0-9]+) ([0-9]+)")
+COVER_SUMMARY = re.compile(r"coverage: (\d+\.\d% of statements|\[no statements\])( \[no tests to run\])?")
 
 
 def require(ok, message):
@@ -100,7 +101,7 @@ def go_inventory():
     source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     module = go("list", "-m")
     rows = [line.split() for line in go(
-        "list", "-f", "{{.ImportPath}} {{if or .TestGoFiles .XTestGoFiles}}test{{else}}empty{{end}}", "./...",
+        "list", "-race", "-f", "{{.ImportPath}} {{if or .TestGoFiles .XTestGoFiles}}test{{else}}empty{{end}}", "./...",
     ).splitlines()]
     packages = dict(rows)
     require(len(rows) == len(packages), "duplicate Go package in go list")
@@ -134,6 +135,7 @@ def list_api_tests(pkg, env):
 def read_tests(lines, group, module, selected=None):
     starts, ends = set(), {}
     running, terminal = set(), {}
+    summaries = {}
     for line in lines:
         event = json.loads(line)
         action, pkg, case = event["Action"], event.get("Package"), event.get("Test")
@@ -154,6 +156,24 @@ def read_tests(lines, group, module, selected=None):
         elif action == "start":
             require(pkg not in starts, f"duplicate Go package start: {pkg}")
             starts.add(pkg)
+        elif action == "output":
+            # Go 1.25.3 reports package coverage separately from the merged
+            # profile, including for packages with no test files. Use the
+            # package summary, not arbitrary coverage text from individual tests.
+            fields = event["Output"].rstrip("\n").split("\t")
+            if len(fields) >= 3 and fields[1] == pkg:
+                if fields == ["?   ", pkg, "[no test files]"] and group[pkg] == "empty":
+                    summary = (False, False)
+                elif (len(fields) == 4 and
+                      (fields[0] == "ok  " or (fields[0] == fields[2] == "" and group[pkg] == "empty"))):
+                    match = COVER_SUMMARY.fullmatch(fields[3])
+                    if match is None:
+                        raise ValueError(f"invalid Go coverage summary: {pkg}")
+                    summary = (match[1] != "[no statements]", bool(match[2]))
+                else:
+                    continue
+                require(pkg not in summaries, f"duplicate Go package summary: {pkg}")
+                summaries[pkg] = summary
         elif action in ("pass", "skip", "fail"):
             require(pkg in starts, f"Go package terminal without start: {pkg}")
             ends[pkg] = action
@@ -164,14 +184,18 @@ def read_tests(lines, group, module, selected=None):
     if selected is not None:
         require(len(group) == 1 and {case for _, case in terminal if "/" not in case} == set(selected),
                 "API test terminals do not match the complete shard selection")
+    require(summaries.keys() == group.keys(), "missing Go package summary")
     for pkg, kind in group.items():
         if kind == "test":
-            require(any(owner == pkg and result == "pass" for (owner, _), result in terminal.items()),
-                    f"no passing tests in {pkg}")
+            results = [result for (owner, _), result in terminal.items() if owner == pkg]
+            # Without a selector, Go's explicit no-tests result covers
+            # benchmark-only packages. It is not an all-skipped test run.
+            no_cases = selected is None and not results and summaries[pkg][1]
+            require("pass" in results or no_cases, f"no passing tests in {pkg}")
         for case in REQUIRED.get(pkg.removeprefix(module + "/"), ()):
             if selected is None or case.split("/", 1)[0] in selected:
                 require(terminal.get((pkg, case)) == "pass", f"fixture test did not pass: {pkg}/{case}")
-    return terminal
+    return terminal, {pkg for pkg, (coverable, _) in summaries.items() if coverable}
 
 
 def read_cover(lines, group):
@@ -196,9 +220,12 @@ def read_cover(lines, group):
 
 def validate(out, group, module, selected=None):
     with (out / "tests.jsonl").open() as lines:
-        tests = read_tests(lines, group, module, selected)
+        tests, coverable = read_tests(lines, group, module, selected)
     with (out / "coverage.out").open() as lines:
         coverage = read_cover(lines, group)
+    represented = {block[0].rsplit("/", 1)[0] for block, (statements, _) in coverage.items() if statements}
+    missing = coverable - represented
+    require(not missing, f"missing Go coverage for packages: {sorted(missing)}")
     return tests, coverage
 
 
@@ -315,6 +342,9 @@ def main():
             run(args.shard, args.directory.resolve())
         else:
             merge(args.directory, args.output, args.source)
+    except subprocess.TimeoutExpired as error:
+        # As with nonzero exits, never print argv or captured subprocess output.
+        sys.exit(f"backend CI command {error.cmd[0]} timed out after {error.timeout}s")
     except subprocess.CalledProcessError as error:
         # docker/psql argv can carry ephemeral credentials; don't print it.
         sys.exit(f"backend CI command {error.cmd[0]} exited {error.returncode}")

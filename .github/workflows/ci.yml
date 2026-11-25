@@ -147,7 +147,9 @@ jobs:
         run: go mod download
 
       - name: Test backend CI contracts
-        run: python3 -B ../scripts/test_ci_backend.py -v
+        run: |
+          python3 -B ../scripts/test_ci_backend.py -v
+          python3 -B ../scripts/test_ci_backend_fixtures.py -v
 
       - name: Run repository backend lint
         run: ../scripts/lint backend
@@ -551,17 +553,33 @@ jobs:
           # layers but do not write a cache. No registry or runtime token shim.
           OMP_SMOKE_CACHE_EXPORT: ${{ (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.minio-cache.outputs.cache-hit != 'true') && 'true' || 'false' }}
         run: |
+          compose=(docker compose -f docker-compose.local-low-memory.yml)
+          # PostgreSQL has no build dependency. Start it now, before the
+          # image-build join; the final Compose up still gates on health.
+          "${compose[@]}" up -d --no-build postgres &
+          postgres=$!
           (
             docker pull nginx:1.28-alpine
             scripts/smoke preview-proxy
+            # Populate the runner's Go cache without changing how the real
+            # playback probe is invoked. Yield CPU to the container builds.
+            cd backend
+            nice -n 10 go build -o /dev/null ./cmd/local-playback-smoke
           ) &
           preview=$!
           # Keep the large analyzer image in the runner's native Docker builder
           # rather than exporting and reloading it from the cache builder.
-          docker compose -f docker-compose.local-low-memory.yml build backend analyzer &
+          "${compose[@]}" build backend analyzer &
           app=$!
           status=0
           scripts/ci-smoke-storage-build || status=$?
+          wait "$postgres" || status=$?
+          # Only one Compose up at a time: both use the same project network.
+          # Bring storage up as soon as its own images are done, even while
+          # the analyzer image is still exporting.
+          if [[ "$status" == 0 ]]; then
+            "${compose[@]}" up -d --no-build minio minio-init || status=$?
+          fi
           wait "$app" || status=$?
           wait "$preview" || status=$?
           exit "$status"

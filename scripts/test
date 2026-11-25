@@ -57,7 +57,9 @@ prepare_client_native() {
   trap 'rm -rf "$native_build"' EXIT
   cmake -S "$ROOT/client/native/mix_renderer" -B "$native_build" -DCMAKE_BUILD_TYPE=Debug
   cmake --build "$native_build" -j 2
-  ctest --test-dir "$native_build" --output-on-failure
+  if [ "${1:-}" != "shard" ]; then
+    ctest --test-dir "$native_build" --output-on-failure
+  fi
   case "$(uname -s)" in
     Darwin) native_extension=dylib ;;
     Linux) native_extension=so ;;
@@ -65,8 +67,23 @@ prepare_client_native() {
   esac
   export SOUNDQ_NATIVE_MIX_LIBRARY="$native_build/libsoundq_mix.$native_extension"
   # Actual host/render/core, no OS audio platform or device access.
-  cmake -S "$ROOT/client/native/device_host" -B "$native_build/ffi-fake" \
-    -DCMAKE_BUILD_TYPE=Debug -DSQ_DEVICE_FFI_FAKE_ONLY=ON
+  local -a configure_fake=(cmake -S "$ROOT/client/native/device_host" -B "$native_build/ffi-fake"
+    -DCMAKE_BUILD_TYPE=Debug -DSQ_DEVICE_FFI_FAKE_ONLY=ON)
+  if [ "${1:-}" = "shard" ]; then
+    # Only configuration overlaps; both producers must settle before the
+    # fake-device build or any Flutter test can consume the host fixtures.
+    local status=0
+    native_ctest_pid=
+    trap 'if [ -n "$native_ctest_pid" ]; then kill "$native_ctest_pid" 2>/dev/null || :; wait "$native_ctest_pid" || :; fi; rm -rf "$native_build"' EXIT
+    ctest --test-dir "$native_build" --output-on-failure &
+    native_ctest_pid=$!
+    "${configure_fake[@]}" || status=$?
+    wait "$native_ctest_pid" || status=$?
+    native_ctest_pid=
+    [ "$status" = 0 ] || return "$status"
+  else
+    "${configure_fake[@]}"
+  fi
   cmake --build "$native_build/ffi-fake" -j 2
   export SOUNDQ_NATIVE_DEVICE_TEST_LIBRARY="$native_build/ffi-fake/libsoundq_device_ffi_fake.$native_extension"
   test -s "$SOUNDQ_NATIVE_MIX_LIBRARY"
@@ -97,7 +114,7 @@ run_client() {
 
 run_client_shard() {
   (
-    prepare_client_native
+    prepare_client_native shard
     cd "$ROOT/client"
     check_client_sources
     python3 -I -B "$ROOT/scripts/ci_flutter.py" shard "$@"

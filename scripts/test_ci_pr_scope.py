@@ -7,15 +7,26 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 SELECTOR = Path(__file__).with_name("ci_pr_scope.py").resolve()
+PRODUCT_RUNBOOK = "docs/ACOUSTICBRAINZ_IMPORT.md"  # Read by the Go artifact-table contract test.
+
+
+def fixture_env(**overrides):
+    # Keep normal process settings (e.g. PATH and TMPDIR) but do not let Git
+    # redirect fixture operations or load user/system configuration. Keep the
+    # harmless hash default so the explicit fixture format can be tested.
+    env = {key: value for key, value in dict(os.environ, **overrides).items()
+           if not key.startswith("GIT_") or key == "GIT_DEFAULT_HASH"}
+    return dict(env, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
 
 
 def git(path, *args):
     return subprocess.check_output(
         ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "-C", str(path), *args],
-        text=True,
+        env=fixture_env(), text=True,
     ).strip()
 
 
@@ -26,11 +37,12 @@ class PullRequestScopeTests(unittest.TestCase):
         self.root = Path(temp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
-        git(self.repo, "init", "-q", "-b", "base")
+        git(self.repo, "init", "-q", "--object-format=sha1", "-b", "base")
         git(self.repo, "config", "user.name", "CI fixture")
         git(self.repo, "config", "user.email", "fixture@example.invalid")
         self.file("README.md", "original")
         self.file("docs/context-map.md", "original")
+        self.file(PRODUCT_RUNBOOK, "original product input")
         self.file("scripts/release-audit", "original").chmod(0o755)
         self.file("scripts/test", "test wrapper")
         self.commit()
@@ -59,18 +71,61 @@ class PullRequestScopeTests(unittest.TestCase):
         self.sha = git(self.repo, "rev-parse", "HEAD")
         self.assertEqual(git(self.repo, "show", "-s", "--format=%P", "HEAD"), f"{self.base} {self.topic}")
 
+    def run_selector(self, output, checkout=None, **env_override):
+        event = dict(GITHUB_EVENT_NAME="pull_request", GITHUB_SHA=self.sha,
+                     PR_HEAD_SHA=self.topic, GITHUB_OUTPUT=str(output))
+        event.update(env_override)
+        return subprocess.run(
+            [sys.executable, "-I", "-B", str(SELECTOR)], cwd=checkout or self.repo, env=fixture_env(**event),
+            capture_output=True, text=True, check=False,
+        )
+
     def route(self, expected, checkout=None, **env_override):
         output = self.root / "output"
         output.write_text("")
-        env = dict(os.environ, GITHUB_EVENT_NAME="pull_request", GITHUB_SHA=self.sha,
-                   PR_HEAD_SHA=self.topic, GITHUB_OUTPUT=str(output))
-        env.update(env_override)
-        result = subprocess.run(
-            [sys.executable, "-B", str(SELECTOR)], cwd=checkout or self.repo, env=env,
-            capture_output=True, text=True, check=False,
-        )
+        result = self.run_selector(output, checkout, **env_override)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(output.read_text(), f"scope={expected}\n", result.stdout + result.stderr)
+
+    def ambient_git(self):
+        # Every redirection target is disposable, even when isolation regresses.
+        ambient = self.root / "ambient"
+        checkout = ambient / "checkout"
+        shutil.copytree(self.repo, checkout)
+        index = ambient / "alternate-index"
+        shutil.copyfile(checkout / ".git/index", index)
+        (checkout / "README.md").write_text("decoy edit")
+        return ambient, {
+            "GIT_DIR": str(checkout / ".git"),
+            "GIT_WORK_TREE": str(checkout),
+            "GIT_INDEX_FILE": str(index),
+        }
+
+    def test_fixture_git_mutates_only_fixture_under_inherited_git_env(self):
+        ambient, env = self.ambient_git()
+
+        def snapshot():
+            return {p.relative_to(ambient): p.read_bytes() for p in ambient.rglob("*") if p.is_file()}
+
+        before = snapshot()
+        self.file("README.md", "fixture edit")
+        with patch.dict(os.environ, env):
+            self.commit()
+        after = snapshot()
+        changed = sorted(path.as_posix() for path in before.keys() | after.keys()
+                         if before.get(path) != after.get(path))
+        self.assertEqual(changed, [], "fixture Git changed the ambient repository or alternate index")
+        self.assertEqual(git(self.repo, "show", "HEAD:README.md"), "fixture edit")
+
+    def test_selector_routes_fixture_under_inherited_git_env(self):
+        _, env = self.ambient_git()
+        self.file("README.md", "doc update")
+        self.merge()
+        with patch.dict(os.environ, env):
+            self.route("delivery-only")
+
+    def test_fixture_uses_sha1_object_format(self):
+        self.assertEqual(git(self.repo, "rev-parse", "--show-object-format"), "sha1")
 
     def test_modified_delivery_inputs_use_tested_base(self):
         self.file("README.md", "doc update")
@@ -87,8 +142,9 @@ class PullRequestScopeTests(unittest.TestCase):
         self.route("full")
 
     def test_product_owned_markdown_is_not_deliverable_docs(self):
-        self.file("docs/ACOUSTICBRAINZ_IMPORT.md", "Go test data, not prose-only")
+        self.file(PRODUCT_RUNBOOK, "updated product input")
         self.merge()
+        self.assertEqual(git(self.repo, "diff", "--name-status", self.base, self.sha), f"M\t{PRODUCT_RUNBOOK}")
         self.route("full")
 
     def test_unrecognized_paths_are_not_allowlisted(self):
@@ -175,10 +231,7 @@ class PullRequestScopeTests(unittest.TestCase):
     def test_unusable_output_file_returns_error(self):
         self.file("README.md", "doc update")
         self.merge()
-        env = dict(os.environ, GITHUB_EVENT_NAME="pull_request", GITHUB_SHA=self.sha,
-                   PR_HEAD_SHA=self.topic, GITHUB_OUTPUT=str(self.root))
-        result = subprocess.run([sys.executable, "-B", str(SELECTOR)], cwd=self.repo,
-                                env=env, capture_output=True, check=False)
+        result = self.run_selector(self.root)
         self.assertNotEqual(result.returncode, 0)
 
 

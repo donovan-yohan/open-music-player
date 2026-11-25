@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -20,14 +21,16 @@ SOURCE = "a" * 40
 
 
 def events(pkg, tests, result="pass"):
-    def event(action, case=None):
+    def event(action, case=None, **fields):
         item = {"Action": action, "Package": pkg}
         if case is not None:
             item["Test"] = case
-        return json.dumps(item) + "\n"
+        return json.dumps(item | fields) + "\n"
 
+    summary = (f"?   \t{pkg}\t[no test files]\n" if result == "skip" else
+               f"ok  \t{pkg}\t1.000s\tcoverage: 100.0% of statements\n")
     return [event("start"), *(line for name, terminal in tests for line in (event("run", name), event(terminal, name))),
-            event(result)]
+            event("output", Output=summary), event(result)]
 
 
 def row(pkg, count=1, *, statements=2, end=4):
@@ -69,9 +72,10 @@ class ContractTests(unittest.TestCase):
     def test_terminals_cannot_skip_required_marker_or_disappear(self):
         passed = [("TestFuture", "pass"), ("TestFuture/marker", "pass")]
         positive = events(API, passed)
-        self.assertEqual(len(ci.read_tests(positive, {API: "test"}, MODULE, ["TestFuture"])), 2)
+        self.assertEqual(len(ci.read_tests(positive, {API: "test"}, MODULE, ["TestFuture"])[0]), 2)
         for bad, message in [
             (positive[:-1], "incomplete"),
+            ([*positive[:-2], positive[-1]], "missing Go package summary"),
             (events(API, passed + passed), "duplicate"),
             (events(API, passed[:-1]), "fixture test did not pass"),
             (events(API, [passed[0], ("TestFuture/marker", "skip")]), "fixture test did not pass"),
@@ -119,8 +123,9 @@ class ContractTests(unittest.TestCase):
                     names = api_groups[shard] if shard in api_groups else ["TestAny"] if kind == "test" else []
                     if "TestFuture" in names:
                         names = [*names, "TestFuture/marker"]
-                    tests.extend(events(pkg, [(name, "pass") for name in names]))
-                    coverage.append(row(pkg, index + 1))
+                    tests.extend(events(pkg, [(name, "pass") for name in names], "pass" if names else "skip"))
+                    if names:
+                        coverage.append(row(pkg, index + 1))
                 (out / "tests.jsonl").write_text("".join(tests))
                 (out / "coverage.out").write_text("".join(coverage))
                 record = {
@@ -155,6 +160,90 @@ class ContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "protection override"), fixtures({}):
                     self.fail("override reached provisioning")
                 docker_mock.assert_not_called()
+
+
+class GoEvidenceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        temporary = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(temporary.cleanup)
+        cls.root = Path(temporary.name)
+        backend = cls.root / "backend"
+        sources = {
+            "go.mod": f"module {MODULE}\n\ngo {ci.GO_VERSION.removeprefix('go')}\n",
+            "tested/p.go": "package tested\nfunc Value() int { return 1 }\nfunc Empty() {}\n",
+            "tested/p_test.go": 'package tested\nimport "testing"\nfunc TestValue(t *testing.T) { Value() }\n',
+            "bench/p.go": "package bench\nfunc Value() int { return 1 }\n",
+            "bench/p_test.go": 'package bench_test\nimport "testing"\nfunc BenchmarkValue(b *testing.B) {}\n',
+            "empty/p.go": "package empty\nconst Value = 1\n",
+            "emptytest/p.go": "package emptytest\nconst Value = 1\n",
+            "emptytest/p_test.go": 'package emptytest\nimport "testing"\nfunc TestValue(t *testing.T) {}\n',
+            "untested/p.go": "package untested\nfunc Value() int { return 1 }\n",
+            "raceonly/p.go": "//go:build race\n\npackage raceonly\nfunc Value() int { return 1 }\n",
+            "raceonly/p_test.go": ('//go:build race\n\npackage raceonly\nimport "testing"\n'
+                                   'func TestRace(t *testing.T) { Value() }\n'),
+            "norace/p.go": "//go:build !race\n\npackage norace\nconst Value = 1\n",
+            "skipped/p.go": "package skipped\nconst Value = 1\n",
+            "skipped/p_test.go": ('package skipped\nimport "testing"\n'
+                                  'func TestSkipped(t *testing.T) { t.Skip("control") }\n'),
+        }
+        for name, text in sources.items():
+            target = backend / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+        cls.group = {f"{MODULE}/{name}": kind for name, kind in (
+            ("tested", "test"), ("bench", "test"), ("empty", "empty"), ("emptytest", "test"),
+            ("untested", "empty"), ("raceonly", "test"),
+        )}
+        with (cls.root / "tests.jsonl").open("w") as output:
+            subprocess.run(["go", "test", "-race", "-json", "-v", "-count=1",
+                            f"-coverprofile={cls.root / 'coverage.out'}", *cls.group, f"{MODULE}/skipped"],
+                           cwd=backend, env=test_environment(), stdout=output, check=True)
+        cls.events = {}
+        for line in (cls.root / "tests.jsonl").read_text().splitlines():
+            pkg = json.loads(line).get("Package")
+            if pkg is not None:
+                cls.events.setdefault(pkg, []).append(line + "\n")
+        cls.profile = (cls.root / "coverage.out").read_text().splitlines(keepends=True)
+
+    def test_inventory_uses_race_build_constraints(self):
+        check_output = subprocess.check_output
+
+        def resolve(command, **kwargs):
+            return SOURCE if command == ["git", "rev-parse", "HEAD"] else check_output(command, **kwargs)
+
+        with patch.object(ci, "ROOT", self.root), patch.object(ci.subprocess, "check_output", side_effect=resolve):
+            self.assertEqual(ci.go_inventory()["packages"], self.group | {f"{MODULE}/skipped": "test"})
+
+    def test_benchmark_only_is_not_an_all_skipped_or_missing_test_package(self):
+        bench, skipped, tested = (f"{MODULE}/{name}" for name in ("bench", "skipped", "tested"))
+        ci.read_tests(self.events[bench], {bench: "test"}, MODULE)
+        partial = [line for line in self.events[tested] if "Test" not in json.loads(line)]
+        for pkg, lines in [(skipped, self.events[skipped]), (tested, partial)]:
+            with self.subTest(pkg=pkg), self.assertRaisesRegex(ValueError, "no passing tests"):
+                ci.read_tests(lines, {pkg: "test"}, MODULE)
+        with patch.object(ci, "REQUIRED", {"bench": {"TestRequired"}}):
+            with self.assertRaisesRegex(ValueError, "fixture test did not pass"):
+                ci.read_tests(self.events[bench], {bench: "test"}, MODULE)
+
+    def test_coverage_requires_coverable_packages_even_without_test_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            (out / "tests.jsonl").write_text("".join(line for pkg in self.group for line in self.events[pkg]))
+            cover = out / "coverage.out"
+            # No rows for declarations-only packages with or without tests.
+            # Real no-test and benchmark-only packages do contribute zero-hit rows.
+            self.assertEqual({line.split(":")[0].rsplit("/", 1)[0] for line in self.profile[1:]},
+                             {f"{MODULE}/{name}" for name in ("tested", "untested", "bench", "raceonly")})
+            cover.write_text("".join(self.profile))
+            _, blocks = ci.validate(out, self.group, MODULE)
+            self.assertIn((0, 0), blocks.values())
+            self.assertEqual({key[0].rsplit("/", 1)[0] for key, (statements, count) in blocks.items()
+                              if statements and count == 0}, {f"{MODULE}/bench", f"{MODULE}/untested"})
+            for omitted in ("untested", "bench", "raceonly"):
+                cover.write_text("".join(line for line in self.profile if not line.startswith(f"{MODULE}/{omitted}/")))
+                with self.subTest(omitted=omitted), self.assertRaisesRegex(ValueError, rf"missing Go coverage.*{MODULE}/{omitted}"):
+                    ci.validate(out, self.group, MODULE)
 
 
 if __name__ == "__main__":
