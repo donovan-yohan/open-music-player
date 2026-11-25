@@ -5,7 +5,11 @@ import com.soundq.android.data.device.LOCAL_ENRICHMENT_PATH
 import com.soundq.android.data.device.LocalEnrichmentReply
 import com.soundq.android.data.device.LocalEnrichmentTerms
 import com.soundq.android.data.discovery.DiscoveryCalls
+import com.soundq.android.data.discovery.DiscoveryCatalogRouteMissing
+import com.soundq.android.data.discovery.DiscoveryProvider
+import com.soundq.android.data.discovery.DiscoveryResultType
 import com.soundq.android.data.discovery.SourceProvider
+import com.soundq.android.data.discovery.isDiscoverBrowsePath
 import com.soundq.android.data.catalog.RecordingMbid
 import com.soundq.android.data.imports.*
 import com.soundq.android.data.originalimport.OriginalImportRepository
@@ -17,6 +21,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.time.Instant
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Only authenticated HTTP path. Response bodies/credentials/signed URLs never enter errors or logs. */
 class SoundQApi internal constructor(
@@ -30,7 +35,15 @@ class SoundQApi internal constructor(
         intakeReceipts: com.soundq.android.data.acquisition.IntakeReceipts = com.soundq.android.data.acquisition.IntakeReceipts(),
         libraryOwnershipReadback: (AccountScope) -> Unit = {},
     ) : this(session, client, intakeReceipts, libraryOwnershipReadback, { null })
-    private class WireGuard(val originalImport: Boolean = false, val valid: () -> Boolean)
+    private class WireGuard(val originalImport: Boolean = false, private val singleExchange: Boolean = false, val valid: () -> Boolean) {
+        private val entered=AtomicBoolean(false)
+        fun check(isCanceled: () -> Boolean) {
+            val admitted = if (valid is LibraryDeleteAdmission) valid.admit(isCanceled) else valid()
+            if(!admitted)throw SafeFailure(SafeFailure.Reason.Retired)
+            // OkHttp can otherwise replay an HTTP 503 with Retry-After: 0.
+            if(singleExchange&&!entered.compareAndSet(false,true))throw SafeFailure(SafeFailure.Reason.ServiceUnavailable)
+        }
+    }
     // Carried by the existing dispatch slot, but only the network chain may admit it.
     private class LibraryDeleteAdmission(val admit: (() -> Boolean) -> Boolean) : () -> Boolean {
         override fun invoke(): Boolean = false
@@ -56,9 +69,8 @@ class SoundQApi internal constructor(
             val r = chain.request()
             val base = session.endpoint.base
             if (r.url.scheme != base.scheme || r.url.host != base.host || r.url.port != base.port || !r.url.encodedPath.startsWith("/api/v1/")) throw SafeFailure(SafeFailure.Reason.Endpoint)
-            val guard = r.tag(WireGuard::class.java)?.valid
-            val admitted = if (guard is LibraryDeleteAdmission) guard.admit(chain.call()::isCanceled) else guard?.invoke() == true
-            if (!admitted) throw SafeFailure(SafeFailure.Reason.Retired)
+            val guard = r.tag(WireGuard::class.java) ?: throw SafeFailure(SafeFailure.Reason.Retired)
+            guard.check(chain.call()::isCanceled)
             chain.proceed(r)
         }.build()
     private val json = Json { ignoreUnknownKeys = true }
@@ -66,7 +78,7 @@ class SoundQApi internal constructor(
     private fun tokens(body: JsonObject): SecretTokens = try {
         SecretTokens(body.getValue("accessToken").jsonPrimitive.content,body.getValue("refreshToken").jsonPrimitive.content,body.getValue("user").jsonObject.getValue("id").jsonPrimitive.content)
     } catch (_: Exception) { throw SafeFailure(SafeFailure.Reason.InvalidResponse) }
-    private class Reply(val code: Int, val body: JsonObject, val text: String = "")
+    private class Reply(val code: Int, val body: JsonObject, val text: String = "", val missingDiscoverCatalogRoute:Boolean=false)
     private fun wire(path: String, method: String = "GET", body: JsonObject? = null, access: String? = null, dispatchValid: (() -> Boolean)? = null, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, rawJson:String?=null, calls:DiscoveryCalls?=null, responseValid:(()->Boolean)?=null, originalImport:Boolean=false, originalBody:RequestBody?=null, valid: () -> Boolean): Reply {
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
         val pathOnly=path.substringBefore('?')
@@ -76,12 +88,14 @@ class SoundQApi internal constructor(
             segment in setOf(".","..") || "%2f" in segment || "%5c" in segment
         })
         val url = (session.endpoint.identity + path).toHttpUrlOrNull() ?: throw SafeFailure(SafeFailure.Reason.Endpoint)
+        val discoverBrowse=method=="GET"&&isDiscoverBrowsePath(pathOnly)
+        val singleExchange=discoverBrowse||method=="GET"&&(pathOnly=="/discovery/search"||pathOnly=="/discovery/catalog")
         val guard: () -> Boolean = if (dispatchValid is LibraryDeleteAdmission) {
             LibraryDeleteAdmission { isCanceled -> valid() && dispatchValid.admit(isCanceled) }
         } else {
             { valid() && (dispatchValid?.invoke() ?: true) }
         }
-        val request = Request.Builder().url(url).tag(WireGuard::class.java,WireGuard(originalImport, guard)).header("Accept","application/json")
+        val request = Request.Builder().url(url).tag(WireGuard::class.java,WireGuard(originalImport, singleExchange, guard)).header("Accept","application/json")
         val enrichment = method == "POST" && path == LOCAL_ENRICHMENT_PATH
         if (enrichment) request.header("Cache-Control", "no-store")
         if (access != null) request.header("Authorization","Bearer $access")
@@ -124,6 +138,14 @@ class SoundQApi internal constructor(
                 }
                 // Never parse/display server error text, which can echo sensitive input.
                 if (response.code !in 200..299) {
+                    // Only this collection GET recognizes the bounded Go ServeMux route-miss
+                    // marker. Entity 404s and other error bodies never grant fallback.
+                    if(method=="GET"&&pathOnly=="/discovery/catalog"&&response.code==404) {
+                        val marker="404 page not found\n"
+                        val missing=response.body.contentType()?.let {it.type=="text"&&it.subtype=="plain"}==true&&
+                            response.body.source().let {!it.request(marker.length+1L)&&it.readUtf8()==marker}
+                        return Reply(404,buildJsonObject {},missingDiscoverCatalogRoute=missing)
+                    }
                     // Only exchange admits a bounded declared code. No message/hash/body survives.
                     val membership=method=="POST" && Regex("^/catalog/recordings/[0-9a-f-]{36}/membership$").matches(path)
                     if(membership) {
@@ -141,10 +163,15 @@ class SoundQApi internal constructor(
                     return Reply(response.code,if(code==null)buildJsonObject {} else buildJsonObject {put("code",code.name)})
                 }
                 val source = response.body.source()
-                // Full signed RGB/tier artifacts are larger than metadata. This bounded
-                // exception belongs ONLY to canonical analysis GETs, never arbitrary URLs,
-                // queries, overrides or writes. Auth/endpoint/retirement fences above stay shared.
-                val responseLimit = if(enrichment) 32768L else if(method=="GET"&&path=="/me/discovery/releases")262144L else if (method == "GET" && Regex("^/tracks/[1-9][0-9]*/analysis$").matches(path)) 16L * 1024 * 1024 else 2_000_000L
+                // Enrichment, canonical analysis and typed edition tracklists have their own byte caps.
+                // Auth, endpoint and retirement fences apply regardless of response size.
+                val responseLimit = when {
+                    enrichment->32768L
+                    method=="GET"&&path=="/me/discovery/releases"->262144L
+                    discoverBrowse&&pathOnly.endsWith("/tracklist")->4L * 1024 * 1024
+                    method=="GET"&&Regex("^/tracks/[1-9][0-9]*/analysis$").matches(path)->16L * 1024 * 1024
+                    else->2_000_000L
+                }
                 if (source.request(responseLimit + 1)) throw SafeFailure(SafeFailure.Reason.InvalidResponse)
                 val text = source.readUtf8()
                 val parsed = if (text.isBlank()) buildJsonObject {} else json.parseToJsonElement(text).jsonObject
@@ -186,11 +213,12 @@ class SoundQApi internal constructor(
     private fun authorized(scope: AccountScope, path: String, method: String = "GET", body: JsonObject? = null, readOnly: Boolean = method == "GET", valid: () -> Boolean = { true }, expectedStatus: Int? = null, acceptedStatuses:Set<Int>? = null, dispatchValid: (() -> Boolean)? = null, allowMissing: Boolean = false, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, privateFeature: Boolean = false, rawJson:String?=null, calls:DiscoveryCalls?=null, received:((String)->Unit)?=null, previewRecording:String?=null): JsonObject {
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
         val access = session.access(scope)
-        val discoveryRead=method=="GET"&&(path.startsWith("/discovery/search?")||
+        val discoveryRead=method=="GET"&&(path.startsWith("/discovery/search?")||path.startsWith("/discovery/catalog?")||isDiscoverBrowsePath(path.substringBefore('?'))||
             (previewRecording!=null&&path=="/catalog/recordings/$previewRecording/source"))
         fun exchange(bearer:String, admit:(()->Boolean)?):Reply = if(discoveryRead) {
-            // Only Search GETs and the pending Radar preview's exact recording GET
-            // use this split; ordinary Add lookup and resolve POST do not.
+            // Search and typed browse GETs, plus the pending Radar preview's exact
+            // recording GET, may finish after a sibling saves its rotated bearer.
+            // Ordinary Add lookup and resolve POST do not borrow this custody.
             wire(path,access=bearer,calls=calls,dispatchValid={session.discoveryDispatchCurrent(scope,bearer)},
                 responseValid={valid()&&session.awaitDiscoveryRead(scope)&&valid()},valid=valid)
         } else wire(path,method,body,bearer,admit,headers,emptyBody,rawJson,calls) {session.remoteCurrent(scope) && valid()}
@@ -204,6 +232,7 @@ class SoundQApi internal constructor(
         if(discoveryRead) {
             if(!session.awaitDiscoveryRead(scope)||!valid())throw SafeFailure(SafeFailure.Reason.Retired)
         } else session.checkScope(scope)
+        if(result.missingDiscoverCatalogRoute)throw DiscoveryCatalogRouteMissing()
         if (privateFeature && result.code !in 200..299) throw com.soundq.android.data.connect.FeatureFailure(result.code)
         if (allowMissing && result.code == 404) throw PlaylistMissing()
         if (result.code !in 200..299) {
@@ -570,12 +599,25 @@ class SoundQApi internal constructor(
     fun radarMembership(scope:AccountScope,recording:com.soundq.android.data.catalog.RecordingMbid,valid:()->Boolean):Boolean =
         com.soundq.android.data.discovery.RadarJson.membership(authorized(scope,"/me/discovery/releases/${recording.value}/membership",valid=valid,expectedStatus=200),recording)
     internal fun discoverySearch(scope: AccountScope, query:String, valid:()->Boolean = {true},grouped:Boolean=false,provider:SourceProvider?=null,calls:DiscoveryCalls?=null): com.soundq.android.data.discovery.SourceResults {
-        require(query.isNotBlank() && query.toByteArray(Charsets.UTF_8).size<=512)
         require(provider==null||!grouped)
         val providers=provider?.wire ?: if(grouped)"youtube,soundcloud,musicbrainz" else "youtube,soundcloud"
-        val url=session.endpoint.base.newBuilder().addQueryParameter("q",query).addQueryParameter("limit",com.soundq.android.data.discovery.DiscoveryJson.SEARCH_SURFACE_LIMIT.toString()).addQueryParameter("providers",providers).build()
-        return com.soundq.android.data.discovery.DiscoveryJson.search(authorized(scope,"/discovery/search?"+url.encodedQuery,valid=valid,expectedStatus=200,calls=calls),query,provider)
+        return com.soundq.android.data.discovery.DiscoveryJson.search(discoverySearchBody(scope,query,providers,calls,valid),query,provider)
     }
+    private fun discoverySearchBody(scope:AccountScope,query:String,providers:String,calls:DiscoveryCalls?,valid:()->Boolean):JsonObject {
+        require(query.isNotBlank() && query.toByteArray(Charsets.UTF_8).size<=512)
+        val url=session.endpoint.base.newBuilder().addQueryParameter("q",query).addQueryParameter("limit",com.soundq.android.data.discovery.DiscoveryJson.SEARCH_SURFACE_LIMIT.toString()).addQueryParameter("providers",providers).build()
+        return authorized(scope,"/discovery/search?"+url.encodedQuery,valid=valid,expectedStatus=200,calls=calls)
+    }
+    internal fun legacyDiscoveryCatalog(scope:AccountScope,query:String,calls:DiscoveryCalls,valid:()->Boolean):com.soundq.android.data.discovery.SourceResults =
+        com.soundq.android.data.discovery.DiscoveryJson.legacyCatalog(discoverySearchBody(scope,query,DiscoveryProvider.MusicBrainz.wire,calls,valid),query)
+    internal fun discoveryCatalog(scope:AccountScope,query:String,type:DiscoveryResultType,calls:DiscoveryCalls,valid:()->Boolean,offset:Int=0):com.soundq.android.data.discovery.DiscoveryCatalogPage {
+        require(query.isNotBlank()&&query.toByteArray(Charsets.UTF_8).size<=512&&offset in 0..1000)
+        val kind=requireNotNull(type.catalogKind)
+        val url=session.endpoint.base.newBuilder().addQueryParameter("q",query).addQueryParameter("kind",kind).addQueryParameter("offset",offset.toString()).build()
+        return com.soundq.android.data.discovery.DiscoveryJson.catalog(authorized(scope,"/discovery/catalog?"+url.encodedQuery,valid=valid,expectedStatus=200,calls=calls),type)
+    }
+    internal fun discoverBrowseBody(scope:AccountScope,route:com.soundq.android.data.discovery.DiscoverBrowseRoute,calls:DiscoveryCalls,valid:()->Boolean):JsonObject =
+        authorized(scope,route.path(session.endpoint.base),valid=valid,expectedStatus=200,calls=calls)
     fun createSourceDecision(scope:AccountScope,choice:com.soundq.android.data.discovery.SourceChoice,valid:()->Boolean,admit:()->Boolean,playlistId:com.soundq.android.data.playlists.PlaylistId?=null):com.soundq.android.data.discovery.SourceDecision {
         val receipt=try {intakeReceipts.begin(session.endpoint.identity,scope.accountId,"source",choice.selection.id,choice.candidate.id,playlistId=playlistId?.value)}catch(_:Exception){throw SafeFailure(SafeFailure.Reason.StoreRejected)}
         try {

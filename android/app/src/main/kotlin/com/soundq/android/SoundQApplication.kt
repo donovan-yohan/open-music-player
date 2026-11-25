@@ -85,7 +85,7 @@ class AppGraph internal constructor(context: Context, val endpoint: ApiEndpoint,
     val catalog=com.soundq.android.data.catalog.CatalogRepository(api,com.soundq.android.data.catalog.CatalogMembershipJournal(File(directory,"catalog-membership.v1.json")))
     // Roll out only after GET /me/discovery/releases owns account-wide daily admission/cache.
     // The legacy fixture argument remains source-compatible; normal Discover now has the same path.
-    val discovery=com.soundq.android.data.discovery.DiscoveryRepository(session,api,historyDirectory=File(directory,"discover-history"),radarAdmitted=true)
+    val discovery=com.soundq.android.data.discovery.DiscoveryRepository(session,api,historyDirectory=File(directory,"discover-history"),radarAdmitted=true,unifiedSearch=true)
     val io=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     internal val phoneAudio=com.soundq.android.data.device.PhoneAudioRepository(this, openPhoneAudioStore)
     private val phoneImportOriginals=PhoneImportOriginals(phoneAudio,session::version)

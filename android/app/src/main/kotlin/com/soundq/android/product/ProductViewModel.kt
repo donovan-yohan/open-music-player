@@ -231,12 +231,22 @@ class ProductViewModel(app:Application):AndroidViewModel(app) {
             .invokeOnCompletion {graph.imports.abandonDiscoverySubmission(receipt)}
         return true
     }
-    fun searchSources(view:com.soundq.android.data.discovery.DiscoveryView,draft:com.soundq.android.data.discovery.DiscoveryDraft) {
-        val request=graph.discovery.claimSearch(view,draft) ?: return
+    fun searchSources(view:com.soundq.android.data.discovery.DiscoveryView,draft:com.soundq.android.data.discovery.DiscoveryDraft,retry:Boolean=false) {
+        val request=graph.discovery.claimSearch(view,draft,retry) ?: return
         viewModelScope.launch(Dispatchers.IO){graph.discovery.search(request)}.invokeOnCompletion {graph.discovery.abandonSearch(request)}
     }
     fun selectDiscoveryType(view:com.soundq.android.data.discovery.DiscoveryView,type:com.soundq.android.data.discovery.DiscoveryResultType) {
         val request=graph.discovery.selectType(view,type) ?: return
+        viewModelScope.launch(Dispatchers.IO){graph.discovery.search(request)}.invokeOnCompletion {graph.discovery.abandonSearch(request)}
+    }
+    internal fun retryDiscoveryCatalog(view:com.soundq.android.data.discovery.DiscoveryView,draft:com.soundq.android.data.discovery.DiscoveryDraft,
+        type:com.soundq.android.data.discovery.DiscoveryResultType,expected:com.soundq.android.data.discovery.DiscoveryCatalogStatus.Unavailable) {
+        val request=graph.discovery.claimCatalogRetry(view,draft,type,expected) ?: return
+        viewModelScope.launch(Dispatchers.IO){graph.discovery.search(request)}.invokeOnCompletion {graph.discovery.abandonSearch(request)}
+    }
+    internal fun continueDiscoveryCatalog(view:com.soundq.android.data.discovery.DiscoveryView,draft:com.soundq.android.data.discovery.DiscoveryDraft,
+        type:com.soundq.android.data.discovery.DiscoveryResultType,expected:com.soundq.android.data.discovery.DiscoveryCatalogStatus.Ready) {
+        val request=graph.discovery.claimCatalogContinuation(view,draft,type,expected) ?: return
         viewModelScope.launch(Dispatchers.IO){graph.discovery.search(request)}.invokeOnCompletion {graph.discovery.abandonSearch(request)}
     }
     fun loadReleaseRadar(view:com.soundq.android.data.discovery.DiscoveryView,refresh:Boolean=false,automatic:Boolean=false) {
