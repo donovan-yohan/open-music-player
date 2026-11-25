@@ -322,6 +322,8 @@ jobs:
     needs: pr-scope
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
     runs-on: ubuntu-latest
+    outputs:
+      web-outcome: ${{ steps.folded-web.outcome }}
     defaults:
       run:
         working-directory: client
@@ -331,6 +333,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Flutter
+        id: flutter-setup
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.0'
@@ -359,10 +362,17 @@ jobs:
       - name: Test opted-in fixture refusal and credential-session isolation
         run: flutter test --no-pub --concurrency=1 --dart-define=SOUNDQ_PERFORMANCE_FIXTURE=true test/performance_fixture_test.dart test/performance_fixture_source_test.dart test/performance_fixture_export_test.dart
 
+      # On full PRs reuse setup; a contract failure must not hide the web result.
+      - name: Build Flutter web (pull request)
+        id: folded-web
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.flutter-setup.outcome == 'success' }}
+        working-directory: ${{ github.workspace }}
+        run: scripts/build client-web
+
   client-web:
     name: Flutter web build
     needs: pr-scope
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -388,10 +398,20 @@ jobs:
         uses: actions/checkout@v4
       - name: Require all Flutter lanes
         env:
+          CI_EVENT: ${{ github.event_name }}
           VM_RESULT: ${{ needs.client-vm.result }}
           CONTRACTS_RESULT: ${{ needs.client-contracts.result }}
           WEB_RESULT: ${{ needs.client-web.result }}
-        run: python3 -I -B scripts/ci_flutter.py require "$VM_RESULT" "$CONTRACTS_RESULT" "$WEB_RESULT"
+          FOLDED_WEB_OUTCOME: ${{ needs.client-contracts.outputs.web-outcome }}
+        run: |
+          if [[ "$CI_EVENT" == pull_request ]]; then
+            if [[ "$WEB_RESULT" != skipped ]]; then
+              printf 'Standalone Flutter web lane must be skipped on PRs; got %s\n' "$WEB_RESULT" >&2
+              exit 1
+            fi
+            WEB_RESULT="$FOLDED_WEB_OUTCOME"
+          fi
+          python3 -I -B scripts/ci_flutter.py require "$VM_RESULT" "$CONTRACTS_RESULT" "$WEB_RESULT"
       - name: Download Flutter VM shard evidence
         uses: actions/download-artifact@v4
         with:

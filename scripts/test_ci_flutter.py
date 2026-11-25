@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from textwrap import dedent
 import unittest
 from unittest.mock import patch
 
@@ -187,6 +188,27 @@ class FlutterCITest(unittest.TestCase):
         self.assertEqual(ci.read_machine(output / "machine.jsonl", self.client, expected),
                          [(file, "a case", False) for file in expected])
         self.assertFalse((output / "receipt.json").exists())
+
+
+class FlutterJoinWorkflowTest(unittest.TestCase):
+    def test_join_requires_web_success_from_the_event_owned_producer(self):
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/ci.yml").read_text()
+        join = workflow.split("\n  client:\n", 1)[1]
+        gate = join.split("      - name: Require all Flutter lanes\n", 1)[1].split("      - name:", 1)[0]
+        command = gate.split("        run: ", 1)[1]
+        if command.startswith("|\n"):
+            command = dedent(command[2:])
+        results = ("success", "failure", "skipped", "cancelled", "", "SUCCESS")
+        for event, standalone, folded in [("pull_request", "skipped", result) for result in results] + [
+            ("pull_request", result, "success") for result in results if result != "skipped"
+        ] + [("push", result, "success") for result in results] + [("push", "success", "")]:
+            expected = (standalone, folded) == ("skipped", "success") if event == "pull_request" else standalone == "success"
+            with self.subTest(event=event, standalone=standalone, folded=folded):
+                proc = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", command], cwd=root,
+                                      env=dict(os.environ, CI_EVENT=event, VM_RESULT="success", CONTRACTS_RESULT="success",
+                                               WEB_RESULT=standalone, FOLDED_WEB_OUTCOME=folded), capture_output=True, text=True)
+                self.assertEqual(proc.returncode, 0 if expected else 1, proc.stderr)
 
 
 if __name__ == "__main__":
