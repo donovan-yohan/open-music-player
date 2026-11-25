@@ -79,9 +79,6 @@ def fetch_branch_tip(repo: str, base: str) -> tuple[str | None, str]:
     # Pair the GitHub PR with the same repository's live branch, not a local
     # tracking ref that a successful fetch may leave untouched.
     ref = f"refs/heads/{base}"
-    result = run(["git", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", "origin", ref], check=False)
-    if result.returncode != 0:
-        return None, f"fetch failed: {(result.stderr or result.stdout).strip()}"
     try:
         branch = gh_json(["api", f"repos/{repo}/git/ref/heads/{base}"])
     except (RuntimeError, ValueError) as exc:
@@ -90,6 +87,14 @@ def fetch_branch_tip(repo: str, base: str) -> tuple[str | None, str]:
     tip = obj.get("sha")
     if branch.get("ref") != ref or obj.get("type") != "commit" or not isinstance(tip, str) or not re.fullmatch(r"[0-9a-f]{40}", tip):
         return None, f"branch lookup did not return a commit for {ref}"
+    # Request the observed commit even if the branch moves before the fetch.
+    # The named ref also forces a transport check when the OID is already local.
+    result = run(
+        ["git", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", "origin", ref, tip],
+        check=False,
+    )
+    if result.returncode != 0:
+        return None, f"fetch failed: {(result.stderr or result.stdout).strip()}"
     return tip, "fetched"
 
 
@@ -261,10 +266,15 @@ def render_text(payload: dict[str, Any]) -> None:
 def test_strict_branch_proof() -> None:
     """Real Git ancestry with GitHub reads replaced by fixed receipts."""
     with TemporaryDirectory(prefix="release-audit-") as directory:
-        root = Path(directory)
+        root = Path(directory) / "checkout"
+        root.mkdir()
+        remote = str(Path(directory) / "origin.git")
         with patch(__name__ + ".ROOT", root):
             def git(*args: str) -> str:
                 return run(["git", *args]).stdout.strip()
+
+            def origin(*args: str) -> str:
+                return git("--git-dir", remote, *args)
 
             git("init", "-b", "main")
             git("config", "user.name", "Release Audit Fixture")
@@ -274,7 +284,8 @@ def test_strict_branch_proof() -> None:
             base = git("rev-parse", "HEAD")
             git("commit", "--allow-empty", "-m", "merged")
             merged = git("rev-parse", "HEAD")
-            git("remote", "add", "origin", str(root))
+            git("clone", "--bare", "--no-local", ".", remote)
+            git("remote", "add", "origin", remote)
             git("update-ref", "refs/remotes/origin/main", merged)
             git("config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/alternate/main")
             github_tip = merged
@@ -295,11 +306,19 @@ def test_strict_branch_proof() -> None:
                     raise AssertionError(f"strict branch proof ({case}): got {actual}, expected {expected}")
 
             check("verified merge", (0, "shipped to main"))
-            git("update-ref", "refs/heads/main", base)
+            origin("update-ref", "refs/heads/main", base)
             github_tip = base
             check("stale tracking ref", (1, "implementation exists, not shipped"))
-            git("update-ref", "refs/heads/main", merged)
+            origin("update-ref", "refs/heads/main", merged)
             check("divergent origin", (1, "implementation exists, not shipped"))
+            # GitHub has observed a newer tip. The origin's named branch still
+            # points to the old tip, but its object store can serve the new one.
+            github_tip = origin("-c", "user.name=Release Audit Fixture", "-c", "user.email=audit@example.invalid",
+                                "-c", "commit.gpgsign=false", "commit-tree", f"{merged}^{{tree}}", "-p", merged, "-m", "advanced")
+            origin("update-ref", "refs/heads/advanced", github_tip)
+            if run(["git", "cat-file", "-e", github_tip], check=False).returncode == 0:
+                raise AssertionError("advanced branch proof fixture already has the new tip")
+            check("new API tip not in origin's named branch", (0, "shipped to main"))
             github_tip = merged
             git("remote", "set-url", "origin", str(root / "missing"))
             check("failed fetch", (1, "implementation exists, not shipped"))
