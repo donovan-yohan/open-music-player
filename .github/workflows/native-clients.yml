@@ -290,6 +290,7 @@ jobs:
         run: |
           python3 -B <<'PY'
           import os
+          import shlex
           from pathlib import Path
           import shutil
           import subprocess
@@ -318,11 +319,18 @@ jobs:
           os.environ.setdefault('TMPDIR', str(output))
           env = dict(os.environ, SOUNDQ_KOTLINC=str(launcher))
           subprocess.run([sys.executable, '-B', 'native/tests/queue_restore_cursor_regressions.py', '--source-root', str(Path.cwd()), '--output', str(output / 'cursor')], env=env, check=True)
+          sys.path.insert(0, str(Path.cwd() / 'native/tests'))
+          from ci_robolectric_sdk import report_presentation_failure, stage_sdk
+          sdk_dir = stage_sdk(output)
+          sdk_args = shlex.quote(f'-Drobolectric.dependency.dir={sdk_dir}')
           # Production Library admission and retained Queue disclosure use the
           # installed compiler; the preceding SDK build compiles the full shell.
-          subprocess.run([sys.executable, '-B', 'native/tests/android_library_regressions.py', '--compiled', '--output', str(output / 'library')], env=env, check=True)
+          try:
+              subprocess.run([sys.executable, '-B', 'native/tests/android_library_regressions.py', '--compiled', '--output', str(output / 'library')], env=dict(env, SOUNDQ_PRESENTATION_GRADLE_ARGS=sdk_args), check=True)
+          except subprocess.CalledProcessError:
+              report_presentation_failure('Library', output / 'library/presentation', 'AndroidPresentationTest')
+              raise
           subprocess.run([sys.executable, '-B', 'native/tests/queue_dialog_regressions.py', '--output', str(output / 'queue-dialog')], env=env, check=True)
-          sys.path.insert(0, str(Path.cwd() / 'native/tests'))
           import queue_current_marker_regressions
           os.environ['SOUNDQ_KOTLINC'] = str(launcher)
           result = queue_current_marker_regressions.run_platform('android', Path.cwd(), output / 'current-marker')
@@ -330,7 +338,15 @@ jobs:
               raise SystemExit(result)
           subprocess.run([sys.executable, '-B', 'native/tests/registration_regressions.py', '--platform', 'android', '--output', str(output / 'registration')], env=env, check=True)
           from android_presentation_regressions import auth_presentation
-          if not auth_presentation(Path.cwd(), output / 'registration-layout')['passed']:
+          # This runner is called directly, not with the child's environment above.
+          os.environ['SOUNDQ_PRESENTATION_GRADLE_ARGS'] = sdk_args
+          passed = False
+          try:
+              passed = auth_presentation(Path.cwd(), output / 'registration-layout')['passed']
+          finally:
+              if not passed:
+                  report_presentation_failure('registration', output / 'registration-layout', 'RegistrationPresentationTest')
+          if not passed:
               raise SystemExit('Native registration layout failed')
           PY
       - uses: actions/upload-artifact@v4
