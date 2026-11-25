@@ -29,47 +29,51 @@ type enrichmentReadFunc func([]byte) (int, error)
 func (f enrichmentReadFunc) Read(p []byte) (int, error) { return f(p) }
 
 func TestLocalEnrichmentProviderAggregateByteCap(t *testing.T) {
-	// Each ignored value is smaller than the limit. Their aggregate plus trailing
-	// whitespace must fit; the one-byte excess is not part of a JSON value.
-	const bound = 1 << 20
-	padding := strings.Repeat("x", 500_000)
-	prefix := `{"ignored1":"` + padding + `","count":0,"recordings":[],"ignored2":"` + padding + `"}`
-	exact := prefix + strings.Repeat(" ", bound-len(prefix))
-	if out, err := localEnrichmentFixtureClient(strings.NewReader(exact)).SearchLocalEnrichment(context.Background(), "Paper", ""); err != nil || len(out) != 0 {
-		t.Fatalf("exact provider byte limit rejected: %v %v", out, err)
-	}
-	if out, err := localEnrichmentFixtureClient(strings.NewReader(exact+" ")).SearchLocalEnrichment(context.Background(), "Paper", ""); err != ErrLocalEnrichmentUnavailable || out != nil {
-		t.Fatalf("excess aggregate bytes accepted: %v %v", out, err)
-	}
+	withFixtureClock(t, func(t *testing.T) {
+		// Each ignored value is smaller than the limit. Their aggregate plus trailing
+		// whitespace must fit; the one-byte excess is not part of a JSON value.
+		const bound = 1 << 20
+		padding := strings.Repeat("x", 500_000)
+		prefix := `{"ignored1":"` + padding + `","count":0,"recordings":[],"ignored2":"` + padding + `"}`
+		exact := prefix + strings.Repeat(" ", bound-len(prefix))
+		if out, err := localEnrichmentFixtureClient(strings.NewReader(exact)).SearchLocalEnrichment(context.Background(), "Paper", ""); err != nil || len(out) != 0 {
+			t.Fatalf("exact provider byte limit rejected: %v %v", out, err)
+		}
+		if out, err := localEnrichmentFixtureClient(strings.NewReader(exact+" ")).SearchLocalEnrichment(context.Background(), "Paper", ""); err != ErrLocalEnrichmentUnavailable || out != nil {
+			t.Fatalf("excess aggregate bytes accepted: %v %v", out, err)
+		}
+	})
 }
 
 func TestLocalEnrichmentProviderReadErrorsPreserveContextOnly(t *testing.T) {
-	const sentinel = "provider body error with a private URL"
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	reader := enrichmentReadFunc(func([]byte) (int, error) {
-		cancel()
-		return 0, errors.New(sentinel)
-	})
-	if out, err := localEnrichmentFixtureClient(reader).SearchLocalEnrichment(ctx, "Paper", ""); err != context.Canceled || out != nil {
-		t.Fatalf("provider cancellation lost context or exposed body error: %v %v", out, err)
-	}
-	reader = func([]byte) (int, error) { return 0, errors.New(sentinel) }
-	if out, err := localEnrichmentFixtureClient(reader).SearchLocalEnrichment(context.Background(), "Paper", ""); err != ErrLocalEnrichmentUnavailable || out != nil {
-		t.Fatalf("provider body error not sanitized: %v %v", out, err)
-	}
-	data := `{"count":0,"recordings":[]}`
-	reader = func(p []byte) (int, error) {
-		if data == "" {
-			return 0, io.EOF
+	withFixtureClock(t, func(t *testing.T) {
+		const sentinel = "provider body error with a private URL"
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		reader := enrichmentReadFunc(func([]byte) (int, error) {
+			cancel()
+			return 0, errors.New(sentinel)
+		})
+		if out, err := localEnrichmentFixtureClient(reader).SearchLocalEnrichment(ctx, "Paper", ""); err != context.Canceled || out != nil {
+			t.Fatalf("provider cancellation lost context or exposed body error: %v %v", out, err)
 		}
-		n := copy(p, data)
-		data = data[n:]
-		return n, io.ErrUnexpectedEOF
-	}
-	if out, err := localEnrichmentFixtureClient(reader).SearchLocalEnrichment(context.Background(), "Paper", ""); err != ErrLocalEnrichmentUnavailable || out != nil {
-		t.Fatalf("valid JSON prefix hid a truncated provider response: %v %v", out, err)
-	}
+		reader = func([]byte) (int, error) { return 0, errors.New(sentinel) }
+		if out, err := localEnrichmentFixtureClient(reader).SearchLocalEnrichment(context.Background(), "Paper", ""); err != ErrLocalEnrichmentUnavailable || out != nil {
+			t.Fatalf("provider body error not sanitized: %v %v", out, err)
+		}
+		data := `{"count":0,"recordings":[]}`
+		reader = func(p []byte) (int, error) {
+			if data == "" {
+				return 0, io.EOF
+			}
+			n := copy(p, data)
+			data = data[n:]
+			return n, io.ErrUnexpectedEOF
+		}
+		if out, err := localEnrichmentFixtureClient(reader).SearchLocalEnrichment(context.Background(), "Paper", ""); err != ErrLocalEnrichmentUnavailable || out != nil {
+			t.Fatalf("valid JSON prefix hid a truncated provider response: %v %v", out, err)
+		}
+	})
 }
 
 type enrichmentProviderReadCount struct {
@@ -84,6 +88,7 @@ func (r *enrichmentProviderReadCount) Read(buf []byte) (int, error) {
 }
 
 func TestLocalEnrichmentStopsBeforeDecodingEleventhRow(t *testing.T) {
+	isolateFixtureBudgets(t)
 	body := `{"count":11,"recordings":[` + strings.Repeat(reviewProviderRow+",", 10) +
 		`{"id":"extra","title":"` + strings.Repeat("x", 512<<10) + `"}]}`
 	read := &enrichmentProviderReadCount{r: strings.NewReader(body)}
@@ -98,6 +103,7 @@ func TestLocalEnrichmentStopsBeforeDecodingEleventhRow(t *testing.T) {
 }
 
 func TestLocalEnrichmentDoesNotAllocateIgnoredCollections(t *testing.T) {
+	isolateFixtureBudgets(t)
 	body := `{"count":1,"recordings":[{"id":"first","title":"Title","artist-credit":[{"artist":{"name":"First Artist"}}` +
 		strings.Repeat(`,{"artist":{"name":""}}`, 30_000) + `],"releases":[{"id":"edition","title":"First Album","release-group":{"id":"group"}}` +
 		strings.Repeat(`,{}`, 70_000) + `]}]}`
@@ -131,6 +137,7 @@ func TestLocalEnrichmentProviderRequiredStructure(t *testing.T) {
 		{"valid ten of many", `{"recordings":[` + strings.Repeat(reviewProviderRow+",", 9) + reviewProviderRow + `],"count":123}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			isolateFixtureBudgets(t)
 			out, err := localEnrichmentFixtureClient(strings.NewReader(tc.body)).SearchLocalEnrichment(context.Background(), "Paper", "")
 			switch tc.name {
 			case "valid empty":

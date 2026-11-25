@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,6 +85,58 @@ class DependencySourcesTest(unittest.TestCase):
                     ], env=env))
                     self.assertEqual(config["services"]["backend"]["environment"].get(flag),
                                      requested or "false")
+
+    def test_smoke_cache_preserves_compose_storage_build_graph(self):
+        env = compose_fixture_env()
+        env["COMPOSE_PROJECT_NAME"] = "soundq-smoke-graph-test"
+        env["OMP_SMOKE_BUILDER"] = subprocess.check_output(
+            ["docker", "context", "show"], env=env, text=True,
+        ).strip()
+
+        def graph():
+            return json.loads(subprocess.check_output(
+                [str(ROOT / "scripts/ci-smoke-storage-build"), "--print"], env=env,
+            ))["target"]
+
+        services = ("minio", "minio-init", "minio-smoke")
+        compose_bake = subprocess.check_output([
+            "docker", "compose", "--profile", "smoke", "-f", "docker-compose.local-low-memory.yml",
+            "build", "--print", *services,
+        ], cwd=ROOT, env=env)
+        expected = json.loads(subprocess.check_output(
+            ["docker", "buildx", "bake", "-f", "-", "--print"],
+            cwd=ROOT, env=env, input=compose_bake,
+        ))["target"]
+        self.assertEqual(set(expected), set(services))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env["OMP_SMOKE_CACHE_DIR"] = tmp
+            with self.subTest(mode="cold-pr"):
+                self.assertEqual(graph(), expected)
+            with self.subTest(mode="cold-default-branch"):
+                env["OMP_SMOKE_CACHE_EXPORT"] = "true"
+                exporting = graph()
+                self.assertEqual(len(exporting["minio"].pop("cache-to")), 1)
+                self.assertEqual(exporting, expected)
+            with self.subTest(mode="warm-pr"):
+                env["OMP_SMOKE_CACHE_EXPORT"] = "false"
+                # Only a presence marker is needed for graph resolution; real
+                # BuildKit import/export is exercised separately from --print.
+                (Path(tmp) / "index.json").write_text("{}")
+                importing = graph()
+                imports = [importing[service].pop("cache-from") for service in services]
+                self.assertEqual(imports, [imports[0]] * 3)
+                self.assertEqual(len(imports[0]), 1)
+                self.assertEqual(importing, expected)
+            with self.subTest(mode="invalid-export"):
+                env["OMP_SMOKE_CACHE_EXPORT"] = "typo"
+                refused = subprocess.run(
+                    [str(ROOT / "scripts/ci-smoke-storage-build"), "--print"],
+                    env=env, capture_output=True, text=True,
+                )
+                self.assertEqual(refused.returncode, 2)
+                self.assertEqual(refused.stdout, "")
+                self.assertIn("OMP_SMOKE_CACHE_EXPORT must be true or false", refused.stderr)
 
 
 if __name__ == "__main__":

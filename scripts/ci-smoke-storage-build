@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Build the low-memory Compose MinIO images, with optional layer reuse.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+: "${COMPOSE_PROJECT_NAME:?set an isolated Compose project name}"
+: "${OMP_SMOKE_BUILDER:?set a task-owned Buildx builder}"
+if [[ $# -ne 0 && ( $# -ne 1 || "$1" != --print ) ]]; then
+  printf 'usage: scripts/ci-smoke-storage-build [--print]\n' >&2
+  exit 2
+fi
+cache="${OMP_SMOKE_CACHE_DIR:-}"
+export_cache="${OMP_SMOKE_CACHE_EXPORT:-false}"
+options=(--builder "$OMP_SMOKE_BUILDER" --progress plain -f -)
+if [[ -n "$cache" && -s "$cache/index.json" ]]; then
+  # The server target includes both compile stages; all storage consumers may
+  # import that one cache. BuildKit still resolves current build inputs.
+  options+=(--allow "fs.read=$cache" --set "minio*.cache-from=type=local,src=$cache")
+fi
+case "$export_cache" in
+  true)
+    : "${OMP_SMOKE_CACHE_DIR:?set a cache directory to export layers}"
+    mkdir -p "$cache"
+    options+=(--allow "fs.write=$cache" --set "minio.cache-to=type=local,dest=$cache,mode=max,ignore-error=true")
+    ;;
+  false) ;;
+  *) printf 'OMP_SMOKE_CACHE_EXPORT must be true or false\n' >&2; exit 2 ;;
+esac
+
+# Use Compose's own tags, labels, outputs and targets instead of hand-maintained
+# Docker build commands. Include the profiled bucket-smoke client so no smoke
+# consumer has to rebuild it with the runner's default Docker driver.
+docker compose -f docker-compose.local-low-memory.yml --profile smoke build --print \
+  minio minio-init minio-smoke |
+  docker buildx bake "${options[@]}" "$@"

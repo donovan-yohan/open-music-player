@@ -17,6 +17,7 @@ import (
 )
 
 func TestLocalEnrichmentDoesNotReadOrWritePublicCache(t *testing.T) {
+	isolateFixtureBudgets(t)
 	var commands []string
 	var gets, sets atomic.Int32
 	cached := fixturePublicCacheWithCommand(t, func(name string) {

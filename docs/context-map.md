@@ -335,6 +335,23 @@ domain concept moves or a new production harness becomes canonical.
   review. Process changes need executable backpressure, and scripts/workflows
   must not bypass review by pushing directly to `main`.
 
+### Flutter CI
+
+- `python3 -I -B scripts/ci_flutter.py plan` partitions tracked `client/test/**/*_test.dart`
+  by whole file into four VM shards. Timings only balance the work; new and
+  renamed VM suites are automatically included. The explicitly listed
+  `@TestOn('browser')` suite was not executed by the old VM gate and is not
+  counted here. Adding a browser-only exclusion requires explicit review; the
+  web build is not Chrome test evidence.
+- `scripts/test client` remains the ordinary local full VM gate.
+  `scripts/test client-shard INDEX OUTPUT` expects dependencies already resolved
+  and creates fresh host audio fixtures in the runner's temporary directory.
+- `Client (Flutter)` remains the required check. It requires all VM shards,
+  analyze/format and fixture contracts, and the independent release web build.
+  It verifies the four same-run/same-SHA artifacts and merges line coverage
+  before the best-effort Codecov upload. `python3 -B scripts/test_ci_flutter.py`
+  exercises the planner and the required-check evidence rules.
+
 ## Harness Matrix
 
 | Need | Command | Notes |
@@ -356,6 +373,7 @@ domain concept moves or a new production harness becomes canonical.
 | Deterministic evidence artifact | `scripts/agentic-cycle --run --evidence /tmp/omp-cycle.json` | Uses a stable evidence path for PR comments, issue handoff, or agent-to-agent transfer. |
 | PR status and source closeout | `scripts/release-audit --pr <number>` (strict: add `--strict`) | Status reports PR and optional issue facts. Strict requires verified merge ancestry; it does not verify whole-feature scope or live adoption. |
 | Exact-head/release policy check | `scripts/lint delivery` | Ensures OMP delivery docs, PR template, and CI script wiring stay present. |
+| CI pull-request scope | `python3 -I -B scripts/test_ci_pr_scope.py` | Exercises first-parent classification in real Git checkouts; only exact delivery-only file edits can skip product jobs, never a `main` push. |
 | Backend static/build | `scripts/lint backend`, `scripts/build backend` | `go vet` plus server/analyzer/local smoke binaries. |
 | Native Android setup | `python3 scripts/android-product preflight` | Explicit private Gradle home, canonical TMPDIR, SDK/NDK/CMake, full host JDK, fixture tools and API/build identity; see `android/README.md`. |
 | Native Android product | `scripts/test android-product`, `scripts/lint android-product`, `scripts/build android-product` | Compose source tests with real host JNI fixtures, Android lint and APK assembly. Not Flutter dogfood or retired framework preview. |

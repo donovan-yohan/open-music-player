@@ -180,6 +180,7 @@ func TestRequestBudgetWaitHonorsCancellationAndDeadline(t *testing.T) {
 }
 
 func TestCacheHitDoesNotWaitForProviderBudget(t *testing.T) {
+	isolateFixtureBudgets(t)
 	store := fixturePublicCache(t)
 	c := NewClient(store)
 	ctx := context.Background()

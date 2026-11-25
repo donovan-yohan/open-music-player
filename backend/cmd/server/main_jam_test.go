@@ -23,6 +23,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/jam"
 	"github.com/openmusicplayer/backend/internal/middleware"
+	"github.com/openmusicplayer/backend/internal/testutil/pgfixture"
 )
 
 func TestJamProductionFixtureProtection(t *testing.T) {
@@ -117,40 +118,7 @@ func jamProductionDatabase(t *testing.T) *db.DB {
 	if dsn == "" || os.Getenv("OMP_CONNECT_REDIS_ADDR") == "" {
 		t.Skip("disposable PG/Redis environment not set")
 	}
-	if err := db.CheckDSNNotProtected(dsn); err != nil {
-		t.Fatal(err)
-	}
-	root, err := sql.Open("postgres", dsn)
-	if err != nil {
-		t.Fatal("open test DB")
-	}
-	t.Cleanup(func() { root.Close() })
-	// Check the root marker before a fresh schema can hide protected data.
-	if err := (&db.DB{DB: root}).CheckDatabaseNotProtected(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	schema := "jam_production_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if _, err = root.Exec(`CREATE SCHEMA ` + schema); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { root.Exec(`DROP SCHEMA ` + schema + ` CASCADE`) })
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal("invalid test DSN")
-	}
-	q := u.Query()
-	q.Set("search_path", schema+",public")
-	u.RawQuery = q.Encode()
-	conn, err := sql.Open("postgres", u.String())
-	if err != nil {
-		t.Fatal("open isolated schema")
-	}
-	t.Cleanup(func() { conn.Close() })
-	database := &db.DB{DB: conn}
-	if err = database.Migrate(); err != nil {
-		t.Fatal(err)
-	}
-	return database
+	return pgfixture.NewMigratedDatabase(t, dsn)
 }
 
 func TestJamProductionConfiguredCompositionHTTP(t *testing.T) {

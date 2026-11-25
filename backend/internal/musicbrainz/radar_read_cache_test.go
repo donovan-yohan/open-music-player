@@ -12,6 +12,7 @@ import (
 )
 
 func TestRadarBudgetWarmPublicCacheAndOversizedUnboundedControl(t *testing.T) {
+	isolateFixtureBudgets(t)
 	ctx := context.Background()
 	store := fixturePublicCache(t)
 	c := NewClient(store)
@@ -44,51 +45,53 @@ func TestRadarBudgetWarmPublicCacheAndOversizedUnboundedControl(t *testing.T) {
 	}
 }
 func TestRadarBudgetFlightIsolationBeforeLeaderRelease(t *testing.T) {
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var starts atomic.Int32
-	c := NewClient(nil)
-	c.httpClient.Transport = fixtureTransport(func(r *http.Request) (*http.Response, error) {
-		if starts.Add(1) == 1 {
-			close(entered)
-			<-release
+	withFixtureClock(t, func(t *testing.T) {
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var starts atomic.Int32
+		c := NewClient(nil)
+		c.httpClient.Transport = fixtureTransport(func(r *http.Request) (*http.Response, error) {
+			if starts.Add(1) == 1 {
+				close(entered)
+				<-release
+			}
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(strings.Repeat("x", 1048577)))}, nil
+		})
+		ordinary := make(chan error, 1)
+		go func() {
+			_, err := c.doRequest(context.Background(), "https://isolated-radar.invalid/q")
+			ordinary <- err
+		}()
+		<-entered
+		bounded := make(chan error, 1)
+		go func() {
+			_, err := c.doRequest(WithRadarReadBudget(context.Background()), "https://isolated-radar.invalid/q")
+			bounded <- err
+		}()
+		deadline := time.NewTimer(2 * time.Second)
+		defer deadline.Stop()
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		isolated := false
+	wait:
+		for {
+			c.requestsMu.Lock()
+			n := len(c.requests)
+			c.requestsMu.Unlock()
+			if n == 2 {
+				isolated = true
+				break
+			}
+			select {
+			case <-deadline.C:
+				break wait
+			case <-ticker.C:
+			}
 		}
-		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(strings.Repeat("x", 1048577)))}, nil
+		close(release)
+		a, b := <-ordinary, <-bounded
+		if !isolated || starts.Load() != 2 || a != nil || b == nil {
+			t.Fatalf("budget policies coalesced isolated=%v starts=%d ordinary=%v bounded=%v", isolated, starts.Load(), a, b)
+		}
 	})
-	ordinary := make(chan error, 1)
-	go func() {
-		_, err := c.doRequest(context.Background(), "https://isolated-radar.invalid/q")
-		ordinary <- err
-	}()
-	<-entered
-	bounded := make(chan error, 1)
-	go func() {
-		_, err := c.doRequest(WithRadarReadBudget(context.Background()), "https://isolated-radar.invalid/q")
-		bounded <- err
-	}()
-	deadline := time.NewTimer(2 * time.Second)
-	defer deadline.Stop()
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	isolated := false
-wait:
-	for {
-		c.requestsMu.Lock()
-		n := len(c.requests)
-		c.requestsMu.Unlock()
-		if n == 2 {
-			isolated = true
-			break
-		}
-		select {
-		case <-deadline.C:
-			break wait
-		case <-ticker.C:
-		}
-	}
-	close(release)
-	a, b := <-ordinary, <-bounded
-	if !isolated || starts.Load() != 2 || a != nil || b == nil {
-		t.Fatalf("budget policies coalesced isolated=%v starts=%d ordinary=%v bounded=%v", isolated, starts.Load(), a, b)
-	}
 }

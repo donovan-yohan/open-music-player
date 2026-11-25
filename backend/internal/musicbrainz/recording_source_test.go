@@ -94,6 +94,7 @@ func TestRecordingSourceRejectsNonTrackURLShapes(t *testing.T) {
 }
 
 func TestRecordingSourceUsesBoundedSharedClient(t *testing.T) {
+	isolateFixtureBudgets(t)
 	ctx := context.Background()
 	store := fixturePublicCache(t)
 	c := NewClient(store)
@@ -130,21 +131,7 @@ func TestRecordingSourceUsesBoundedSharedClient(t *testing.T) {
 func TestRecordingSourceBypassesStalledCache(t *testing.T) {
 	for _, command := range []string{"get", "set"} {
 		t.Run(command, func(t *testing.T) {
-			// Isolate inherited cooldown while leaving normal pacing enabled.
-			key := "https://musicbrainz.org " + userAgent
-			providerBudgets.Lock()
-			prior := providerBudgets.origins[key]
-			providerBudgets.origins[key] = &requestBudget{slot: make(chan struct{}, 1)}
-			providerBudgets.Unlock()
-			t.Cleanup(func() {
-				providerBudgets.Lock()
-				defer providerBudgets.Unlock()
-				if prior == nil {
-					delete(providerBudgets.origins, key)
-				} else {
-					providerBudgets.origins[key] = prior
-				}
-			})
+			isolateFixtureBudgets(t)
 			var touched atomic.Bool
 			release := make(chan struct{})
 			store := fixturePublicCacheWithCommand(t, func(got string) {
@@ -206,19 +193,21 @@ func TestRecordingSourceRejectsUnboundedOrRedirectedLookup(t *testing.T) {
 		{"retryable provider failure", func() *http.Response { return fixtureResponse(http.StatusServiceUnavailable, "not public") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := NewClient(nil)
-			calls := 0
-			c.httpClient.Transport = fixtureTransport(func(r *http.Request) (*http.Response, error) {
-				calls++
-				if calls != 1 {
-					return nil, fmt.Errorf("unexpected followup: %s", r.URL)
+			withFixtureClock(t, func(t *testing.T) {
+				c := NewClient(nil)
+				calls := 0
+				c.httpClient.Transport = fixtureTransport(func(r *http.Request) (*http.Response, error) {
+					calls++
+					if calls != 1 {
+						return nil, fmt.Errorf("unexpected followup: %s", r.URL)
+					}
+					return tc.response(), nil
+				})
+				got, err := c.GetRecordingSource(context.Background(), id)
+				if got != nil || err == nil || calls != 1 {
+					t.Fatalf("bounded lookup source=%v, error=%v, calls=%d", got, err, calls)
 				}
-				return tc.response(), nil
 			})
-			got, err := c.GetRecordingSource(context.Background(), id)
-			if got != nil || err == nil || calls != 1 {
-				t.Fatalf("bounded lookup source=%v, error=%v, calls=%d", got, err, calls)
-			}
 		})
 	}
 }

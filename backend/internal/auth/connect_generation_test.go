@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/testutil/pgfixture"
 )
 
 func TestConnectAuthFixtureProtection(t *testing.T) {
@@ -109,42 +110,10 @@ func connectAuthDB(t *testing.T) (*db.DB, *Service, *db.User) {
 	if dsn == "" {
 		t.Skip("OMP_CONNECT_POSTGRES_DSN not set")
 	}
-	if err := db.CheckDSNNotProtected(dsn); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := sql.Open("postgres", dsn)
-	if err != nil {
-		t.Fatal("open test database")
-	}
-	t.Cleanup(func() { raw.Close() })
-	// Check the root marker before a fresh schema can hide protected data.
-	if err := (&db.DB{DB: raw}).CheckDatabaseNotProtected(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	schema := "connect_auth_" + uuid.NewString()[:8]
-	if _, err = raw.Exec(`CREATE SCHEMA ` + schema); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { raw.Exec(`DROP SCHEMA ` + schema + ` CASCADE`) })
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal("test DSN must be URL")
-	}
-	q := u.Query()
-	q.Set("search_path", schema+",public")
-	u.RawQuery = q.Encode()
-	conn, err := sql.Open("postgres", u.String())
-	if err != nil {
-		t.Fatal("open scoped database")
-	}
-	t.Cleanup(func() { conn.Close() })
-	database := &db.DB{DB: conn}
-	if err = database.Migrate(); err != nil {
-		t.Fatal(err)
-	}
+	database := pgfixture.NewMigratedDatabase(t, dsn)
 	user := &db.User{ID: uuid.New(), Email: uuid.NewString() + "@example.test", Username: "connect", PasswordHash: "unused", CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	users := db.NewUserRepository(database)
-	if err = users.Create(context.Background(), user); err != nil {
+	if err := users.Create(context.Background(), user); err != nil {
 		t.Fatal(err)
 	}
 	return database, NewService(users, db.NewTokenRepository(database), "connect-test-only-secret"), user

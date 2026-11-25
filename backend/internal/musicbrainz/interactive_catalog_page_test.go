@@ -44,6 +44,7 @@ func TestInteractiveCatalogRetriesWithoutCachingMalformedPage(t *testing.T) {
 		},
 	} {
 		t.Run(tc.entity, func(t *testing.T) {
+			isolateFixtureBudgets(t)
 			var writes atomic.Int32
 			store := fixturePublicCacheWithCommand(t, func(command string) {
 				if command == "set" {
@@ -122,6 +123,7 @@ func TestInteractiveCatalogRequiresBrowseableIDsBeforeCache(t *testing.T) {
 					name = "warm"
 				}
 				t.Run(name, func(t *testing.T) {
+					isolateFixtureBudgets(t)
 					var writes atomic.Int32
 					store := fixturePublicCacheWithCommand(t, func(command string) {
 						if command == "set" {
