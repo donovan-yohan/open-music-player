@@ -8,9 +8,13 @@ import os
 import re
 import subprocess
 import sys
+from contextlib import redirect_stdout
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -71,24 +75,42 @@ def default_repo() -> str:
     raise RuntimeError("could not infer GitHub repo; pass --repo owner/name")
 
 
-def git_fetch(base: str) -> str:
-    result = run(["git", "fetch", "origin", base, "--quiet"], check=False)
-    if result.returncode == 0:
-        return "fetched"
-    return f"fetch failed: {(result.stderr or result.stdout).strip()}"
+def fetch_branch_tip(repo: str, base: str) -> tuple[str | None, str]:
+    # Pair the GitHub PR with the same repository's live branch, not a local
+    # tracking ref that a successful fetch may leave untouched.
+    ref = f"refs/heads/{base}"
+    try:
+        branch = gh_json(["api", f"repos/{repo}/git/ref/heads/{base}"])
+    except (RuntimeError, ValueError) as exc:
+        return None, f"branch lookup failed: {exc}"
+    obj = branch.get("object") or {}
+    tip = obj.get("sha")
+    if branch.get("ref") != ref or obj.get("type") != "commit" or not isinstance(tip, str) or not re.fullmatch(r"[0-9a-f]{40}", tip):
+        return None, f"branch lookup did not return a commit for {ref}"
+    # Request the observed commit even if the branch moves before the fetch.
+    # The named ref also forces a transport check when the OID is already local.
+    result = run(
+        ["git", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", "origin", ref, tip],
+        check=False,
+    )
+    if result.returncode != 0:
+        return None, f"fetch failed: {(result.stderr or result.stdout).strip()}"
+    return tip, "fetched"
 
 
-def default_branch_head(base: str) -> str:
-    result = run(["git", "log", "-1", "--format=%h %H %ci %s", f"origin/{base}"], check=False)
+def default_branch_head(tip: str | None) -> str:
+    if tip is None:
+        return "unavailable: no verified branch tip"
+    result = run(["git", "log", "-1", "--format=%h %H %ci %s", tip], check=False)
     if result.returncode != 0:
         return f"unavailable: {(result.stderr or result.stdout).strip()}"
     return result.stdout.strip()
 
 
-def is_ancestor(commit: str, base: str) -> bool:
-    if not commit:
+def is_ancestor(commit: str, tip: str | None) -> bool:
+    if not tip or not re.fullmatch(r"[0-9a-f]{40}", commit):
         return False
-    result = run(["git", "merge-base", "--is-ancestor", commit, f"origin/{base}"], check=False)
+    result = run(["git", "merge-base", "--is-ancestor", commit, tip], check=False)
     return result.returncode == 0
 
 
@@ -202,7 +224,7 @@ def classify_pr(pr: dict[str, Any], checks: CheckSummary, base: str, merge_commi
         return Verdict("blocked", 1, reasons)
 
     reasons.append(f"PR #{pr['number']} is open, non-draft, mergeable, and checks are green.")
-    return Verdict("candidate ready", 0, reasons)
+    return Verdict("candidate ready", 1, reasons)
 
 
 def render_text(payload: dict[str, Any]) -> None:
@@ -241,6 +263,67 @@ def render_text(payload: dict[str, Any]) -> None:
         print(f"- {reason}")
 
 
+def test_strict_branch_proof() -> None:
+    """Real Git ancestry with GitHub reads replaced by fixed receipts."""
+    with TemporaryDirectory(prefix="release-audit-") as directory:
+        root = Path(directory) / "checkout"
+        root.mkdir()
+        remote = str(Path(directory) / "origin.git")
+        with patch(__name__ + ".ROOT", root):
+            def git(*args: str) -> str:
+                return run(["git", *args]).stdout.strip()
+
+            def origin(*args: str) -> str:
+                return git("--git-dir", remote, *args)
+
+            git("init", "-b", "main")
+            git("config", "user.name", "Release Audit Fixture")
+            git("config", "user.email", "audit@example.invalid")
+            git("config", "commit.gpgsign", "false")
+            git("commit", "--allow-empty", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            git("commit", "--allow-empty", "-m", "merged")
+            merged = git("rev-parse", "HEAD")
+            git("clone", "--bare", "--no-local", ".", remote)
+            git("remote", "add", "origin", remote)
+            git("update-ref", "refs/remotes/origin/main", merged)
+            git("config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/alternate/main")
+            github_tip = merged
+
+            def gh(args: list[str]) -> dict[str, Any]:
+                if args == ["api", "repos/fixture/release-audit/git/ref/heads/main"]:
+                    return {"ref": "refs/heads/main", "object": {"type": "commit", "sha": github_tip}}
+                if args[:3] == ["pr", "view", "1"]:
+                    return {"number": 1, "state": "MERGED", "baseRefName": "main", "mergeCommit": {"oid": merged}}
+                raise AssertionError(f"unexpected GitHub request: {args}")
+
+            def check(case: str, expected: tuple[int, str]) -> None:
+                output = StringIO()
+                with patch(__name__ + ".gh_json", gh), redirect_stdout(output):
+                    status = main(["--repo", "fixture/release-audit", "--pr", "1", "--strict", "--json"])
+                actual = (status, json.loads(output.getvalue())["verdict"]["status"])
+                if actual != expected:
+                    raise AssertionError(f"strict branch proof ({case}): got {actual}, expected {expected}")
+
+            check("verified merge", (0, "shipped to main"))
+            origin("update-ref", "refs/heads/main", base)
+            github_tip = base
+            check("stale tracking ref", (1, "implementation exists, not shipped"))
+            origin("update-ref", "refs/heads/main", merged)
+            check("divergent origin", (1, "implementation exists, not shipped"))
+            # GitHub has observed a newer tip. The origin's named branch still
+            # points to the old tip, but its object store can serve the new one.
+            github_tip = origin("-c", "user.name=Release Audit Fixture", "-c", "user.email=audit@example.invalid",
+                                "-c", "commit.gpgsign=false", "commit-tree", f"{merged}^{{tree}}", "-p", merged, "-m", "advanced")
+            origin("update-ref", "refs/heads/advanced", github_tip)
+            if run(["git", "cat-file", "-e", github_tip], check=False).returncode == 0:
+                raise AssertionError("advanced branch proof fixture already has the new tip")
+            check("new API tip not in origin's named branch", (0, "shipped to main"))
+            github_tip = merged
+            git("remote", "set-url", "origin", str(root / "missing"))
+            check("failed fetch", (1, "implementation exists, not shipped"))
+
+
 def self_test() -> int:
     checks = summarize_checks(
         [
@@ -266,7 +349,7 @@ def self_test() -> int:
         "main",
         False,
     )
-    if ready.status != "candidate ready" or ready.exit_status != 0:
+    if ready.status != "candidate ready" or ready.exit_status != 1:
         failures.append(f"ready PR classified as {ready}")
 
     blocked = classify_pr(
@@ -296,6 +379,10 @@ def self_test() -> int:
     )
     if shipped.status != "shipped to main" or shipped.exit_status != 0:
         failures.append(f"merged PR classified as {shipped}")
+    try:
+        test_strict_branch_proof()
+    except AssertionError as exc:
+        failures.append(str(exc))
 
     if failures:
         print("RELEASE AUDIT SELF-TEST FAILED")
@@ -316,10 +403,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="exit nonzero when verdict is not shipped to main or candidate ready",
+        help="require --pr and exit zero only for a verified merge into the target branch",
     )
     parser.add_argument("--self-test", action="store_true", help="run local classifier tests")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.strict and args.pr is None and not args.self_test:
+        parser.error("--strict requires --pr")
+    return args
 
 
 def main(argv: list[str]) -> int:
@@ -328,20 +418,20 @@ def main(argv: list[str]) -> int:
         return self_test()
 
     repo = args.repo or default_repo()
-    fetch_status = git_fetch(args.base)
+    pr = pr_view(repo, args.pr) if args.pr else None
+    tip, fetch_status = fetch_branch_tip(repo, args.base)
     payload: dict[str, Any] = {
         "repo": repo,
         "base": args.base,
         "fetch_status": fetch_status,
-        "default_branch_head": default_branch_head(args.base),
+        "default_branch_head": default_branch_head(tip),
         "issues": [issue_view(repo, issue) for issue in args.issue],
     }
 
-    if args.pr:
-        pr = pr_view(repo, args.pr)
+    if pr is not None:
         check_summary = summarize_checks(pr.get("statusCheckRollup") or [])
         merge_commit = (pr.get("mergeCommit") or {}).get("oid") or ""
-        verdict = classify_pr(pr, check_summary, args.base, is_ancestor(merge_commit, args.base))
+        verdict = classify_pr(pr, check_summary, args.base, is_ancestor(merge_commit, tip))
         payload.update(
             {
                 "pr": pr,
@@ -352,7 +442,7 @@ def main(argv: list[str]) -> int:
     else:
         payload["verdict"] = {
             "status": "default branch audited",
-            "exit_status": 0,
+            "exit_status": 1,
             "reasons": [f"origin/{args.base} head was inspected."],
         }
 

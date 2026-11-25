@@ -68,7 +68,8 @@ See `docs/context-map.md` for the fuller map and harness table.
   `scripts/agentic-cycle --run --base origin/main`
 - Deterministic dev-cycle evidence path:
   `scripts/agentic-cycle --run --evidence /tmp/omp-cycle.json`
-- Release/closeout audit: `scripts/release-audit --pr <number> --issue <number>`
+- PR status: `scripts/release-audit --pr <number>`; add `--strict` only to require
+  a verified merge into the target branch.
 - Native Compose checks: `scripts/test android-product`,
   `scripts/lint android-product`, `scripts/build android-product`, or
   `python3 scripts/android-product check` for all three. Explicit SDK/JDK,
@@ -144,8 +145,9 @@ from historical agent instructions.
   `/tmp` evidence for nontrivial local PR handoffs. The runner writes evidence
   before gates start and after each gate, so failed or interrupted cycles still
   leave an inspectable artifact.
-- Use `scripts/release-audit` before calling an epic/PR shipped; it verifies
-  default-branch truth, PR checks, mergeability, review state, and issue state.
+- Close the requested feature, not just its first PR. Follow the [closeout
+  audit](docs/agentic-delivery.md#closeout-audit) for all affected surfaces and
+  the authorized live target.
 - Use `scripts/dev test-infra` when backend tests need PostgreSQL/Redis/MinIO
   without a backend worker consuming queue jobs.
 - Keep the OMP delivery rules in `docs/agentic-delivery.md` aligned with the

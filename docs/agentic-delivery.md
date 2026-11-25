@@ -112,16 +112,20 @@ when the default dogfood stack might already own the normal ports.
 
 ## Closeout Audit
 
-Before calling a PR, issue, or epic shipped, run:
+For PR status, use `scripts/release-audit --pr <number>` (optionally `--issue
+<number>`). For source closeout use `--strict`: zero means this PR is merged into
+the verified target branch, not that the feature shipped.
 
-```bash
-scripts/release-audit --pr <number> --issue <number>
-```
+For end-to-end delivery, the parent owns the integrated user path across all
+affected surfaces, including native Android when it consumes the change. Verify
+the intended merges and adoption at the requested live target for changed
+deployables. A backend-first merge, draft, green CI or signed release advances
+that outcome; it does not close it. Take the next authorized gate as soon as it
+is runnable. If blocked, name the exact dependency and owner and continue
+independent work. Preserve exact-head, device installation and production
+access boundaries.
 
-Use `--strict` when the command is acting as a release gate; non-ready verdicts
-then exit nonzero.
-
-Use the verdict literally:
+Use the PR verdict literally:
 
 - `shipped to main`: merged and verified in `origin/main`.
 - `candidate ready`: PR is open, non-draft, mergeable, and checks are green.
