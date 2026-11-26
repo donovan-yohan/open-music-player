@@ -167,6 +167,8 @@ internal class NativeCallbackPlayer(
         val deck: Int, val identity: Long, val outgoing: MediaItem, val outgoingGrant: MediaGrant,
         val outgoingUri: String, val outgoingDeck: Int, val outgoingIdentity: Long, val outgoingEof: Long,
         val speed: Double = 1.0) {
+        var canArm = false
+        var bindingFollowsSource = false
         var armed = false
         var arming = false
         var completed = false
@@ -185,8 +187,12 @@ internal class NativeCallbackPlayer(
         val c = successor
         // Publish the exact kept deck to the reader before revoking pair authority.
         // This also covers an edit after the overlap already selected the incoming deck.
-        if (c != null && ordinaryDeck == c.deck && ordinaryIdentity == c.identity) retainedSuccessor = c
-        successorRevision++; successorJob?.cancel()
+        val kept = c?.takeIf { ordinaryDeck == it.deck && ordinaryIdentity == it.identity }
+        if (kept != null) retainedSuccessor = kept
+        val keepBinding = kept?.bindingFollowsSource == true
+        val preparation = successorJob
+        successorRevision++
+        if (c != null && !keepBinding) preparation?.cancel()
         if (!preserveAttempt) successorAttempt = null
         successor = null
         if (c != null) {
@@ -194,7 +200,9 @@ internal class NativeCallbackPlayer(
             val otherDeck = if (keepDeck == c.deck) c.outgoingDeck else c.deck
             val otherIdentity = if (keepDeck == c.deck) c.outgoingIdentity else c.identity
             journal.retire(otherDeck,drain=natural)
-            val predecessor = tail
+            // The borrowed decoder's load/gain commands already settled before arm.
+            // Its retained journal wait does not own the outgoing decoder's drain.
+            val predecessor = tail.takeUnless { keepBinding && it === preparation }
             tail = lifetime.launch {
                 predecessor?.join()
                 if (c.armed || c.arming) owner.crossfade(keepDeck, keepIdentity, otherDeck, otherIdentity, 0) { true }
@@ -236,13 +244,30 @@ internal class NativeCallbackPlayer(
                 predecessor?.join(); check(current())
                 withContext(NonCancellable + Dispatchers.IO) { file = source.acquire(item, ::sourceCurrent) }
                 ensureActive(); check(current())
+                val acquired = requireNotNull(file)
                 transferred = true
-                check(withContext(NonCancellable) { owner.loadDeck(c.deck, requireNotNull(file), c.identity, c.identity, journal.initialResume(requireNotNull(file),grant,c.deck), ::current, c.speed) })
+                check(withContext(NonCancellable) { owner.loadDeck(c.deck, acquired, c.identity, c.identity, journal.initialResume(acquired,grant,c.deck), ::current, c.speed) })
                 check(current())
-                bindJournal(item,grant,requireNotNull(file),c.deck,c.identity,true,::current,::sourceCurrent)
-                owner.controlDeck(c.deck, 7, volume.toDouble(), ::current)
+                if (acquired is NativePlaybackSource.BorrowedOriginal) {
+                    owner.controlDeck(c.deck, 7, volume.toDouble(), ::current)
+                    check(current())
+                    c.bindingFollowsSource = true
+                    c.canArm = true
+                    // A borrowed original has no post-bind resume Seek. Its journal can
+                    // follow the retained assignment without delaying native playback.
+                    fun bindingCurrent() = sourceCurrent() && acquired.versionCurrent()
+                    bindJournal(item,grant,acquired,c.deck,c.identity,true,::bindingCurrent)
+                } else {
+                    c.canArm = true
+                    bindJournal(item,grant,acquired,c.deck,c.identity,true,::current,::sourceCurrent)
+                    owner.controlDeck(c.deck, 7, volume.toDouble(), ::current)
+                }
             } catch (_: CancellationException) { }
-            catch (_: Exception) { if (current()) cancelSuccessor(preserveAttempt = true) }
+            catch (_: Exception) {
+                if (c.bindingFollowsSource && ordinaryDeck == c.deck && ordinaryIdentity == c.identity && sourceCurrent())
+                    fail("Audio source could not be prepared. Check Local audio access or choose the file again.")
+                else if (current()) cancelSuccessor(preserveAttempt = true)
+            }
             finally {
                 try {
                     if (!transferred) withContext(NonCancellable + Dispatchers.IO) { file?.let {owner.releaseUnborrowed(it)} }
@@ -265,7 +290,7 @@ internal class NativeCallbackPlayer(
         val b = snapshot.decks.getOrNull(c.deck) ?: return false
         if (a.identity != c.outgoingIdentity || b.identity != c.identity || a.generation != c.outgoingIdentity || b.generation != c.identity) return false
         if (b.error != 0) { cancelSuccessor(preserveAttempt = true); return false }
-        if (!c.armed && !c.arming && b.ready && a.ready && a.eofCount == c.outgoingEof) {
+        if (c.canArm && !c.armed && !c.arming && b.ready && a.ready && a.eofCount == c.outgoingEof) {
             val preference = graph.crossfadePreferences.state.value
             if (!preference.ready || preference.error || preference.seconds == 0) { cancelSuccessor(); return false }
             val length = minOf(preference.seconds * 1000L, a.durationMs / 2, b.durationMs / 2)
@@ -1156,6 +1181,7 @@ internal class NativeCallbackPlayer(
         performanceIdentity = null; durablePerformanceDocument = null; syncQualifications.clear(); performanceDecks = emptyMap(); onPerformanceChanged?.invoke()
         epoch++
         retainedSuccessor = null
+        successorJob?.cancel()
         transportRevision++
         pending?.cancel()
         pending = null

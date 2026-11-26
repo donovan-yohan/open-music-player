@@ -19,7 +19,7 @@ internal class WireOriginalImportTransport(
     private val endpoint: String,
     private val send: (AccountScope, String, RequestBody?, UUID?, (() -> Boolean)?) -> Reply,
 ) : OriginalImportTransport {
-    internal data class Reply(val code: Int, val body: JsonObject)
+    internal data class Reply(val code: Int, val body: JsonObject, val libraryAuthRefusal: Boolean = false)
 
     override fun canEncode(scope: AccountScope, intent: OriginalImportIntent): Boolean = try {
         checkIntent(scope, intent); manifest(intent); true
@@ -78,7 +78,7 @@ internal class WireOriginalImportTransport(
         fun complete(status: OriginalReceiptStatus) = OriginalImportReceipt(intent.destination, intent.operation, status)
         if (reply.code !in 200..299) {
             val code = reply.body.code()
-            val noWrite = upload && ((reply.code == 400 && code == "INVALID_UPLOAD") ||
+            val noWrite = upload && ((reply.code == 401 && reply.libraryAuthRefusal) || (reply.code == 400 && code == "INVALID_UPLOAD") ||
                 (reply.code == 413 && code == "UPLOAD_TOO_LARGE") || (reply.code == 415 && code == "UPLOAD_MEDIA"))
             return complete(if (noWrite) OriginalReceiptStatus.Refused else OriginalReceiptStatus.Unconfirmed)
         }

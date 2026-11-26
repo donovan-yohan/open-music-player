@@ -266,6 +266,7 @@ DRAIN
 }
 private class RetirementCandidate(val item:Item,val outgoing:Item,val deck:Int=1,val identity:Long=222,val outgoingDeck:Int=0,val outgoingIdentity:Long=111,val armed:Boolean=true,val arming:Boolean=false) {
  // This legacy extracted cohort has no numeric borrowed grants; the real player cohort covers those.
+ val bindingFollowsSource=false
  val grant:Grant?=null;val outgoingGrant:Grant?=null
 }
 private class RetirementJournal {val retired=mutableListOf<Int>();fun retire(slot:Int,drain:Boolean=false){retired+=slot}}

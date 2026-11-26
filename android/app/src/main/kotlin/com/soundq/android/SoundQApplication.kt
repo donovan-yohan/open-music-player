@@ -8,7 +8,6 @@ import com.soundq.android.data.*
 import com.soundq.android.data.originalimport.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import okhttp3.OkHttpClient
 import java.io.File
 import java.security.KeyStore
@@ -91,12 +90,7 @@ class AppGraph internal constructor(context: Context, val endpoint: ApiEndpoint,
     private val phoneImportOriginals=PhoneImportOriginals(phoneAudio,session::version)
     internal val originalImports=OriginalImportRepository(session,OriginalImportJournal(File(directory,"original-import.v1.json")),
         phoneImportOriginals::open,phoneImportOriginals::current,sourceStamp=phoneImportOriginals::stamp) {scope,_->
-        io.launch {
-            // Existing reader owns the query and generation; this never selects a track or changes filters.
-            val observed=library.state.combine(session.scopeRevision) {state,_->state}.first {!it.loading || !session.remoteCurrent(scope)}
-            if(session.remoteCurrent(scope)&&library.projectionScope(observed)?.epoch==scope.epoch)
-                runCatching {library.refreshObserved(scope,observed)}
-        }
+        library.scheduleImportRefresh(scope,io)
     }.also {imports->
         if(originalImportFixtureMode!=null) {
             val writes=originalImportFixtureMode=="fixture"

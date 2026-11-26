@@ -1,7 +1,13 @@
 package com.soundq.android.data
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import com.soundq.android.data.playlists.LibraryTrackCapture
 
 data class LibraryState(val query: LibraryQuery = LibraryQuery(), val rows: List<Track> = emptyList(), val total: Int? = null, val loading: Boolean = false, val error: SafeFailure.Reason? = null, val mutations: Map<TrackId,MutationOutcome> = emptyMap(), val analysis:Map<TrackId,LibraryAnalysisFacts> = emptyMap(), val nextOffset:Int=0, val endReached:Boolean=false, val pageRevision:Long=0, val failedAppend:Boolean=false, val sortError:Boolean=false, val collectionLoading:Boolean=false, val collectionError:String?=null,val completeProjection:Boolean=false,val projectionError:Boolean=false)
@@ -389,10 +395,56 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
             changed()
         }
     }
+    /** An import owes this query an observation, even if a local update retires its first page. */
+    internal fun scheduleImportRefresh(scope:AccountScope,jobs:CoroutineScope) {
+        val lifetime=synchronized(this){if(!session.remoteCurrent(scope))return;queryLifetime}
+        jobs.launch {
+            fun current()=isActive&&session.remoteCurrent(scope)&&synchronized(this@LibraryRepository){queryLifetime==lifetime}
+            // One fresh attempt after supersession, never a retry of a failed GET or an import command.
+            repeat(2) {
+                var expected:LibraryState?=null
+                combine(state,likeRevision,session.scopeRevision){_,_,_->Unit}.first {
+                    synchronized(this@LibraryRepository) {
+                        when {
+                            !current()->true
+                            // A Like readback can still own rows after loading becomes false. Its final
+                            // release signals likeRevision even if LibraryState itself does not change.
+                            mutable.value.loading||mutations.values.any {same(it.offer.view.scope,scope)}->false
+                            else->{expected=mutable.value.takeIf {acceptedScope?.let {same(it,scope)}==true};true}
+                        }
+                    }
+                }
+                val observed=expected ?: return@launch
+                try {
+                    if(tryRefreshObserved(scope,observed,::current,recoverSuperseded=true))return@launch
+                } catch(cancelled:CancellationException) {throw cancelled}
+                catch(_:Exception) {return@launch}
+            }
+        }
+    }
     fun refreshObserved(scope:AccountScope,expected:LibraryState,valid:()->Boolean={true}) {
-        val version=synchronized(this){if(!valid()||!session.current(scope)||mutable.value!==expected||expected.loading)return;generation}
-        val page=fetchPage(scope,expected.query,0) {valid()&&session.current(scope)&&synchronized(this){generation==version}}
-        synchronized(this){if(valid()&&session.current(scope)&&generation==version&&mutable.value===expected){generation++;observe(scope,page.tracks,true);mutable.value=expected.copy(completeProjection=false,projectionError=false,rows=page.tracks,total=page.total,error=null,analysis=pageAnalysis(page),nextOffset=page.scannedIds.size,endReached=page.tracks.isEmpty()||page.scannedIds.size>=page.total,pageRevision=++paginationSerial)}}
+        tryRefreshObserved(scope,expected,valid)
+    }
+    /** False means the observed snapshot lost authority, not that its transport failed. */
+    private fun tryRefreshObserved(scope:AccountScope,expected:LibraryState,valid:()->Boolean,recoverSuperseded:Boolean=false):Boolean {
+        val version=synchronized(this){if(!valid()||!session.current(scope)||mutable.value!==expected||expected.loading)return false;generation}
+        fun snapshotCurrent()=generation==version&&mutable.value===expected
+        val page=try {
+            fetchPage(scope,expected.query,0) {valid()&&session.current(scope)&&synchronized(this){
+                generation==version&&(!recoverSuperseded||mutable.value===expected)
+            }}
+        } catch(e:SafeFailure) {
+            // The collection reader stops between pages on supersession, rather than returning a stale page.
+            if(recoverSuperseded&&e.reason==SafeFailure.Reason.Retired&&!synchronized(this){snapshotCurrent()})return false
+            throw e
+        }
+        return synchronized(this) {
+            if(!valid()||!session.current(scope)||!snapshotCurrent())return false
+            generation++
+            observe(scope,page.tracks,true)
+            mutable.value=expected.copy(completeProjection=false,projectionError=false,rows=page.tracks,total=page.total,error=null,analysis=pageAnalysis(page),nextOffset=page.scannedIds.size,endReached=page.tracks.isEmpty()||page.scannedIds.size>=page.total,pageRevision=++paginationSerial)
+            true
+        }
     }
     /** Playback cleanup may trail a newer account's read; preserve only that current owner. */
     @Synchronized internal fun retireObsolete() {

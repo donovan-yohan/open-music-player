@@ -110,7 +110,9 @@ internal class OriginalImportJournal(private val file: File) {
         val nextConflicts = if (entry.phase == OriginalImportPhase.Unconfirmed) conflicts else
             conflicts.filterNot { it.upload == entry.intent.operation && it.confirmed }
         replace(rows.filterNot { it.intent.operation == entry.intent.operation } + settled, current, nextConflicts,
-            mayReclaimRefusals = previous == null)
+            mayReclaimRefusals = previous == null || previous.phase == OriginalImportPhase.Unconfirmed && entry.commit != null,
+            admittingUpload = previous == null && entry.phase == OriginalImportPhase.Unconfirmed,
+            refusingUpload = previous?.phase == OriginalImportPhase.Unconfirmed && entry.phase == OriginalImportPhase.Refused)
         return settled
     }
 
@@ -231,8 +233,13 @@ internal class OriginalImportJournal(private val file: File) {
     }
 
     private fun replace(next: List<OriginalImportEntry>, current: () -> Boolean, nextConflicts: List<RemovalConflict> = conflicts,
-        removalWrite: RemovalWrite? = null, mayReclaimRefusals: Boolean = false, nextPrepared: Set<UUID> = prepared) {
+        removalWrite: RemovalWrite? = null, mayReclaimRefusals: Boolean = false, nextPrepared: Set<UUID> = prepared,
+        admittingUpload: Boolean = false, refusingUpload: Boolean = false) {
         require(nextConflicts.size <= MAX_ROWS)
+        // Legacy bytes did not reserve room. Keep their cleanup usable without letting
+        // a new upload or any subsequent write consume more of its receipts' allowance.
+        val previousBudget = (loadedBytes?.size ?: 0) + receiptReserve(loadedRows)
+        val budget = if (admittingUpload) MAX_BYTES else maxOf(MAX_BYTES, previousBudget)
         fun encode(rows: List<OriginalImportEntry>): ByteArray? {
             if (rows.size > MAX_ROWS) return null
             validate(rows, nextConflicts, nextPrepared)
@@ -245,7 +252,7 @@ internal class OriginalImportJournal(private val file: File) {
             }
             return Json.encodeToString(Disk(version, rows.map(DiskRow::from), nextConflicts.map(DiskConflict::from),
                 nextPrepared.map(UUID::toString)))
-                .encodeToByteArray().takeIf { it.size <= MAX_BYTES }
+                .encodeToByteArray().takeIf { it.size <= MAX_BYTES && it.size + receiptReserve(rows) <= budget }
         }
         var persisted = next
         var encoded = encode(persisted)
@@ -266,8 +273,9 @@ internal class OriginalImportJournal(private val file: File) {
             check(current())
             try {
                 Files.move(stage, file.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
-                // Readback alone is not enough: a crash must not restore prepared bytes after entry.
-                if (removalWrite != null) syncDirectory()
+                // Readback proves visibility, not crash durability. A definitive refusal also
+                // must survive restart before the caller drops its exact no-write witness.
+                if (removalWrite != null || admittingUpload || refusingUpload) syncDirectory()
                 check(read().contentEquals(bytes)) { "Original import journal replacement could not be verified" }
             } catch (failure: Exception) {
                 // An ambiguous replacement must not leave cached Added rows authorizing reads.
@@ -284,6 +292,14 @@ internal class OriginalImportJournal(private val file: File) {
 
     private fun syncDirectory() {
         FileChannel.open(requireNotNull(file.parentFile).toPath(), READ).use { it.force(true) }
+    }
+
+    private fun receiptReserve(rows: List<OriginalImportEntry>): Int = rows.sumOf {
+        when (it.phase) {
+            OriginalImportPhase.Unconfirmed -> uploadReceiptGrowth
+            OriginalImportPhase.ReadbackRequired -> membershipGrowth
+            else -> 0
+        }
     }
 
     private fun publish(rows: List<OriginalImportEntry>, nextConflicts: List<RemovalConflict>, nextPrepared: Set<UUID>) {
@@ -375,6 +391,14 @@ internal class OriginalImportJournal(private val file: File) {
     }
     private companion object {
         const val MAX_BYTES = 2_000_000; const val MAX_ROWS = 4096
+        // Field widths are measured by the disk serializer. A pending UUID may resolve
+        // into a removal fence instead of ReadbackRequired, or grow through Added.
+        private val sample = DiskRow("", "", "", "", "", 1, 1, "", "", "", OriginalImportPhase.Unconfirmed.name)
+        private val receipt = sample.copy(phase = OriginalImportPhase.ReadbackRequired.name, track = Long.MAX_VALUE)
+        private fun encodedSize(row: DiskRow) = Json.encodeToString(row).encodeToByteArray().size
+        private val membershipGrowth = encodedSize(receipt.copy(phase = OriginalImportPhase.Added.name, durationMs = Long.MAX_VALUE)) - encodedSize(receipt)
+        private val uploadReceiptGrowth = maxOf(encodedSize(receipt) + membershipGrowth,
+            encodedSize(receipt.copy(phase = OriginalImportPhase.RemovalPending.name, removal = UUID(0, 0).toString()))) - encodedSize(sample)
         fun canonicalUuid(value: String) = UUID.fromString(value).also { require(it.toString() == value) }
     }
 }

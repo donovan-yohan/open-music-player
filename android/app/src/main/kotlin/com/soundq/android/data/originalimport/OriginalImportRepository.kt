@@ -27,9 +27,11 @@ internal class OriginalImportRepository(
     private val membershipLock = Any()
     private val reads = mutableMapOf<Member, Any>()
     private val failedRetirements = mutableSetOf<Member>()
-    // Live certificates are account-epoch owned. Cold journal fences carry neither certificate.
+    // A received ACK can survive a credential save or a same-session local lock/unlock,
+    // not a new login. Cold journal fences carry no live acknowledgement.
     private val removals = mutableMapOf<Member, RemovalFence>()
     private var removalEpoch: Long? = null
+    private val uploadRefusals = mutableMapOf<ServerAccount, OriginalImportEntry>()
     private val proofs = MutableStateFlow<Map<Member, Proof>>(emptyMap())
     private val proofSequence = MutableStateFlow(0L)
     val membershipRevision: StateFlow<Long> = proofSequence
@@ -115,26 +117,34 @@ internal class OriginalImportRepository(
     internal class RemovalFence internal constructor(internal val scope: AccountScope, internal val owner: ServerAccount,
         internal val track: TrackId, internal val operation: UUID, internal val preparedOnly: Boolean = false) {
         internal var durable = false
+        @Volatile internal var wireEntered = false
+        internal var acknowledged = false
         internal var status = LibraryRemovalFenceStatus.Unconfirmed
         private val witness = LibraryRemovalWitness()
-        internal fun observe() = LibraryRemovalFence(operation, status, witness)
+        internal fun observableStatus(scope: AccountScope) =
+            if (acknowledged && scope.epoch != this.scope.epoch) LibraryRemovalFenceStatus.ConfirmedLocalSettleFailed else status
+        internal fun observe(status: LibraryRemovalFenceStatus = this.status) = LibraryRemovalFence(operation, status, witness)
         internal fun settled() { witness.settled = true }
     }
 
     private fun removalPending(scope: AccountScope, track: TrackId) = journal.pendingRemoval(owner(scope), track) != null
 
-    private fun useRemovalEpoch(scope: AccountScope) {
+    private fun useRemovalEpoch(scope: AccountScope): Boolean {
+        if (!session.remoteCurrent(scope)) return false
         if (removalEpoch != scope.epoch) {
-            removals.clear()
+            val retired = removals.filterValues { !it.durable || !it.wireEntered || !session.resumesLocal(it.scope) }.keys
+            // A new lock during continuity checks must not discard this session's receipts.
+            if (!session.remoteCurrent(scope)) return false
+            removals.keys.removeAll(retired)
             removalEpoch = scope.epoch
         }
+        return true
     }
 
     private fun removalFence(scope: AccountScope, track: TrackId): LibraryRemovalFence? {
-        if (!session.remoteCurrent(scope)) return null
-        useRemovalEpoch(scope)
+        if (!useRemovalEpoch(scope)) return null
         val key = Member(owner(scope), track)
-        return removals[key]?.observe() ?: journal.pendingRemoval(key.owner, track)?.let {
+        return removals[key]?.let { it.observe(it.observableStatus(scope)) } ?: journal.pendingRemoval(key.owner, track)?.let {
             val status = if (journal.preparedRemoval(key.owner, track) == it) LibraryRemovalFenceStatus.NotSentLocalCleanupFailed
                 else LibraryRemovalFenceStatus.Unconfirmed
             LibraryRemovalFence(it, status)
@@ -149,8 +159,7 @@ internal class OriginalImportRepository(
     fun retryRemovalSettlement(scope: AccountScope, track: TrackId, mounted: () -> Boolean, retractionOnly: Boolean = false): UUID? =
         synchronized(membershipLock) {
             fun current() = mounted() && session.remoteCurrent(scope)
-            if (!current()) return@synchronized null
-            useRemovalEpoch(scope)
+            if (!current() || !useRemovalEpoch(scope)) return@synchronized null
             val key = Member(owner(scope), track)
             val fence = removals[key] ?: run {
                 val operation = journal.preparedRemoval(key.owner, track) ?: return@synchronized null
@@ -162,7 +171,7 @@ internal class OriginalImportRepository(
                     invalidateRemovalProof(key)
                 }
             }
-            val settlement = when (fence.status) {
+            val settlement = when (fence.observableStatus(scope)) {
                 LibraryRemovalFenceStatus.NotSentLocalCleanupFailed -> Settlement.Retract
                 LibraryRemovalFenceStatus.ConfirmedLocalSettleFailed -> if (retractionOnly) return@synchronized null else Settlement.Confirm
                 LibraryRemovalFenceStatus.Unconfirmed -> return@synchronized null
@@ -215,20 +224,38 @@ internal class OriginalImportRepository(
         finishRemoval(fence, Settlement.Confirm) { session.remoteCurrent(fence.scope) }
     }
 
-    /** Lose only the live attempt, not its durable unknown-outcome fence. */
+    /** Exact wire evidence, not permission to publish or write the journal while locked. */
+    fun receiveRemovalAcknowledgement(fence: RemovalFence) = synchronized(membershipLock) {
+        if (fence.durable && fence.wireEntered && removals[Member(fence.owner, fence.track)] === fence)
+            fence.acknowledged = true
+    }
+
+    /** End the wire attempt without discarding an exact durable ACK or unknown-outcome fence. */
     fun unconfirmedRemoval(fence: RemovalFence): LibraryRemovalFence? = synchronized(membershipLock) {
         val key = Member(fence.owner, fence.track)
         if (removals[key] === fence) {
-            removals.remove(key)
-            if (!fence.durable) fence.settled()
+            if (fence.acknowledged) {
+                // The response guard can lose remote authority while rotation saves credentials
+                // without advancing the epoch. Only now is the local settlement available to Reload.
+                fence.status = LibraryRemovalFenceStatus.ConfirmedLocalSettleFailed
+            } else {
+                removals.remove(key)
+                if (!fence.durable) fence.settled()
+            }
         }
         fence.observe().takeIf { fence.durable && session.remoteCurrent(fence.scope) }
     }
 
     private fun finishRemoval(fence: RemovalFence, settlement: Settlement, current: () -> Boolean): Boolean {
         val key = Member(fence.owner, fence.track)
-        if (removals[key] !== fence || !current()) return false
+        if (removals[key] !== fence) return false
         val acknowledged = settlement == Settlement.Confirm
+        if (acknowledged && fence.durable && !fence.acknowledged) return false
+        if (!current()) {
+            // Authority can also vanish after wire validation, before immediate confirmation.
+            if (acknowledged && fence.acknowledged) fence.status = LibraryRemovalFenceStatus.ConfirmedLocalSettleFailed
+            return false
+        }
         return try {
             if (fence.durable) journal.finishRemoval(fence.owner, fence.track, fence.operation, acknowledged, fence.preparedOnly, current)
             if (acknowledged) failedRetirements.remove(key)
@@ -307,6 +334,10 @@ internal class OriginalImportRepository(
             journal.load()
             if (!state.value.ready) return Action.StorageUnavailable
             if (!session.remoteCurrent(scope)) return Action.Retired
+            val cleaned = synchronized(membershipLock) {
+                uploadRefusals[owner]?.let { finishUploadRefusal(scope, it) } ?: true
+            }
+            if (!cleaned) return if (session.remoteCurrent(scope)) Action.StorageUnavailable else Action.Retired
             return block(adapter)
         } finally { synchronized(mutableWork) { mutableWork.value = mutableWork.value - owner } }
     }
@@ -323,15 +354,14 @@ internal class OriginalImportRepository(
             val body = exchange { VerifiedOriginalBody.verify(opened, intent.original.revision, ::current, ::canSend) } ?: return Action.Unavailable
             if (!canSend()) return Action.Retired
             synchronized(membershipLock) {
-                if (!session.remoteCurrent(scope)) return Action.Retired
-                useRemovalEpoch(scope)
+                if (!useRemovalEpoch(scope)) return Action.Retired
                 if (!importAdmissionClear(intent.destination)) return Action.AlreadyInProgress
                 if (save(scope, entry, null) == null) return Action.StorageUnavailable
             }
             fun admit() = admitImportMutation(scope, intent.destination, sourceCurrent = ::current, mounted = choice.mounted)
-            if (!admit()) return settleUnsentUpload(scope, entry)
+            if (!admit()) return retainUploadRefusal(scope, entry, Action.Retired)
             try { adapter.upload(scope, intent, body, ::admit) }
-            catch (_: OriginalUploadNotAdmitted) { return settleUnsentUpload(scope, entry) }
+            catch (_: OriginalUploadNotAdmitted) { return retainUploadRefusal(scope, entry, Action.Retired) }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { null }
         } finally {
@@ -344,8 +374,7 @@ internal class OriginalImportRepository(
     private fun admitImportMutation(scope: AccountScope, owner: ServerAccount,
         sourceCurrent: () -> Boolean = { true }, mounted: () -> Boolean): Boolean =
         sourceCurrent() && synchronized(membershipLock) {
-            if (!session.remoteCurrent(scope)) return@synchronized false
-            useRemovalEpoch(scope)
+            if (!useRemovalEpoch(scope)) return@synchronized false
             // Durable custody can require IO. Sample mount and account at the end of admission.
             importAdmissionClear(owner) && mounted() && session.remoteCurrent(scope)
         }
@@ -353,20 +382,29 @@ internal class OriginalImportRepository(
     private fun importAdmissionClear(owner: ServerAccount) = journal.allowsUnknownTargetMutation(owner) &&
         removals.values.none { it.owner == owner && it.status == LibraryRemovalFenceStatus.Unconfirmed }
 
-    private fun settleUnsentUpload(scope: AccountScope, entry: OriginalImportEntry): Action = when {
-        !session.remoteCurrent(scope) -> Action.Retired
-        save(scope, entry.copy(phase = OriginalImportPhase.Refused), entry) != null -> Action.Retired
-        else -> Action.StorageUnavailable
+    /** Only a positive non-entry or producer no-write result can schedule local cleanup. */
+    private fun retainUploadRefusal(scope: AccountScope, entry: OriginalImportEntry, result: Action): Action = synchronized(membershipLock) {
+        uploadRefusals[entry.intent.destination] = entry
+        if (!session.remoteCurrent(scope)) Action.Retired
+        else if (finishUploadRefusal(scope, entry)) result
+        else if (!session.remoteCurrent(scope)) Action.Retired else Action.StorageUnavailable
+    }
+
+    private fun finishUploadRefusal(scope: AccountScope, entry: OriginalImportEntry): Boolean {
+        check(entry.intent.destination == owner(scope))
+        if (save(scope, entry.copy(phase = OriginalImportPhase.Refused), entry) == null) return false
+        uploadRefusals.remove(entry.intent.destination)
+        return true
     }
 
     private fun settle(adapter: OriginalImportTransport, scope: AccountScope, entry: OriginalImportEntry, receipt: OriginalImportReceipt?, isRead: Boolean): Action {
-        if (!session.remoteCurrent(scope)) return Action.Retired
         val status = receipt?.takeIf { it.destination == entry.intent.destination && it.operation == entry.intent.operation }?.status
+        if (!isRead && status == OriginalReceiptStatus.Refused) return retainUploadRefusal(scope, entry, Action.Refused)
+        if (!session.remoteCurrent(scope)) return Action.Retired
         val next = when (status) {
             is OriginalReceiptStatus.Committed -> if (status.original.revision == entry.intent.original.revision)
                 entry.copy(phase = OriginalImportPhase.ReadbackRequired, commit = status.original) else null
             OriginalReceiptStatus.Closed -> if (isRead) entry.copy(phase = OriginalImportPhase.Closed) else null
-            OriginalReceiptStatus.Refused -> entry.copy(phase = OriginalImportPhase.Refused)
             else -> null
         }
         if (next == null) return Action.Unconfirmed

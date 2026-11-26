@@ -105,8 +105,11 @@ class SoundQApi internal constructor(
             else -> false
         }
     }
-    private fun wire(path: String, method: String = "GET", body: JsonObject? = null, access: String? = null, dispatchValid: (() -> Boolean)? = null, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, rawJson:String?=null, calls:DiscoveryCalls?=null, responseValid:(()->Boolean)?=null, originalImport:Boolean=false, originalBody:RequestBody?=null, valid: () -> Boolean): Reply {
-        if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
+    private fun wire(path: String, method: String = "GET", body: JsonObject? = null, access: String? = null, dispatchValid: (() -> Boolean)? = null, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, rawJson:String?=null, calls:DiscoveryCalls?=null, responseValid:(()->Boolean)?=null, originalImport:Boolean=false, originalBody:RequestBody?=null, libraryRemovalAccepted:(()->Unit)?=null, valid: () -> Boolean): Reply {
+        if (!valid()) {
+            if (originalBody != null) throw OriginalUploadNotAdmitted()
+            throw SafeFailure(SafeFailure.Reason.Retired)
+        }
         val pathOnly=path.substringBefore('?')
         require(path.startsWith("/") && !path.startsWith("//") && '#' !in path && '\\' !in pathOnly)
         require(pathOnly.split('/').none {part->
@@ -147,13 +150,31 @@ class SoundQApi internal constructor(
         // Only this bound original upload may turn that absence into a no-entry certificate.
         fun uploadNotEntered() = requestGuard.originalUpload && call.isExecuted() &&
             call.request().tag(WireGuard::class.java) === requestGuard && !requestGuard.uploadEntered
+        fun ownsNetworkReply(response: Response): Boolean {
+            val sent = response.networkResponse?.takeIf { it.code == response.code }?.request ?: return false
+            val submitted = call.request()
+            return response.cacheResponse == null && sent.tag(WireGuard::class.java) === requestGuard &&
+                sent.url == submitted.url && sent.method == submitted.method &&
+                sent.header("Authorization") == submitted.header("Authorization") &&
+                sent.header("Idempotency-Key") == submitted.header("Idempotency-Key")
+        }
         if(originalImport)call.timeout().timeout(if(method=="POST")100 else 32,TimeUnit.SECONDS)
         val cancel=call::cancel
         if(calls!=null&&!calls.track(cancel))throw SafeFailure(SafeFailure.Reason.Retired)
         try {
             call.execute().use { response ->
                 if (uploadNotEntered()) throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+                // Take custody of narrow producer evidence before checking the old presentation scope.
+                if (response.code == 204 && libraryRemovalAccepted != null) {
+                    if (!ownsNetworkReply(response)) throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+                    libraryRemovalAccepted()
+                }
+                if (response.code == 401 && requestGuard.originalUpload && ownsNetworkReply(response) &&
+                    response.cacheControl.isPrivate && response.cacheControl.noStore && response.header("ETag") == null &&
+                    isLibraryAuthRefusal(response))
+                    return Reply(401, buildJsonObject {}, libraryAuthRefusal = true)
                 if (!(responseValid?.invoke() ?: valid())) throw SafeFailure(SafeFailure.Reason.Retired)
+                if (response.code == 204 && libraryRemovalAccepted != null) return Reply(204, buildJsonObject {})
                 if (response.code in 300..399) throw SafeFailure(SafeFailure.Reason.Endpoint)
                 if (response.code == 401 && method == "DELETE" && dispatchValid is LibraryMutationAdmission)
                     return Reply(401, buildJsonObject {}, libraryAuthRefusal = isLibraryAuthRefusal(response))
@@ -314,12 +335,15 @@ class SoundQApi internal constructor(
                     else if (!requireNotNull(current).invoke() || isCanceled()) false
                     else { entered = true; true }
                 } else null) {session.remoteCurrent(scope)}
-            val access=session.access(scope)
+            val access = try { session.access(scope) } catch (failure: SafeFailure) {
+                if (upload && failure.reason == SafeFailure.Reason.Retired) throw OriginalUploadNotAdmitted()
+                throw failure
+            }
             val first=exchange(access)
             // Only ordinary exact membership is read-only. Never replay a commit-capable status GET.
             val result=if(current==null&&first.code==401&&refresh(scope,access))exchange(session.access(scope))else first
-            session.checkRemote(scope)
-            WireOriginalImportTransport.Reply(result.code,result.body)
+            if (!result.libraryAuthRefusal) session.checkRemote(scope)
+            WireOriginalImportTransport.Reply(result.code, result.body, result.libraryAuthRefusal)
         }
     }
     /** One disclosed lookup, without a 401 refresh/replay or transport follow-up. */
@@ -435,8 +459,11 @@ class SoundQApi internal constructor(
                         }
                         if (!live()) return@LibraryMutationAdmission false
                     }
+                    fence?.wireEntered = true
                     entered = true
                     true
+                }, libraryRemovalAccepted = {
+                    if (entered) fence?.let { checkNotNull(imports).receiveRemovalAcknowledgement(it) }
                 }) { session.remoteCurrent(scope) }.also { session.checkRemote(scope) }
         } catch (failure: Exception) {
             fence?.let {
@@ -460,8 +487,10 @@ class SoundQApi internal constructor(
             throw SafeFailure(if (response.code >= 500) SafeFailure.Reason.Uncertain else
                 if (response.code in 200..299) SafeFailure.Reason.InvalidResponse else SafeFailure.Reason.Refused)
         }
-        return if (admitted == null || checkNotNull(imports).confirmRemoval(admitted)) LibraryRemovalResult(LibraryRemovalReceipt.Confirmed)
+        val result = if (admitted == null || checkNotNull(imports).confirmRemoval(admitted)) LibraryRemovalResult(LibraryRemovalReceipt.Confirmed)
             else LibraryRemovalResult(LibraryRemovalReceipt.ConfirmedLocalSettleFailed, admitted.observe())
+        session.checkRemote(scope)
+        return result
     }
     fun trackDetailsMetadata(scope:AccountScope,id:TrackId,draft:com.soundq.android.data.trackdetails.MetadataDraft,valid:()->Boolean) {
         val body=authorized(scope,"/tracks/${id.value}/metadata-override","PUT",com.soundq.android.data.trackdetails.TrackDetailsJson.metadata(draft),valid=valid,expectedStatus=200)

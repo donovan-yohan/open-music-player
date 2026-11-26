@@ -130,7 +130,7 @@ internal class VerifiedOriginalBody private constructor(
 }
 
 internal class OriginalContentMismatch : IOException("Original content changed")
-/** Only the one-shot authenticated wire guard produces this positive non-entry witness. */
+/** Only the one-shot authenticated request owner produces this positive non-entry witness. */
 internal class OriginalUploadNotAdmitted : IOException("Original upload was not admitted")
 
 /** Bounded exact proof on the descriptor that will actually be streamed/decoded. */

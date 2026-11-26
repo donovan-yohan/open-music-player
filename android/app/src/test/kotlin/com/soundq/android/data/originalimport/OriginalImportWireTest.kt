@@ -2,9 +2,14 @@ package com.soundq.android.data.originalimport
 
 import com.soundq.android.data.*
 import com.soundq.android.data.deviceaudio.*
+import com.soundq.android.data.trackdetails.DetailsAction
+import com.soundq.android.data.trackdetails.RemovalIssue
+import com.soundq.android.data.trackdetails.TrackDetailsRepository
 import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.serialization.json.*
@@ -82,6 +87,365 @@ class OriginalImportWireTest {
             assertEquals(1, headers.get())
             assertNull(f.server.takeRequest(150, TimeUnit.MILLISECONDS))
         }
+    }
+
+    @Test fun acceptedUploadHasRoomForMaximumTrackReceiptInNearFullJournal() = receiptCapacity(reclaimable = true)
+
+    @Test fun uploadWithoutReceiptRoomOrReclaimableRowsNeverEnters() = receiptCapacity(reclaimable = false)
+
+    private fun receiptCapacity(reclaimable: Boolean) = fixture().use { f ->
+        val pending = OriginalImportEntry(f.choice().intent, OriginalImportPhase.Unconfirmed)
+        val journal = OriginalImportJournal(f.file)
+        journal.put(pending, null) { true }
+        val sample = Json.parseToJsonElement(f.file.readText()).jsonObject.getValue("rows").jsonArray.single().jsonObject
+        val phase = if (reclaimable) "Refused" else "Closed"
+        val text = "x".repeat(500)
+        val template = sample + mapOf("phase" to JsonPrimitive(phase), "title" to JsonPrimitive(text),
+            "artist" to JsonPrimitive(text), "album" to JsonPrimitive(text))
+        fun row(n: Int, values: Map<String, JsonElement>) = JsonObject(values + mapOf(
+            "operation" to JsonPrimitive(UUID(0, n.toLong()).toString()), "sha256" to JsonPrimitive("1".repeat(64))))
+        val sampleBytes = sample.toString().encodeToByteArray().size
+        val rowBytes = row(1, template).toString().encodeToByteArray().size + 1
+        val target = 2_000_000 - sampleBytes - 1 - 4
+        fun disk(rows: List<JsonObject>) = buildJsonObject { put("version", 1); put("rows", JsonArray(rows)) }
+        val count = (target - disk(emptyList()).toString().encodeToByteArray().size + 1) / rowBytes
+        val rows = (1..count).map { row(it, template) }.toMutableList()
+        // Leave four bytes after the actual intent would be written, not enough for a track ID.
+        // Use legal two-byte characters to fill the remainder without raising the field's code point count.
+        var pad = target - disk(rows).toString().encodeToByteArray().size
+        for (i in 0..1) {
+            val fields = listOf("title", "artist", "album").associateWith {
+                val extra = minOf(pad, 500)
+                pad -= extra
+                JsonPrimitive("é".repeat(extra) + "x".repeat(500 - extra))
+            }
+            rows[i] = row(i + 1, rows[i] + fields)
+        }
+        assertEquals(0, pad)
+        f.file.writeText(disk(rows).toString())
+        assertEquals(target.toLong(), f.file.length())
+        f.reconstruct(true)
+        val choice = f.choice()
+        val track = Long.MAX_VALUE
+        f.server.enqueue(f.reply(201, f.receipt(choice.intent.operation, track = track)))
+        f.server.enqueue(f.reply(200, f.membership(track = track)))
+        if (reclaimable) {
+            assertEquals(OriginalImportRepository.Action.Added, f.repository.confirm(choice))
+            assertEquals("POST", f.next("/api/v1/library/uploads").method)
+            assertEquals("GET", f.next("/api/v1/library/tracks/$track").method)
+            val restored = OriginalImportJournal(f.file).apply { load() }.state.value.entry(choice.intent.operation)
+            assertEquals(OriginalImportPhase.Added, restored?.phase)
+            assertEquals(TrackId(track), restored?.commit?.track)
+        } else {
+            val before = f.file.readBytes()
+            assertEquals(OriginalImportRepository.Action.StorageUnavailable, f.repository.confirm(choice))
+            assertArrayEquals(before, f.file.readBytes())
+            assertNull(f.repository.state.value.entry(choice.intent.operation))
+        }
+        assertNull(f.server.takeRequest(150, TimeUnit.MILLISECONDS))
+    }
+
+    @Test fun preRequestRetirementDuringRealCredentialSaveSettlesOnlyThatUnsentOperation() = fixture().use { f ->
+        val saveStarted = java.util.concurrent.CountDownLatch(1)
+        val releaseSave = java.util.concurrent.CountDownLatch(1)
+        val finished = AtomicReference<Boolean>()
+        val worker = Thread {
+            finished.set(f.auth.refresh(f.scope) {
+                SecretTokens("fixture-access", "fixture-refresh", f.account)
+            })
+        }
+        f.beforeSave = { saveStarted.countDown(); check(releaseSave.await(5, TimeUnit.SECONDS)) }
+        f.reconstruct(true, beforeUpload = { worker.start(); check(saveStarted.await(5, TimeUnit.SECONDS)) })
+        val choice = f.choice()
+        try {
+            assertEquals(OriginalImportRepository.Action.Retired, f.repository.confirm(choice))
+            assertEquals(0, f.server.requestCount)
+            assertEquals(OriginalImportPhase.Unconfirmed, f.repository.state.value.entry(choice.intent.operation)?.phase)
+        } finally {
+            releaseSave.countDown()
+            worker.join(5000)
+            f.beforeSave = {}
+        }
+        assertEquals(true, finished.get())
+        assertEquals(OriginalImportRepository.Action.Refused, f.repository.check(f.scope, choice.intent.operation) { true })
+        assertEquals(OriginalImportPhase.Refused, OriginalImportJournal(f.file).apply { load() }.state.value.entry(choice.intent.operation)?.phase)
+        assertEquals(0, f.server.requestCount)
+        var attempted = false
+        f.beforeUpload = { attempted = true }
+        f.added()
+        assertTrue(attempted)
+        assertEquals(OriginalImportRepository.Action.Retired, f.repository.confirm(choice))
+        assertNull(f.server.takeRequest(150, TimeUnit.MILLISECONDS))
+    }
+
+    @Test fun exactUploadMiddleware401SettlesWithoutRefreshOrReplay() = fixture().use { f ->
+        val choice = f.choice()
+        f.server.enqueue(authRefusal())
+        assertEquals(OriginalImportRepository.Action.Refused, f.repository.confirm(choice))
+        assertEquals(choice.intent.operation.toString(), f.next("/api/v1/library/uploads").headers["Idempotency-Key"])
+        assertEquals(OriginalImportPhase.Refused, OriginalImportJournal(f.file).apply { load() }.state.value.entry(choice.intent.operation)?.phase)
+        assertNull(f.server.takeRequest(150, TimeUnit.MILLISECONDS))
+        assertNotEquals(choice.intent.operation, f.added().intent.operation)
+    }
+
+    @Test fun upload401WithExactTextButNoMiddlewareHeadersRemainsUnknown() = fixture().use { f ->
+        val choice = f.choice()
+        f.server.enqueue(f.reply(401, authBody))
+        assertEquals(OriginalImportRepository.Action.Unconfirmed, f.repository.confirm(choice))
+        assertEquals("POST", f.next("/api/v1/library/uploads").method)
+        f.server.enqueue(authRefusal()) // The same reply to status is not POST's no-write certificate.
+        assertEquals(OriginalImportRepository.Action.Unconfirmed, f.repository.check(f.scope, choice.intent.operation) { true })
+        assertEquals("GET", f.next("/api/v1/library/uploads/${choice.intent.operation}").method)
+        assertEquals(OriginalImportRepository.Action.AlreadyInProgress, f.repository.confirm(f.choice()))
+        assertNull(f.server.takeRequest(150, TimeUnit.MILLISECONDS))
+    }
+
+    private val authBody = """{"code":"UNAUTHORIZED","message":"invalid access token"}""" + "\n"
+    private fun authRefusal() = MockResponse.Builder().code(401).body(authBody)
+        .setHeader("Content-Type", "text/plain; charset=utf-8").setHeader("X-Content-Type-Options", "nosniff")
+        .setHeader("Cache-Control", "private, no-store").build()
+
+    @Test fun entered204DuringRotatedCredentialSaveSettlesOnOrdinaryDetailsReload() = deleteAcrossCredentialSave()
+
+    @Test fun entered202DuringRotatedCredentialSaveDoesNotAuthorizeLocalSettlement() = deleteAcrossCredentialSave(code = 202)
+
+    @Test fun replacementLoginWithSameIdCannotSettle204FromRotatedCredentialSave() = deleteAcrossCredentialSave(replace = true)
+
+    @Test fun rotatedCredentialSave204CannotSettleCorruptOrSupersedingFence() = deleteAcrossCredentialSave(replaceJournal = true)
+
+    private fun deleteAcrossCredentialSave(code: Int = 204, replace: Boolean = false, replaceJournal: Boolean = false) = fixture().use { f ->
+        val choice = f.added()
+        val track = TrackId(77)
+        val old = f.scope
+        f.server.enqueue(f.reply(200, f.page(added = true)))
+        f.library.restore()
+        assertEquals("GET", f.next("/api/v1/library").method)
+        fun capture() = requireNotNull(f.library.captureTrack(f.library.state.value.rows.single()))
+        val details = TrackDetailsRepository(f.api, f.library)
+        val oldRoute = requireNotNull(details.open(capture()))
+        val detailRow = JsonObject(Json.parseToJsonElement(f.membership()).jsonObject + mapOf(
+            "has_metadata_override" to JsonPrimitive(false), "mb_verified" to JsonPrimitive(false)))
+        val detailPage = """{"tracks":[$detailRow],"total":1,"offset":0,"limit":100}"""
+        val emptyPage = """{"tracks":[],"total":0,"offset":0,"limit":100}"""
+        f.server.enqueue(f.reply(200, detailPage))
+        f.server.enqueue(f.reply(404, ""))
+        details.load(oldRoute)
+        assertEquals("GET", f.next("/api/v1/library").method)
+        assertEquals("GET", f.next("/api/v1/tracks/77/analysis").method)
+        val command = requireNotNull(details.claim(oldRoute, requireNotNull(details.state.value.detail), DetailsAction.Remove))
+
+        val entered = CountDownLatch(1)
+        val reply = CountDownLatch(1)
+        val saving = CountDownLatch(1)
+        val save = CountDownLatch(1)
+        f.beforeSave = { saving.countDown(); check(save.await(10, TimeUnit.SECONDS)) }
+        f.server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.method to request.url.encodedPath) {
+                "DELETE" to "/api/v1/library/tracks/77" -> {
+                    entered.countDown()
+                    check(reply.await(10, TimeUnit.SECONDS))
+                    MockResponse.Builder().code(code).build()
+                }
+                "POST" to "/api/v1/auth/refresh" -> {
+                    check(request.body?.utf8() == """{"refreshToken":"fixture-refresh"}""")
+                    f.reply(200, """{"accessToken":"rotated-access","refreshToken":"rotated-refresh","user":{"id":"${f.account}"}}""")
+                }
+                "GET" to "/api/v1/library" -> when (request.headers["Authorization"]) {
+                    "Bearer fixture-access" -> f.reply(401, "")
+                    "Bearer rotated-access" -> f.reply(200, emptyPage)
+                    else -> error("unexpected fixture credential")
+                }
+                else -> error("unexpected fixture request")
+            }
+        }
+        val removal = FutureTask { details.execute(command) }
+        val rotation = FutureTask { f.api.trackDetailsSnapshot(old, track) { true } }
+        val removalWorker = Thread(removal)
+        val rotationWorker = Thread(rotation)
+        removalWorker.start()
+        val witness: LibraryRemovalWitness
+        val pending = try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val disk = OriginalImportJournal(f.file).apply { load() }
+            val operation = requireNotNull(disk.pendingRemoval(choice.intent.destination, track))
+            assertNull(disk.preparedRemoval(choice.intent.destination, track))
+            val observed = requireNotNull(f.api.observeLibraryRemovalFence(old, track) { it })
+            witness = requireNotNull(observed.witness)
+            assertEquals(operation, observed.operation)
+            assertEquals(LibraryRemovalFenceStatus.Unconfirmed, observed.status)
+            assertNull(f.api.retryLibraryRemovalSettlement(old, track) { true })
+            rotationWorker.start() // Ordinary GET 401 -> SoundQApi.refresh -> real rotation and SessionStore.save.
+            assertTrue(saving.await(5, TimeUnit.SECONDS))
+            assertEquals(old.epoch, f.auth.version())
+            assertFalse(f.auth.remoteCurrent(old))
+            assertNull(f.auth.capture())
+            val bytes = f.file.readBytes()
+            details.close(oldRoute)
+            val retired = details.state.value
+            reply.countDown()
+            removal.get(5, TimeUnit.SECONDS) // The 204 callback and command must finish while save is still held.
+            assertFalse(rotation.isDone)
+            assertFalse(f.auth.remoteCurrent(old))
+            assertSame(retired, details.state.value)
+            assertFalse(witness.settled)
+            assertArrayEquals(bytes, f.file.readBytes())
+            operation to bytes
+        } finally {
+            reply.countDown()
+            save.countDown()
+            removalWorker.join(5000)
+            rotationWorker.join(5000)
+            f.beforeSave = {}
+        }
+        assertNull(rotation.get(5, TimeUnit.SECONDS))
+        assertEquals(old.epoch, f.auth.version())
+        assertTrue(f.auth.remoteCurrent(old))
+        assertEquals(f.account, f.auth.capture()?.accountId)
+        val received = listOf("DELETE", "GET", "POST", "GET").map { method ->
+            requireNotNull(f.server.takeRequest(2, TimeUnit.SECONDS)).also { assertEquals(method, it.method) }
+        }
+        assertEquals(listOf("/api/v1/library/tracks/77", "/api/v1/library", "/api/v1/auth/refresh", "/api/v1/library"),
+            received.map { it.url.encodedPath })
+        assertTrue(received.last().headers["Authorization"] == "Bearer rotated-access")
+        assertNull(f.server.takeRequest(150, TimeUnit.MILLISECONDS)) // Authority restoration sends no mutation or settlement.
+        assertArrayEquals(pending.second, f.file.readBytes())
+        if (replace) {
+            f.signIn(f.account)
+            assertNotEquals(old.epoch, f.scope.epoch)
+            assertEquals(LibraryRemovalFenceStatus.Unconfirmed, f.api.libraryRemovalFenceStatus(f.scope, track))
+            assertNull(f.api.retryLibraryRemovalSettlement(f.scope, track) { true })
+        } else {
+            val current = requireNotNull(f.auth.capture())
+            assertNull(f.api.retryLibraryRemovalSettlement(current, track) { false })
+            assertFalse(f.api.retryUnenteredLibraryRemoval(current, track) { true })
+            if (replaceJournal) {
+                val superseding = UUID.randomUUID()
+                val replacements = listOf("{", pending.second.decodeToString().replace(pending.first.toString(), superseding.toString()))
+                replacements.forEachIndexed { i, foreign ->
+                    f.file.writeText(foreign)
+                    val changed = OriginalImportJournal(f.file).apply { load() }
+                    if (i == 0) assertTrue(changed.state.value.rejected)
+                    else assertEquals(superseding, changed.pendingRemoval(choice.intent.destination, track))
+                    assertNull(f.api.retryLibraryRemovalSettlement(current, track) { true })
+                    assertEquals(foreign, f.file.readText())
+                    assertFalse(witness.settled)
+                }
+                f.file.writeBytes(pending.second)
+                assertEquals(pending.first, f.api.retryLibraryRemovalSettlement(current, track) { true })
+            } else {
+                val route = requireNotNull(details.open(capture()))
+                details.load(route)
+                val read = requireNotNull(f.server.takeRequest(2, TimeUnit.SECONDS))
+                assertEquals("GET", read.method)
+                assertEquals("/api/v1/library", read.url.encodedPath)
+                assertTrue(details.state.value.missing)
+                assertTrue(details.state.value.reconciled)
+                assertNull(details.state.value.outcome)
+                assertEquals(code != 204, details.state.value.removalBlocked)
+                assertEquals(if (code == 204) null else RemovalIssue.Unconfirmed, details.state.value.removalIssue)
+            }
+        }
+        val settled = !replace && code == 204
+        assertEquals(settled, witness.settled)
+        val reopened = OriginalImportJournal(f.file).apply { load() }
+        assertEquals(if (settled) OriginalImportPhase.Removed else OriginalImportPhase.RemovalPending,
+            reopened.state.value.entry(choice.intent.operation)?.phase)
+        assertEquals(pending.first, reopened.state.value.entry(choice.intent.operation)?.removal)
+        if (!settled) assertArrayEquals(pending.second, f.file.readBytes())
+        assertNull(f.api.retryLibraryRemovalSettlement(f.scope, track) { true })
+        assertNull(f.server.takeRequest(150, TimeUnit.MILLISECONDS))
+    }
+
+    @Test fun preparedButUnenteredFenceCannotInheritADeleteAcknowledgement() = fixture().use { f ->
+        val choice = f.added()
+        val track = TrackId(77)
+        val prior = f.file.readBytes()
+        val prepared = f.repository.prepareRemoval(f.scope, track) { true }
+        val disk = OriginalImportJournal(f.file).apply { load() }
+        assertEquals(prepared.operation, disk.preparedRemoval(choice.intent.destination, track))
+        f.repository.receiveRemovalAcknowledgement(prepared)
+        assertFalse(f.repository.confirmRemoval(prepared))
+        assertEquals(LibraryRemovalFenceStatus.Unconfirmed, f.api.libraryRemovalFenceStatus(f.scope, track))
+        assertNull(f.api.retryLibraryRemovalSettlement(f.scope, track) { true })
+        assertTrue(f.repository.retractUnenteredRemoval(prepared))
+        assertArrayEquals(prior, f.file.readBytes())
+        assertNull(f.server.takeRequest(150, TimeUnit.MILLISECONDS))
+    }
+
+    @Test fun lockBetweenDeleteEntryAnd204RetainsOnlyExactLocalSettlement() = deleteAcrossLock(204)
+
+    @Test fun observingNewScopeAfterUnlockBefore204DoesNotLoseItsCustody() = deleteAcrossLock(204, unlockBeforeReply = true)
+
+    @Test fun lockedDeleteWithout204RemainsUnconfirmed() = deleteAcrossLock(202)
+
+    @Test fun lockThenAccountReplacementCannotAdoptOld204() = deleteAcrossLock(204, replace = true)
+
+    @Test fun locked204CannotSettleAgainstReplacedJournal() = deleteAcrossLock(204, corrupt = true)
+
+    private fun deleteAcrossLock(code: Int, replace: Boolean = false, corrupt: Boolean = false, unlockBeforeReply: Boolean = false) = fixture().use { f ->
+        val choice = f.added()
+        val track = TrackId(77)
+        val old = f.scope
+        val held = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val error = AtomicReference<Throwable>()
+        f.server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                check(request.method == "DELETE" && request.url.encodedPath == "/api/v1/library/tracks/77")
+                held.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                return MockResponse.Builder().code(code).build()
+            }
+        }
+        val worker = Thread { runCatching { f.api.trackDetailsRemove(old, track) { true } }.exceptionOrNull()?.let(error::set) }
+        worker.start()
+        val fence = try {
+            assertTrue(held.await(5, TimeUnit.SECONDS))
+            val entered = OriginalImportJournal(f.file).apply { load() }
+            val operation = requireNotNull(entered.pendingRemoval(choice.intent.destination, track))
+            assertNull(entered.preparedRemoval(choice.intent.destination, track))
+            assertTrue(f.auth.lockLocal())
+            if (unlockBeforeReply) {
+                f.unlock()
+                assertEquals(LibraryRemovalFenceStatus.Unconfirmed, f.api.libraryRemovalFenceStatus(f.scope, track))
+                assertNull(f.api.retryLibraryRemovalSettlement(f.scope, track) { true })
+            }
+            operation
+        } finally { release.countDown(); worker.join(5000) }
+        assertFalse(worker.isAlive)
+        assertEquals(SafeFailure.Reason.Retired, (error.get() as? SafeFailure)?.reason)
+        if (replace) {
+            f.signIn("2dc91581-2795-4d0a-b87d-25dbc35c8fc0")
+            assertNull(f.api.retryLibraryRemovalSettlement(f.scope, track) { true })
+            f.signIn(f.account) // Equal identity does not confer continuation of a retired login.
+        } else if (!unlockBeforeReply) f.unlock()
+        val bytes = f.file.readBytes()
+        if (corrupt) f.file.appendText(" ") // Even another parseable snapshot is not our custody.
+        if (code == 204 && !replace) {
+            assertEquals(LibraryRemovalFenceStatus.ConfirmedLocalSettleFailed, f.api.libraryRemovalFenceStatus(f.scope, track))
+            assertNull(f.api.retryLibraryRemovalSettlement(f.scope, track) { false })
+            if (corrupt) {
+                val foreign = f.file.readBytes()
+                assertNull(f.api.retryLibraryRemovalSettlement(f.scope, track) { true })
+                assertArrayEquals(foreign, f.file.readBytes())
+                val superseding = UUID.randomUUID()
+                f.file.writeText(bytes.decodeToString().replace(fence.toString(), superseding.toString()))
+                assertEquals(superseding, OriginalImportJournal(f.file).apply { load() }.pendingRemoval(choice.intent.destination, track))
+                val newer = f.file.readBytes()
+                assertNull(f.api.retryLibraryRemovalSettlement(f.scope, track) { true })
+                assertArrayEquals(newer, f.file.readBytes())
+                f.file.writeBytes(bytes)
+            }
+            assertEquals(fence, f.api.retryLibraryRemovalSettlement(f.scope, track) { true })
+            assertEquals(OriginalImportPhase.Removed, OriginalImportJournal(f.file).apply { load() }.state.value.entry(choice.intent.operation)?.phase)
+        } else {
+            assertEquals(LibraryRemovalFenceStatus.Unconfirmed, f.api.libraryRemovalFenceStatus(f.scope, track))
+            assertNull(f.api.retryLibraryRemovalSettlement(f.scope, track) { true })
+            assertArrayEquals(bytes, f.file.readBytes())
+        }
+        assertNull(f.api.retryLibraryRemovalSettlement(f.scope, track) { true })
+        assertEquals("DELETE", f.next("/api/v1/library/tracks/77").method)
+        assertNull(f.server.takeRequest(150, TimeUnit.MILLISECONDS))
     }
 
     @Test fun canonicalDelete401RetractsOnlyExactFenceWithoutRefreshOrReplay() = deleteRefusal(401, canonical = true)
@@ -639,18 +1003,30 @@ class OriginalImportWireTest {
             startTls(port, cert)
         }
         val endpoint = ApiEndpoint.parse(server.url("/api/v1").newBuilder().host("127.0.0.1").build().toString())
-        private val auth = AccountSession(endpoint, MemoryStore()).also { check(it.accept(it.beginIntent(), SecretTokens("fixture-access", "fixture-refresh", account))) }
+        var beforeSave: () -> Unit = {}
+        var beforeUpload: (() -> Unit)? = null
+        private val store = MemoryStore()
+        val auth = AccountSession(endpoint, object : SessionStore by store {
+            override fun save(endpoint: ApiEndpoint, tokens: SecretTokens) { beforeSave(); store.save(endpoint, tokens) }
+        }).also { check(it.accept(it.beginIntent(), SecretTokens("fixture-access", "fixture-refresh", account))) }
         var scope = auth.capture()!!
             private set
         fun signIn(account: String) {
             check(auth.accept(auth.beginIntent(), SecretTokens("fixture-access", "fixture-refresh", account)))
             scope = requireNotNull(auth.capture())
         }
+        fun unlock() {
+            check(auth.completeLocalUnlock(requireNotNull(auth.localUnlockTicket())))
+            scope = requireNotNull(auth.capture())
+        }
         val api = SoundQApi(auth, OkHttpClient.Builder().sslSocketFactory(trust.sslSocketFactory(), trust.trustManager).eventListener(listener).build(),
             com.soundq.android.data.acquisition.IntakeReceipts(), {}, { repository })
         val library = LibraryRepository(auth, api::library, api::like)
         var repository: OriginalImportRepository = build(true)
-        fun reconstruct(writes: Boolean?) { repository = build(writes) }
+        fun reconstruct(writes: Boolean?, beforeUpload: (() -> Unit)? = null) {
+            this.beforeUpload = beforeUpload
+            repository = build(writes)
+        }
         fun choice() = requireNotNull(repository.choose(scope, owner, display) { true })
         fun differentChoice() = requireNotNull(repository.choose(scope, otherOwner, display) { true })
         fun seedCapacity(dense: Boolean): OriginalImportEntry {
@@ -712,17 +1088,26 @@ class OriginalImportWireTest {
             val observed = library.state.value
             if (library.projectionScope(observed)?.epoch == captured.epoch) library.refreshObserved(captured, observed)
         }).also {
-            if (writes != null) it.installTransport(api.originalImportTransport(writes), writes)
+            if (writes != null) {
+                val wire = api.originalImportTransport(writes)
+                it.installTransport(object : OriginalImportTransport by wire {
+                    override fun upload(scope: AccountScope, intent: OriginalImportIntent, body: VerifiedOriginalBody,
+                        current: () -> Boolean): OriginalImportReceipt {
+                        beforeUpload?.invoke()
+                        return wire.upload(scope, intent, body, current)
+                    }
+                }, writes)
+            }
             it.load()
         }
         fun reply(code: Int, json: String, location: String? = null): MockResponse = MockResponse.Builder().code(code).body(json)
             .setHeader("Cache-Control", "private, no-store").setHeader("Content-Type", "application/json")
             .apply { if (location != null) setHeader("Location", location) }.build()
-        fun receipt(op: UUID, status: String = "committed"): String = buildJsonObject {
+        fun receipt(op: UUID, status: String = "committed", track: Long = 77): String = buildJsonObject {
             put("account_id",account);put("operation_id",op.toString());put("status",status)
-            if(status=="committed"){put("track_id",77);put("sha256","sha256:$sha");put("byte_length",bytes.size)}
+            if(status=="committed"){put("track_id",track);put("sha256","sha256:$sha");put("byte_length",bytes.size)}
         }.toString()
-        fun membership(account: String = this.account, track: Int = 77, hash: String = sha, length: Int = bytes.size) = buildJsonObject {
+        fun membership(account: String = this.account, track: Long = 77, hash: String = sha, length: Int = bytes.size) = buildJsonObject {
             put("account_id",account);put("id",track);put("sha256","sha256:$hash");put("byte_length",length)
             put("title",display.title);put("artist",display.artist);put("album",display.album);put("duration_ms",13000);put("added_at","2026-11-20T19:00:00Z")
         }.toString()
