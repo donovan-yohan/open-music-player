@@ -53,9 +53,9 @@ internal class WireOriginalImportTransport(
         return receipt(intent, response, upload = true)
     }
 
-    override fun status(scope: AccountScope, intent: OriginalImportIntent): OriginalImportReceipt {
+    override fun status(scope: AccountScope, intent: OriginalImportIntent, admit: () -> Boolean): OriginalImportReceipt {
         checkIntent(scope, intent)
-        return receipt(intent, send(scope, "/library/uploads/${intent.operation}", null, null, null), upload = false)
+        return receipt(intent, send(scope, "/library/uploads/${intent.operation}", null, null, admit), upload = false)
     }
 
     override fun membership(scope: AccountScope, track: TrackId): OriginalMembershipResult {

@@ -22,7 +22,7 @@ class VerifiedOriginalImportTest {
 
     @Test fun definitiveAckRequiresExactReadbackAndProjectsOneRowWithAcceptedDisplay() {
         val f = fixture()
-        f.peer.readback = { it.copy(display = ImportDisplay("wrong", "", "")) }
+        f.peer.readback = { it.copy(original = it.original.copy(track = TrackId(it.original.track.value + 1))) }
         assertEquals(OriginalImportRepository.Action.ReadbackRequired, f.repo.confirm(f.choose()))
         val pending = f.repo.entries(f.scope).single()
         assertEquals(OriginalImportPhase.ReadbackRequired, pending.phase)
@@ -276,7 +276,9 @@ class VerifiedOriginalImportTest {
             if (dropResponse) throw IOException("synthetic typed response loss")
             return statusOf(intent)
         }
-        override fun status(scope: AccountScope, intent: OriginalImportIntent): OriginalImportReceipt { checks.add(intent.operation); return statusOf(intent) }
+        override fun status(scope: AccountScope, intent: OriginalImportIntent, admit: () -> Boolean): OriginalImportReceipt {
+            check(admit()); checks.add(intent.operation); return statusOf(intent)
+        }
         private fun statusOf(intent: OriginalImportIntent) = receipt(OriginalImportReceipt(intent.destination, intent.operation,
             OriginalReceiptStatus.Committed(CommittedOriginal(track, intent.original.revision))))
         override fun membership(scope: AccountScope, track: TrackId): OriginalMembershipResult {

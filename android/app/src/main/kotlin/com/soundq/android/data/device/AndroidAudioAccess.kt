@@ -48,9 +48,10 @@ internal class AndroidAudioAccess(private val context: Context, private val stor
     @RequiresApi(30) fun storageRoots(): List<File> =
         context.getSystemService(StorageManager::class.java).storageVolumes.filter { it.state == Environment.MEDIA_MOUNTED || it.state == Environment.MEDIA_MOUNTED_READ_ONLY }.mapNotNull { it.directory }
     /** With all files access, ask MediaStore to index audio on shared storage it does not list yet, so the
-     * indexed scan keeps owning identity. Returns false when the walk or indexing was incomplete. */
+     * indexed scan keeps owning identity. On Android 11+, a skipped or incomplete walk is not whole coverage. */
     fun indexUnlisted(current: () -> Boolean): Boolean {
-        if (Build.VERSION.SDK_INT < 30 || !storageAllowed()) return true
+        if (Build.VERSION.SDK_INT < 30) return true
+        if (!storageAllowed()) return false
         val walk = SharedStorageAudioWalker.walk(storageRoots(), current)
         val unlisted = SharedStorageAudioWalker.unlisted(walk.files, ::listedPaths)
         return scanFiles(unlisted, current) && !walk.truncated

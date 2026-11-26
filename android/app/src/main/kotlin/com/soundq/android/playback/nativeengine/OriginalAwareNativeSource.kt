@@ -41,10 +41,10 @@ internal class OriginalAwareNativeSource(
     private fun openOriginal(binding: OriginalAssociation, uri: String, permit: MediaGrant, current: () -> Boolean): NativePlaybackSource {
         val scope = permit.scope
         val ref = binding.intent.original.originalRef()
-        val authority = graph.phoneAudio.importSourceStamp(ref, permit.version) ?: throw SafeFailure(SafeFailure.Reason.AudioUnavailable)
+        val sourceCurrent = graph.phoneAudio.borrowOriginalCurrent(ref, permit.version) ?: throw SafeFailure(SafeFailure.Reason.AudioUnavailable)
         val row = graph.phoneAudio.observed(ref) ?: throw SafeFailure(SafeFailure.Reason.AudioUnavailable)
         fun active() = current() && grants[uri] === permit && permit.current(graph) && graph.originalImports.owns(scope, binding) &&
-            graph.phoneAudio.importSourceStamp(ref, permit.version) == authority
+            sourceCurrent()
         // Once an exact original was selected, any custody failure is terminal for this acquisition.
         // A subsequent ordinary online action can use server storage if the original is no longer available.
         return try {

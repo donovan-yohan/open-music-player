@@ -63,14 +63,14 @@ import com.soundq.designsystem.*
         state.error?.let {SoundQFeedback("Could not load song details",FeedbackKind.Error,it.message,"Reload song details",onReload)}
         when(state.removalIssue) {
             RemovalIssue.NotSent->SoundQFeedback("Removal not sent",FeedbackKind.Error,"Couldn’t save local original protection. Your Library was not changed by this action.")
-            RemovalIssue.NotSentLocalCleanupFailed->SoundQFeedback("Removal not sent",FeedbackKind.Error,"Couldn’t clear local original protection. Reload song details to try clearing it.","Reload song details",onReload)
+            RemovalIssue.NotSentLocalCleanupFailed->SoundQFeedback("Removal not applied",FeedbackKind.Error,"Couldn’t clear local original protection. Reload song details to try clearing it.","Reload song details",onReload)
             RemovalIssue.Unconfirmed->SoundQFeedback("Removal not confirmed",FeedbackKind.Error,"Reload to check your Library. This removal won’t be sent again from this device.","Reload song details",onReload)
-            RemovalIssue.ConfirmedLocalSettleFailed->SoundQFeedback("Removed from Library",FeedbackKind.Notice,"Your phone original is protected, but its removal status couldn’t be saved locally. Don’t repeat the removal.")
+            RemovalIssue.ConfirmedLocalSettleFailed->SoundQFeedback("Removed from Library",FeedbackKind.Notice,"Your phone original is protected, but its removal status couldn’t be saved locally. Don’t repeat the removal.","Reload song details",onReload)
             null->Unit
         }
         // Independent notices can share the same explicit reload action.
         val changeReload=when(state.removalIssue) {
-            RemovalIssue.NotSentLocalCleanupFailed,RemovalIssue.Unconfirmed->null
+            RemovalIssue.NotSentLocalCleanupFailed,RemovalIssue.Unconfirmed,RemovalIssue.ConfirmedLocalSettleFailed->null
             else->"Reload song details"
         }
         when(state.genericOutcome) {

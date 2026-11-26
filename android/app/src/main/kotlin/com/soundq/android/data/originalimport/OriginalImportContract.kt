@@ -43,7 +43,8 @@ internal interface OriginalImportTransport {
     /** Pure validation before journaling: no auth exchange, file read, or wire dispatch. */
     fun canEncode(scope: AccountScope, intent: OriginalImportIntent): Boolean = true
     fun upload(scope: AccountScope, intent: OriginalImportIntent, body: VerifiedOriginalBody, current: () -> Boolean): OriginalImportReceipt
-    fun status(scope: AccountScope, intent: OriginalImportIntent): OriginalImportReceipt
+    /** This exact-operation GET can commit a stored stage and needs a final mutation guard. */
+    fun status(scope: AccountScope, intent: OriginalImportIntent, admit: () -> Boolean): OriginalImportReceipt
     fun membership(scope: AccountScope, track: TrackId): OriginalMembershipResult
 }
 
@@ -71,10 +72,9 @@ internal sealed interface OriginalMembershipResult {
     data object Unconfirmed : OriginalMembershipResult
 }
 
-internal data class OriginalAssociation(val intent: OriginalImportIntent, val membership: OriginalMembership) {
+internal data class OriginalAssociation(val intent: OriginalImportIntent, val membership: OriginalMembership, val lease: Any = Any()) {
     init {
         require(membership.destination == intent.destination && membership.original.revision == intent.original.revision)
-        require(membership.display == intent.display)
     }
     val track get() = membership.original.track
 }
@@ -130,6 +130,8 @@ internal class VerifiedOriginalBody private constructor(
 }
 
 internal class OriginalContentMismatch : IOException("Original content changed")
+/** Only the one-shot authenticated wire guard produces this positive non-entry witness. */
+internal class OriginalUploadNotAdmitted : IOException("Original upload was not admitted")
 
 /** Bounded exact proof on the descriptor that will actually be streamed/decoded. */
 internal fun verifyBytes(source: ImportOriginalRead, revision: ContentRevision, current: () -> Boolean, out: OutputStream? = null) {

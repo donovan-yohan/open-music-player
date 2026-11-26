@@ -9,6 +9,7 @@ import com.soundq.android.data.AccountScope
 import com.soundq.android.data.AuthState
 import com.soundq.android.data.DiscoveryPreviewInput
 import com.soundq.android.data.SafeFailure
+import com.soundq.android.data.deviceaudio.HistoryKey
 import com.soundq.android.playback.*
 import com.soundq.android.playback.QueuePolicy
 import com.soundq.android.data.timeline.*
@@ -170,7 +171,8 @@ internal class NativeCallbackPlayer(
         var arming = false
         var completed = false
     }
-    private var successor: Successor? = null
+    @Volatile private var successor: Successor? = null
+    @Volatile private var retainedSuccessor: Successor? = null
     private var successorJob: Job? = null
     private var successorRevision = 0L
     private var successorAttempt: String? = null
@@ -180,9 +182,13 @@ internal class NativeCallbackPlayer(
 
     /** Explicit edits permit retry; a failed optional source stays latched across polls. */
     private fun cancelSuccessor(preserveAttempt: Boolean = false,natural:Boolean=false) {
+        val c = successor
+        // Publish the exact kept deck to the reader before revoking pair authority.
+        // This also covers an edit after the overlap already selected the incoming deck.
+        if (c != null && ordinaryDeck == c.deck && ordinaryIdentity == c.identity) retainedSuccessor = c
         successorRevision++; successorJob?.cancel()
         if (!preserveAttempt) successorAttempt = null
-        val c = successor; successor = null
+        successor = null
         if (c != null) {
             val keepDeck = ordinaryDeck; val keepIdentity = ordinaryIdentity
             val otherDeck = if (keepDeck == c.deck) c.outgoingDeck else c.deck
@@ -218,18 +224,22 @@ internal class NativeCallbackPlayer(
             activeGrant ?: return, activeUri ?: return, ordinaryDeck, ordinaryIdentity, eofCount, loadSpeed(item))
         successor = c
         fun current() = !released && epoch == generation && successorRevision == revision && successorCurrent(c)
+        // Acquisition/JNI still need the pair. A kept decoder and listening binding
+        // outlive that pair and require only their own grant and the selection lifetime.
+        fun sourceCurrent() = current() || (!released && epoch == generation && retainedSuccessor === c &&
+            currentScope() && grants[uri] === grant && grant.current(graph))
         val predecessor = tail
         preparing.incrementAndGet()
         val job = lifetime.launch(start = CoroutineStart.LAZY) {
             var file: NativePlaybackSource? = null; var transferred = false
             try {
                 predecessor?.join(); check(current())
-                withContext(NonCancellable + Dispatchers.IO) { file = source.acquire(item, ::current) }
+                withContext(NonCancellable + Dispatchers.IO) { file = source.acquire(item, ::sourceCurrent) }
                 ensureActive(); check(current())
                 transferred = true
                 check(withContext(NonCancellable) { owner.loadDeck(c.deck, requireNotNull(file), c.identity, c.identity, journal.initialResume(requireNotNull(file),grant,c.deck), ::current, c.speed) })
                 check(current())
-                bindJournal(item,grant,requireNotNull(file),c.deck,c.identity,true,::current)
+                bindJournal(item,grant,requireNotNull(file),c.deck,c.identity,true,::current,::sourceCurrent)
                 owner.controlDeck(c.deck, 7, volume.toDouble(), ::current)
             } catch (_: CancellationException) { }
             catch (_: Exception) { if (current()) cancelSuccessor(preserveAttempt = true) }
@@ -335,8 +345,12 @@ internal class NativeCallbackPlayer(
         fun logical(item:MediaItem)=(PlaybackRef.read(item.mediaMetadata.extras?.getString("playbackRef")) as? PlaybackRef.Device)?.let {graph.phoneAudio.sameFile(it,ref)}==true
         if (parkedQueue?.items?.any(::logical) == true) finishDiscoveryPreview()
         if(arrangement!=null&&arrangementSourceItems.any(::logical))return false
-        val target = graph.phoneAudio.sourceFileId(ref)
+        val catalog = graph.phoneAudio.state.value.snapshot
+        val target = catalog?.authorityTarget(ref.contentOwner) ?: ref.fileId
         val fileIds = mutableSetOf(target.value.toString())
+        // A fold changes the catalog ID, not the ID already registered by a decoder
+        // or a failed descriptor close. The catalog normalizes redirects to the survivor.
+        catalog?.retired?.forEach { if (it.into == target) fileIds += (it.from.key as HistoryKey.Device).id.value.toString() }
         fun borrowed(grant: MediaGrant?): Boolean {
             val row = grant?.takeIf { it.device == null }?.phoneAdmission?.row ?: return false
             if (graph.phoneAudio.sourceFileId(graph.phoneAudio.reference(row)) != target) return false
@@ -1141,6 +1155,7 @@ internal class NativeCallbackPlayer(
         revokePerformance()
         performanceIdentity = null; durablePerformanceDocument = null; syncQualifications.clear(); performanceDecks = emptyMap(); onPerformanceChanged?.invoke()
         epoch++
+        retainedSuccessor = null
         transportRevision++
         pending?.cancel()
         pending = null
@@ -1307,9 +1322,9 @@ internal class NativeCallbackPlayer(
         } ?: throw DeckReadinessExpired()
     }
 
-    private suspend fun bindJournal(item:MediaItem,grant:MediaGrant,file:NativePlaybackSource,slot:Int,identity:Long,allowResume:Boolean,current:()->Boolean) {
+    private suspend fun bindJournal(item:MediaItem,grant:MediaGrant,file:NativePlaybackSource,slot:Int,identity:Long,allowResume:Boolean,current:()->Boolean,journalCurrent:()->Boolean=current) {
         val ready=awaitDeckReady(slot,identity,current)
-        val resume=try {journal.bind(item,grant,file,ready,slot,current)}catch(failure:Exception){if(grant.device!=null||file is NativePlaybackSource.BorrowedOriginal)throw failure else {check(current());return}}
+        val resume=try {journal.bind(item,grant,file,ready,slot,journalCurrent)}catch(failure:Exception){if(grant.device!=null||file is NativePlaybackSource.BorrowedOriginal)throw failure else {check(current());return}}
         if(allowResume&&resume>0 && file !is NativePlaybackSource.BorrowedOriginal) {
             journal.fenceSeek(slot)
             check(journal.beginSeek(slot,2,ready.naturalEnd?.count ?: 0))

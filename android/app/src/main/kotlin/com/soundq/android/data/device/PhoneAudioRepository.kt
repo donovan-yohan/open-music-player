@@ -39,7 +39,8 @@ internal class PhoneAudioRepository(private val graph: AppGraph,
     private val enrichmentPermissionGate = Any()
     @Volatile private var enrichmentStorageEpoch = 0L
     private fun enrichmentPermissionDenied() {
-        // A denial observed by any repository access check retires even an unscanned editor.
+        // The shared access producer records denial here before accepting another grant.
+        // Both borrowed playback and an unscanned editor observe that retirement.
         // Positive samples never advance or restore the epoch, including out-of-order results.
         synchronized(enrichmentPermissionGate) { enrichmentStorageEpoch++ }
     }
@@ -79,6 +80,20 @@ internal class PhoneAudioRepository(private val graph: AppGraph,
         }
     }
     fun current(version: Long) = jobs.isActive && acceptedVersion == version && graph.session.owns(version) && graph.session.state.value !is AuthState.LocalLocked
+
+    /** Sample platform access at borrowed-original admission. The returned guard
+     * uses the same producer's synchronous denial notification, not another OS query.
+     * The descriptor still samples platform access at its full validation boundaries. */
+    fun borrowOriginalCurrent(ref:com.soundq.android.playback.PlaybackRef.Device, version:Long): (() -> Boolean)? {
+        val observedAccess = enrichmentStorageEpoch
+        val stamp = importSourceStamp(ref, version) ?: return null
+        val owner = stamp.resolvedOwner ?: return null
+        val file = (owner.key as HistoryKey.Device).id
+        fun active() = enrichmentStorageEpoch == observedAccess && current(version) && sourceAuthority(ref) == stamp.source &&
+            observed(ref)?.let { it.id == file && it.revision == owner.revision && it.incarnation == owner.incarnation } == true &&
+            enrichmentStorageEpoch == observedAccess
+        return if (active()) ::active else null
+    }
     // One sequence fences every proof publication. Broad transport and physical-file
     // grants expose separate epochs so a local mutation never retires unrelated audio.
     private val authoritySequence=java.util.concurrent.atomic.AtomicLong()
@@ -346,6 +361,9 @@ internal class PhoneAudioRepository(private val graph: AppGraph,
                 jobs.launch {serial.withLock {store?.retireChangedOriginal(capture.get().source);publish("Original audio changed. Saved progress was reset; refresh Local audio.")}}
             }
         }
+        // A verified borrow can wait for journal admission after capturing access.
+        // Sample it again before the provider call; per-step liveness stays cheap.
+        if (verify != null) check(platform.storageAllowed() && active())
         val original=platform.openOriginal(route,::active,::changed,admission.row.id.value.toString())
         try {
             verify?.invoke(original)

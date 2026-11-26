@@ -61,10 +61,7 @@ class TrackDetailsJourneyTest {
         }}
         try {
             graph.session.retire()
-            compose.waitUntil(10000){compose.onAllNodesWithContentDescription("Email").fetchSemanticsNodes().isNotEmpty()}
-            compose.onNodeWithContentDescription("Email").performTextInput("details@example.test")
-            compose.onNodeWithContentDescription("Password").performTextInput("test-only-password")
-            compose.onAllNodesWithText("Sign in").filterToOne(hasClickAction()).performClick()
+            compose.signInThroughSettings("details@example.test","test-only-password") {graph.session.state.value is AuthState.SignedIn}
             compose.waitUntil(10000){graph.library.state.value.rows.isNotEmpty()}
             val query=graph.library.state.value.query
             compose.onNodeWithContentDescription("More for Fixture 1").performClick()

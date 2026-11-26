@@ -277,6 +277,7 @@ private class Retirement(val graph:AppGraph,var items:List<Item>) {
  private fun finishDiscoveryPreview():Unit=error("Preview teardown is outside this fixture")
  var index=0;val arrangement:Any?=null;val arrangementSourceItems=emptyList<Item>();var successor:RetirementCandidate?=null
  var pending:Job?=null;var tail:Job?=null;var successorJob:Job?=null;var successorAttempt:String?=null;var successorRevision=0L
+ @Volatile private var retainedSuccessor:RetirementCandidate?=null
  var ordinaryIdentity=111L;var ordinaryDeck=0;var selectedLoaded=true;var playback=3;var position=42000L;var released=false;var error:Any?=null
  var stopped=0;var pauses=0;var retired=0;var prepares=0;var order=items.indices.toList();var queueScope:Session?=null
  val durations=mutableMapOf<String,Long>();val lifetime=CoroutineScope(SupervisorJob()+Dispatchers.Unconfined);val journal=RetirementJournal();val owner=RetirementHardware()
@@ -344,7 +345,10 @@ if a.run:
  def jar(g,n,v):return next((cache/g/n/v).glob('*/*.jar'))
  cp=os.pathsep.join(map(str,[jar('org.jetbrains.kotlinx','kotlinx-serialization-json-jvm','1.9.0'),jar('org.jetbrains.kotlinx','kotlinx-serialization-core-jvm','1.9.0'),jar('org.jetbrains.kotlinx','kotlinx-coroutines-core-jvm','1.10.2'),jar('junit','junit','4.13.2'),jar('org.hamcrest','hamcrest-core','1.3')]))
  (out/'Track.kt').write_text('package com.soundq.android.data\n@JvmInline value class TrackId(val value:Long) {init {require(value>0)}}\n')
- files=[str(src/'playback/nativeengine/OriginalDescriptorCustody.kt'),*map(str,(src/'data/deviceaudio').glob('*.kt')),str(src/'playback/PlaybackRef.kt'),str(src/'playback/ListeningSpeed.kt'),str(out/'Track.kt'),str(out/'SongMenuBoundaryTest.kt')]
+ access=section('data/originalimport/PhoneImportOriginals.kt','internal class OriginalAccessEpoch','internal class DescriptorImportRead')
+ stamp=next(line for line in (src/'data/originalimport/OriginalImportRepository.kt').read_text().splitlines() if line.startswith('internal data class OriginalSourceStamp'))
+ (out/'OriginalAccess.kt').write_text('package com.soundq.android.data.originalimport\nimport com.soundq.android.data.deviceaudio.ContentOwner\n'+access+stamp+'\n')
+ files=[str(src/'playback/nativeengine/OriginalDescriptorCustody.kt'),*map(str,(src/'data/deviceaudio').glob('*.kt')),str(src/'playback/PlaybackRef.kt'),str(src/'playback/ListeningSpeed.kt'),str(out/'Track.kt'),str(out/'OriginalAccess.kt'),str(out/'SongMenuBoundaryTest.kt')]
  commands=[['kotlinc','-J-Xmx512m','-J-XX:ActiveProcessorCount=1',*files,'-cp',cp,'-include-runtime','-d',str(out/'tests.jar')],['java','-Xmx512m','-XX:ActiveProcessorCount=1','-Djava.io.tmpdir='+str(out),'-cp',str(out/'tests.jar')+os.pathsep+cp,'org.junit.runner.JUnitCore','com.soundq.android.menuprobe.SongMenuBoundaryTest','com.soundq.android.menuprobe.SongFileRetirementBoundaryTest']]
  (out/'commands.json').write_text(json.dumps(commands,indent=2))
  for name,cmd in zip(['compile','tests'],commands):

@@ -35,6 +35,76 @@ class TrackDetailsRemovalFeedbackTest {
 
     @Test fun acceptedMetadataWithFailedReadbackKeepsBothNoticesAndOneReloadAction() = exercise(MutationOutcome.ReadbackFailed)
 
+    @Test fun acknowledgedRemovalNoticeOffersRealLocalSettlementReload() = renderedLocalRetry(confirmed = true)
+
+    @Test fun authenticatingRefusalNoticeSaysNotAppliedAndOffersRealReload() = renderedLocalRetry(confirmed = false)
+
+    private fun renderedLocalRetry(confirmed: Boolean) = Fixture().use { f ->
+        val journal = f.directory.resolve("original-import.v1.json")
+        val before = journal.readBytes()
+        val dir = f.directory.toPath()
+        val writable = java.nio.file.Files.getPosixFilePermissions(dir)
+        val member = AtomicBoolean(true)
+        val deletes = java.util.concurrent.atomic.AtomicInteger()
+        f.server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = when (request.method to request.url.encodedPath) {
+                "GET" to "/api/v1/library" -> f.libraryPage(member.get(), request)
+                "GET" to "/api/v1/tracks/77/analysis" -> f.reply(404, "{}")
+                "DELETE" to f.memberPath -> {
+                    check(deletes.incrementAndGet() == 1)
+                    java.nio.file.Files.setPosixFilePermissions(dir, java.nio.file.attribute.PosixFilePermissions.fromString("r-x------"))
+                    if (confirmed) {
+                        member.set(false)
+                        MockResponse.Builder().code(204).build()
+                    } else MockResponse.Builder().code(401)
+                        .setHeader("Content-Type", "text/plain; charset=utf-8").setHeader("X-Content-Type-Options", "nosniff")
+                        .body("""{"code":"TOKEN_EXPIRED","message":"access token has expired"}""" + "\n").build()
+                }
+                else -> f.reply(500, "{}")
+            }
+        }
+        try {
+            f.graph(null).use { g ->
+                val scope = f.signIn(g)
+                val route = f.openDetails(g)
+                val details = g.trackDetails
+                val commands = mutableListOf<DetailsTicket>()
+                val reloads = java.util.concurrent.LinkedBlockingQueue<Unit>()
+                compose.setContent {
+                    SoundQTheme { TrackDetailsSheet(details.state.collectAsState().value,
+                        { observed, action -> commands += checkNotNull(details.claim(route, observed, action)) },
+                        { reloads.add(Unit) }, {}) }
+                }
+                click("Remove from Library")
+                button("Confirm Library removal").assertIsDisplayed().performClick()
+                details.execute(compose.runOnIdle { commands.single() })
+                assertEquals("DELETE", f.next(f.memberPath).method)
+                if (confirmed) repeat(2) { assertEquals("GET", f.next("/api/v1/library").method) }
+                assertEquals(confirmed, details.state.value.missing)
+                val header = if (confirmed) "Removed from Library" else "Removal not applied"
+                notice(header)
+                compose.onNodeWithText("Removal not sent").assertDoesNotExist()
+                val reload = hasClickAction() and hasText("Reload song details")
+                compose.onAllNodes(reload).assertCountEquals(1)
+                java.nio.file.Files.setPosixFilePermissions(dir, writable)
+                click("Reload song details")
+                compose.runOnIdle { assertNotNull(reloads.poll()); assertNull(reloads.poll()); assertEquals(1, commands.size) }
+                details.load(route)
+                assertEquals("GET", f.next("/api/v1/library").method)
+                if (!confirmed) assertEquals("GET", f.next("/api/v1/tracks/77/analysis").method)
+                compose.onNodeWithText(header).assertDoesNotExist()
+                assertFalse(details.state.value.removalBlocked)
+                assertEquals(if (confirmed) "Removed" else "Added", g.originalImports.entries(scope).single().phase.name)
+                if (!confirmed) {
+                    assertArrayEquals(before, journal.readBytes())
+                    button("Remove from Library").assertIsEnabled()
+                }
+                assertEquals(1, deletes.get())
+                assertNull(f.server.takeRequest(150, java.util.concurrent.TimeUnit.MILLISECONDS))
+            }
+        } finally { java.nio.file.Files.setPosixFilePermissions(dir, writable) }
+    }
+
     private fun button(label: String) = compose.onNode(hasText(label) and hasClickAction())
     private fun click(label: String) = button(label).performScrollTo().assertIsEnabled().performClick()
     private fun notice(label: String) {

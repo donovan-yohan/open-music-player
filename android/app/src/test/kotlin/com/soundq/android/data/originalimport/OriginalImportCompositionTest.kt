@@ -49,6 +49,250 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [28], application = Application::class)
 class OriginalImportCompositionTest {
+    @Test fun coldDetailsReloadRetractsOnlyDurablePreparedFence() = preparedFenceRecovery(reopen = true)
+
+    @Test fun replacementAccountEpochRetractsOnlyItsDurablePreparedFence() = preparedFenceRecovery(reopen = false)
+
+    private fun preparedFenceRecovery(reopen: Boolean) = Fixture().use { f ->
+        val peerAccount = "2dc91581-2795-4d0a-b87d-25dbc35c8fc0"
+        val peer = f.intent.copy(destination = f.intent.destination.copy(account = peerAccount), operation = UUID.randomUUID())
+        f.seed(peer)
+        val disk = f.directory.resolve("original-import.v1.json")
+        val journal = OriginalImportJournal(disk)
+        val peerFence = UUID.randomUUID()
+        assertTrue(journal.prepareRemoval(peer.destination, f.track, peerFence) { true })
+        // Re-encode exactly the v2 representation: the absence of a prepared marker is never proof.
+        val v2 = Json.parseToJsonElement(disk.readText()).jsonObject.let {
+            JsonObject(mapOf("version" to JsonPrimitive(2), "rows" to it.getValue("rows")))
+        }
+        disk.writeText(v2.toString())
+        val before = disk.readBytes()
+        val neighbor = v2.getValue("rows").jsonArray.last().jsonObject
+        val dir = f.directory.toPath()
+        val writable = Files.getPosixFilePermissions(dir)
+        val readOnly = PosixFilePermissions.fromString("r-x------")
+        val deleteCall = java.util.concurrent.atomic.AtomicReference<Call>()
+        val headers = AtomicInteger()
+        val deletes = AtomicInteger()
+        val listener = object : EventListener() {
+            override fun callStart(call: Call) { if (call.request().method == "DELETE") deleteCall.set(call) }
+            override fun requestHeadersStart(call: Call) { if (call.request().method == "DELETE") headers.incrementAndGet() }
+        }
+        f.server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = when (request.method to request.url.encodedPath) {
+                "GET" to "/api/v1/library" -> f.libraryPage(true, request)
+                "GET" to "/api/v1/tracks/77/analysis" -> f.reply(404, "{}")
+                "DELETE" to f.memberPath -> { deletes.incrementAndGet(); MockResponse.Builder().code(204).build() }
+                else -> f.reply(500, "{}")
+            }
+        }
+        fun recover(g: AppGraph) {
+            f.signIn(g, peerAccount)
+            val legacy = f.openDetails(g)
+            val details = g.trackDetails
+            assertEquals("Unconfirmed", details.state.value.removalIssue?.name)
+            assertTrue(details.state.value.removalBlocked)
+            assertNull(details.claim(legacy, details.state.value.detail!!, DetailsAction.Remove))
+            val scope = f.signIn(g)
+            val route = f.openDetails(g) // Read-only directory: this attempt cannot retract even a prepared record.
+            assertTrue(details.state.value.removalBlocked)
+            assertEquals(OriginalImportPhase.RemovalPending, g.originalImports.entries(scope).single().phase)
+            Files.setPosixFilePermissions(dir, writable)
+            details.load(route)
+            assertEquals("GET", f.next("/api/v1/library").method)
+            assertEquals("GET", f.next("/api/v1/tracks/77/analysis").method)
+            assertFalse("the exact prepared-only operation must recover on Reload", details.state.value.removalBlocked)
+            assertNull(details.state.value.removalIssue)
+            assertNotNull(details.claim(route, details.state.value.detail!!, DetailsAction.Remove))
+            assertArrayEquals(before, disk.readBytes())
+            assertEquals(neighbor, Json.parseToJsonElement(disk.readText()).jsonObject.getValue("rows").jsonArray.last())
+            assertEquals(0, headers.get()); assertEquals(0, deletes.get())
+            assertNull(f.server.takeRequest(150, java.util.concurrent.TimeUnit.MILLISECONDS))
+        }
+        try {
+            f.graph(null, listener = listener).use { g ->
+                val scope = f.signIn(g)
+                var canceled = false
+                val error = assertThrows(SafeFailure::class.java) {
+                    g.api.trackDetailsRemove(scope, f.track) {
+                        val stored = g.originalImports.state.value.entry(f.intent.operation)
+                        if (!canceled && stored?.phase == OriginalImportPhase.RemovalPending) {
+                            val reopened = OriginalImportJournal(disk).apply { load() }.state.value
+                            assertEquals(stored, reopened.entry(f.intent.operation))
+                            assertEquals(peerFence, reopened.entry(peer.operation)?.removal)
+                            Files.setPosixFilePermissions(dir, readOnly)
+                            checkNotNull(deleteCall.get()).cancel()
+                            canceled = true
+                        }
+                        true
+                    }
+                }
+                assertTrue(canceled)
+                assertEquals(SafeFailure.Reason.RemovalNotSentLocalCleanupFailed, error.reason)
+                assertEquals(0, headers.get()); assertEquals(0, deletes.get())
+                if (!reopen) recover(g)
+            }
+            if (reopen) f.graph(null, listener = listener).use(::recover)
+        } finally { Files.setPosixFilePermissions(dir, writable) }
+    }
+
+    @Test fun cancellationAfterVerifiedEntryBoundaryStillLeavesAColdUnknownFence() = Fixture().use { f ->
+        val disk = f.directory.resolve("original-import.v1.json")
+        val dir = f.directory.toPath()
+        val writable = Files.getPosixFilePermissions(dir)
+        val deleteCall = java.util.concurrent.atomic.AtomicReference<Call>()
+        val headers = AtomicInteger()
+        val listener = object : EventListener() {
+            override fun callStart(call: Call) { if (call.request().method == "DELETE") deleteCall.set(call) }
+            override fun requestHeadersStart(call: Call) { if (call.request().method == "DELETE") headers.incrementAndGet() }
+        }
+        f.server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = when (request.method to request.url.encodedPath) {
+                "GET" to "/api/v1/library" -> f.libraryPage(true, request)
+                "GET" to "/api/v1/tracks/77/analysis" -> f.reply(404, "{}")
+                else -> f.reply(500, "{}")
+            }
+        }
+        try {
+            f.graph(null, listener = listener).use { g ->
+                val scope = f.signIn(g)
+                var sawPrepared = false
+                var canceledAfterEntry = false
+                assertEquals(SafeFailure.Reason.RemovalNotSentLocalCleanupFailed, assertThrows(SafeFailure::class.java) {
+                    g.api.trackDetailsRemove(scope, f.track) {
+                        if (g.originalImports.entries(scope).singleOrNull()?.phase == OriginalImportPhase.RemovalPending) {
+                            val raw = Json.parseToJsonElement(disk.readText()).jsonObject
+                            if (raw["prepared"] != null) sawPrepared = true
+                            else if (sawPrepared && !canceledAfterEntry) {
+                                assertEquals(2, raw.getValue("version").jsonPrimitive.int)
+                                Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-x------"))
+                                checkNotNull(deleteCall.get()).cancel()
+                                canceledAfterEntry = true
+                            }
+                        }
+                        true
+                    }
+                }.reason)
+                assertTrue(canceledAfterEntry)
+                assertEquals(0, headers.get()); assertEquals(0, f.server.requestCount)
+            }
+            Files.setPosixFilePermissions(dir, writable)
+            val enteredBytes = disk.readBytes()
+            f.graph(null).use { cold ->
+                f.signIn(cold)
+                val route = f.openDetails(cold)
+                assertEquals("Unconfirmed", cold.trackDetails.state.value.removalIssue?.name)
+                assertNull(cold.trackDetails.claim(route, cold.trackDetails.state.value.detail!!, DetailsAction.Remove))
+                assertArrayEquals(enteredBytes, disk.readBytes())
+                assertNull(f.server.takeRequest(150, java.util.concurrent.TimeUnit.MILLISECONDS))
+            }
+        } finally { Files.setPosixFilePermissions(dir, writable) }
+    }
+
+    @Test fun transientJournalReadFailureRecoversExactBytesButFutureVersionStaysRejected() = Fixture().use { f ->
+        val disk = File(f.directory, "original-import.v1.json")
+        val before = disk.readBytes()
+        val permissions = Files.getPosixFilePermissions(disk.toPath())
+        val journal = OriginalImportJournal(disk)
+        try {
+            Files.setPosixFilePermissions(disk.toPath(), PosixFilePermissions.fromString("---------"))
+            journal.load()
+            assertFalse(journal.state.value.ready)
+        } finally { Files.setPosixFilePermissions(disk.toPath(), permissions) }
+        journal.load()
+        assertEquals(f.intent, journal.state.value.rows.single().intent)
+        assertArrayEquals(before, disk.readBytes())
+        for (rejected in listOf(before.decodeToString().replace("\"version\":1", "\"version\":99").encodeToByteArray(), byteArrayOf(0))) {
+            assertFalse(before.contentEquals(rejected))
+            disk.writeBytes(rejected)
+            val invalid = OriginalImportJournal(disk).apply { load() }
+            assertTrue(invalid.state.value.rejected)
+            assertArrayEquals(rejected, disk.readBytes())
+            disk.writeBytes(before)
+            invalid.load()
+            assertTrue(invalid.state.value.rejected)
+            assertTrue(invalid.state.value.rows.isEmpty())
+        }
+    }
+
+    @Test fun accepted204RetriesOnlyLocalSettlementOnDetailsReload() = Fixture().use { f ->
+        val journal = File(f.directory, "original-import.v1.json")
+        val dir = f.directory.toPath()
+        val writable = Files.getPosixFilePermissions(dir)
+        val member = AtomicBoolean(true)
+        val deletes = AtomicInteger()
+        f.server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.method to request.url.encodedPath) {
+                "GET" to "/api/v1/library" -> f.libraryPage(member.get(), request)
+                "GET" to "/api/v1/tracks/77/analysis" -> f.reply(404, "{}")
+                "DELETE" to f.memberPath -> {
+                    check(deletes.incrementAndGet() == 1 && member.compareAndSet(true, false))
+                    Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-x------"))
+                    MockResponse.Builder().code(204).build()
+                }
+                else -> f.reply(500, "{}")
+            }
+        }
+        try {
+            f.graph(null).use { g ->
+                val scope = f.signIn(g)
+                val route = f.openDetails(g)
+                val details = g.trackDetails
+                details.execute(checkNotNull(details.claim(route, details.state.value.detail!!, DetailsAction.Remove)))
+                assertEquals("DELETE", f.next(f.memberPath).method)
+                assertEquals("GET", f.next("/api/v1/library").method)
+                assertEquals("GET", f.next("/api/v1/library").method)
+                assertEquals("ConfirmedLocalSettleFailed", details.state.value.removalIssue?.name)
+                val pending = OriginalImportJournal(journal).apply { load() }.state.value.rows.single()
+                assertEquals(OriginalImportPhase.RemovalPending, pending.phase)
+                Files.setPosixFilePermissions(dir, writable)
+                details.load(route)
+                assertEquals("GET", f.next("/api/v1/library").method)
+                val removed = OriginalImportJournal(journal).apply { load() }.state.value.rows.single()
+                assertEquals(OriginalImportPhase.Removed, removed.phase)
+                assertEquals(pending.removal, removed.removal)
+                assertTrue(details.state.value.missing)
+                assertFalse(details.state.value.removalBlocked)
+                assertNull(details.state.value.removalIssue)
+                assertEquals(removed, g.originalImports.entries(scope).single())
+                assertEquals(1, deletes.get())
+                assertNull(f.server.takeRequest(150, java.util.concurrent.TimeUnit.MILLISECONDS))
+            }
+        } finally { Files.setPosixFilePermissions(dir, writable) }
+    }
+
+    @Test fun callDeadlineDuringVerifiedPrepareReportsNotSentWithoutMutationHeaders() = Fixture().use { f ->
+        val disk = File(f.directory, "original-import.v1.json")
+        val before = disk.readBytes()
+        val canceled = CountDownLatch(1)
+        val headers = AtomicInteger()
+        val listener = object : EventListener() {
+            override fun canceled(call: Call) { if (call.request().method == "DELETE") canceled.countDown() }
+            override fun requestHeadersStart(call: Call) { if (call.request().method == "DELETE") headers.incrementAndGet() }
+        }
+        f.graph(null, listener = listener).use { g ->
+            val scope = f.signIn(g)
+            g.originalImports.load()
+            var witnessed = false
+            val error = assertThrows(SafeFailure::class.java) {
+                g.api.trackDetailsRemove(scope, f.track) {
+                    if (!witnessed && g.originalImports.entries(scope).single().phase == OriginalImportPhase.RemovalPending) {
+                        assertEquals(OriginalImportPhase.RemovalPending,
+                            OriginalImportJournal(disk).apply { load() }.state.value.rows.single().phase)
+                        witnessed = true
+                        assertTrue(canceled.await(25, SECONDS))
+                    }
+                    true
+                }
+            }
+            assertTrue(witnessed)
+            assertEquals(0, headers.get())
+            assertEquals(0, f.server.requestCount)
+            assertArrayEquals(before, disk.readBytes())
+            assertEquals(SafeFailure.Reason.RemovalNotSent, error.reason)
+        }
+    }
+
     @Test fun acknowledgedDeleteWithFailedLocalSettleCannotReviveEitherBorrowingPathAfterRestart() =
         failedDeleteSurvivesRestart(confirmed = true)
 
@@ -601,21 +845,7 @@ class OriginalImportCompositionTest {
                 assertNull(claimRemove())
 
                 Files.setPosixFilePermissions(path, writable)
-                // A reconstructed graph sees the same v2 fence, but has no pre-entry witness.
-                // The live graph still owns the exclusive phone store; reopen a snapshot of it.
-                val reopenedPhone = File(f.directory, "reopened-phone-listening.v1.json")
-                File(f.directory, "phone-listening.v1.json").copyTo(reopenedPhone)
-                f.graph("fixture", openPhoneAudioStore = { DeviceListeningStore(reopenedPhone) }).use { restarted ->
-                    val restartedScope = f.signIn(restarted)
-                    assertEquals(intent.original, f.phoneSource(restarted))
-                    f.openDetails(restarted)
-                    assertEquals(OriginalImportPhase.RemovalPending, restarted.originalImports.entries(restartedScope).single().phase)
-                    assertEquals("Unconfirmed", restarted.trackDetails.state.value.removalIssue?.name)
-                    assertTrue(restarted.trackDetails.state.value.removalBlocked)
-                    assertTrue(restarted.originalImports.admitOnlinePlayback(restartedScope, f.track).isEmpty())
-                    assertTrue(restarted.originalImports.admitExplicitOriginal(restartedScope, f.track, operation).isEmpty())
-                    assertArrayEquals(fenced, journal.readBytes())
-                }
+                // Cold recovery of certified prepared bytes is exercised separately, without two active file owners.
 
                 reloadDetails()
                 assertNull(g.trackDetails.state.value.removalIssue)
@@ -738,7 +968,9 @@ class OriginalImportCompositionTest {
                 assertNotNull(pending.removal)
                 assertEquals(pending, g.originalImports.state.value.entry(f.intent.operation))
                 val fenced = disk.readBytes()
-                assertEquals(2, Json.parseToJsonElement(fenced.decodeToString()).jsonObject.getValue("version").jsonPrimitive.int)
+                val prepared = Json.parseToJsonElement(fenced.decodeToString()).jsonObject
+                assertEquals(4, prepared.getValue("version").jsonPrimitive.int)
+                assertEquals(pending.removal.toString(), prepared.getValue("prepared").jsonArray.single().jsonPrimitive.content)
                 assertEquals(1, deleteCalls.get())
                 assertEquals(0, mutationHeaders.get())
                 assertEquals(0, mutationRequests.get())
@@ -766,17 +998,6 @@ class OriginalImportCompositionTest {
                 assertArrayEquals(fenced, disk.readBytes())
                 assertEquals(LibraryRemovalFenceStatus.NotSentLocalCleanupFailed, g.api.libraryRemovalFenceStatus(scope, f.track))
                 Files.setPosixFilePermissions(path, writable)
-
-                // An independent graph has the same bytes, not the live process's unentered witness.
-                f.graph(null, listener = listener).use { restarted ->
-                    f.signIn(restarted)
-                    val coldRoute = f.openDetails(restarted)
-                    val cold = restarted.trackDetails.state.value
-                    assertEquals("Unconfirmed", cold.removalIssue?.name)
-                    assertTrue(cold.removalBlocked)
-                    assertNull(restarted.trackDetails.claim(coldRoute, cold.detail!!, DetailsAction.Remove))
-                    assertArrayEquals(fenced, disk.readBytes())
-                }
 
                 if (refuseMetadata) {
                     val metadata = DetailsAction.Metadata(com.soundq.android.data.trackdetails.MetadataDraft("Unrelated draft"))
@@ -830,7 +1051,15 @@ class OriginalImportCompositionTest {
                 assertEquals(0, mutationRequests.get())
                 val recovered = details.state.value
                 assertFalse(recovered.loading)
-                if (!laterFence) {
+                if (laterFence) {
+                    details.load(replacement)
+                    assertEquals("GET", f.next("/api/v1/library").method)
+                    assertEquals("GET", f.next("/api/v1/tracks/77/analysis").method)
+                    val afterExternalCleanup = details.state.value
+                    assertFalse("verified retraction by the other command must retire exactly B", afterExternalCleanup.removalBlocked)
+                    assertNull(afterExternalCleanup.removalIssue)
+                    assertNotNull(details.claim(replacement, afterExternalCleanup.detail!!, DetailsAction.Remove))
+                } else {
                     assertEquals(if (refuseMetadata) MutationOutcome.Refused else null, recovered.outcome)
                     assertFalse(recovered.removalBlocked)
                     assertNotNull("fresh deliberate Remove must be eligible without being executed",
