@@ -11,74 +11,77 @@ import (
 )
 
 func TestCoalescedWaiterCancellationDoesNotCancelLeader(t *testing.T) {
-	c := NewClient(nil)
-	var calls atomic.Int32
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var once sync.Once
-	c.httpClient.Transport = fixtureTransport(func(r *http.Request) (*http.Response, error) {
-		calls.Add(1)
-		once.Do(func() { close(entered) })
+	withFixtureClock(t, func(t *testing.T) {
+		c := NewClient(nil)
+		var calls atomic.Int32
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		c.httpClient.Transport = fixtureTransport(func(r *http.Request) (*http.Response, error) {
+			calls.Add(1)
+			once.Do(func() { close(entered) })
+			select {
+			case <-release:
+				return fixtureResponse(200, `{}`), nil
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			}
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { _, err := c.doRequest(ctx, "https://coalesce.fixture.invalid/shared"); done <- err }()
 		select {
-		case <-release:
-			return fixtureResponse(200, `{}`), nil
-		case <-r.Context().Done():
-			return nil, r.Context().Err()
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		waitCtx, waitCancel := context.WithCancel(ctx)
+		observed := &waitObservedContext{Context: waitCtx, waiting: make(chan struct{})}
+		waitDone := make(chan error, 1)
+		go func() { _, err := c.doRequest(observed, "https://coalesce.fixture.invalid/shared"); waitDone <- err }()
+		select {
+		case <-observed.waiting:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		waitCancel()
+		if err := <-waitDone; !errors.Is(err, context.Canceled) {
+			t.Errorf("waiter cancellation=%v", err)
+		}
+		deadlineCtx, deadlineCancel := context.WithTimeout(ctx, 40*time.Millisecond)
+		defer deadlineCancel()
+		if _, err := c.doRequest(deadlineCtx, "https://coalesce.fixture.invalid/shared"); !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("coalesced waiter deadline=%v", err)
+		}
+		if calls.Load() != 1 {
+			t.Errorf("waiter dispatched extra call: %d", calls.Load())
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("waiter retired leader: %v", err)
+		default:
+		}
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.doRequest(ctx, "https://coalesce.fixture.invalid/shared"); err != nil {
+			t.Fatal(err)
+		}
+		if calls.Load() != 2 {
+			t.Fatalf("completed request retained as hidden cache: calls=%d", calls.Load())
+		}
+		c.requestsMu.Lock()
+		defer c.requestsMu.Unlock()
+		if len(c.requests) != 0 {
+			t.Fatalf("completed requests retained: %d", len(c.requests))
 		}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { _, err := c.doRequest(ctx, "https://coalesce.fixture.invalid/shared"); done <- err }()
-	select {
-	case <-entered:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	waitCtx, waitCancel := context.WithCancel(ctx)
-	observed := &waitObservedContext{Context: waitCtx, waiting: make(chan struct{})}
-	waitDone := make(chan error, 1)
-	go func() { _, err := c.doRequest(observed, "https://coalesce.fixture.invalid/shared"); waitDone <- err }()
-	select {
-	case <-observed.waiting:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	waitCancel()
-	if err := <-waitDone; !errors.Is(err, context.Canceled) {
-		t.Errorf("waiter cancellation=%v", err)
-	}
-	deadlineCtx, deadlineCancel := context.WithTimeout(ctx, 40*time.Millisecond)
-	defer deadlineCancel()
-	if _, err := c.doRequest(deadlineCtx, "https://coalesce.fixture.invalid/shared"); !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("coalesced waiter deadline=%v", err)
-	}
-	if calls.Load() != 1 {
-		t.Errorf("waiter dispatched extra call: %d", calls.Load())
-	}
-	select {
-	case err := <-done:
-		t.Fatalf("waiter retired leader: %v", err)
-	default:
-	}
-	close(release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.doRequest(ctx, "https://coalesce.fixture.invalid/shared"); err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 2 {
-		t.Fatalf("completed request retained as hidden cache: calls=%d", calls.Load())
-	}
-	c.requestsMu.Lock()
-	defer c.requestsMu.Unlock()
-	if len(c.requests) != 0 {
-		t.Fatalf("completed requests retained: %d", len(c.requests))
-	}
 }
 
 func TestConcurrentCachedMissesCoalesceRetriesAndDecodeIndependently(t *testing.T) {
+	isolateFixtureBudgets(t)
 	store := fixturePublicCache(t)
 	c := NewClient(store)
 	var calls atomic.Int32
@@ -154,22 +157,24 @@ func TestConcurrentCachedMissesCoalesceRetriesAndDecodeIndependently(t *testing.
 }
 
 func TestRequestCancellationOnFinalRetryRetainsContextError(t *testing.T) {
-	c := NewClient(nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	var attempts atomic.Int32
-	c.httpClient.Transport = fixtureTransport(func(r *http.Request) (*http.Response, error) {
-		if attempts.Add(1) == 4 {
-			cancel()
-			return nil, context.Canceled
+	withFixtureClock(t, func(t *testing.T) {
+		c := NewClient(nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		var attempts atomic.Int32
+		c.httpClient.Transport = fixtureTransport(func(r *http.Request) (*http.Response, error) {
+			if attempts.Add(1) == 4 {
+				cancel()
+				return nil, context.Canceled
+			}
+			return fixtureResponse(503, `{}`), nil
+		})
+		_, err := c.doRequest(ctx, "https://final-retry.fixture.invalid/a")
+		if attempts.Load() != 4 {
+			t.Fatalf("did not reach final attempt: %d, err=%v", attempts.Load(), err)
 		}
-		return fixtureResponse(503, `{}`), nil
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("final cancellation lost its context identity: %v", err)
+		}
 	})
-	_, err := c.doRequest(ctx, "https://final-retry.fixture.invalid/a")
-	if attempts.Load() != 4 {
-		t.Fatalf("did not reach final attempt: %d, err=%v", attempts.Load(), err)
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("final cancellation lost its context identity: %v", err)
-	}
 }

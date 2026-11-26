@@ -17,6 +17,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/testutil/pgfixture"
 )
 
 func TestJamRepositoryFixtureProtection(t *testing.T) {
@@ -105,51 +106,26 @@ func assertFixtureProtection(t *testing.T, fixture func(*testing.T), dsnEnv, red
 	})
 }
 
-// Each run owns only a fresh schema in an explicitly supplied disposable DB.
+// Each test seeds its own database using the authoritative startup schema.
 func testRepository(t *testing.T) (*Repository, Owner, Proof) {
 	t.Helper()
 	dsn := os.Getenv("JAM_TEST_DSN")
 	if dsn == "" {
 		t.Skip("JAM_TEST_DSN required (disposable PostgreSQL only)")
 	}
-	if err := db.CheckDSNNotProtected(dsn); err != nil {
-		t.Fatal(err)
-	}
-	admin, e := sql.Open("postgres", dsn)
-	if e != nil {
-		t.Fatal(e)
-	}
-	t.Cleanup(func() { admin.Close() })
-	// Read the original database marker before creating the isolated schema.
-	if err := (&db.DB{DB: admin}).CheckDatabaseNotProtected(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	schema := "jam_test_" + uuid.NewString()[:8]
-	if _, e = admin.Exec(`CREATE SCHEMA ` + schema); e != nil {
-		t.Fatal(e)
-	}
-	t.Cleanup(func() { admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`) })
-	db, e := sql.Open("postgres", dsn+"&search_path="+schema)
-	if e != nil {
-		t.Fatal(e)
-	}
-	t.Cleanup(func() { db.Close() })
-	_, e = db.Exec(`CREATE TABLE users(id uuid PRIMARY KEY,connect_auth_generation bigint NOT NULL DEFAULT 0); CREATE TABLE tracks(id bigint PRIMARY KEY,title text,artist text,duration_ms integer); CREATE TABLE user_library(user_id uuid REFERENCES users(id),track_id bigint REFERENCES tracks(id),PRIMARY KEY(user_id,track_id));` + testJamSchema)
-	if e != nil {
-		t.Fatal(e)
-	}
+	database := pgfixture.NewMigratedDatabase(t, dsn)
 	o := Owner{UserID: uuid.New(), Generation: 0}
 	p := Proof{HostDeviceID: uuid.New(), LeaseID: uuid.New(), WriterSecret: NewSecret()}
-	if _, e = db.Exec(`INSERT INTO users(id) VALUES($1);`, o.UserID); e != nil {
+	if _, e := database.ExecContext(t.Context(), `INSERT INTO users(id,email,username,password_hash) VALUES($1,$2,'fixture','not-a-login')`, o.UserID, o.UserID.String()+"@example.invalid"); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = db.Exec(`INSERT INTO tracks VALUES(1,'Selected track','Fixture artist',180000),(2,'Not owned','Other',1000)`); e != nil {
+	if _, e := database.ExecContext(t.Context(), `INSERT INTO tracks(id,identity_hash,title,artist,duration_ms) VALUES(1,'selected','Selected track','Fixture artist',180000),(2,'not-owned','Not owned','Other',1000)`); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = db.Exec(`INSERT INTO user_library VALUES($1,1)`, o.UserID); e != nil {
+	if _, e := database.ExecContext(t.Context(), `INSERT INTO user_library(user_id,track_id) VALUES($1,1)`, o.UserID); e != nil {
 		t.Fatal(e)
 	}
-	return NewRepository(db), o, p
+	return NewRepository(database.DB), o, p
 }
 func createFixture(t *testing.T, r *Repository, o Owner, p Proof) uuid.UUID {
 	t.Helper()
@@ -600,12 +576,3 @@ func TestPostgresPurgeOnlyRetiredAfterRetention(t *testing.T) {
 		t.Fatalf("purge expired=%d %v", n, e)
 	}
 }
-
-// This is an isolated test helper, NOT another migration runner. Parent copies
-// the authoritative schema into internal/db/db.go exactly once.
-const testJamSchema = `CREATE TABLE jams (
- id uuid PRIMARY KEY,owner_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
- owner_auth_generation bigint NOT NULL,created_at timestamptz NOT NULL,
- expires_at timestamptz NOT NULL,closed_at timestamptz,
- version bigint NOT NULL CHECK(version>=1),state jsonb NOT NULL CHECK(octet_length(state::text)<=65536));
- CREATE INDEX jams_owner_idx ON jams(owner_user_id);`

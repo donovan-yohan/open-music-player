@@ -1,0 +1,33 @@
+// CI-only adapter: never use Maven local or replace a locked coordinate.
+def stage = new File(Objects.requireNonNull(System.getenv('SOUNDQ_COMPOSE_ROBOLECTRIC_STAGE'),
+    'Compose Robolectric requires a verified CI stage'))
+def sdk = new File(stage, 'sdk')
+def mavenDir = new File(stage, 'maven')
+if (!sdk.isDirectory() || !mavenDir.isDirectory()) {
+    throw new GradleException('Compose Robolectric verified stage is incomplete')
+}
+
+settingsEvaluated { settings ->
+    def repos = settings.dependencyResolutionManagement.repositories
+    repos.exclusiveContent {
+        forRepository {
+            repos.maven {
+                name = 'composeVerifiedRobolectricNativeRuntime'
+                url = mavenDir.toURI()
+            }
+        }
+        filter { includeModule('org.robolectric', 'nativeruntime-dist-compat') }
+    }
+}
+
+gradle.beforeProject { project ->
+    if (project.path in [':app', ':designsystem']) {
+        project.tasks.withType(Test).configureEach {
+            if (name == 'testDebugUnitTest') {
+                systemProperty('robolectric.offline', 'true')
+                systemProperty('robolectric.dependency.dir', sdk.absolutePath)
+                inputs.dir(sdk).withPropertyName('verifiedRobolectricSdkJars').withPathSensitivity(PathSensitivity.RELATIVE)
+            }
+        }
+    }
+}

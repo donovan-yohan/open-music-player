@@ -24,6 +24,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/connect"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/middleware"
+	"github.com/openmusicplayer/backend/internal/testutil/pgfixture"
 )
 
 func TestConnectRouterFixtureProtection(t *testing.T) {
@@ -119,39 +120,7 @@ func connectRouterFixture(t *testing.T) (http.Handler, *auth.Service, *db.DB, *r
 	if dsn == "" || addr == "" {
 		t.Skip("Connect disposable PG/Redis environment not set")
 	}
-	if err := db.CheckDSNNotProtected(dsn); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := sql.Open("postgres", dsn)
-	if err != nil {
-		t.Fatal("open test DB")
-	}
-	t.Cleanup(func() { raw.Close() })
-	// Check the root marker before a fresh schema can hide protected data.
-	if err := (&db.DB{DB: raw}).CheckDatabaseNotProtected(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	schema := "connect_api_" + uuid.NewString()[:8]
-	if _, err = raw.Exec(`CREATE SCHEMA ` + schema); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { raw.Exec(`DROP SCHEMA ` + schema + ` CASCADE`) })
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal("test DSN must be URL")
-	}
-	q := u.Query()
-	q.Set("search_path", schema+",public")
-	u.RawQuery = q.Encode()
-	conn, err := sql.Open("postgres", u.String())
-	if err != nil {
-		t.Fatal("open test schema")
-	}
-	t.Cleanup(func() { conn.Close() })
-	database := &db.DB{DB: conn}
-	if err = database.Migrate(); err != nil {
-		t.Fatal(err)
-	}
+	database := pgfixture.NewMigratedDatabase(t, dsn)
 	users := db.NewUserRepository(database)
 	service := auth.NewService(users, db.NewTokenRepository(database), "connect-api-test-secret")
 	client := redis.NewClient(&redis.Options{Addr: addr})

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import runpy
 import sys
 import tempfile
@@ -124,12 +125,27 @@ class NativePublicationTest(unittest.TestCase):
 
     def test_android_artifacts_never_select_deprecated_flutter_product(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
-        client = ci.split("  client:", 1)[1].split("  extension:", 1)[0]
-        self.assertIn("name: Client (Flutter)", client)
-        for command in ("scripts/test client", "scripts/lint client", "scripts/build client-web"):
-            self.assertIn(command, client)
-        self.assertNotIn("flutter-apk", client)
-        self.assertNotIn("Build debug APK", client)
+        flutter_jobs = {
+            "client-vm": "scripts/test client-shard ",
+            "client-contracts": "scripts/lint client",
+            "client-web": "scripts/build client-web",
+            "client": "scripts/ci_flutter.py merge",
+        }
+        for job, command in flutter_jobs.items():
+            with self.subTest(job=job):
+                match = re.search(rf"(?ms)^  {job}:\n(.*?)(?=^  [\w-]+:\n|\Z)", ci)
+                if match is None:
+                    self.fail(f"missing Flutter CI job {job}")
+                body = match[1]
+                self.assertIn(command, body)
+                for deprecated in ("flutter-apk", "Build debug APK", "flutter build apk", "client-flutter-android-legacy"):
+                    self.assertNotIn(deprecated, body)
+                if job == "client":
+                    self.assertIn("name: Client (Flutter)", body)
+                    needs = re.search(r"(?m)^    needs: \[(.+)\]$", body)
+                    if needs is None:
+                        self.fail("Flutter required check has no lane dependencies")
+                    self.assertTrue(set(flutter_jobs) - {"client"} <= set(needs[1].split(", ")))
         nightly = (ROOT / ".github/workflows/nightly-apk.yml").read_text()
         self.assertIn("scripts/android-product check", nightly)
         self.assertIn("https://fixture.invalid/api/v1", nightly)

@@ -243,12 +243,55 @@ func TestWeeklyExportNearStorageCeilingEscapedMetadata(t *testing.T) {
 	}
 }
 
+// Count the encoded entries added by this append-only fixture without encoding
+// all previously admitted metadata again at every step.
+type weeklyFixtureMapBytes struct{ count, encoded int }
+
+func (m *weeklyFixtureMapBytes) add(t *testing.T, size int, singleton any) {
+	t.Helper()
+	if size != m.count+1 {
+		t.Fatal("test fixture size cache requires a fresh key")
+	}
+	raw, err := json.Marshal(singleton)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.count != 0 {
+		m.encoded++ // The comma between entries.
+	}
+	m.encoded += len(raw) - len("{}")
+	m.count++
+}
+
+func weeklyFixtureSize(t *testing.T, state *weekly.State, feedback, artists weeklyFixtureMapBytes) int {
+	t.Helper()
+	if feedback.count != len(state.Feedback) || artists.count != len(state.Artists) || state.Feedback == nil || state.Artists == nil {
+		t.Fatal("fixture map inventory changed")
+	}
+	reduced := *state
+	reduced.Feedback, reduced.Artists = nil, nil
+	raw, err := json.Marshal(&reduced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(raw) - 2*len("null") + 2*len("{}") + feedback.encoded + artists.encoded
+}
+
 func weeklyExportNearCeiling(t *testing.T, name string) {
 	store := &weeklyExportStore{state: weekly.NewState()}
 	if name == "artist-metadata" {
 		store.artistName = strings.Repeat("\x01<&>\"\\", 83) + "界é"
 	}
 	service, user := weeklyExportFixtureService(store), uuid.New()
+	var feedback, artists weeklyFixtureMapBytes
+	recordFeedback := func(n int) {
+		id := weeklyExportID(n, 1)
+		value, ok := store.state.Feedback[id]
+		if !ok {
+			t.Fatal("missing recorded feedback")
+		}
+		feedback.add(t, len(store.state.Feedback), map[string]weekly.FeedbackEntry{id: value})
+	}
 	// Both strings meet generate's actual 2,000-byte metadata bound. JSON HTML,
 	// control, quote and backslash escaping must count, not source string bytes.
 	metadata := strings.Repeat("\x01<&>\"\\", 332) + "é界ABC"
@@ -258,6 +301,7 @@ func weeklyExportNearCeiling(t *testing.T, name string) {
 			vote = "none"
 		}
 		weeklyExportVote(t, store, service, user, n, metadata, metadata, vote, true, 16)
+		recordFeedback(n)
 	}
 	// Retire provenance through the collaborator, as a later accepted generation
 	// can do. Fill via canonical artist writes with actual <=500-character labels.
@@ -269,8 +313,12 @@ func weeklyExportNearCeiling(t *testing.T, name string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw, _ := json.Marshal(store.state)
-		if len(raw) > 1750000 {
+		value, ok := store.state.Artists[id]
+		if !ok {
+			t.Fatal("missing fixture artist")
+		}
+		artists.add(t, len(store.state.Artists), map[string]weekly.Artist{id: value})
+		if weeklyFixtureSize(t, store.state, feedback, artists) > 1750000 {
 			break
 		}
 	}
@@ -278,17 +326,25 @@ func weeklyExportNearCeiling(t *testing.T, name string) {
 	// invalid padding field. Use small records for the final few KiB so the
 	// fixture itself never exceeds the admission ceiling.
 	for n := 65; ; n++ {
-		raw, _ := json.Marshal(store.state)
-		if len(raw) >= 1797500 {
+		size := weeklyFixtureSize(t, store.state, feedback, artists)
+		if size >= 1797500 {
 			break
 		}
 		title, artist, credits := metadata, metadata, 16
-		if len(raw) > 1760000 {
+		if size > 1760000 {
 			title, artist = "T", "A"
 			credits = 1
 		}
 		weeklyExportVote(t, store, service, user, n, title, artist, "up", true, credits)
+		recordFeedback(n)
 		store.state.Batches = []weekly.Page{}
+	}
+	raw, err := json.Marshal(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != weeklyFixtureSize(t, store.state, feedback, artists) {
+		t.Fatal("fixture byte-count estimate diverged from true serialized size")
 	}
 	out := weeklyAssertExport(t, store, user, "near-ceiling-"+name)
 	if len(out.DerivedArtistAffinities) >= 50 {

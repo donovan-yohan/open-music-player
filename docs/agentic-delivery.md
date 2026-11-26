@@ -58,6 +58,16 @@ Use this rerun policy when the head changes:
 - Mobile/audio/device delta: require physical-device dogfood when unit tests
   cannot prove the central claim.
 
+CI keeps the `Delivery Harness` required on every PR to `main`. Product jobs
+are skipped only when `PR CI Scope` verifies that the tested merge differs from
+its first parent solely by content edits to the exact documentation and
+release-audit paths in `scripts/ci_pr_scope.py`. The tested base supplies the
+selector. Missing history or policy, other files, and path/type/mode changes
+run the full suite. A failed scope job also fails `Delivery Harness` and does
+not suppress product jobs. Job skips are not product test passes. Pushes to
+`main` always run full CI for release qualification; native and release
+workflows retain their own triggers.
+
 Do not store stale PR numbers, head SHAs, or one-off gate verdicts in semantic
 memory. Keep per-PR/head state in PR comments, board artifacts, or local logs.
 

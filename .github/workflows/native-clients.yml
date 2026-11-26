@@ -48,11 +48,25 @@ jobs:
           python3 -B scripts/test-android-product.py
           python3 -B scripts/test-native-publication.py
           python3 -B scripts/check-native-payload.py
+          python3 -B android/ci/test-compose-robolectric.py
           python3 scripts/android-product preflight
+      - name: Acquire verified Compose Robolectric dependencies
+        id: compose-robolectric
+        # Only the fresh GitHub-hosted job owns the lifetime of this RUNNER_TEMP stage.
+        # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#runner-context
+        run: |
+          if [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then
+            printf '%s\n' 'Compose Robolectric staging requires a GitHub-hosted runner' >&2
+            exit 1
+          fi
+          exec python3 -B android/ci/compose_robolectric.py
       - name: Test, assemble and lint the Compose product
+        if: success() && steps.compose-robolectric.outcome == 'success'
+        env:
+          SOUNDQ_COMPOSE_ROBOLECTRIC_STAGE: ${{ steps.compose-robolectric.outputs.stage }}
         run: |
           export PATH="$ANDROID_HOME/cmake/3.22.1/bin:$PATH"
-          python3 scripts/android-product check -Pkotlin.compiler.execution.strategy=in-process '-Dorg.gradle.jvmargs=-Xmx3g -XX:ActiveProcessorCount=2'
+          python3 scripts/android-product check --init-script ci/compose-robolectric.init.gradle -Pkotlin.compiler.execution.strategy=in-process '-Dorg.gradle.jvmargs=-Xmx3g -XX:ActiveProcessorCount=2'
       - name: Upload Compose debug APKs
         uses: actions/upload-artifact@v4
         with:
@@ -290,6 +304,7 @@ jobs:
         run: |
           python3 -B <<'PY'
           import os
+          import shlex
           from pathlib import Path
           import shutil
           import subprocess
@@ -318,11 +333,18 @@ jobs:
           os.environ.setdefault('TMPDIR', str(output))
           env = dict(os.environ, SOUNDQ_KOTLINC=str(launcher))
           subprocess.run([sys.executable, '-B', 'native/tests/queue_restore_cursor_regressions.py', '--source-root', str(Path.cwd()), '--output', str(output / 'cursor')], env=env, check=True)
+          sys.path.insert(0, str(Path.cwd() / 'native/tests'))
+          from ci_robolectric_sdk import report_presentation_failure, stage_sdk
+          sdk_dir = stage_sdk(output)
+          sdk_args = shlex.quote(f'-Drobolectric.dependency.dir={sdk_dir}')
           # Production Library admission and retained Queue disclosure use the
           # installed compiler; the preceding SDK build compiles the full shell.
-          subprocess.run([sys.executable, '-B', 'native/tests/android_library_regressions.py', '--compiled', '--output', str(output / 'library')], env=env, check=True)
+          try:
+              subprocess.run([sys.executable, '-B', 'native/tests/android_library_regressions.py', '--compiled', '--output', str(output / 'library')], env=dict(env, SOUNDQ_PRESENTATION_GRADLE_ARGS=sdk_args), check=True)
+          except subprocess.CalledProcessError:
+              report_presentation_failure('Library', output / 'library/presentation', 'AndroidPresentationTest')
+              raise
           subprocess.run([sys.executable, '-B', 'native/tests/queue_dialog_regressions.py', '--output', str(output / 'queue-dialog')], env=env, check=True)
-          sys.path.insert(0, str(Path.cwd() / 'native/tests'))
           import queue_current_marker_regressions
           os.environ['SOUNDQ_KOTLINC'] = str(launcher)
           result = queue_current_marker_regressions.run_platform('android', Path.cwd(), output / 'current-marker')
@@ -330,7 +352,15 @@ jobs:
               raise SystemExit(result)
           subprocess.run([sys.executable, '-B', 'native/tests/registration_regressions.py', '--platform', 'android', '--output', str(output / 'registration')], env=env, check=True)
           from android_presentation_regressions import auth_presentation
-          if not auth_presentation(Path.cwd(), output / 'registration-layout')['passed']:
+          # This runner is called directly, not with the child's environment above.
+          os.environ['SOUNDQ_PRESENTATION_GRADLE_ARGS'] = sdk_args
+          passed = False
+          try:
+              passed = auth_presentation(Path.cwd(), output / 'registration-layout')['passed']
+          finally:
+              if not passed:
+                  report_presentation_failure('registration', output / 'registration-layout', 'RegistrationPresentationTest')
+          if not passed:
               raise SystemExit('Native registration layout failed')
           PY
       - uses: actions/upload-artifact@v4
