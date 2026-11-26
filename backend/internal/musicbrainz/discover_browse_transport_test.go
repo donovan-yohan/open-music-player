@@ -20,92 +20,96 @@ const (
 )
 
 func TestDiscoverBrowseArtistSearchEachKindUsesLiteralAndExactCredit(t *testing.T) {
-	const literal = `same" OR arid:*\name`
-	var paths []string
-	client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
-		paths = append(paths, req.URL.Path)
-		var field, list, body string
-		switch req.URL.Path {
-		case "/ws/2/recording":
-			field, list = "recording", "recordings"
-			body = `{"id":"` + browseRecording + `","title":"Same song","length":123000,"first-release-date":"2026",` + discoverBrowseCredit + `}`
-		case "/ws/2/release-group":
-			field, list = "releasegroup", "release-groups"
-			body = `{"id":"` + discoverBrowseGroup + `","title":"Same album","primary-type":"Album",` + discoverBrowseCredit + `}`
-		default:
-			return nil, errors.New("unexpected provider path: " + req.URL.Path)
+	withFixtureClock(t, func(t *testing.T) {
+		const literal = `same" OR arid:*\name`
+		var paths []string
+		client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
+			paths = append(paths, req.URL.Path)
+			var field, list, body string
+			switch req.URL.Path {
+			case "/ws/2/recording":
+				field, list = "recording", "recordings"
+				body = `{"id":"` + browseRecording + `","title":"Same song","length":123000,"first-release-date":"2026",` + discoverBrowseCredit + `}`
+			case "/ws/2/release-group":
+				field, list = "releasegroup", "release-groups"
+				body = `{"id":"` + discoverBrowseGroup + `","title":"Same album","primary-type":"Album",` + discoverBrowseCredit + `}`
+			default:
+				return nil, errors.New("unexpected provider path: " + req.URL.Path)
+			}
+			want := url.Values{"query": {field + `:"same\" OR arid:*\\name" AND arid:` + discoverBrowseArtist}, "fmt": {"json"}, "limit": {"20"}, "offset": {"0"}}
+			if !reflect.DeepEqual(req.URL.Query(), want) {
+				t.Errorf("wrong scoped query: %v", req.URL.Query())
+			}
+			return fixtureResponse(200, `{"count":1,"offset":0,"`+list+`":[`+body+`]}`), nil
+		}))
+		id := uuid.MustParse(discoverBrowseArtist)
+		songs, err := client.SearchArtistRecordings(context.Background(), id, literal, 20, 0)
+		if err != nil || len(songs.Results) != 1 || songs.Results[0].RecordingMBID != browseRecording || songs.Results[0].Duration != 123000 || songs.Results[0].FirstReleaseDate != "2026" || !reflect.DeepEqual(paths, []string{"/ws/2/recording"}) {
+			t.Fatalf("song kind result or dispatch: %+v %v; %v", songs, err, paths)
 		}
-		want := url.Values{"query": {field + `:"same\" OR arid:*\\name" AND arid:` + discoverBrowseArtist}, "fmt": {"json"}, "limit": {"20"}, "offset": {"0"}}
-		if !reflect.DeepEqual(req.URL.Query(), want) {
-			t.Errorf("wrong scoped query: %v", req.URL.Query())
+		albums, err := client.SearchArtistReleaseGroups(context.Background(), id, literal, 20, 0)
+		if err != nil || len(albums.Results) != 1 || albums.Results[0].ReleaseGroupMBID != discoverBrowseGroup || !reflect.DeepEqual(paths, []string{"/ws/2/recording", "/ws/2/release-group"}) {
+			t.Fatalf("album kind result or dispatch: %+v %v; %v", albums, err, paths)
 		}
-		return fixtureResponse(200, `{"count":1,"offset":0,"`+list+`":[`+body+`]}`), nil
-	}))
-	id := uuid.MustParse(discoverBrowseArtist)
-	songs, err := client.SearchArtistRecordings(context.Background(), id, literal, 20, 0)
-	if err != nil || len(songs.Results) != 1 || songs.Results[0].RecordingMBID != browseRecording || songs.Results[0].Duration != 123000 || songs.Results[0].FirstReleaseDate != "2026" || !reflect.DeepEqual(paths, []string{"/ws/2/recording"}) {
-		t.Fatalf("song kind result or dispatch: %+v %v; %v", songs, err, paths)
-	}
-	albums, err := client.SearchArtistReleaseGroups(context.Background(), id, literal, 20, 0)
-	if err != nil || len(albums.Results) != 1 || albums.Results[0].ReleaseGroupMBID != discoverBrowseGroup || !reflect.DeepEqual(paths, []string{"/ws/2/recording", "/ws/2/release-group"}) {
-		t.Fatalf("album kind result or dispatch: %+v %v; %v", albums, err, paths)
-	}
+	})
 }
 
 func TestDiscoverBrowseEditionsPageAndExactTrackPlacements(t *testing.T) {
-	var starts []time.Time
-	client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
-		starts = append(starts, time.Now())
-		if deadline, ok := req.Context().Deadline(); !ok || time.Until(deadline) > discoverBrowseTimeout {
-			t.Errorf("unbounded provider context: %s", req.URL)
-		}
-		summary := `"id":"` + browseEdition + `","release-group":{"id":"` + discoverBrowseGroup + `"},"title":"Box Set","date":"2025-06","country":"GB","status":"Official",` + discoverBrowseCredit
-		switch req.URL.Path {
-		case "/ws/2/release":
-			want := url.Values{"release-group": {discoverBrowseGroup}, "inc": {"artist-credits media release-groups"}, "fmt": {"json"}, "limit": {"5"}, "offset": {"7"}}
-			if !reflect.DeepEqual(req.URL.Query(), want) {
-				t.Errorf("wrong editions query: %v", req.URL.Query())
+	withFixtureClock(t, func(t *testing.T) {
+		var starts []time.Time
+		client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
+			starts = append(starts, time.Now())
+			if deadline, ok := req.Context().Deadline(); !ok || time.Until(deadline) > discoverBrowseTimeout {
+				t.Errorf("unbounded provider context: %s", req.URL)
 			}
-			return fixtureResponse(200, `{"release-count":12,"release-offset":7,"releases":[{`+summary+`,"media":[{"position":1,"format":"Vinyl","track-count":2},{"position":2,"format":"Vinyl","track-count":1}]}]}`), nil
-		case "/ws/2/release/" + browseEdition:
-			want := url.Values{"inc": {"artist-credits recordings release-groups"}, "fmt": {"json"}}
-			if !reflect.DeepEqual(req.URL.Query(), want) {
-				t.Errorf("wrong tracklist query: %v", req.URL.Query())
+			summary := `"id":"` + browseEdition + `","release-group":{"id":"` + discoverBrowseGroup + `"},"title":"Box Set","date":"2025-06","country":"GB","status":"Official",` + discoverBrowseCredit
+			switch req.URL.Path {
+			case "/ws/2/release":
+				want := url.Values{"release-group": {discoverBrowseGroup}, "inc": {"artist-credits media release-groups"}, "fmt": {"json"}, "limit": {"5"}, "offset": {"7"}}
+				if !reflect.DeepEqual(req.URL.Query(), want) {
+					t.Errorf("wrong editions query: %v", req.URL.Query())
+				}
+				return fixtureResponse(200, `{"release-count":12,"release-offset":7,"releases":[{`+summary+`,"media":[{"position":1,"format":"Vinyl","track-count":2},{"position":2,"format":"Vinyl","track-count":1}]}]}`), nil
+			case "/ws/2/release/" + browseEdition:
+				want := url.Values{"inc": {"artist-credits recordings release-groups"}, "fmt": {"json"}}
+				if !reflect.DeepEqual(req.URL.Query(), want) {
+					t.Errorf("wrong tracklist query: %v", req.URL.Query())
+				}
+				return fixtureResponse(200, `{`+summary+`,"media":[
+					{"position":2,"format":"Vinyl","track-count":1,"track-offset":0,"tracks":[
+						{"id":"55555555-5555-4555-8555-555555555555","position":1,"number":"C1","title":"Reprise","length":null,"recording":{"id":"`+browseRecording+`"}}]},
+					{"position":1,"format":"Vinyl","track-count":2,"track-offset":0,"tracks":[
+						{"id":"66666666-6666-4666-8666-666666666666","position":2,"number":"A2","title":"Main, part II","recording":{"id":"`+browseRecording+`"}},
+						{"id":"77777777-7777-4777-8777-777777777777","position":1,"number":"A1","length":5000,"recording":{"id":"`+browseRecording+`","title":"Main"},`+discoverBrowseCredit+`}],
+					"pregap":{"id":"88888888-8888-4888-8888-888888888888","position":0,"title":"Hidden","recording":{"id":"`+browseRecording+`"}},
+					"data-tracks":[{"id":"99999999-9999-4999-8999-999999999999","position":3,"title":"Data"}]}]}`), nil
+			default:
+				return nil, errors.New("unexpected provider path: " + req.URL.Path)
 			}
-			return fixtureResponse(200, `{`+summary+`,"media":[
-				{"position":2,"format":"Vinyl","track-count":1,"track-offset":0,"tracks":[
-					{"id":"55555555-5555-4555-8555-555555555555","position":1,"number":"C1","title":"Reprise","length":null,"recording":{"id":"`+browseRecording+`"}}]},
-				{"position":1,"format":"Vinyl","track-count":2,"track-offset":0,"tracks":[
-					{"id":"66666666-6666-4666-8666-666666666666","position":2,"number":"A2","title":"Main, part II","recording":{"id":"`+browseRecording+`"}},
-					{"id":"77777777-7777-4777-8777-777777777777","position":1,"number":"A1","length":5000,"recording":{"id":"`+browseRecording+`","title":"Main"},`+discoverBrowseCredit+`}],
-				"pregap":{"id":"88888888-8888-4888-8888-888888888888","position":0,"title":"Hidden","recording":{"id":"`+browseRecording+`"}},
-				"data-tracks":[{"id":"99999999-9999-4999-8999-999999999999","position":3,"title":"Data"}]}]}`), nil
-		default:
-			return nil, errors.New("unexpected provider path: " + req.URL.Path)
+		}))
+		page, err := client.BrowseReleaseGroupEditions(context.Background(), uuid.MustParse(discoverBrowseGroup), 5, 7)
+		if err != nil || len(page.Results) != 1 || len(starts) != 1 || page.NextOffset == nil || *page.NextOffset != 8 {
+			t.Fatalf("wrong edition page: %+v, %v; %d calls", page, err, len(starts))
 		}
-	}))
-	page, err := client.BrowseReleaseGroupEditions(context.Background(), uuid.MustParse(discoverBrowseGroup), 5, 7)
-	if err != nil || len(page.Results) != 1 || len(starts) != 1 || page.NextOffset == nil || *page.NextOffset != 8 {
-		t.Fatalf("wrong edition page: %+v, %v; %d calls", page, err, len(starts))
-	}
-	edition := page.Results[0]
-	if edition.ReleaseGroupMBID != discoverBrowseGroup || edition.ReleaseMBID != browseEdition || edition.DiscCount != 2 || !reflect.DeepEqual(edition.Formats, []string{"Vinyl"}) || edition.CoverArtURL != "https://coverartarchive.org/release/"+browseEdition+"/front-250" {
-		t.Fatalf("wrong edition projection: %+v", edition)
-	}
-	tracklist, err := client.GetEditionTracklist(context.Background(), uuid.MustParse(edition.ReleaseMBID))
-	if err != nil || tracklist.TrackCount != 5 || len(tracklist.Tracks) != 5 || len(starts) != 2 || starts[1].Sub(starts[0]) < time.Second {
-		t.Fatalf("wrong tracklist or pacing: %+v, %v; starts %v", tracklist, err, starts)
-	}
-	tracks := tracklist.Tracks
-	for i, want := range [][2]int{{1, 0}, {1, 1}, {1, 2}, {1, 3}, {2, 1}} {
-		x := tracks[i]
-		if x.DiscPosition != want[0] || x.TrackPosition != want[1] || (i != 3 && x.RecordingMBID != browseRecording) || x.TrackMBID == x.RecordingMBID {
-			t.Fatalf("wrong placement %d: %+v", i, x)
+		edition := page.Results[0]
+		if edition.ReleaseGroupMBID != discoverBrowseGroup || edition.ReleaseMBID != browseEdition || edition.DiscCount != 2 || !reflect.DeepEqual(edition.Formats, []string{"Vinyl"}) || edition.CoverArtURL != "https://coverartarchive.org/release/"+browseEdition+"/front-250" {
+			t.Fatalf("wrong edition projection: %+v", edition)
 		}
-	}
-	if tracks[0].Kind != "pregap" || tracks[3].Kind != "data" || tracks[1].Title != "Main" || tracks[1].Number != "A1" || tracks[1].Duration == nil || *tracks[1].Duration != 5000 || tracks[4].Duration != nil || tracks[1].TrackMBID == tracks[4].TrackMBID || len(tracks[1].ArtistCredits) != 2 {
-		t.Fatalf("track display metadata lost: %+v", tracks)
-	}
+		tracklist, err := client.GetEditionTracklist(context.Background(), uuid.MustParse(edition.ReleaseMBID))
+		if err != nil || tracklist.TrackCount != 5 || len(tracklist.Tracks) != 5 || len(starts) != 2 || starts[1].Sub(starts[0]) < time.Second {
+			t.Fatalf("wrong tracklist or pacing: %+v, %v; starts %v", tracklist, err, starts)
+		}
+		tracks := tracklist.Tracks
+		for i, want := range [][2]int{{1, 0}, {1, 1}, {1, 2}, {1, 3}, {2, 1}} {
+			x := tracks[i]
+			if x.DiscPosition != want[0] || x.TrackPosition != want[1] || (i != 3 && x.RecordingMBID != browseRecording) || x.TrackMBID == x.RecordingMBID {
+				t.Fatalf("wrong placement %d: %+v", i, x)
+			}
+		}
+		if tracks[0].Kind != "pregap" || tracks[3].Kind != "data" || tracks[1].Title != "Main" || tracks[1].Number != "A1" || tracks[1].Duration == nil || *tracks[1].Duration != 5000 || tracks[4].Duration != nil || tracks[1].TrackMBID == tracks[4].TrackMBID || len(tracks[1].ArtistCredits) != 2 {
+			t.Fatalf("track display metadata lost: %+v", tracks)
+		}
+	})
 }
 
 func TestDiscoverBrowseSmallPageRefusesMalformedOverBudgetOrUnavailable(t *testing.T) {
@@ -122,15 +126,17 @@ func TestDiscoverBrowseSmallPageRefusesMalformedOverBudgetOrUnavailable(t *testi
 		{"no_retry", 503, `{"error":"busy"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			calls := 0
-			client := NewClientWithTransport(nil, fixtureTransport(func(*http.Request) (*http.Response, error) {
-				calls++
-				return fixtureResponse(tc.status, tc.body), nil
-			}))
-			page, err := client.SearchArtistRecordings(context.Background(), uuid.MustParse(discoverBrowseArtist), "term", 20, 0)
-			if err == nil || page != nil || calls != 1 {
-				t.Fatalf("bad provider response accepted or retried: %+v %v; calls %d", page, err, calls)
-			}
+			withFixtureClock(t, func(t *testing.T) {
+				calls := 0
+				client := NewClientWithTransport(nil, fixtureTransport(func(*http.Request) (*http.Response, error) {
+					calls++
+					return fixtureResponse(tc.status, tc.body), nil
+				}))
+				page, err := client.SearchArtistRecordings(context.Background(), uuid.MustParse(discoverBrowseArtist), "term", 20, 0)
+				if err == nil || page != nil || calls != 1 {
+					t.Fatalf("bad provider response accepted or retried: %+v %v; calls %d", page, err, calls)
+				}
+			})
 		})
 	}
 }
@@ -150,67 +156,71 @@ func TestDiscoverBrowseTracklistWireBudgetAndNoRedirect(t *testing.T) {
 		{"no_retry", 503, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			calls := 0
-			client := NewClientWithTransport(nil, fixtureTransport(func(*http.Request) (*http.Response, error) {
-				calls++
-				resp := fixtureResponse(tc.status, tc.body)
-				if tc.status == 301 {
-					resp.Header.Set("Location", "https://not-contacted.invalid/edition")
+			withFixtureClock(t, func(t *testing.T) {
+				calls := 0
+				client := NewClientWithTransport(nil, fixtureTransport(func(*http.Request) (*http.Response, error) {
+					calls++
+					resp := fixtureResponse(tc.status, tc.body)
+					if tc.status == 301 {
+						resp.Header.Set("Location", "https://not-contacted.invalid/edition")
+					}
+					return resp, nil
+				}))
+				page, err := client.GetEditionTracklist(context.Background(), uuid.MustParse(browseEdition))
+				if (err != nil) != tc.wantErr || (page == nil) != tc.wantErr || calls != 1 {
+					t.Fatalf("tracklist or attempt result: %+v %v, %d calls", page, err, calls)
 				}
-				return resp, nil
-			}))
-			page, err := client.GetEditionTracklist(context.Background(), uuid.MustParse(browseEdition))
-			if (err != nil) != tc.wantErr || (page == nil) != tc.wantErr || calls != 1 {
-				t.Fatalf("tracklist or attempt result: %+v %v, %d calls", page, err, calls)
-			}
+			})
 		})
 	}
 }
 
 func TestDiscoverBrowseCancellationStopsProviderAndKeepsContextError(t *testing.T) {
-	entered := make(chan struct{})
-	stopped := make(chan error, 1)
-	var calls atomic.Int32
-	client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
-		if calls.Add(1) != 1 {
-			return fixtureResponse(http.StatusOK, discoverEmptyGroups), nil
+	withFixtureClock(t, func(t *testing.T) {
+		entered := make(chan struct{})
+		stopped := make(chan error, 1)
+		var calls atomic.Int32
+		client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
+			if calls.Add(1) != 1 {
+				return fixtureResponse(http.StatusOK, discoverEmptyGroups), nil
+			}
+			close(entered)
+			<-req.Context().Done()
+			stopped <- req.Context().Err()
+			return nil, req.Context().Err()
+		}))
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		start := func(ctx context.Context) <-chan error {
+			returned := make(chan error, 1)
+			go func() {
+				_, err := client.BrowseArtistDiscography(ctx, uuid.MustParse(discoverBrowseArtist), "", 20, 0)
+				returned <- err
+			}()
+			return returned
 		}
-		close(entered)
-		<-req.Context().Done()
-		stopped <- req.Context().Err()
-		return nil, req.Context().Err()
-	}))
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	start := func(ctx context.Context) <-chan error {
-		returned := make(chan error, 1)
-		go func() {
-			_, err := client.BrowseArtistDiscography(ctx, uuid.MustParse(discoverBrowseArtist), "", 20, 0)
-			returned <- err
-		}()
-		return returned
-	}
-	owner := start(ctx)
-	awaitDiscoverEvent(t, entered)
-	followerCtx, cancelFollower := context.WithCancel(t.Context())
-	defer cancelFollower()
-	joining := &discoverJoinContext{Context: followerCtx, waiting: make(chan struct{})}
-	follower := start(joining)
-	awaitDiscoverEvent(t, joining.waiting)
-	cancel()
-	if err := awaitDiscoverEvent(t, owner); !errors.Is(err, context.Canceled) {
-		t.Fatalf("wrong owner cancellation: %v", err)
-	}
-	cancelFollower()
-	if err := awaitDiscoverEvent(t, follower); !errors.Is(err, context.Canceled) {
-		t.Fatalf("wrong follower cancellation: %v", err)
-	}
-	if err := awaitDiscoverEvent(t, stopped); !errors.Is(err, context.Canceled) || calls.Load() != 1 {
-		t.Fatalf("last caller did not cancel the single provider dispatch: %v, calls=%d", err, calls.Load())
-	}
-	if err := awaitDiscoverEvent(t, start(t.Context())); err != nil || calls.Load() != 2 {
-		t.Fatalf("fresh caller joined the abandoned flight: %v, calls=%d", err, calls.Load())
-	}
+		owner := start(ctx)
+		awaitDiscoverEvent(t, entered)
+		followerCtx, cancelFollower := context.WithCancel(t.Context())
+		defer cancelFollower()
+		joining := &discoverJoinContext{Context: followerCtx, waiting: make(chan struct{})}
+		follower := start(joining)
+		awaitDiscoverEvent(t, joining.waiting)
+		cancel()
+		if err := awaitDiscoverEvent(t, owner); !errors.Is(err, context.Canceled) {
+			t.Fatalf("wrong owner cancellation: %v", err)
+		}
+		cancelFollower()
+		if err := awaitDiscoverEvent(t, follower); !errors.Is(err, context.Canceled) {
+			t.Fatalf("wrong follower cancellation: %v", err)
+		}
+		if err := awaitDiscoverEvent(t, stopped); !errors.Is(err, context.Canceled) || calls.Load() != 1 {
+			t.Fatalf("last caller did not cancel the single provider dispatch: %v, calls=%d", err, calls.Load())
+		}
+		if err := awaitDiscoverEvent(t, start(t.Context())); err != nil || calls.Load() != 2 {
+			t.Fatalf("fresh caller joined the abandoned flight: %v, calls=%d", err, calls.Load())
+		}
+	})
 }
 
 func TestDiscoverBrowseTracklistRequiresExplicitCompleteMediaBeforeCache(t *testing.T) {
@@ -225,6 +235,7 @@ func TestDiscoverBrowseTracklistRequiresExplicitCompleteMediaBeforeCache(t *test
 		{"nonzero_offset", `"track-count":0,"track-offset":1,"tracks":[]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			isolateFixtureBudgets(t)
 			var writes atomic.Int32
 			store := fixturePublicCacheWithCommand(t, func(cmd string) {
 				if cmd == "set" {
@@ -280,6 +291,7 @@ func TestDiscoverBrowseTracklistRequiresCompleteOrdinalsBeforeCache(t *testing.T
 		{"data_occupies_ordinal", "", strings.TrimSuffix(trackHole, "}") + `,"data-tracks":[` + data + `]},` + emptyDisc, []string{"track", "data", "track"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			isolateFixtureBudgets(t)
 			var writes atomic.Int32
 			store := fixturePublicCacheWithCommand(t, func(command string) {
 				if command == "set" {

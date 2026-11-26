@@ -29,102 +29,106 @@ func awaitDiscoverEvent[T any](t *testing.T, event <-chan T) T {
 }
 
 func TestDiscoverBrowseOwnerCancellationKeepsJoinedFollower(t *testing.T) {
-	entered, release := make(chan struct{}), make(chan struct{})
-	open := sync.OnceFunc(func() { close(release) })
-	defer open()
-	var calls atomic.Int32
-	client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
-		if calls.Add(1) == 1 {
-			close(entered)
+	withFixtureClock(t, func(t *testing.T) {
+		entered, release := make(chan struct{}), make(chan struct{})
+		open := sync.OnceFunc(func() { close(release) })
+		defer open()
+		var calls atomic.Int32
+		client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
+			if calls.Add(1) == 1 {
+				close(entered)
+			}
+			select {
+			case <-req.Context().Done():
+				return nil, req.Context().Err()
+			case <-release:
+				return fixtureResponse(http.StatusOK, discoverEmptyGroups), nil
+			}
+		}))
+		type result struct {
+			page *DiscoverBrowsePage[DiscoverReleaseGroup]
+			err  error
+		}
+		start := func(ctx context.Context) <-chan result {
+			out := make(chan result, 1)
+			go func() {
+				page, err := client.BrowseArtistDiscography(ctx, uuid.MustParse(discoverBrowseArtist), "", 20, 0)
+				out <- result{page, err}
+			}()
+			return out
+		}
+		ownerCtx, cancelOwner := context.WithCancel(t.Context())
+		defer cancelOwner()
+		owner := start(ownerCtx)
+		awaitDiscoverEvent(t, entered)
+		followerCtx := &discoverJoinContext{Context: t.Context(), waiting: make(chan struct{})}
+		follower := start(followerCtx)
+		awaitDiscoverEvent(t, followerCtx.waiting)
+		// A still-live follower must not need the first caller to stay, and the
+		// canceled caller must not wait for the fixture to release the provider.
+		cancelOwner()
+		if got := awaitDiscoverEvent(t, owner); !errors.Is(got.err, context.Canceled) || got.page != nil {
+			t.Fatalf("canceled owner: %+v", got)
 		}
 		select {
-		case <-req.Context().Done():
-			return nil, req.Context().Err()
-		case <-release:
-			return fixtureResponse(http.StatusOK, discoverEmptyGroups), nil
+		case got := <-follower:
+			t.Fatalf("joined follower returned before provider release: page=%+v err=%v", got.page, got.err)
+		default:
 		}
-	}))
-	type result struct {
-		page *DiscoverBrowsePage[DiscoverReleaseGroup]
-		err  error
-	}
-	start := func(ctx context.Context) <-chan result {
-		out := make(chan result, 1)
-		go func() {
-			page, err := client.BrowseArtistDiscography(ctx, uuid.MustParse(discoverBrowseArtist), "", 20, 0)
-			out <- result{page, err}
-		}()
-		return out
-	}
-	ownerCtx, cancelOwner := context.WithCancel(t.Context())
-	defer cancelOwner()
-	owner := start(ownerCtx)
-	awaitDiscoverEvent(t, entered)
-	followerCtx := &discoverJoinContext{Context: t.Context(), waiting: make(chan struct{})}
-	follower := start(followerCtx)
-	awaitDiscoverEvent(t, followerCtx.waiting)
-	// A still-live follower must not need the first caller to stay, and the
-	// canceled caller must not wait for the fixture to release the provider.
-	cancelOwner()
-	if got := awaitDiscoverEvent(t, owner); !errors.Is(got.err, context.Canceled) || got.page != nil {
-		t.Fatalf("canceled owner: %+v", got)
-	}
-	select {
-	case got := <-follower:
-		t.Fatalf("joined follower returned before provider release: page=%+v err=%v", got.page, got.err)
-	default:
-	}
-	open()
-	if got := awaitDiscoverEvent(t, follower); got.err != nil || got.page == nil || got.page.Results == nil || calls.Load() != 1 {
-		t.Fatalf("joined follower: page=%+v err=%v; dispatches=%d", got.page, got.err, calls.Load())
-	}
+		open()
+		if got := awaitDiscoverEvent(t, follower); got.err != nil || got.page == nil || got.page.Results == nil || calls.Load() != 1 {
+			t.Fatalf("joined follower: page=%+v err=%v; dispatches=%d", got.page, got.err, calls.Load())
+		}
+	})
 }
 
 func TestDiscoverBrowseDoesNotInheritStandardRequestFlightButSharesPacing(t *testing.T) {
-	first, second := make(chan time.Time, 1), make(chan time.Time, 1)
-	bodyEntered, releaseBody := make(chan struct{}), make(chan struct{})
-	openBody := sync.OnceFunc(func() { close(releaseBody) })
-	defer openBody()
-	params := url.Values{"artist": {discoverBrowseArtist}, "inc": {"artist-credits"}, "fmt": {"json"}, "limit": {"20"}, "offset": {"0"}}
-	endpoint := baseURL + "/release-group?" + params.Encode()
-	var calls atomic.Int32
-	client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
-		if req.URL.String() != endpoint || !interactiveCatalogRead(req.Context()) {
-			t.Errorf("unexpected request/policy: %s", req.URL)
+	withFixtureClock(t, func(t *testing.T) {
+		first, second := make(chan time.Time, 1), make(chan time.Time, 1)
+		bodyEntered, releaseBody := make(chan struct{}), make(chan struct{})
+		openBody := sync.OnceFunc(func() { close(releaseBody) })
+		defer openBody()
+		params := url.Values{"artist": {discoverBrowseArtist}, "inc": {"artist-credits"}, "fmt": {"json"}, "limit": {"20"}, "offset": {"0"}}
+		endpoint := baseURL + "/release-group?" + params.Encode()
+		var calls atomic.Int32
+		client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
+			if req.URL.String() != endpoint || !interactiveCatalogRead(req.Context()) {
+				t.Errorf("unexpected request/policy: %s", req.URL)
+			}
+			resp := fixtureResponse(http.StatusOK, discoverEmptyGroups)
+			switch calls.Add(1) {
+			case 1:
+				first <- time.Now()
+				resp.Body = &discoverHeldBody{ReadCloser: resp.Body, entered: bodyEntered, release: releaseBody}
+			case 2:
+				second <- time.Now()
+			default:
+				t.Error("duplicate dispatch")
+			}
+			return resp, nil
+		}))
+		standard := make(chan error, 1)
+		go func() {
+			_, err := client.doRequest(WithInteractiveCatalogRead(t.Context()), endpoint)
+			standard <- err
+		}()
+		awaitDiscoverEvent(t, bodyEntered)
+		browse := make(chan error, 1)
+		go func() {
+			_, err := client.BrowseArtistDiscography(t.Context(), uuid.MustParse(discoverBrowseArtist), "", 20, 0)
+			browse <- err
+		}()
+		if err := awaitDiscoverEvent(t, browse); err != nil || calls.Load() != 2 {
+			t.Fatalf("browse did not finish independently of the held doRequest: %v calls=%d", err, calls.Load())
 		}
-		resp := fixtureResponse(http.StatusOK, discoverEmptyGroups)
-		switch calls.Add(1) {
-		case 1:
-			first <- time.Now()
-			resp.Body = &discoverHeldBody{ReadCloser: resp.Body, entered: bodyEntered, release: releaseBody}
-		case 2:
-			second <- time.Now()
-		default:
-			t.Error("duplicate dispatch")
+		if gap := awaitDiscoverEvent(t, second).Sub(awaitDiscoverEvent(t, first)); gap < time.Second {
+			t.Fatalf("browse bypassed standard request pacing: %s", gap)
 		}
-		return resp, nil
-	}))
-	standard := make(chan error, 1)
-	go func() {
-		_, err := client.doRequest(WithInteractiveCatalogRead(t.Context()), endpoint)
-		standard <- err
-	}()
-	awaitDiscoverEvent(t, bodyEntered)
-	browse := make(chan error, 1)
-	go func() {
-		_, err := client.BrowseArtistDiscography(t.Context(), uuid.MustParse(discoverBrowseArtist), "", 20, 0)
-		browse <- err
-	}()
-	if err := awaitDiscoverEvent(t, browse); err != nil || calls.Load() != 2 {
-		t.Fatalf("browse did not finish independently of the held doRequest: %v calls=%d", err, calls.Load())
-	}
-	if gap := awaitDiscoverEvent(t, second).Sub(awaitDiscoverEvent(t, first)); gap < time.Second {
-		t.Fatalf("browse bypassed standard request pacing: %s", gap)
-	}
-	openBody()
-	if err := awaitDiscoverEvent(t, standard); err != nil {
-		t.Fatalf("standard request: %v", err)
-	}
+		openBody()
+		if err := awaitDiscoverEvent(t, standard); err != nil {
+			t.Fatalf("standard request: %v", err)
+		}
+	})
 }
 
 type discoverFixtureCache struct {

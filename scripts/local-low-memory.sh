@@ -113,10 +113,11 @@ FLUTTER_API_BASE_URL="${OMP_FLUTTER_API_BASE_URL:-${OMP_API_BASE_URL:-$BACKEND_B
 
 usage() {
   cat <<'USAGE'
-usage: scripts/local-low-memory.sh <start|start-downloads|start-stems|test-infra|stop|clean|status|smoke|playback-smoke|e2e-smoke|flutter-web-command>
+usage: scripts/local-low-memory.sh <start|start-prebuilt|start-downloads|start-stems|test-infra|stop|clean|status|smoke|playback-smoke|e2e-smoke|flutter-web-command>
 
 commands:
   start                 start backend + PostgreSQL + MinIO, with Redis off and WORKER_COUNT=0
+  start-prebuilt        start the same stack without rebuilding the CI images
   start-downloads       start optional Redis too, with REDIS_ENABLED=true and WORKER_COUNT defaulting to 1
   start-stems           start the stems profile too, with STEMS_ENABLED=true (builds the multi-GB stems runtime)
   test-infra            start PostgreSQL + MinIO + Redis only, with no backend worker
@@ -145,8 +146,12 @@ wait_for_backend() {
 
 cmd="${1:-}"
 case "$cmd" in
-  start)
-    REDIS_ENABLED=false WORKER_COUNT=0 "${COMPOSE[@]}" up -d --build postgres minio minio-init backend
+  start|start-prebuilt)
+    build=--build
+    if [[ "$cmd" == start-prebuilt ]]; then
+      build=--no-build
+    fi
+    REDIS_ENABLED=false WORKER_COUNT=0 "${COMPOSE[@]}" up -d "$build" postgres minio minio-init backend
     ;;
   start-downloads)
     REDIS_ENABLED=true WORKER_COUNT="${WORKER_COUNT:-1}" "${COMPOSE[@]}" --profile downloads up -d --build postgres minio minio-init redis backend

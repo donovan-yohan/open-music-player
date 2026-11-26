@@ -271,44 +271,53 @@ ENTRYPOINT ["/app/stems-worker"]
 # MinIO CE is source-only and the old official Quay images now deny pulls.
 # Build unmodified official security-release sources, not an untrusted image
 # mirror or the pre-CVE September image. See docs/CI_DEPENDENCIES.md.
-FROM golang:1.27-alpine@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS minio-source-build
+FROM golang:1.27-alpine@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS minio-build-base
 WORKDIR /src
 RUN apk add --no-cache ca-certificates curl
+
+# Independent compile stages can run in parallel on a cold runner. Keep source,
+# modules and compiler objects out of the exported layers: only the verified
+# build outputs and the upstream license/entrypoint are needed across runs.
+# The upstream Go module checksums remain enforced. Do not refresh/tidy them.
+# Explicit ldflags preserve release/commit identity without inventing a git repo
+# for the hash-verified source archives (upstream's flag generator requires git).
+FROM minio-build-base AS minio-mc-build
+RUN curl -fsSL --retry 3 --retry-delay 2 \
+        https://codeload.github.com/minio/mc/tar.gz/7394ce0dd2a80935aded936b09fa12cbb3cb8096 -o mc.tar.gz \
+    && echo "95cd293c7119f16921a6dc515a1fb74a2227f19fd994b9c8b770a154e802ac44  mc.tar.gz" | sha256sum -c - \
+    && mkdir mc && tar -xzf mc.tar.gz -C mc --strip-components=1 \
+    && cd mc && go mod download && go mod verify \
+    && CGO_ENABLED=0 go build -mod=readonly -trimpath -tags kqueue \
+        -ldflags="-s -w -X github.com/minio/mc/cmd.Version=2025-08-13T08:35:41Z -X github.com/minio/mc/cmd.ReleaseTag=RELEASE.2025-08-13T08-35-41Z -X github.com/minio/mc/cmd.CommitID=7394ce0dd2a80935aded936b09fa12cbb3cb8096 -X github.com/minio/mc/cmd.ShortCommitID=7394ce0dd2a8 -X github.com/minio/mc/cmd.CopyrightYear=2025" \
+        -o /out/mc . \
+    && cp LICENSE /out/LICENSE \
+    && go clean -cache -modcache && cd /src && rm -rf mc mc.tar.gz
+
+FROM minio-build-base AS minio-server-build
 RUN curl -fsSL --retry 3 --retry-delay 2 \
         https://codeload.github.com/minio/minio/tar.gz/9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a -o minio.tar.gz \
     && echo "45521908307306e925c98d629e1c17d78c8b72b6ee242b1bfb1409f7d8ee5841  minio.tar.gz" | sha256sum -c - \
     && mkdir minio && tar -xzf minio.tar.gz -C minio --strip-components=1 \
-    && curl -fsSL --retry 3 --retry-delay 2 \
-        https://codeload.github.com/minio/mc/tar.gz/7394ce0dd2a80935aded936b09fa12cbb3cb8096 -o mc.tar.gz \
-    && echo "95cd293c7119f16921a6dc515a1fb74a2227f19fd994b9c8b770a154e802ac44  mc.tar.gz" | sha256sum -c - \
-    && mkdir mc && tar -xzf mc.tar.gz -C mc --strip-components=1
-# The upstream Go module checksums remain enforced. Do not refresh/tidy them.
-# Explicit ldflags preserve release/commit identity without inventing a git repo
-# for the hash-verified source archives (upstream's flag generator requires git).
-WORKDIR /src/mc
-RUN go mod download && go mod verify \
-    && CGO_ENABLED=0 go build -mod=readonly -trimpath -tags kqueue \
-        -ldflags="-s -w -X github.com/minio/mc/cmd.Version=2025-08-13T08:35:41Z -X github.com/minio/mc/cmd.ReleaseTag=RELEASE.2025-08-13T08-35-41Z -X github.com/minio/mc/cmd.CommitID=7394ce0dd2a80935aded936b09fa12cbb3cb8096 -X github.com/minio/mc/cmd.ShortCommitID=7394ce0dd2a8 -X github.com/minio/mc/cmd.CopyrightYear=2025" \
-        -o /out/mc .
-WORKDIR /src/minio
-RUN go mod download && go mod verify \
+    && cd minio && go mod download && go mod verify \
     && CGO_ENABLED=0 go build -mod=readonly -trimpath -tags kqueue \
         -ldflags="-s -w -X github.com/minio/minio/cmd.Version=2025-10-15T17:29:55Z -X github.com/minio/minio/cmd.ReleaseTag=RELEASE.2025-10-15T17-29-55Z -X github.com/minio/minio/cmd.CommitID=9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a -X github.com/minio/minio/cmd.ShortCommitID=9e49d5e7a648 -X github.com/minio/minio/cmd.CopyrightYear=2025" \
-        -o /out/minio .
+        -o /out/minio . \
+    && cp LICENSE dockerscripts/docker-entrypoint.sh /out/ \
+    && go clean -cache -modcache && cd /src && rm -rf minio minio.tar.gz
 
 FROM alpine:3.24@sha256:c6b073f8e9e58d881f6ffba6ebf3b9ebd60b9e7d6e8337018c0e68bb5c356873 AS minio-client
 RUN apk add --no-cache ca-certificates
-COPY --from=minio-source-build /out/mc /usr/bin/mc
-COPY --from=minio-source-build /src/mc/LICENSE /usr/share/licenses/minio-mc/LICENSE
+COPY --from=minio-mc-build /out/mc /usr/bin/mc
+COPY --from=minio-mc-build /out/LICENSE /usr/share/licenses/minio-mc/LICENSE
 LABEL org.opencontainers.image.source="https://github.com/minio/mc" \
       org.opencontainers.image.revision="7394ce0dd2a80935aded936b09fa12cbb3cb8096" \
       org.opencontainers.image.licenses="AGPL-3.0-or-later"
 ENTRYPOINT ["mc"]
 
 FROM minio-client AS minio-runtime
-COPY --from=minio-source-build /out/minio /usr/bin/minio
-COPY --from=minio-source-build /src/minio/LICENSE /usr/share/licenses/minio/LICENSE
-COPY --from=minio-source-build /src/minio/dockerscripts/docker-entrypoint.sh /usr/bin/docker-entrypoint.sh
+COPY --from=minio-server-build /out/minio /usr/bin/minio
+COPY --from=minio-server-build /out/LICENSE /usr/share/licenses/minio/LICENSE
+COPY --from=minio-server-build /out/docker-entrypoint.sh /usr/bin/docker-entrypoint.sh
 LABEL org.opencontainers.image.source="https://github.com/minio/minio" \
       org.opencontainers.image.revision="9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a" \
       org.opencontainers.image.version="RELEASE.2025-10-15T17-29-55Z"

@@ -20,6 +20,7 @@ const (
 )
 
 func TestDiscoverBrowseArtistDiscographyUsesTypedGroupPageAndCache(t *testing.T) {
+	isolateFixtureBudgets(t)
 	calls := 0
 	client := NewClientWithTransport(fixturePublicCache(t), fixtureTransport(func(req *http.Request) (*http.Response, error) {
 		calls++
@@ -45,6 +46,7 @@ func TestDiscoverBrowseArtistDiscographyUsesTypedGroupPageAndCache(t *testing.T)
 }
 
 func TestDiscoverBrowseDiscographyChecksCreditsPastDisplayCap(t *testing.T) {
+	isolateFixtureBudgets(t)
 	const collaborator = `{"artist":{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","name":"Collaborator"}},`
 	body := `{"release-group-count":1,"release-group-offset":0,"release-groups":[{"id":"` + discoverBrowseGroup + `","title":"A Group","primary-type":null,"artist-credit":[` + strings.Repeat(collaborator, maxArtistCredits) + `{"artist":{"id":"` + discoverBrowseArtist + `","name":"Selected artist"}}]}]}`
 	client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
@@ -67,6 +69,7 @@ func TestDiscoverBrowseDiscographyRejectsWrongCreditOrPrimaryTypeBeforeCache(t *
 		{"missing_primary", `"secondary-types":["Live"]`, discoverBrowseCredit},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			isolateFixtureBudgets(t)
 			var writes atomic.Int32
 			store := fixturePublicCacheWithCommand(t, func(cmd string) {
 				if cmd == "set" {

@@ -26,6 +26,10 @@ case "${1:-low-memory}" in
     use_isolated_ports
     exec "$ROOT/scripts/local-low-memory.sh" start
     ;;
+  isolated-prebuilt)
+    use_isolated_ports
+    exec "$ROOT/scripts/local-low-memory.sh" start-prebuilt
+    ;;
   test-infra)
     exec "$ROOT/scripts/local-low-memory.sh" test-infra
     ;;
@@ -45,7 +49,7 @@ case "${1:-low-memory}" in
       --dart-define="OMP_API_BASE_URL=$FLUTTER_API_BASE_URL"
     ;;
   *)
-    echo "usage: scripts/dev [low-memory|backend|isolated|codex|test-infra|test-infra-isolated|full|flutter-web]" >&2
+    echo "usage: scripts/dev [low-memory|backend|isolated|isolated-prebuilt|codex|test-infra|test-infra-isolated|full|flutter-web]" >&2
     exit 2
     ;;
 esac

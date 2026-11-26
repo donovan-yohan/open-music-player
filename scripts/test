@@ -51,31 +51,57 @@ run_stems() {
     "$ROOT/backend"
 }
 
+prepare_client_native() {
+  # Fresh host fixtures for this checkout and runner, never a stale library.
+  native_build="$(mktemp -d "${TMPDIR:-/tmp}/soundq-client-native.XXXXXXXX")"
+  trap 'rm -rf "$native_build"' EXIT
+  cmake -S "$ROOT/client/native/mix_renderer" -B "$native_build" -DCMAKE_BUILD_TYPE=Debug
+  cmake --build "$native_build" -j 2
+  if [ "${1:-}" != "shard" ]; then
+    ctest --test-dir "$native_build" --output-on-failure
+  fi
+  case "$(uname -s)" in
+    Darwin) native_extension=dylib ;;
+    Linux) native_extension=so ;;
+    *) echo "native client tests require a supported host library path" >&2; exit 1 ;;
+  esac
+  export SOUNDQ_NATIVE_MIX_LIBRARY="$native_build/libsoundq_mix.$native_extension"
+  # Actual host/render/core, no OS audio platform or device access.
+  local -a configure_fake=(cmake -S "$ROOT/client/native/device_host" -B "$native_build/ffi-fake"
+    -DCMAKE_BUILD_TYPE=Debug -DSQ_DEVICE_FFI_FAKE_ONLY=ON)
+  if [ "${1:-}" = "shard" ]; then
+    # Only configuration overlaps; both producers must settle before the
+    # fake-device build or any Flutter test can consume the host fixtures.
+    local status=0
+    native_ctest_pid=
+    trap 'if [ -n "$native_ctest_pid" ]; then kill "$native_ctest_pid" 2>/dev/null || :; wait "$native_ctest_pid" || :; fi; rm -rf "$native_build"' EXIT
+    ctest --test-dir "$native_build" --output-on-failure &
+    native_ctest_pid=$!
+    "${configure_fake[@]}" || status=$?
+    wait "$native_ctest_pid" || status=$?
+    native_ctest_pid=
+    [ "$status" = 0 ] || return "$status"
+  else
+    "${configure_fake[@]}"
+  fi
+  cmake --build "$native_build/ffi-fake" -j 2
+  export SOUNDQ_NATIVE_DEVICE_TEST_LIBRARY="$native_build/ffi-fake/libsoundq_device_ffi_fake.$native_extension"
+  test -s "$SOUNDQ_NATIVE_MIX_LIBRARY"
+  test -s "$SOUNDQ_NATIVE_DEVICE_TEST_LIBRARY"
+}
+
+check_client_sources() {
+  python3 test/audio_service_vendor_check.py
+  python3 -B test/just_audio_vendor_check.py
+  python3 test/android_media_source_check.py
+}
+
 run_client() {
   (
-    # Exercise the real FFI library in the normal client gate, never a skipped
-    # native test or a library left over from another checkout.
-    native_build="$(mktemp -d "${TMPDIR:-/tmp}/soundq-client-native.XXXXXXXX")"
-    cmake -S "$ROOT/client/native/mix_renderer" -B "$native_build" -DCMAKE_BUILD_TYPE=Debug
-    cmake --build "$native_build" -j 2
-    ctest --test-dir "$native_build" --output-on-failure
-    case "$(uname -s)" in
-      Darwin) native_extension=dylib ;;
-      Linux) native_extension=so ;;
-      *) echo "native client tests require a supported host library path" >&2; exit 1 ;;
-    esac
-    export SOUNDQ_NATIVE_MIX_LIBRARY="$native_build/libsoundq_mix.$native_extension"
-    # This target links actual host/render/core but NO OS platform. Tests can
-    # exercise device handoff/failures without ever opening a real audio device.
-    cmake -S "$ROOT/client/native/device_host" -B "$native_build/ffi-fake" \
-      -DCMAKE_BUILD_TYPE=Debug -DSQ_DEVICE_FFI_FAKE_ONLY=ON
-    cmake --build "$native_build/ffi-fake" -j 2
-    export SOUNDQ_NATIVE_DEVICE_TEST_LIBRARY="$native_build/ffi-fake/libsoundq_device_ffi_fake.$native_extension"
+    prepare_client_native
     cd "$ROOT/client"
     flutter pub get
-    python3 test/audio_service_vendor_check.py
-    python3 -B test/just_audio_vendor_check.py
-    python3 test/android_media_source_check.py
+    check_client_sources
     if [ -n "${FLUTTER_TEST_ARGS:-}" ]; then
       # shellcheck disable=SC2206
       extra_args=(${FLUTTER_TEST_ARGS})
@@ -83,6 +109,15 @@ run_client() {
     else
       flutter test
     fi
+  )
+}
+
+run_client_shard() {
+  (
+    prepare_client_native shard
+    cd "$ROOT/client"
+    check_client_sources
+    python3 -I -B "$ROOT/scripts/ci_flutter.py" shard "$@"
   )
 }
 
@@ -139,6 +174,9 @@ case "$TARGET" in
   client)
     run_client
     ;;
+  client-shard)
+    run_client_shard "${@:2}"
+    ;;
   extension)
     run_extension
     ;;
@@ -153,7 +191,7 @@ case "$TARGET" in
     run_extension
     ;;
   *)
-    echo "usage: scripts/test [design-studio|android-product|native|private-vm|delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
+    echo "usage: scripts/test [design-studio|android-product|native|private-vm|delivery|harness|backend|analyzer|stems|audio-mir|client|client-shard INDEX OUTPUT|extension|all]" >&2
     exit 2
     ;;
 esac

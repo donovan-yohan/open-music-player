@@ -69,6 +69,25 @@ ports, health checks, init commands, credentials, and bucket policies are
 unchanged. Initial source compilation is slower than pulling a prebuilt image;
 Docker caches it. Existing persistent volumes are never migrated by this patch.
 
+`Local Stack Smoke` builds the server and client in independent Dockerfile
+stages, so a cache miss need not serialize their downloads and compiles. CI
+uses Compose's own build graph for the three storage images and a dedicated
+`docker-container` builder to import/export their BuildKit layers. Only the
+MinIO server target exports; it includes the layers for both compiled binaries.
+The native builder still builds the backend and analyzer from the checkout,
+without a large cross-builder image transfer. Those builds, the storage build,
+and the bundled preview-proxy probe overlap in the same required job.
+
+GitHub Actions caches only the local BuildKit OCI cache directory, keyed by
+runner OS/architecture and the Dockerfile and low-memory Compose file hashes.
+There is no fallback key, registry login or BuildKit `gha` credential shim.
+PR jobs can restore the default branch's cache but do not publish one. A
+successful default-branch miss seeds the cache after runtime checks and
+cleanup. A missing or evicted cache is normal: Compose still builds the real
+images from the verified upstream sources and runs the same health, storage and
+playback checks. Compare cold and restored hosted job times separately; the
+cache transfer and load are not free.
+
 The archived CE code is not a promise of future security support. Moving to a
 maintained fork, AIStor, or a different S3 service is a separate product and
 license decision, not a hidden CI workaround.

@@ -21,8 +21,8 @@ android {
         unitTests.all {
             it.maxParallelForks = 1
             it.jvmArgs("-XX:ActiveProcessorCount=2")
-            // Opt-in offline SDK resolver for air-gapped qualification; hosted CI
-            // uses Robolectric's normal declared Maven SDK resolver.
+            // Native Android CI pins and stages these host-test SDKs; ordinary
+            // invocations without this opt-in use Robolectric's Maven resolver.
             System.getProperty("robolectric.dependency.dir")?.let { path ->
                 it.systemProperty("robolectric.offline", "true")
                 it.systemProperty("robolectric.dependency.dir", path)

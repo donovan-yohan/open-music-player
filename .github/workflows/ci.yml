@@ -11,8 +11,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pr-scope:
+    name: PR CI Scope
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
+    steps:
+      - name: Checkout tested merge
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Classify tested merge against its first parent
+        id: scope
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # The tested base owns routing policy. Changes to the selector itself
+          # get the full suite; the candidate selector is tested by Delivery Harness.
+          selector="$RUNNER_TEMP/ci_pr_scope.py"
+          if [[ -z "$GITHUB_SHA" || -z "$PR_HEAD_SHA" ]] ||
+             [[ "$(git --no-replace-objects rev-parse --verify HEAD)" != "$GITHUB_SHA" ]] ||
+             [[ "$(git --no-replace-objects rev-parse --verify HEAD^2)" != "$PR_HEAD_SHA" ]] ||
+             ! git --no-replace-objects show HEAD^1:scripts/ci_pr_scope.py > "$selector"; then
+            printf 'scope=full\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 -I -B "$selector"
+
   delivery-harness:
     name: Delivery Harness
+    needs: pr-scope
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
 
     steps:
@@ -28,6 +59,9 @@ jobs:
       - name: Run agentic delivery harness
         run: scripts/lint delivery
 
+      - name: Test Flutter CI partition and evidence
+        run: python3 -B scripts/test_ci_flutter.py
+
       - name: Test observability operator diagnostics
         run: python3 -m unittest discover -s deploy/observability -p 'test_*.py' -v
 
@@ -40,44 +74,68 @@ jobs:
       - name: Test release audit classifier
         run: scripts/release-audit --self-test
 
-  backend:
-    name: Backend (Go)
+      - name: Test CI pull request scope
+        run: python3 -I -B scripts/test_ci_pr_scope.py
+
+      - name: Verify PR routing completed
+        if: github.event_name == 'pull_request' && needs.pr-scope.result != 'success'
+        run: |
+          printf '%s\n' 'PR scope job did not succeed; refusing a green Delivery Harness.' >&2
+          exit 1
+
+  # Job-level routing keeps the original required check names registered. Only
+  # an explicit successful PR decision suppresses product jobs. Pushes always
+  # run the complete suite for production release qualification.
+  backend-tests:
+    name: Backend tests (${{ matrix.shard }})
+    needs: pr-scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [api, api-playlists, api-weekly, api-weekly-ceiling, database, provider, application, remaining]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Run guarded race and coverage shard
+        run: python3 -B scripts/ci_backend.py run "$SHARD" "$RUNNER_TEMP/backend-go-$SHARD"
+        env:
+          SHARD: ${{ matrix.shard }}
+
+      - name: Retain shard results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-go-${{ matrix.shard }}
+          path: ${{ runner.temp }}/backend-go-${{ matrix.shard }}
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  backend-lint:
+    name: Backend lint
+    needs: pr-scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: backend
-
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: openmusicplayer_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -87,6 +145,11 @@ jobs:
 
       - name: Install dependencies
         run: go mod download
+
+      - name: Test backend CI contracts
+        run: |
+          python3 -B ../scripts/test_ci_backend.py -v
+          python3 -B ../scripts/test_ci_backend_fixtures.py -v
 
       - name: Run repository backend lint
         run: ../scripts/lint backend
@@ -99,13 +162,26 @@ jobs:
           skip-cache: true
           working-directory: backend
 
-      - name: Run tests
-        run: ../scripts/test backend
-        env:
-          BACKEND_GO_TEST_ARGS: -v -race -coverprofile=coverage.out
-          DATABASE_URL: postgres://test:test@localhost:5432/openmusicplayer_test?sslmode=disable
-          REDIS_URL: redis://localhost:6379
-          OMP_MANUAL_SYNC_REDIS_URL: redis://localhost:6379/15
+  backend-build:
+    name: Backend build and replay
+    needs: pr-scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Install dependencies
+        run: go mod download
 
       - name: Run AI assist replay eval
         run: ../scripts/eval ai-assist --mode replay --output "$RUNNER_TEMP/ai-assist-replay.jsonl"
@@ -113,15 +189,59 @@ jobs:
       - name: Build
         run: ../scripts/build backend
 
+  backend:
+    name: Backend (Go)
+    runs-on: ubuntu-latest
+    needs: [pr-scope, backend-tests, backend-lint, backend-build]
+    if: ${{ always() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
+    steps:
+      - name: Require every backend lane to succeed
+        env:
+          TESTS: ${{ needs.backend-tests.result }}
+          LINT: ${{ needs.backend-lint.result }}
+          BUILD: ${{ needs.backend-build.result }}
+        run: |
+          python3 -c 'import sys; sys.exit(0 if sys.argv[1:] == ["success"] * 3 else f"Backend lane results (tests, lint, build): {sys.argv[1:]}")' "$TESTS" "$LINT" "$BUILD"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download Go shard receipts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: backend-go-*
+          path: ${{ runner.temp }}/backend-go-shards
+
+      - name: Verify all Go test receipts and merge atomic coverage
+        run: python3 -B scripts/ci_backend.py merge "$RUNNER_TEMP/backend-go-shards" backend/coverage.out "$(git rev-parse HEAD)"
+
+      - name: Retain merged Go coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage.out
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
           files: backend/coverage.out
           flags: backend
         continue-on-error: true
+      - name: Refuse a cancelled backend workflow
+        if: ${{ cancelled() }}
+        run: |
+          printf '%s\n' 'Backend workflow was cancelled; refusing a green required check.' >&2
+          exit 1
 
   analyzer:
     name: Audio Analyzer (MIR)
+    needs: pr-scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -140,6 +260,8 @@ jobs:
 
   stems:
     name: Stem Separation (DSP contract)
+    needs: pr-scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -157,9 +279,51 @@ jobs:
       - name: Run stems DSP contract image
         run: scripts/test stems
 
-  client:
-    name: Client (Flutter)
+  client-vm:
+    name: Flutter VM shard ${{ matrix.shard }}
+    needs: pr-scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: 'stable'
+          cache: true
+      - name: Install client audio fixture dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Get dependencies
+        working-directory: client
+        run: flutter pub get --enforce-lockfile
+      - name: Prepare fixtures and run Flutter VM shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: TMPDIR="$RUNNER_TEMP" scripts/test client-shard "$SHARD" "$RUNNER_TEMP/client-vm-shard-$SHARD"
+      - name: Preserve verified Flutter VM shard evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-vm-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/client-vm-shard-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 7
+          # Selective retries replace the rerun shard; untouched siblings are
+          # still bound to the same workflow run and tested SHA at the join.
+          overwrite: true
+
+  client-contracts:
+    name: Flutter analysis and fixture contracts
+    needs: pr-scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
+    runs-on: ubuntu-latest
+    outputs:
+      web-outcome: ${{ steps.folded-web.outcome }}
     defaults:
       run:
         working-directory: client
@@ -169,17 +333,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Flutter
+        id: flutter-setup
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.0'
           channel: 'stable'
           cache: true
-
-      - name: Install client audio fixture dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
-
-      - name: Get dependencies
-        run: flutter pub get
 
       - name: Analyze code
         run: ../scripts/lint client
@@ -200,26 +359,82 @@ jobs:
           include-hidden-files: false
           retention-days: 7
 
-      - name: Run tests
-        run: ../scripts/test client
-        env:
-          FLUTTER_TEST_ARGS: --coverage
-
       - name: Test opted-in fixture refusal and credential-session isolation
         run: flutter test --no-pub --concurrency=1 --dart-define=SOUNDQ_PERFORMANCE_FIXTURE=true test/performance_fixture_test.dart test/performance_fixture_source_test.dart test/performance_fixture_export_test.dart
 
-      - name: Build Flutter web
-        run: ../scripts/build client-web
+      # On full PRs reuse setup; a contract failure must not hide the web result.
+      - name: Build Flutter web (pull request)
+        id: folded-web
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.flutter-setup.outcome == 'success' }}
+        working-directory: ${{ github.workspace }}
+        run: scripts/build client-web
 
+  client-web:
+    name: Flutter web build
+    needs: pr-scope
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: 'stable'
+          cache: true
+      - name: Build Flutter web
+        run: scripts/build client-web
+
+  # Keep the one protected Flutter context. A failed/skipped/cancelled child
+  # cannot turn this into an implicitly skipped (and therefore green) job.
+  client:
+    name: Client (Flutter)
+    needs: [pr-scope, client-vm, client-contracts, client-web]
+    if: ${{ always() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Require all Flutter lanes
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          VM_RESULT: ${{ needs.client-vm.result }}
+          CONTRACTS_RESULT: ${{ needs.client-contracts.result }}
+          WEB_RESULT: ${{ needs.client-web.result }}
+          FOLDED_WEB_OUTCOME: ${{ needs.client-contracts.outputs.web-outcome }}
+        run: |
+          if [[ "$CI_EVENT" == pull_request ]]; then
+            if [[ "$WEB_RESULT" != skipped ]]; then
+              printf 'Standalone Flutter web lane must be skipped on PRs; got %s\n' "$WEB_RESULT" >&2
+              exit 1
+            fi
+            WEB_RESULT="$FOLDED_WEB_OUTCOME"
+          fi
+          python3 -I -B scripts/ci_flutter.py require "$VM_RESULT" "$CONTRACTS_RESULT" "$WEB_RESULT"
+      - name: Download Flutter VM shard evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: client-vm-shard-*
+          path: ${{ runner.temp }}/client-vm-evidence
+      - name: Verify all test evidence and merge LCOV
+        run: python3 -I -B scripts/ci_flutter.py merge "$RUNNER_TEMP/client-vm-evidence" client/coverage/lcov.info
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
           files: client/coverage/lcov.info
           flags: client
         continue-on-error: true
+      - name: Refuse a cancelled Flutter workflow
+        if: ${{ cancelled() }}
+        run: |
+          printf '%s\n' 'Flutter workflow was cancelled; refusing a green required check.' >&2
+          exit 1
 
   extension:
     name: Extension (TypeScript)
+    needs: pr-scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -263,6 +478,8 @@ jobs:
 
   agent-evals:
     name: Agent Search Evals
+    needs: pr-scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
     runs-on: ubuntu-latest
 
     steps:
@@ -306,8 +523,13 @@ jobs:
 
   local-smoke:
     name: Local Stack Smoke
+    needs: pr-scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.pr-scope.result != 'success' || needs.pr-scope.outputs.scope != 'delivery-only') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
+      COMPOSE_PROJECT_NAME: soundq-smoke-${{ github.run_id }}-${{ github.run_attempt }}
       SERVER_PORT: 18080
       POSTGRES_PORT: 15434
       REDIS_PORT: 16380
@@ -318,6 +540,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go for preview proxy smoke
         uses: actions/setup-go@v5
@@ -325,13 +549,63 @@ jobs:
           go-version-file: backend/go.mod
           cache: false
 
-      - name: Run bundled preview proxy smoke
+      - name: Restore verified-source MinIO build layers
+        id: minio-cache
+        continue-on-error: true
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/soundq-minio-cache
+          key: soundq-smoke-minio-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('backend/Dockerfile', 'docker-compose.local-low-memory.yml') }}
+
+      - name: Set up isolated Buildx builder
+        id: smoke-builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker-container
+          cache-binary: false
+          use: false
+
+      - name: Build low-memory stack images and check bundled preview proxy
+        env:
+          OMP_SMOKE_BUILDER: ${{ steps.smoke-builder.outputs.name }}
+          OMP_SMOKE_CACHE_DIR: ${{ runner.temp }}/soundq-minio-cache
+          # PRs (including forks) can read the default branch's public build
+          # layers but do not write a cache. No registry or runtime token shim.
+          OMP_SMOKE_CACHE_EXPORT: ${{ (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.minio-cache.outputs.cache-hit != 'true') && 'true' || 'false' }}
         run: |
-          docker pull nginx:1.28-alpine
-          scripts/smoke preview-proxy
+          compose=(docker compose -f docker-compose.local-low-memory.yml)
+          # PostgreSQL has no build dependency. Start it now, before the
+          # image-build join; the final Compose up still gates on health.
+          "${compose[@]}" up -d --no-build postgres &
+          postgres=$!
+          (
+            docker pull nginx:1.28-alpine
+            scripts/smoke preview-proxy
+            # Populate the runner's Go cache without changing how the real
+            # playback probe is invoked. Yield CPU to the container builds.
+            cd backend
+            nice -n 10 go build -o /dev/null ./cmd/local-playback-smoke
+          ) &
+          preview=$!
+          # Keep the large analyzer image in the runner's native Docker builder
+          # rather than exporting and reloading it from the cache builder.
+          "${compose[@]}" build backend analyzer &
+          app=$!
+          status=0
+          scripts/ci-smoke-storage-build || status=$?
+          wait "$postgres" || status=$?
+          # Only one Compose up at a time: both use the same project network.
+          # Bring storage up as soon as its own images are done, even while
+          # the analyzer image is still exporting.
+          if [[ "$status" == 0 ]]; then
+            "${compose[@]}" up -d --no-build minio minio-init || status=$?
+          fi
+          wait "$app" || status=$?
+          wait "$preview" || status=$?
+          exit "$status"
 
       - name: Start isolated low-memory stack
-        run: scripts/dev isolated
+        run: scripts/dev isolated-prebuilt
 
       - name: Run isolated smoke
         run: scripts/smoke isolated
@@ -342,3 +616,15 @@ jobs:
       - name: Cleanup low-memory stack
         if: always()
         run: scripts/local-low-memory.sh clean
+
+      - name: Save verified-source MinIO build layers
+        if: >-
+          success() && github.event_name == 'push' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+          steps.minio-cache.outputs.cache-hit != 'true' &&
+          steps.minio-cache.outputs.cache-primary-key != ''
+        continue-on-error: true
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/soundq-minio-cache
+          key: ${{ steps.minio-cache.outputs.cache-primary-key }}

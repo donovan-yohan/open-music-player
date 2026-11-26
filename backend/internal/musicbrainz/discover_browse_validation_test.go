@@ -33,32 +33,34 @@ func TestDiscoverBrowseTracklistFetchErrorsKeepOperationAndCause(t *testing.T) {
 		{"not_found", "", func(*http.Request) (*http.Response, error) { return fixtureResponse(http.StatusNotFound, ""), nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var calls atomic.Int32
-			client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
-				calls.Add(1)
+			withFixtureClock(t, func(t *testing.T) {
+				var calls atomic.Int32
+				client := NewClientWithTransport(nil, fixtureTransport(func(req *http.Request) (*http.Response, error) {
+					calls.Add(1)
+					if tc.transport == nil {
+						return nil, errors.New("malformed URL dispatched")
+					}
+					return tc.transport(req)
+				}))
 				if tc.transport == nil {
-					return nil, errors.New("malformed URL dispatched")
+					_, err := client.fetchDiscoverTracklist(t.Context(), ":bad-url")
+					var urlErr *url.Error
+					if !errors.As(err, &urlErr) || errors.Unwrap(err) != urlErr || !strings.Contains(err.Error(), tc.operation) || calls.Load() != 0 {
+						t.Fatalf("request error lost operation/cause, or dispatched: %v (calls=%d)", err, calls.Load())
+					}
+					return
 				}
-				return tc.transport(req)
-			}))
-			if tc.transport == nil {
-				_, err := client.fetchDiscoverTracklist(t.Context(), ":bad-url")
-				var urlErr *url.Error
-				if !errors.As(err, &urlErr) || errors.Unwrap(err) != urlErr || !strings.Contains(err.Error(), tc.operation) || calls.Load() != 0 {
-					t.Fatalf("request error lost operation/cause, or dispatched: %v (calls=%d)", err, calls.Load())
+				result, err := client.GetEditionTracklist(t.Context(), uuid.MustParse(browseEdition))
+				if tc.name == "not_found" {
+					if result != nil || !errors.Is(err, ErrNotFound) || calls.Load() != 1 {
+						t.Fatalf("404 mapped to %v, %v, calls=%d", result, err, calls.Load())
+					}
+					return
 				}
-				return
-			}
-			result, err := client.GetEditionTracklist(t.Context(), uuid.MustParse(browseEdition))
-			if tc.name == "not_found" {
-				if result != nil || !errors.Is(err, ErrNotFound) || calls.Load() != 1 {
-					t.Fatalf("404 mapped to %v, %v, calls=%d", result, err, calls.Load())
+				if result != nil || !errors.Is(err, cause) || !strings.Contains(err.Error(), tc.operation) || calls.Load() != 1 {
+					t.Fatalf("fetch error lost operation/cause: %v, %v, calls=%d", result, err, calls.Load())
 				}
-				return
-			}
-			if result != nil || !errors.Is(err, cause) || !strings.Contains(err.Error(), tc.operation) || calls.Load() != 1 {
-				t.Fatalf("fetch error lost operation/cause: %v, %v, calls=%d", result, err, calls.Load())
-			}
+			})
 		})
 	}
 }
@@ -79,6 +81,7 @@ func TestDiscoverBrowseTracklistAcceptsSerializerOmissionAtExplicitZero(t *testi
 			`"data-tracks":[{"id":"` + discoverFixtureTrackID + `","position":1,"title":"Data"}]`, []string{"pregap", "data"}, []int{0, 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			isolateFixtureBudgets(t)
 			var calls, writes atomic.Int32
 			store := fixturePublicCacheWithCommand(t, func(cmd string) {
 				if cmd == "set" {
@@ -148,6 +151,7 @@ func TestDiscoverBrowseRejectsBlankTitlesBeforeCache(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			isolateFixtureBudgets(t)
 			const want = "  Verbatim title  "
 			var calls, writes atomic.Int32
 			store := fixturePublicCacheWithCommand(t, func(cmd string) {
@@ -181,6 +185,7 @@ func TestDiscoverBrowseTracklistChoosesFirstNonblankVerbatimTitle(t *testing.T) 
 		{"no_eligible_title", " \t ", " \u2003 ", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			isolateFixtureBudgets(t)
 			var calls, writes atomic.Int32
 			store := fixturePublicCacheWithCommand(t, func(cmd string) {
 				if cmd == "set" {
