@@ -31,11 +31,11 @@ import com.soundq.android.data.device.FileDeleteOutcome
     DisposableEffect(alive){onDispose {alive.set(false);reveal.dispose()}}
     val valid={alive.get()&&current()&&model.graph.phoneAudio.current(version)&&model.graph.phoneAudio.observed(ref)!=null}
     if(!row.available) {
-        SoundQMediaRow(row.metadata.displayTitle,row.metadata.artist.orEmpty(),false,onMore,onMore,
+        SoundQMediaRow(row.displayTitle,row.displayArtist.orEmpty(),false,onMore,onMore,
             supporting=phoneRowUnavailableLabel(row),metadata={LibraryMetadataContent(memberDurationMetadata(row.durationMs ?: 0))})
         return
     }
-    SoundQRevealMediaRow(row.metadata.displayTitle,row.metadata.artist.orEmpty(),selected,reveal,valid(),null,false,
+    SoundQRevealMediaRow(row.displayTitle,row.displayArtist.orEmpty(),selected,reveal,valid(),null,false,
         {},{if(valid())model.controller.enqueueDevice(ref,false,valid)},
         {if(valid())model.controller.playDevice(ref,valid)},onMore,
         metadata={LibraryMetadataContent(memberDurationMetadata(row.durationMs ?: 0))},
@@ -44,8 +44,10 @@ import com.soundq.android.data.device.FileDeleteOutcome
         supporting=if(saved!=null)"Phone file · Resume at ${formatSongTime(saved)}"else "Phone file")
 }
 
-@Composable internal fun PhoneTrackSheet(model:ProductViewModel,row:DeviceAudio,onDismiss:()->Unit,onManage:()->Unit) {
+@Composable internal fun PhoneTrackSheet(model:ProductViewModel,row:DeviceAudio,onDismiss:()->Unit,onManage:()->Unit,routeCurrent:()->Boolean) {
     val playback by model.playback.collectAsState()
+    val phone by model.graph.phoneAudio.state.collectAsState()
+    val auth by model.graph.session.state.collectAsState()
     val version=model.graph.session.version();val ref=model.graph.phoneAudio.reference(row)
     val alive=remember(ref,version){AtomicBoolean(true)}
     DisposableEffect(alive){onDispose {alive.set(false)}}
@@ -60,21 +62,49 @@ import com.soundq.android.data.device.FileDeleteOutcome
     var deleting by remember(ref,version){mutableStateOf(false)}
     var message by remember(ref,version){mutableStateOf<String?>(null)}
     var savedSpeed by remember(ref,version){mutableStateOf<String?>(null)}
+    // Keep the observed menu identity, but display the just-acknowledged local text.
+    val display = phone.snapshot?.resolve(row.owner)?.takeIf { it.owner == row.owner } ?: row
+    var enrichment by remember(ref) { mutableStateOf<LocalEnrichmentVisit?>(null) }
+    var enriched by remember(ref,version) { mutableStateOf(false) }
+    val visit = enrichment
+    fun closeEnrichment(target: LocalEnrichmentVisit) {
+        target.close()
+        if (enrichment === target) enrichment = null
+    }
+    val dismiss = { if (visit != null) closeEnrichment(visit) else onDismiss() }
+    val sheetScroll = key(visit) { rememberScrollState() }
     LaunchedEffect(ref,version,speed) {
         if(!speed)model.controller.songSpeed(ref,version,null,valid) {state->if(valid())savedSpeed=state?.let {SoundQSpeedScale.label(it.speed)}}
     }
-    SoundQSheet(row.metadata.displayTitle,onDismiss) {
-        if(speed)SongSpeedEditor(model,ref,valid){speed=false}
+    key(visit) { SoundQSheet(if (visit == null) display.displayTitle else "Enrich metadata", dismiss, scrollState = sheetScroll) {
+        if (visit != null) {
+            LocalEnrichmentEditor(model.graph, visit, { enrichment === visit && routeCurrent() },
+                { closeEnrichment(visit) }, { if (enrichment === visit) { enriched = true; closeEnrichment(visit) } })
+        }
+        else if(speed)SongSpeedEditor(model,ref,valid){speed=false}
         else Column {
-            row.metadata.artist?.takeIf {it.isNotBlank()}?.let {Text(it)}
-            row.metadata.album?.takeIf {it.isNotBlank()}?.let {Text(it)}
+            display.displayArtist?.takeIf {it.isNotBlank()}?.let {Text(it)}
+            display.displayAlbum?.takeIf {it.isNotBlank()}?.let {Text(it)}
             Text(row.metadata.filename,style=SoundQ.typography.caption)
             if(!row.available)Text(phoneRowUnavailableLabel(row),style=SoundQ.typography.caption)
+            if(enriched)Text("Metadata updated in SoundQ", style=SoundQ.typography.caption)
             SongActionRow("Play / resume",{if(valid()){model.controller.playDevice(ref,valid);onDismiss()}},SoundQIcon.Play,enabled=valid()&&!busy)
             SongActionRow("Play next",{if(valid()){model.controller.enqueueDevice(ref,true,valid);onDismiss()}},SoundQIcon.Next,enabled=valid()&&!busy)
             SongActionRow("Add to listening queue",{if(valid()){model.controller.enqueueDevice(ref,false,valid);onDismiss()}},SoundQIcon.AddQueue,enabled=valid()&&!busy)
+            OriginalImportActionContent(model,row) {lifetime()&&routeCurrent()}
             SoundQDivider()
             SongActionRow("Playback speed",{speed=true},value=savedSpeed,opensDestination=true,enabled=valid()&&!busy)
+            if (auth is com.soundq.android.data.AuthState.SignedIn && display.available) {
+                SongActionRow("Enrich metadata", {
+                    val account = model.graph.session.capture()
+                    if (enrichment == null && routeCurrent() && valid() && account != null && model.graph.session.remoteCurrent(account)) {
+                        model.graph.phoneAudio.observed(ref)?.takeIf { it.owner == display.owner }?.let {
+                            enriched = false
+                            enrichment = LocalEnrichmentVisit(account, it)
+                        }
+                    }
+                }, opensDestination = true, enabled = valid() && !busy)
+            }
             SongActionRow("Open in file browser",{
                 busy=true;message=null
                 scope.launch {
@@ -94,12 +124,12 @@ import com.soundq.android.data.device.FileDeleteOutcome
             },SoundQIcon.Trash,value=deleteUnavailable,enabled=valid()&&!busy&&deleteUnavailable==null,destructive=true)
             message?.let {Text(it,style=SoundQ.typography.caption,color=SoundQ.colors.error)}
         }
-    }
+    } }
     confirmation?.let {target->
         AlertDialog(onDismissRequest={if(!deleting)confirmation=null},shape=RectangleShape,
             containerColor=SoundQ.colors.sheet,title={Text("Delete file from phone?",style=SoundQ.typography.title)},
             text={Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(row.metadata.displayTitle);Text(target.path)
+                Text(display.displayTitle);Text(target.path)
                 Text("This deletes the original file from your phone. Other apps will lose access. SoundQ can't undo this.")
                 if(playback.queue.singleOrNull {it.occurrenceId==playback.selectedOccurrence}?.ref==ref)
                     Text("Playback will stop. Another song won't start automatically.")

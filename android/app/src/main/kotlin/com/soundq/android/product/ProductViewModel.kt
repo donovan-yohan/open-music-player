@@ -290,13 +290,22 @@ class ProductViewModel(app:Application):AndroidViewModel(app) {
             try {
                 withContext(Dispatchers.IO){graph.library.readCollection(request)}
                 if(!intent())return@launch
-                graph.library.startCollection(request) {tracks,index->
+                val consumer=coroutineContext.job
+                var delivery:CompletableDeferred<Unit>?=null
+                graph.library.startCollection(request,holdForDelivery=true) {tracks,index->
                     when {
                         !com.soundq.android.playback.QueuePolicy.acceptsContext(tracks.size)->"This collection exceeds the current playback capacity. Nothing was started."
                         playback.value.connection!=PlaybackProjection.Connection.Connected->"Player is not connected. Try again."
-                        else->{graph.rememberTracks(tracks);controller.playContext(tracks,index,valid={graph.library.collectionPlaybackCurrent(request)});null}
+                        else->{
+                            val settled=CompletableDeferred<Unit>().also {delivery=it}
+                            graph.rememberTracks(tracks)
+                            controller.playContext(tracks,index,valid={consumer.isActive&&graph.library.collectionPlaybackCurrent(request)},delivery=settled)
+                            null
+                        }
                     }
                 }
+                // The large-context adapter returns before the service consumes its source guard.
+                delivery?.await()
             }finally {graph.library.abandonCollection(request)}
         }.invokeOnCompletion {graph.library.abandonCollection(request)}
     }

@@ -30,7 +30,7 @@ class DiscoveryQueryRepairTest {
             val wire=SoundQApi::class.java.declaredMethods.single {it.name=="wire"}.apply {isAccessible=true}
             for(path in listOf("/../auth/login","/library/../auth/login","/library/./tracks","/%2e%2e/auth/login","/library/%2E./tracks","//evil.test/api/v1/library","/library\\..\\auth/login","/library#fragment")) {
                 f.reply("{}")
-                assertTrue("path must be refused: $path",runCatching {wire.invoke(api,path,"GET",null,"a",null,emptyMap<String,String>(),false,null,null,null,{true})}.exceptionOrNull()?.cause is IllegalArgumentException)
+                assertTrue("path must be refused: $path",runCatching {wire.invoke(api,path,"GET",null,"a",null,emptyMap<String,String>(),false,null,null,null,false,null,null,{true})}.exceptionOrNull()?.cause is IllegalArgumentException)
                 assertEquals(0,f.server.requestCount)
             }
         }

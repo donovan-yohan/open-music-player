@@ -48,6 +48,8 @@ private class Uri(val value:String) {val authority:String? get()=value.substring
 private data class PhoneSourceAdmission(val row:DeviceAudio,val source:SourceCapture,val sessionVersion:Long,val resumeMs:Long=0)
 private data class PhoneAudioState(val ready:Boolean=false,val snapshot:DeviceListeningSnapshot?=null,val refreshing:Boolean=false,val permission:Boolean=true,val message:String?=null,val scan:Any?=null)
 private class Platform {var allowed=true;var publicationGate:java.util.concurrent.CountDownLatch?=null;val publishing=java.util.concurrent.CountDownLatch(1)
+ private val access=com.soundq.android.data.originalimport.OriginalAccessEpoch()
+ fun storageAccessStamp():Long?=access.observe(::storageAllowed)
  fun storageAllowed():Boolean {if(Thread.currentThread().name=="held-publish"){publishing.countDown();check(publicationGate?.await(5,java.util.concurrent.TimeUnit.SECONDS)!=false)};return allowed}}
 private class Session {var version=1L;var accountId="a";fun version()=version;fun owns(v:Long)=version==v;fun capture()=this;fun current(s:Session)=s===this}
 private class Endpoint {var identity="endpoint"}
@@ -83,6 +85,7 @@ MUTATIONS
 REPORT
 }
 private class Grant(val device:PlaybackRef.Device?,val version:Long,val audioRevision:Long,val scope:Session) {
+ val phoneAdmission:PhoneSourceAdmission?=null
 GRANT
 }
 private object Player {const val STATE_IDLE=1}
@@ -261,7 +264,11 @@ DRAIN
  suspend fun snapshot(current:()->Boolean)=if(current())Snapshot(decks.values.map(::Deck))else null
  data class Snapshot(val decks:List<Deck>)
 }
-private class RetirementCandidate(val item:Item,val outgoing:Item,val deck:Int=1,val identity:Long=222,val outgoingDeck:Int=0,val outgoingIdentity:Long=111,val armed:Boolean=true,val arming:Boolean=false)
+private class RetirementCandidate(val item:Item,val outgoing:Item,val deck:Int=1,val identity:Long=222,val outgoingDeck:Int=0,val outgoingIdentity:Long=111,val armed:Boolean=true,val arming:Boolean=false) {
+ // This legacy extracted cohort has no numeric borrowed grants; the real player cohort covers those.
+ val bindingFollowsSource=false
+ val grant:Grant?=null;val outgoingGrant:Grant?=null
+}
 private class RetirementJournal {val retired=mutableListOf<Int>();fun retire(slot:Int,drain:Boolean=false){retired+=slot}}
 private class ParkedQueue(val items:List<Item>)
 private class Retirement(val graph:AppGraph,var items:List<Item>) {
@@ -271,10 +278,12 @@ private class Retirement(val graph:AppGraph,var items:List<Item>) {
  private fun finishDiscoveryPreview():Unit=error("Preview teardown is outside this fixture")
  var index=0;val arrangement:Any?=null;val arrangementSourceItems=emptyList<Item>();var successor:RetirementCandidate?=null
  var pending:Job?=null;var tail:Job?=null;var successorJob:Job?=null;var successorAttempt:String?=null;var successorRevision=0L
+ @Volatile private var retainedSuccessor:RetirementCandidate?=null
  var ordinaryIdentity=111L;var ordinaryDeck=0;var selectedLoaded=true;var playback=3;var position=42000L;var released=false;var error:Any?=null
  var stopped=0;var pauses=0;var retired=0;var prepares=0;var order=items.indices.toList();var queueScope:Session?=null
  val durations=mutableMapOf<String,Long>();val lifetime=CoroutineScope(SupervisorJob()+Dispatchers.Unconfined);val journal=RetirementJournal();val owner=RetirementHardware()
  val grants=items.associate {it.mediaId to Grant(it.ref as? PlaybackRef.Device,1,graph.phoneAudio.sourceAuthority(it.ref as PlaybackRef.Device),graph.session)}
+ val activeGrant:Grant?=null
  fun selected()=items.getOrNull(index)
  fun rebuilt(next:List<Item>,at:Int)=next.indices.toList()
  fun pause(){pauses++};fun stop(){stopped++;selectedLoaded=false;playback=Player.STATE_IDLE}
@@ -327,7 +336,7 @@ class SongFileRetirementBoundaryTest {
 ownerText=(src/'playback/nativeengine/NativeCallbackOwner.kt').read_text()
 drain=ownerText[ownerText.index('    suspend fun sourcesDrained('):ownerText.index('    suspend fun retainedBytes(')]
 retirement=retirement.replace('DRAIN',drain)
-retirement=retirement.replace('RETIRE',method('    internal suspend fun retirePhoneFile(')).replace('CANCEL',method('    private fun cancelSuccessor(')).replace('MUTATE',method('    private fun mutate('))
+retirement=retirement.replace('RETIRE',method('    internal suspend fun retirePhoneFile(').replace('grant: MediaGrant?', 'grant: Grant?')).replace('CANCEL',method('    private fun cancelSuccessor(')).replace('MUTATE',method('    private fun mutate('))
 text=header+retirement
 for name,value in [('AUTHORITY',authority),('PUBLISH',publish),('FAILURE',failure),('MUTATIONS',mutations),('REPORT',report),('GRANT',grant),('POLL',poll),('SPEED_CHANGED',speedChanged),('COMMAND',command)]:text=text.replace(name,value)
 (out/'SongMenuBoundaryTest.kt').write_text(text)
@@ -337,7 +346,10 @@ if a.run:
  def jar(g,n,v):return next((cache/g/n/v).glob('*/*.jar'))
  cp=os.pathsep.join(map(str,[jar('org.jetbrains.kotlinx','kotlinx-serialization-json-jvm','1.9.0'),jar('org.jetbrains.kotlinx','kotlinx-serialization-core-jvm','1.9.0'),jar('org.jetbrains.kotlinx','kotlinx-coroutines-core-jvm','1.10.2'),jar('junit','junit','4.13.2'),jar('org.hamcrest','hamcrest-core','1.3')]))
  (out/'Track.kt').write_text('package com.soundq.android.data\n@JvmInline value class TrackId(val value:Long) {init {require(value>0)}}\n')
- files=[str(src/'playback/nativeengine/OriginalDescriptorCustody.kt'),*map(str,(src/'data/deviceaudio').glob('*.kt')),str(src/'playback/PlaybackRef.kt'),str(src/'playback/ListeningSpeed.kt'),str(out/'Track.kt'),str(out/'SongMenuBoundaryTest.kt')]
+ access=section('data/originalimport/PhoneImportOriginals.kt','internal class OriginalAccessEpoch','internal class DescriptorImportRead')
+ stamp=next(line for line in (src/'data/originalimport/OriginalImportRepository.kt').read_text().splitlines() if line.startswith('internal data class OriginalSourceStamp'))
+ (out/'OriginalAccess.kt').write_text('package com.soundq.android.data.originalimport\nimport com.soundq.android.data.deviceaudio.ContentOwner\n'+access+stamp+'\n')
+ files=[str(src/'playback/nativeengine/OriginalDescriptorCustody.kt'),*map(str,(src/'data/deviceaudio').glob('*.kt')),str(src/'playback/PlaybackRef.kt'),str(src/'playback/ListeningSpeed.kt'),str(out/'Track.kt'),str(out/'OriginalAccess.kt'),str(out/'SongMenuBoundaryTest.kt')]
  commands=[['kotlinc','-J-Xmx512m','-J-XX:ActiveProcessorCount=1',*files,'-cp',cp,'-include-runtime','-d',str(out/'tests.jar')],['java','-Xmx512m','-XX:ActiveProcessorCount=1','-Djava.io.tmpdir='+str(out),'-cp',str(out/'tests.jar')+os.pathsep+cp,'org.junit.runner.JUnitCore','com.soundq.android.menuprobe.SongMenuBoundaryTest','com.soundq.android.menuprobe.SongFileRetirementBoundaryTest']]
  (out/'commands.json').write_text(json.dumps(commands,indent=2))
  for name,cmd in zip(['compile','tests'],commands):

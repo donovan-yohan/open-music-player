@@ -82,6 +82,7 @@ private class RecordingStore(val domain:DeviceListeningStore,val platform:Platfo
 }
 private class Repository(domain:DeviceListeningStore,val jobs:CoroutineScope) {
  val graph=Graph();val platform=Platform();val store=RecordingStore(domain,platform);val access=domain.unlock();val mutable=MutableStateFlow(State())
+
  // Mutation bodies below are extracted verbatim apart from the declared row-reference type binding.
 MUTATION
  fun observed(ref:DeviceAudio)=store.domain.snapshot(access)?.resolve(ref.owner)?.takeUnless {fileMutations.containsKey(it.canonicalId)}
@@ -102,6 +103,10 @@ ADVANCE
  fun requestsReleased()=refreshLocked {refreshRunning==null&&pendingRefresh==null}
  fun publish(message:String?=null){mutable.value=State(message=message)}
  fun fail(message:String){mutable.value=State(message=message)}
+ // No Enrich visits/receipts are created by this provider/delete facade. The real
+ // recovery and visit ownership are exercised by EnrichmentApplyBoundaryTest.
+ @Suppress("UNUSED_PARAMETER")
+ private fun reconcileAbandonedEnrichment(owner:RecordingStore,accepted:AccessCapture)=Unit
  private fun grantId(v:String)=ScanGrantId(UUID.nameUUIDFromBytes(v.toByteArray()))
  private fun locator(v:String)=ProviderLocator("fixture",v)
 REFRESH

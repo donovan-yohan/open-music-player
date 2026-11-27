@@ -20,7 +20,8 @@ public final class AudioReadRetirementTest {
     @Test public void currentReadPublishesReusableExactCacheBytes() throws Exception { verify(null); }
 
     private MediaGrant grant(AccountScope scope) throws Exception {
-        return MediaGrant.class.getConstructor(AccountScope.class, long.class, boolean.class, kotlin.jvm.internal.DefaultConstructorMarker.class).newInstance(scope, 7L, false, null);
+        // TrackId is unboxed here; use an ordinary (non-Original-only) grant for this cache exercise.
+        return MediaGrant.class.getConstructor(AccountScope.class, long.class, boolean.class, boolean.class, kotlin.jvm.internal.DefaultConstructorMarker.class).newInstance(scope, 7L, false, false, null);
     }
     private void verify(Boolean retireAccount) throws Exception {
         Path directory = Files.createTempDirectory(Path.of(System.getenv("TMPDIR")), "audio-read-retirement-").toRealPath();

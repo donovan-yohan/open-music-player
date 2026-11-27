@@ -6,7 +6,7 @@ Generated domain source is instrumented for collection/identity work, not semant
 from pathlib import Path
 import argparse, ast, hashlib, json, os, subprocess
 p=argparse.ArgumentParser(description=__doc__)
-p.add_argument('--root',type=Path);p.add_argument('--output',type=Path,required=True)
+p.add_argument('--root',type=Path);p.add_argument('--output',type=Path,required=True);p.add_argument('--borrowed-originals',action='store_true')
 a=p.parse_args();root=(a.root or Path(__file__).resolve().parents[1]).resolve();out=a.output.resolve();out.mkdir(parents=True,exist_ok=False)
 b=root/'app/src/main/kotlin/com/soundq/android';records=[];sources={};spans={}
 env=dict(os.environ,JAVA_OPTS='-Xmx512m -XX:ActiveProcessorCount=1',TMPDIR=str(out))
@@ -20,6 +20,8 @@ def block(f,marker):
  s=read(f);start=s.index(marker);i=s.index('{',start)+1;depth=1
  while depth:depth+=(s[i]=='{')-(s[i]=='}');i+=1
  result=s[start:i];spans[f+':'+marker.strip()]=hashlib.sha256(result.encode()).hexdigest();return result
+def section(f,start,end):
+ s=read(f);i=s.index(start);result=s[i:s.index(end,i+len(start))];spans[f+':'+start.strip()]=hashlib.sha256(result.encode()).hexdigest();return result
 def put(n,s):(out/n).write_text(s)
 def jar(group,artifact,version):
  f=next((Path.home()/'.gradle/caches/modules-2/files-2.1'/group/artifact/version).glob('*/*.jar'))
@@ -28,6 +30,7 @@ def jar(group,artifact,version):
 tree=ast.parse((root/'scripts/test-original-read-boundaries.py').read_text())
 facades=ast.literal_eval(next(n.value for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='files' for t in n.targets)))
 for n in ['Annotations.kt','Uri.kt','Media.kt','Store.kt','Os.kt','Pfd.kt','Resolver.kt']:put(n,facades[n])
+put('Store.kt',facades['Store.kt'].replace('object MediaColumns {','object MediaColumns {const val _ID="_id";'))
 java=out/'java/android';(java/'os').mkdir(parents=True);(java/'system').mkdir()
 (java/'os/Build.java').write_text('package android.os;public class Build {public static class VERSION {public static int SDK_INT=27;}}')
 (java/'system/StructTimespec.java').write_text('package android.system;public class StructTimespec {public long tv_sec,tv_nsec;public StructTimespec(long s,long n){tv_sec=s;tv_nsec=n;}}')
@@ -56,10 +59,10 @@ for f in ['data/deviceaudio/'+p.name for p in (b/'data/deviceaudio').glob('*.kt'
   s=s.replace('import kotlinx.coroutines.flow.MutableStateFlow','import com.soundq.android.lookupprobe.Work\nimport kotlinx.coroutines.flow.MutableStateFlow')
   s=s.replace('fun owns(intent: Long) = intent == epoch','fun owns(intent: Long):Boolean { Work.sessionChecks++; return intent == epoch }')
  dest=out/Path(f).name;put(dest.name,s);production.append(dest)
-contracts=read('data/Contracts.kt');contracts=contracts[:contracts.index('enum class LibrarySort')]+contracts[contracts.index('class SafeFailure'):];put('Contracts.kt',contracts)
+contracts=read('data/Contracts.kt');contracts=contracts[:contracts.index('enum class LibrarySort')]+contracts[contracts.index('internal enum class LibraryRemovalFenceStatus'):];put('Contracts.kt',contracts)
 # Exact repo bodies/fields; test-only publication setup does not replace live validators.
 s=read('data/device/PhoneAudioRepository.kt')
-head=s[s.index('internal data class PhoneAudioState'):s.index('/** Android composition')]
+head=s[s.index('internal data class PhoneAudioState'):s.index('/** Direct published file only')]
 fields=s[s.index('    private val authoritySequence'):s.index('    fun sourceFileId(')]
 fields=fields[:fields.index('    private fun advanceAuthority(')]+block('data/device/PhoneAudioRepository.kt','    private fun advanceAuthority(')
 repo='''package com.soundq.android.data.device
@@ -73,7 +76,7 @@ import kotlinx.coroutines.sync.*
 import java.io.File
 import java.util.UUID
 '''+head+'''internal class PhoneAudioRepository(private val graph:AppGraph) {
- val platform=AndroidAudioAccess(graph.applicationContext)
+ REPOSITORY_PLATFORM
  private val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)
  private val serial=Mutex()
  private var store:DeviceListeningStore?=null
@@ -83,13 +86,28 @@ import java.util.UUID
  private var lastScan:PhoneScanObservation?=null
  private val mutable=MutableStateFlow(PhoneAudioState())
  val state:StateFlow<PhoneAudioState> = mutable.asStateFlow()
- private val fileMutations=java.util.concurrent.ConcurrentHashMap<String,UUID>()
+ // This probe runs exact physical-mutation admission, but never schedules a refresh.
+ private data class FileMutation(val token:UUID,val refresh:Long)
+ private val fileMutations=java.util.concurrent.ConcurrentHashMap<String,FileMutation>()
+ private data class RefreshScope(val version:Long,val storage:Boolean)
+ private var refreshScope:RefreshScope?=null
+ private var refreshRunning:(()->Unit)?=null
+ private var pendingRefresh:(()->Unit)?=null
+ private val refreshEpoch=java.util.concurrent.atomic.AtomicLong()
  private val refreshLock=java.util.concurrent.locks.ReentrantLock()
  private inline fun <T> refreshLocked(block:()->T):T {refreshLock.lock();try{return block()}finally{refreshLock.unlock()}}
 '''+fields+'\n'
 # Include expression-bodied methods verbatim as lines/ranges, block methods by brace parser.
-for start,end in [('    fun current(version:','    // One sequence'),('    fun sourceAuthority(','    private fun publish('),('    fun observed(','    suspend fun <T> journal(')]:repo+=s[s.index(start):s.index(end)]
+for start,end in [('    fun current(version:','    // One sequence'),('    fun sourceAuthority(','    /** An observed access ABA'),('    fun observed(','    suspend fun <T> journal(')]:repo+=s[s.index(start):s.index(end)]
 for marker in ['    fun sourceFileId(','    private fun publish(','    fun beginFileMutation(','    fun endFileMutation(','    fun sameFile(','    suspend fun <T> journal(','    suspend fun admit(','    suspend fun reportFailure(','    suspend fun openOriginal(']:repo+=block('data/device/PhoneAudioRepository.kt',marker)+'\n'
+phone='data/device/PhoneAudioRepository.kt'
+imports='data/originalimport/PhoneImportOriginals.kt'
+# Keep the real denial callback and producer; only the permission-service call is a facade.
+repo=repo.replace(' REPOSITORY_PLATFORM',section(phone,'    private val enrichmentPermissionGate','    private fun enrichmentPermissionAllowed('))
+for marker in ['    fun originalDescriptorsDrained(', '    fun importSourceStamp(', '    fun reserveImportedOriginal(', '    fun fileMutationCurrent(']:
+ repo+=block(phone,marker)+'\n'
+repo=repo.replace('import com.soundq.android.AppGraph','import android.net.Uri\nimport com.soundq.android.AppGraph')
+repo+=section(phone,'    suspend fun markFileMissing(', '    fun observed(')
 repo+=''' fun setup(owner:DeviceListeningStore,accepted:AccessCapture) {store=owner;access=accepted;acceptedVersion=graph.session.version();publish()}
  fun install(snapshot:DeviceListeningSnapshot?) {mutable.value=mutable.value.copy(snapshot=snapshot)}
  fun acceptVersion(v:Long) {acceptedVersion=v}
@@ -102,15 +120,32 @@ repo+=''' fun setup(owner:DeviceListeningStore,accepted:AccessCapture) {store=ow
 # Its production body remains present; scheduling/OS work is not the work-count subject.
 repo=repo.replace('private val jobs=CoroutineScope(SupervisorJob()+Dispatchers.IO)', 'private val jobs=CoroutineScope(SupervisorJob()+object:CoroutineDispatcher(){override fun dispatch(context:kotlin.coroutines.CoroutineContext,block:Runnable){}})')
 repo=repo.replace('fun active()=live.get() && current(admission.sessionVersion) && valid()', 'fun active():Boolean {Work.callbackChecks++;return live.get() && current(admission.sessionVersion) && valid()}')
-repo=repo.replace('fun current(version: Long) = acceptedVersion == version && graph.session.owns(version) && graph.session.state.value !is AuthState.LocalLocked', 'fun current(version:Long):Boolean {Work.repositoryChecks++;return acceptedVersion == version && graph.session.owns(version) && graph.session.state.value !is AuthState.LocalLocked}')
+current_line=next(line for line in repo.splitlines() if line.strip().startswith('fun current(version: Long) = '))
+repo=repo.replace(current_line,'    fun current(version:Long):Boolean {Work.repositoryChecks++;return '+current_line.split(' = ',1)[1]+'}')
 put('Repository.kt',repo)
 wrapper=s=read('data/device/AndroidAudioAccess.kt');wrapper=s[s.index('    fun openOriginal('):s.index('    /** Exact-byte proof')]
 put('Platform.kt','''package com.soundq.android.data.device
 import com.soundq.android.playback.nativeengine.*
-internal class AndroidAudioAccess(val resolver:android.content.ContentResolver) {
+import com.soundq.android.data.originalimport.OriginalAccessEpoch
+import java.security.MessageDigest
+import java.util.concurrent.CancellationException
+internal data class AudioContentProof(val bytes:Long,val sha256:String)
+internal class AndroidAudioAccess(val resolver:android.content.ContentResolver, storageDenied:()->Unit) {
  var allowed=true
- fun storageAllowed()=allowed
-'''+wrapper+'\n}\n')
+ var accessChecks=0
+ private fun platformStorageAllowed():Boolean {accessChecks++;return allowed}
+'''+section('data/device/AndroidAudioAccess.kt','    private val storageAccess =','    /** All files access.')+
+ section('data/device/AndroidAudioAccess.kt','    fun storageAccessStamp()','    @RequiresApi(30) fun storageRoots()')+wrapper+
+ block('data/device/AndroidAudioAccess.kt','    fun proof(')+'\n}\n')
+put('OriginalAccess.kt','''package com.soundq.android.data.originalimport
+import com.soundq.android.data.deviceaudio.*
+import com.soundq.android.playback.PlaybackRef
+import com.soundq.android.playback.nativeengine.OriginalAudioReadLease
+'''+section(imports,'internal fun ContentOwner.originalRef()', '/** Only accepts')+
+ section(imports,'internal class OriginalAccessEpoch', 'internal class DescriptorImportRead')+
+ block(imports,'internal class DescriptorImportRead')+'\n'+
+ next(line for line in read('data/originalimport/OriginalImportRepository.kt').splitlines() if line.startswith('internal data class OriginalSourceStamp'))+'\n')
+put('OriginalImportContract.kt',read('data/originalimport/OriginalImportContract.kt'))
 put('Window.kt','''package com.soundq.android.playback.nativeengine
 internal class AndroidPlatformWindowReader(val lease:OriginalAudioReadLease):NativePcmReader {
  override fun open()=error("codec outside host test")
@@ -128,6 +163,19 @@ internal class AppGraph(val directory:java.io.File) {
  val session=AccountSession(endpoint,object:SessionStore {override fun load(endpoint:ApiEndpoint):SecretTokens?=null;override fun save(endpoint:ApiEndpoint,tokens:SecretTokens){};override fun clear(){}}).apply {retire()}
  val applicationContext=android.content.ContentResolver()
  val phoneAudio=PhoneAudioRepository(this)
+ val originalImports=OriginalImportsFixture(session)
+ val crossfadePreferences=CrossfadePreferencesFixture()
+}
+internal class CrossfadePreferencesFixture {
+ data class Choice(val ready:Boolean=true,val error:Boolean=false,val seconds:Int=2,val revision:Long=1)
+ val state=kotlinx.coroutines.flow.MutableStateFlow(Choice())
+}
+internal class OriginalImportsFixture(private val session:AccountSession) {
+ var association:com.soundq.android.data.originalimport.OriginalAssociation?=null
+ val enabled=true
+ fun owns(scope:AccountScope,binding:com.soundq.android.data.originalimport.OriginalAssociation)=session.current(scope)&&association===binding
+ fun admitOnlinePlayback(scope:AccountScope,track:TrackId)=listOfNotNull(association).filter {owns(scope,it)&&it.track==track}
+ fun admitExplicitOriginal(scope:AccountScope,track:TrackId,operation:String)=admitOnlinePlayback(scope,track).filter {it.intent.operation.toString()==operation}
 }
 ''')
 grant=block('playback/SignedAudioDataSource.kt','internal class MediaGrant')
@@ -135,17 +183,21 @@ grant=grant.replace('fun current(graph:AppGraph):Boolean=', 'fun current(graph:A
 grant=grant.replace('graph.phoneAudio.observed(device)!=null\n}', 'graph.phoneAudio.observed(device)!=null}\n}')
 put('Grant.kt','package com.soundq.android.playback\nimport com.soundq.android.AppGraph\nimport com.soundq.android.data.*\n'+grant)
 put('MediaItem.kt','''package androidx.media3.common
-class MediaItem(val uri:android.net.Uri) {class Local(val uri:android.net.Uri);val localConfiguration=Local(uri)}
+class MediaItem(val uri:android.net.Uri,val mediaId:String="fixture",val metadata:Map<String,String> = emptyMap()) {
+ class Local(val uri:android.net.Uri);val localConfiguration=Local(uri)
+ class Extras(val values:Map<String,String>) {fun getString(key:String):String?=values[key]}
+ class Metadata(val extras:Extras?);val mediaMetadata=Metadata(Extras(metadata))
+}
 ''')
 put('Source.kt','''package com.soundq.android.playback.nativeengine
 import androidx.media3.common.MediaItem
 import com.soundq.android.AppGraph
 import com.soundq.android.playback.MediaGrant
 import java.util.concurrent.ConcurrentHashMap
-internal class GrantedNativeCallbackSource(val graph:AppGraph,val grants:ConcurrentHashMap<String,MediaGrant>) {
+internal open class GrantedNativeCallbackSource(private val graph:AppGraph,private val grants:ConcurrentHashMap<String,MediaGrant>) {
  fun prepareBounded(item:MediaItem,max:Long,current:()->Boolean):java.io.File=error("server out of scope")
  companion object {const val MAX_BYTES=128L*1024*1024}
-'''+block('playback/nativeengine/NativeCallbackSource.kt','    override fun acquire(').replace('override fun','fun',1)+'\n}')
+'''+block('playback/nativeengine/NativeCallbackSource.kt','    override fun acquire(').replace('override fun','open fun',1)+'\n}')
 # Full ordinary player method, with output/journal declarations only.
 put('Player.kt','''package com.soundq.android.lookupprobe
 import com.soundq.android.AppGraph
@@ -168,6 +220,8 @@ internal class Hardware {
 }
 private class Journal {fun initialResume(s:NativePlaybackSource.BorrowedOriginal,g:MediaGrant,d:Int)=s.resumeMs}
 internal class CanonicalPrepare(val graph:AppGraph,val grants:ConcurrentHashMap<String,MediaGrant>,val items:List<MediaItem>,val lifetime:CoroutineScope) {
+ // Ordinary phone preparation has no parked or preview selection.
+ private var preview:Any?=null;private var restoredPark:Any?=null
  var intent=true;var released=false;var pending:Job?=null;var tail:Job?=null;var selectedLoaded=false;var arrangement:Any?=null;var activeGrant:MediaGrant?=null;var activeUri:String?=null;var queueScope:AccountScope?=null
  var epoch=1L;var sourceSequence=0L;var ordinaryDeck=0;var ordinaryIdentity=0L;var playback=Player.STATE_IDLE;var error:Any?=null;var eofCount=0L;var position=0L;val preparing=AtomicInteger();var explicitSeek=0L;var desiredSeek:Long?=null;var acknowledgedSeekPosition:Long?=null;var outputUnavailable=false;val volume=1f
  val source=GrantedNativeCallbackSource(graph,grants);val owner=Hardware();private val journal=Journal()
@@ -193,6 +247,25 @@ inline fun <T> Iterable<T>.countedSingleOrNull(predicate:(T)->Boolean):T? {var f
 inline fun <T> Iterable<T>.countedAny(predicate:(T)->Boolean):Boolean {for(v in this){Work.visits++;if(predicate(v))return true};return false}
 ''')
 put('Probe.kt',(Path(__file__).with_name('source-lookup')/'Probe.kt').read_text())
+helpers=[Path(__file__).resolve(),Path(__file__).with_name('source-lookup')/'Probe.kt',root/'scripts/test-original-read-boundaries.py']
+if a.borrowed_originals:
+ native='playback/nativeengine/NativeCallbackPlayer.kt';owner='playback/nativeengine/NativeCallbackOwner.kt'
+ put('OriginalAwareNativeSource.kt',read('playback/nativeengine/OriginalAwareNativeSource.kt'))
+ put('Traversal.kt',read('playback/nativeengine/NativeCallbackTraversal.kt'))
+ put('NativeState.kt','package com.soundq.android.playback.nativeengine\n'+
+     section(owner,'internal data class NativeNaturalEndReceipt','internal data class NativeCallbackSnapshot')+
+     section(owner,'internal data class NativeCallbackSnapshot','    companion object {').rstrip().removesuffix('{').rstrip()+'\n')
+ delete_file='data/device/PhoneFileActions.kt'
+ templates={'CROSSFADE':section(native,'    private class Successor(', '    private var seekRevision'),
+     'RETIRE_FILE':block(native,'    internal suspend fun retirePhoneFile('),
+     'DRAIN':section(owner,'    suspend fun sourcesDrained(', '    suspend fun retainedBytes('),
+     'DELETE':section(delete_file,'    suspend fun delete(', '\n}'),
+     'OUTCOME':next(line for line in read(delete_file).splitlines() if line.startswith('internal enum class FileDeleteOutcome'))}
+ harness=Path(__file__).with_name('source-lookup')/'BorrowedOriginalProbe.kt';helpers.append(harness)
+ text=harness.read_text()
+ for marker,body in templates.items():
+  token=f'    // INSERT_{marker}';assert text.count(token)==1,token;text=text.replace(token,body)
+ put('BorrowedOriginalProbe.kt',text)
 # Optional published view exists only in successor; predecessor compiles identical fixture.
 # Publication extension chooses the production sealing factory when available.
 types=read('data/deviceaudio/DeviceAudioTypes.kt')
@@ -204,12 +277,14 @@ kotlin=Path(os.path.realpath(__import__('shutil').which('kotlinc'))).parents[1]
 plugin=next((f for f in [kotlin/'lib/kotlinx-serialization-compiler-plugin.jar',kotlin/'libexec/lib/kotlinx-serialization-compiler-plugin.jar'] if f.is_file()),None)
 assert plugin is not None, 'kotlinc serialization compiler plugin required'
 dependencies[str(plugin)]=hashlib.sha256(plugin.read_bytes()).hexdigest()
-helpers=[Path(__file__).resolve(),Path(__file__).with_name('source-lookup')/'Probe.kt',root/'scripts/test-original-read-boundaries.py']
 helper_hashes={str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in helpers}
 (out/'inputs.json').write_text(json.dumps(dict(source=sources,spans=spans,dependencies=dependencies,helpers=helper_hashes,generated={f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in out.glob('*.kt')},instrumentation='predicate receiver iteration, sealed backing get, UUID/Regex/identity construction, full validator entry counters; no validator replacement'),indent=2)+'\n')
 rc=run('compile',['kotlinc','-J-Xmx512m','-J-XX:ActiveProcessorCount=1',*out.glob('*.kt'),'-Xplugin='+str(plugin),'-cp',cp,'-nowarn','-include-runtime','-d',out/'probe.jar'])
 if rc:raise SystemExit(rc)
 rc=run('full-current',['java','-Xmx512m','-XX:ActiveProcessorCount=1','-Djava.io.tmpdir='+str(out),'-cp',str(out/'probe.jar')+os.pathsep+cp,'com.soundq.android.lookupprobe.ProbeKt'])
+if a.borrowed_originals:
+ for name in ('natural-promotion','midpoint-edit','unpromoted-cancellation','access-hot-guard','access-aba','fold-empty','fold-queued','distinct-same-digest'):
+  case=run(name,['java','-Xmx512m','-XX:ActiveProcessorCount=1','-Djava.io.tmpdir='+str(out),'-cp',str(out/'probe.jar')+os.pathsep+cp,'com.soundq.android.lookupprobe.BorrowedOriginalProbeKt',name]);rc=rc or case
 assert all(hashlib.sha256((b/f).read_bytes()).hexdigest()==h for f,h in sources.items()), 'Production input changed'
 assert all(hashlib.sha256(Path(f).read_bytes()).hexdigest()==h for f,h in {**dependencies,**helper_hashes}.items()), 'Dependency/helper changed'
 (out/'input-readback.json').write_text(json.dumps(dict(sourceUnchanged=True,dependencyAndHelperUnchanged=True,rawExit=rc),indent=2)+'\n')

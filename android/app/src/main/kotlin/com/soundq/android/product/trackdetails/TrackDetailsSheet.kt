@@ -61,12 +61,24 @@ import com.soundq.designsystem.*
         if(editor.page!=DetailsPage.Read)SoundQIconButton(SoundQIcon.Back,"Back to Song details",{request(DismissDestination.Read)})
         if(state.loading)SoundQFeedback("Loading song details",FeedbackKind.Loading)
         state.error?.let {SoundQFeedback("Could not load song details",FeedbackKind.Error,it.message,"Reload song details",onReload)}
-        when(state.outcome) {
+        when(state.removalIssue) {
+            RemovalIssue.NotSent->SoundQFeedback("Removal not sent",FeedbackKind.Error,"Couldn’t save local original protection. Your Library was not changed by this action.")
+            RemovalIssue.NotSentLocalCleanupFailed->SoundQFeedback("Removal not applied",FeedbackKind.Error,"Couldn’t clear local original protection. Reload song details to try clearing it.","Reload song details",onReload)
+            RemovalIssue.Unconfirmed->SoundQFeedback("Removal not confirmed",FeedbackKind.Error,"Reload to check your Library. This removal won’t be sent again from this device.","Reload song details",onReload)
+            RemovalIssue.ConfirmedLocalSettleFailed->SoundQFeedback("Removed from Library",FeedbackKind.Notice,"Your phone original is protected, but its removal status couldn’t be saved locally. Don’t repeat the removal.","Reload song details",onReload)
+            null->Unit
+        }
+        // Independent notices can share the same explicit reload action.
+        val changeReload=when(state.removalIssue) {
+            RemovalIssue.NotSentLocalCleanupFailed,RemovalIssue.Unconfirmed,RemovalIssue.ConfirmedLocalSettleFailed->null
+            else->"Reload song details"
+        }
+        when(state.genericOutcome) {
             MutationOutcome.Pending->SoundQFeedback("Saving change",FeedbackKind.Loading)
             MutationOutcome.Confirmed->SoundQFeedback("Change saved",FeedbackKind.Notice)
             MutationOutcome.Refused->SoundQFeedback("Change refused",FeedbackKind.Error,"Your changes were not saved.")
-            MutationOutcome.Uncertain->SoundQFeedback("Change not confirmed",FeedbackKind.Error,"Reload to check before saving again.","Reload song details",onReload)
-            MutationOutcome.ReadbackFailed->SoundQFeedback("Change accepted, refresh failed",FeedbackKind.Error,"Reload to check the saved details.","Reload song details",onReload)
+            MutationOutcome.Uncertain->SoundQFeedback("Change not confirmed",FeedbackKind.Error,"Reload to check before saving again.",changeReload,onReload)
+            MutationOutcome.ReadbackFailed->SoundQFeedback("Change accepted, refresh failed",FeedbackKind.Error,"Reload to check the saved details.",changeReload,onReload)
             null->Unit
         }
         if(state.missing)SoundQFeedback("Track is not in your Library",FeedbackKind.Notice)
@@ -106,7 +118,7 @@ import com.soundq.designsystem.*
                     DetailsButton("Correct analysis",SoundQIcon.Settings,{editor.page=DetailsPage.Analysis},enabled=state.analysis!=null&&canWrite)
                     DetailsButton("Remove from Library",SoundQIcon.Trash,{
                         editor.confirmation=DetailsConfirmation("Remove from Library?","This removes the song from your Library, not the current listening queue or a device copy.","Confirm Library removal",observed,DetailsAction.Remove)
-                    },enabled=canWrite,destructive=true)
+                    },enabled=canWrite&&!state.removalBlocked,destructive=true)
                 }
             }
             DetailsPage.Metadata->{
@@ -132,7 +144,7 @@ import com.soundq.designsystem.*
         if(editor.page==DetailsPage.Read)DetailsButton("Reload details",SoundQIcon.Retry,onReload,enabled=!state.loading&&state.outcome!=MutationOutcome.Pending&&!editor.saving)
         editor.confirmation?.let {confirmation->
             val cancel=when(confirmation.action) {DetailsAction.Remove->"Cancel removal";is DetailsAction.Metadata,is DetailsAction.Analysis->"Cancel reset";is DetailsAction.Verification->"Cancel matching change"}
-            DetailsDialog(confirmation.title,confirmation.explanation,confirmation.label,cancel,canWrite,
+            DetailsDialog(confirmation.title,confirmation.explanation,confirmation.label,cancel,canWrite&&(confirmation.action!=DetailsAction.Remove||!state.removalBlocked),
                 {editor.confirmation=null},{editor.confirmation=null;dispatch(confirmation.observed,confirmation.action)})
         }
         if(editor.dismissDestination!=null)DetailsDialog("Discard changes?","Your unsaved changes will be lost.","Discard","Keep editing",true,

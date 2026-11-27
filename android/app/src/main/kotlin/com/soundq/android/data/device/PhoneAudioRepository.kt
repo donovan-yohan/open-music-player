@@ -2,6 +2,7 @@ package com.soundq.android.data.device
 
 import android.net.Uri
 import com.soundq.android.AppGraph
+import com.soundq.android.data.AccountScope
 import com.soundq.android.data.AuthState
 import com.soundq.android.data.deviceaudio.*
 import com.soundq.android.playback.nativeengine.PhoneAudioStage
@@ -25,12 +26,28 @@ internal data class PhoneAudioState(val ready: Boolean = false, val snapshot: De
  * unlisted audio indexed first), [complete] when that coverage was whole and every row was proved. Not persisted. */
 internal data class PhoneScanObservation(val indexed: Boolean, val complete: Boolean, val storage: Boolean = false)
 internal data class PhoneSourceAdmission(val row: DeviceAudio, val source: SourceCapture, val sessionVersion: Long, val resumeMs: Long)
+/** Direct published file only: neither a new playback admission nor a folded queue reference. */
+internal class PhoneEnrichmentSource(val metadata: DeviceMetadataCapture, val account: AccountScope,
+    val version: Long, val authority: Long, val storageEpoch: Long, val visit: EnrichmentVisitGate)
 
 /** Android composition for the single released catalog/journal. Every disk-backed store call is IO-only.
  * UI observes copied StateFlow data. It never calls snapshot/capture or invents playback receipts.
  */
-internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable {
-    val platform = AndroidAudioAccess(graph.applicationContext)
+internal class PhoneAudioRepository(private val graph: AppGraph,
+    private val openStore: (File) -> DeviceListeningStore = { DeviceListeningStore(it) },
+) : AutoCloseable {
+    private val enrichmentPermissionGate = Any()
+    @Volatile private var enrichmentStorageEpoch = 0L
+    private fun enrichmentPermissionDenied() {
+        // The shared access producer records denial here before accepting another grant.
+        // Both borrowed playback and an unscanned editor observe that retirement.
+        // Positive samples never advance or restore the epoch, including out-of-order results.
+        synchronized(enrichmentPermissionGate) { enrichmentStorageEpoch++ }
+    }
+    val platform = AndroidAudioAccess(graph.applicationContext, ::enrichmentPermissionDenied)
+    private fun enrichmentPermissionAllowed(): Boolean = try { platform.storageAllowed() }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { enrichmentPermissionDenied(); false }
     private val jobs = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val serial = Mutex()
     private var store: DeviceListeningStore? = null
@@ -48,7 +65,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                 serial.withLock { refreshLocked {
                     if(!jobs.isActive||!graph.session.owns(version))return@refreshLocked
                     try {
-                        if (store == null) store = DeviceListeningStore(File(graph.directory, "phone-listening.v1.json"))
+                        if (store == null) store = openStore(File(graph.directory, "phone-listening.v1.json"))
                         val owner = requireNotNull(store)
                         if (auth is AuthState.LocalLocked || auth is AuthState.Pending || auth is AuthState.Restoring || auth is AuthState.SaveRequired) {
                             acceptedVersion = -1; owner.lock(); access = null; lastScan = null; mutable.value = PhoneAudioState(); return@refreshLocked
@@ -63,6 +80,20 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
         }
     }
     fun current(version: Long) = jobs.isActive && acceptedVersion == version && graph.session.owns(version) && graph.session.state.value !is AuthState.LocalLocked
+
+    /** Sample platform access at borrowed-original admission. The returned guard
+     * uses the same producer's synchronous denial notification, not another OS query.
+     * The descriptor still samples platform access at its full validation boundaries. */
+    fun borrowOriginalCurrent(ref:com.soundq.android.playback.PlaybackRef.Device, version:Long): (() -> Boolean)? {
+        val observedAccess = enrichmentStorageEpoch
+        val stamp = importSourceStamp(ref, version) ?: return null
+        val owner = stamp.resolvedOwner ?: return null
+        val file = (owner.key as HistoryKey.Device).id
+        fun active() = enrichmentStorageEpoch == observedAccess && current(version) && sourceAuthority(ref) == stamp.source &&
+            observed(ref)?.let { it.id == file && it.revision == owner.revision && it.incarnation == owner.incarnation } == true &&
+            enrichmentStorageEpoch == observedAccess
+        return if (active()) ::active else null
+    }
     // One sequence fences every proof publication. Broad transport and physical-file
     // grants expose separate epochs so a local mutation never retires unrelated audio.
     private val authoritySequence=java.util.concurrent.atomic.AtomicLong()
@@ -83,11 +114,27 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     }
     fun sourceAuthority(ref:com.soundq.android.playback.PlaybackRef.Device):Long =
         maxOf(authorityVersion,fileAuthorities[sourceFileId(ref)] ?: 0L)
-    private fun publish(message: String? = null, unavailable: ContentOwner? = null) = refreshLocked {
+    /** An observed access ABA must retire consent even when scan publication was conflated. */
+    fun importSourceStamp(ref:com.soundq.android.playback.PlaybackRef.Device, version:Long):com.soundq.android.data.originalimport.OriginalSourceStamp? {
+        val access = platform.storageAccessStamp() ?: return null
+        val source = sourceAuthority(ref)
+        val resolved = observed(ref)?.owner ?: return null
+        // Published lookup admits a provider-proven fold, not an arbitrary same-byte copy.
+        // Including its resolved owner still retires consent captured before that fold.
+        return com.soundq.android.data.originalimport.OriginalSourceStamp(source, access, resolved)
+            .takeIf { platform.storageAccessStamp() == access && current(version) && sourceAuthority(ref) == source && observed(ref)?.owner == resolved }
+    }
+
+    /** Reserve physical custody under the same fence as beginFileMutation, before platform IO. */
+    fun reserveImportedOriginal(admission:PhoneSourceAdmission, valid:()->Boolean) = refreshLocked {
+        if (!current(admission.sessionVersion) || fileMutations.containsKey(admission.row.canonicalId) || !valid()) null
+        else com.soundq.android.playback.nativeengine.OriginalDescriptorCustody.own(admission.row.canonicalId) {}
+    }
+    private fun publish(message: String? = null, unavailable: ContentOwner? = null, permissionObserved: Boolean? = null) = refreshLocked {
         val version=graph.session.version()
         if(!current(version))return@refreshLocked
         val snapshot = access?.let { store?.snapshot(it) }
-        val permission=platform.storageAllowed()
+        val permission=permissionObserved ?: platform.storageAllowed()
         if(!current(version))return@refreshLocked
         val previous=mutable.value.snapshot
         // Only an acknowledged row-local failure may spare unrelated transport grants.
@@ -132,7 +179,6 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     }
     private fun admit(valid: () -> Boolean) {
         // Only redundant owner/access observations may share admitted exact-byte work.
-        // Observe under the same lock as publication; every observed ABA retires the old epoch.
         val scope=RefreshScope(graph.session.version(),platform.storageAllowed())
         // A physical mutation owns the catalog interval, not a held JVM lock across provider IO.
         // Still observe owner/access ABA; it retires that mutation before destructive dispatch.
@@ -163,7 +209,14 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                 val owner = requireNotNull(store); val accepted = requireNotNull(access)
                 val indexed = ScanGrant(grantId("indexed:external-audio"), GrantKind.INDEXED, "Android audio index", ProviderLocator("android", "indexed:external-audio"), false,
                     if (scope.storage) AccessState.AVAILABLE else AccessState.REVOKED)
-                refreshLocked{if(!active())throw CancellationException();check(owner.putGrant(accepted, indexed) != Mutation.REFUSED)}
+                refreshLocked {
+                    if (!active()) throw CancellationException()
+                    // The row may already be unpublished. Resolve an abandoned receipt before the
+                    // ordinary grant/scan path, which must otherwise refuse this store.
+                    reconcileAbandonedEnrichment(owner, accepted)
+                    if (!active()) throw CancellationException()
+                    check(owner.putGrant(accepted, indexed) != Mutation.REFUSED)
+                }
                 if (!scope.storage) {
                     refreshLocked { if (!active()) throw CancellationException(); lastScan = PhoneScanObservation(false, true, false); publish() }
                     return@launch
@@ -295,7 +348,7 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
     }
     /** Direct original acquisition. No encoded copy, checksum or whole PCM preparation.
      * Live-version resume policy is an explicit candidate, NOT old SHA equality. */
-    suspend fun openOriginal(admission:PhoneSourceAdmission,valid:()->Boolean):Pair<NativePlaybackSource.BorrowedOriginal,PhoneSourceAdmission> = withContext(Dispatchers.IO) {
+    suspend fun openOriginal(admission:PhoneSourceAdmission,verify:((com.soundq.android.playback.nativeengine.OriginalAudioReadLease)->Unit)?=null,valid:()->Boolean):Pair<NativePlaybackSource.BorrowedOriginal,PhoneSourceAdmission> = withContext(Dispatchers.IO) {
         check(current(admission.sessionVersion) && valid())
         val route=admission.row.aliases.first {it.state==AccessState.AVAILABLE}.locator.value
         val live=java.util.concurrent.atomic.AtomicBoolean(true)
@@ -308,8 +361,12 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
                 jobs.launch {serial.withLock {store?.retireChangedOriginal(capture.get().source);publish("Original audio changed. Saved progress was reset; refresh Local audio.")}}
             }
         }
+        // A verified borrow can wait for journal admission after capturing access.
+        // Sample it again before the provider call; per-step liveness stays cheap.
+        if (verify != null) check(platform.storageAllowed() && active())
         val original=platform.openOriginal(route,::active,::changed,admission.row.id.value.toString())
         try {
+            verify?.invoke(original)
             val accepted=serial.withLock {
                 check(active())
                 val owner=requireNotNull(store);requireNotNull(access)
@@ -334,6 +391,98 @@ internal class PhoneAudioRepository(private val graph: AppGraph) : AutoCloseable
             result to accepted
         } catch(error:Throwable) {try {original.close()}catch(close:Throwable){error.addSuppressed(close)};throw error}
     }
+    suspend fun captureEnrichment(account: AccountScope, row: DeviceAudio, visit: EnrichmentVisitGate): PhoneEnrichmentSource? = withContext(Dispatchers.IO) {
+        val epoch = enrichmentStorageEpoch
+        if (!visit.active() || !graph.session.remoteCurrent(account) || !enrichmentPermissionAllowed()) return@withContext null
+        journal { owner, accepted ->
+            val version = graph.session.version()
+            if (!visit.active() || enrichmentStorageEpoch != epoch || !graph.session.remoteCurrent(account)) return@journal null
+            // A new visit can recover an abandoned write, but does not get its success receipt
+            // or silently substitute the newly published row for the visit's originally rendered one.
+            if (reconcileAbandonedEnrichment(owner, accepted)) publishEnrichment(version, epoch)
+            val capture = owner.captureMetadata(accepted, row.owner)?.takeIf { it.row == row } ?: return@journal null
+            PhoneEnrichmentSource(capture, account, version, sourceAuthority(reference(row)), epoch, visit).takeIf(::enrichmentOwned)
+        }
+    }
+
+    private fun enrichmentOwned(source: PhoneEnrichmentSource): Boolean {
+        val row = source.metadata.row
+        val ref = reference(row)
+        return source.visit.active() && current(source.version) && graph.session.current(source.account) &&
+            enrichmentStorageEpoch == source.storageEpoch &&
+            sourceAuthority(ref) == source.authority && observed(ref) == row
+    }
+
+    fun enrichmentCurrent(source: PhoneEnrichmentSource): Boolean =
+        enrichmentOwned(source) && enrichmentPermissionAllowed() && enrichmentOwned(source)
+
+    private fun publishEnrichment(version: Long, storageEpoch: Long) {
+        if (current(version)) publish(permissionObserved = enrichmentStorageEpoch == storageEpoch)
+    }
+
+    private data class EnrichmentAttempt(val source: PhoneEnrichmentSource, val receipt: MetadataApplyResult.Unconfirmed)
+    // Under refreshLock. The store owns the exact bytes; this binds its receipt to the only visit
+    // allowed to Check it. Once that capability retires, the current phone-store owner may read back.
+    private var pendingEnrichment: EnrichmentAttempt? = null
+
+    private fun ownsEnrichmentCheck(source: PhoneEnrichmentSource): Boolean =
+        source.visit.active() && current(source.version) && graph.session.current(source.account) &&
+            enrichmentStorageEpoch == source.storageEpoch
+
+    private fun readEnrichment(owner: DeviceListeningStore, accepted: AccessCapture, attempt: EnrichmentAttempt): MetadataApplyResult {
+        val result = owner.readbackMetadata(accepted, attempt.receipt) ?: attempt.receipt
+        if (result !is MetadataApplyResult.Unconfirmed) pendingEnrichment = null
+        return result
+    }
+
+    private fun reconcileAbandonedEnrichment(owner: DeviceListeningStore, accepted: AccessCapture): Boolean {
+        val abandoned = pendingEnrichment?.takeUnless { ownsEnrichmentCheck(it.source) } ?: return false
+        return readEnrichment(owner, accepted, abandoned) !is MetadataApplyResult.Unconfirmed
+    }
+
+    suspend fun applyEnrichment(source: PhoneEnrichmentSource, changes: LocalDisplayText,
+        artwork: LocalAppliedCover? = null, reviewCurrent: () -> Boolean): MetadataApplyResult = withContext(Dispatchers.IO) {
+        val caller = coroutineContext.job
+        // Allow retirement, refresh and ordinary journal work to proceed during platform IO.
+        // The following fences are cheap and are checked again at the actual atomic move.
+        if (!reviewCurrent() || !enrichmentCurrent(source)) return@withContext MetadataApplyResult.Refused
+        journal { owner, _ ->
+            if (!enrichmentOwned(source)) return@journal MetadataApplyResult.Refused
+            owner.applyMetadata(source.metadata, changes, artwork) { replace ->
+                // The existing repository/store locks order source publication. These leaf gates
+                // order account/visit/observed permission retirement with just the rename, not
+                // preparation, directory fsync, a permission call, or StateFlow publication.
+                synchronized(graph.session) {
+                    source.visit.replaceIfActive {
+                        synchronized(enrichmentPermissionGate) {
+                            if (!caller.isActive || !reviewCurrent() || !enrichmentOwned(source)) false
+                            else { replace(); true }
+                        }
+                    }
+                }
+            }.also {
+                when (it) {
+                    is MetadataApplyResult.Unconfirmed -> pendingEnrichment = EnrichmentAttempt(source, it)
+                    MetadataApplyResult.Applied -> publishEnrichment(source.version, source.storageEpoch)
+                    MetadataApplyResult.Refused -> Unit
+                }
+            }
+        } ?: MetadataApplyResult.Refused
+    }
+
+    suspend fun checkEnrichment(source: PhoneEnrichmentSource, receipt: MetadataApplyResult.Unconfirmed): MetadataApplyResult = withContext(Dispatchers.IO) {
+        // A failed scan can unpublish the old row while the writer awaits readback. Recovery
+        // is exact-receipt-only and is not another source admission.
+        if (receipt.capture !== source.metadata || !ownsEnrichmentCheck(source) || !enrichmentPermissionAllowed()) return@withContext receipt
+        journal { owner, accepted ->
+            val attempt = pendingEnrichment?.takeIf { it.source === source && it.receipt === receipt } ?: return@journal receipt
+            if (!ownsEnrichmentCheck(source)) return@journal receipt
+            val read = readEnrichment(owner, accepted, attempt)
+            if (read !is MetadataApplyResult.Unconfirmed) publishEnrichment(source.version, source.storageEpoch)
+            if (ownsEnrichmentCheck(source)) read else receipt
+        } ?: receipt
+    }
+
     override fun close() { jobs.cancel();refreshLocked { acceptedVersion=-1;refreshEpoch.incrementAndGet();mutable.value=PhoneAudioState() };jobs.launch(NonCancellable) { serial.withLock { refreshLocked {store?.close();store=null;access=null} } } }
     private fun grantId(value: String) = ScanGrantId(UUID.nameUUIDFromBytes(value.toByteArray(Charsets.UTF_8)))
     private fun locator(value: String) = ProviderLocator(Uri.parse(value).authority ?: "android", value)

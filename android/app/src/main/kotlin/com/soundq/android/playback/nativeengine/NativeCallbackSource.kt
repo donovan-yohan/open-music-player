@@ -18,7 +18,7 @@ internal fun interface NativeCallbackSource {
 }
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-internal class GrantedNativeCallbackSource(
+internal open class GrantedNativeCallbackSource(
     private val graph: AppGraph,
     private val grants: ConcurrentHashMap<String, MediaGrant>,
 ) : NativeCallbackSource {
@@ -48,6 +48,8 @@ internal class GrantedNativeCallbackSource(
     }
     internal fun prepareBounded(item: MediaItem, maxBytes: Long, current: () -> Boolean): File {
         require(maxBytes in 1..MAX_BYTES)
+        // Finite consumers are not authorized to replace a borrowed-original action with a copy.
+        require(item.mediaMetadata.extras?.getString("originalImportOperation")==null)
         val uri = requireNotNull(item.localConfiguration).uri
         val grant = requireNotNull(grants[uri.toString()])
         require(uri.scheme == "soundq")

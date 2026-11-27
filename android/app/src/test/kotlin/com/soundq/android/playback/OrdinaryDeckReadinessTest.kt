@@ -13,13 +13,20 @@ import com.soundq.android.data.ApiEndpoint
 import com.soundq.android.data.SecretTokens
 import com.soundq.android.data.SessionStore
 import com.soundq.android.data.TrackId
+import com.soundq.android.data.device.PhoneSourceAdmission
+import com.soundq.android.data.deviceaudio.*
 import com.soundq.android.playback.nativeengine.NativeCallbackCalls
 import com.soundq.android.playback.nativeengine.NativeCallbackPlayer
 import com.soundq.android.playback.nativeengine.NativeCallbackSource
+import com.soundq.android.playback.nativeengine.NativePcmReader
+import com.soundq.android.playback.nativeengine.NativePlaybackSource
+import com.soundq.android.playback.nativeengine.OriginalDescriptorCustody
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -29,9 +36,15 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.File
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.security.MessageDigest
 import java.time.Duration
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** Real Media3 player, account/queue admission, readiness and native-owner custody. No HTTP or decoder. */
 @RunWith(RobolectricTestRunner::class)
@@ -143,6 +156,53 @@ class OrdinaryDeckReadinessTest {
         assertEquals(listOf(selected.mediaId, next.mediaId, next.mediaId), f.hw.loads.map { it.occurrence })
     }
 
+    @Test fun deletingSelectedBorrowedNumericOriginalAwaitsExactDescriptorAndKeepsOccurrences() = Fixture().use { f ->
+        val target = f.borrowed(1)
+        val normal = f.item(2)
+        f.play(target.item, normal)
+        f.drain("selected physical original is playing") { f.player.isPlaying && f.hw.renderer.identity(0) > 0 }
+        assertEquals(target.item, f.player.currentMediaItem)
+        f.proveRetirement(target)
+        assertEquals(Player.STATE_IDLE, f.player.playbackState)
+        assertEquals(target.item, f.player.currentMediaItem)
+        assertEquals(listOf(target.item, normal), (0 until f.player.mediaItemCount).map(f.player::getMediaItemAt))
+    }
+
+    @Test fun deletingPreloadedBorrowedNumericOriginalDrainsSpareAndPreservesPlayingPeer() = Fixture().use { f ->
+        val target = f.borrowed(2)
+        val normal = f.item(1)
+        f.enableCrossfade(); f.play(normal, target.item)
+        f.drain("both physical leases and overlap are accepted") { f.player.isPlaying && f.hw.arms.size == 1 }
+        val keep = f.hw.loads.single { it.occurrence == normal.mediaId }
+        assertTrue(f.hw.renderer.identity(1) > 0)
+        f.proveRetirement(target)
+        assertEquals(0L, f.hw.renderer.identity(1))
+        f.assertPlaying(normal, keep)
+        assertEquals(listOf(normal, target.item), (0 until f.player.mediaItemCount).map(f.player::getMediaItemAt))
+        assertEquals(1, f.hw.renderer.acceptedLoads.count { it.occurrence == target.item.mediaId })
+    }
+
+    private class BorrowedReader(val file: File, physicalId: String) : NativePcmReader {
+        val closing = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val closed = CountDownLatch(1)
+        private val fd = RandomAccessFile(file, "r")
+        private val lease = OriginalDescriptorCustody.own(physicalId, fd::close)
+        override fun open() = 48_000
+        override fun read(first: Long, count: Int, destination: ByteBuffer) = 0
+        override fun endFrames() = 480_000L
+        override fun revoke() = Unit
+        override fun closeReader(): Boolean {
+            closing.countDown()
+            if (!release.await(8, TimeUnit.SECONDS)) return false
+            lease.close(); closed.countDown(); return true
+        }
+    }
+    private data class Borrowed(val item: MediaItem, val ref: PlaybackRef.Device, val row: DeviceAudio,
+        val file: File, val admission: PhoneSourceAdmission) {
+        @Volatile var reader: BorrowedReader? = null
+    }
+
     private class Fixture : AutoCloseable {
         private val graph = AppGraph(RuntimeEnvironment.getApplication(), ApiEndpoint.parse("https://fixture.invalid/api/v1"),
             store = object : SessionStore {
@@ -156,10 +216,21 @@ class OrdinaryDeckReadinessTest {
         }
         private val grants = ConcurrentHashMap<String, MediaGrant>()
         private val jobs = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        private val borrowed = ConcurrentHashMap<String, Borrowed>()
+        private var startedPhone = false
         val hw = Hardware(ProjectionPreviewHardware())
-        val player = NativeCallbackPlayer(graph, grants, jobs, hw, NativeCallbackSource { item, current ->
-            check(current())
-            File.createTempFile("ordinary-deck", ".encoded", graph.directory).apply { writeText(item.mediaId) }
+        val player = NativeCallbackPlayer(graph, grants, jobs, hw, object : NativeCallbackSource {
+            override fun prepare(item: MediaItem, current: () -> Boolean): File {
+                check(current())
+                return File.createTempFile("ordinary-deck", ".encoded", graph.directory).apply { writeText(item.mediaId) }
+            }
+            override fun acquire(item: MediaItem, current: () -> Boolean): NativePlaybackSource {
+                val target = borrowed[item.mediaId] ?: return super.acquire(item, current)
+                check(current())
+                grants.getValue(item.localConfiguration!!.uri.toString()).phoneAdmission = target.admission
+                val reader = BorrowedReader(target.file, target.row.canonicalId).also { target.reader = it }
+                return NativePlaybackSource.BorrowedOriginal(reader, 0, 10000, target.row.canonicalId) { current() }
+            }
         })
         private val main = shadowOf(Looper.getMainLooper())
         private val control = run {
@@ -174,6 +245,44 @@ class OrdinaryDeckReadinessTest {
             return MediaItem.Builder().setMediaId("occurrence-$track").setUri(uri).setMediaMetadata(
                 MediaMetadata.Builder().setExtras(Bundle().apply { putLong("trackId", track) }).build(),
             ).build()
+        }
+
+        fun borrowed(track: Long): Borrowed {
+            if (!startedPhone) { startedPhone = true; graph.phoneAudio.start() }
+            drain("real device journal is ready") { graph.phoneAudio.state.value.ready && !graph.phoneAudio.state.value.refreshing }
+            val occurrence = UUID.randomUUID().toString()
+            val file = File.createTempFile("borrowed-numeric", ".encoded", graph.directory).apply { writeText(occurrence) }
+            val revision = ContentRevision(MessageDigest.getInstance("SHA-256").digest(file.readBytes()).joinToString("") { "%02x".format(it) }, file.length())
+            val admission = checkNotNull(runBlocking { graph.phoneAudio.journal(true) { store, access ->
+                val grant = ScanGrant(ScanGrantId(UUID.randomUUID()), GrantKind.INDEXED, "Host original", ProviderLocator("fixture", "fixture/index"), true)
+                check(store.putGrant(access, grant) != Mutation.REFUSED)
+                val scan = checkNotNull(store.beginScan(access, grant.id))
+                check(store.publishScan(scan, listOf(DiscoveredAudio(ProviderObjectId("fixture", occurrence),
+                    ProviderLocator("fixture", "fixture/$occurrence"), revision, OriginalMetadata("fixture.mp3"), 10000)), true) != Mutation.REFUSED)
+                val row = checkNotNull(store.snapshot(access)).files.single { it.revision == revision }
+                PhoneSourceAdmission(row, checkNotNull(store.captureSource(access, row.id)), scope.epoch, 0)
+            } })
+            val item = item(track).let { base -> base.buildUpon().setMediaId(occurrence).setMediaMetadata(
+                base.mediaMetadata.buildUpon().setExtras(Bundle(base.mediaMetadata.extras!!).apply {
+                    putString("playbackRef", PlaybackRef.Server(graph.endpoint.identity, scope.accountId, track).wire())
+                }).build()).build() }
+            return Borrowed(item, graph.phoneAudio.reference(admission.row), admission.row, file, admission).also { borrowed[occurrence] = it }
+        }
+
+        fun proveRetirement(target: Borrowed) {
+            val reader = checkNotNull(target.reader)
+            assertFalse(graph.phoneAudio.originalDescriptorsDrained(target.row.canonicalId))
+            val pending = jobs.async { player.retirePhoneFile(target.ref) }
+            try {
+                drain("entered close or premature result") { reader.closing.count == 0L || pending.isCompleted }
+                assertEquals("numeric occurrence must retire its physical descriptor", 0L, reader.closing.count)
+                assertFalse("Delete must not pass a held close", pending.isCompleted)
+                assertFalse(graph.phoneAudio.originalDescriptorsDrained(target.row.canonicalId))
+            } finally { reader.release.countDown() }
+            drain("actual player retirement settled") { pending.isCompleted }
+            assertTrue(runBlocking { pending.await() }); assertEquals(0L, reader.closed.count)
+            assertTrue(graph.phoneAudio.originalDescriptorsDrained(target.row.canonicalId))
+            assertTrue(target.file.isFile) // Player does not unlink the original.
         }
 
         fun enableCrossfade() = graph.crossfadePreferences.run {
@@ -233,6 +342,7 @@ class OrdinaryDeckReadinessTest {
 
         override fun close() {
             try {
+                borrowed.values.forEach { it.reader?.release?.countDown() }
                 player.release()
                 // The owner may quit its Looper as soon as close completes.
                 drain("native owner closed", tick = { main.idleFor(Duration.ofMillis(5)) }) { player.nativeReleased.isDone }
@@ -258,6 +368,9 @@ class OrdinaryDeckReadinessTest {
                 if (accepted) loads += Load(occurrence, deck, identity, file)
             }
         }
+
+        override fun loadReader(handle: Long, deck: Int, reader: NativePcmReader, identity: Long, generation: Long,
+            positionMs: Long, speed: Double): Boolean = load(handle, deck, (reader as BorrowedReader).file.absolutePath, identity, generation, positionMs)
 
         override fun state(handle: Long): String {
             val state = JSONObject(renderer.state(handle))

@@ -5,7 +5,9 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import com.soundq.android.data.*
+import com.soundq.android.data.originalimport.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.combine
 import okhttp3.OkHttpClient
 import java.io.File
 import java.security.KeyStore
@@ -36,8 +38,14 @@ open class SoundQApplication : Application() {
     protected open fun createGraph(): AppGraph = AppGraph(this, ApiEndpoint.parse(BuildConfig.OMP_API_BASE_URL))
 }
 /** Application composition, not a visual/global playback coordinator. */
-class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpClient = OkHttpClient(), store: SessionStore? = null, val mediaClient: OkHttpClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build(), radarFixtureAdmission:Boolean=false) : AutoCloseable {
+class AppGraph internal constructor(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpClient = OkHttpClient(), store: SessionStore? = null, val mediaClient: OkHttpClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build(), radarFixtureAdmission:Boolean=false, originalImportFixtureMode:String?=null,
+    // Construction-only substitution of the existing repository dependency for fault fixtures.
+    openPhoneAudioStore: (File) -> com.soundq.android.data.deviceaudio.DeviceListeningStore = { com.soundq.android.data.deviceaudio.DeviceListeningStore(it) },
+) : AutoCloseable {
+    // Construction-only test substitution uses isolated TLS; production shares Radar's pool.
+    internal var enrichmentArtworkPool = com.soundq.android.product.discovery.radarArtworkPool
     init {require(!radarFixtureAdmission||endpoint.base.host in setOf("localhost","fixture.invalid"))}
+    init {require(originalImportFixtureMode==null || originalImportFixtureMode in setOf("fixture","fixture-readback") && endpoint.base.host=="127.0.0.1")}
     internal val applicationContext: Context = context.applicationContext
     val directory=File(context.noBackupFilesDir.canonicalFile,"soundq").apply {mkdirs()}
     internal val contextStarts=com.soundq.android.playback.ContextStartAdmission(File(directory,"context-starts"))
@@ -52,7 +60,8 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     val crossfadePreferences=com.soundq.android.data.preferences.CrossfadePreferences(File(directory,"crossfade.v1.json"))
     val localUnlock=com.soundq.android.localunlock.LocalUnlock(File(directory,"local-unlock.v1.json"),session)
     val temporaryAudio by lazy {com.soundq.android.data.cache.TemporaryAudioCache(File(directory,"temporary-audio"),session)}
-    val api:SoundQApi=SoundQApi(session,apiClient,com.soundq.android.data.acquisition.IntakeReceipts(File(directory,"intake-receipts.v1.json")),libraryOwnershipReadback={scope->discovery.libraryChanged(scope)})
+    val api:SoundQApi=SoundQApi(session,apiClient,com.soundq.android.data.acquisition.IntakeReceipts(File(directory,"intake-receipts.v1.json")),
+        libraryOwnershipReadback={scope->discovery.libraryChanged(scope)},originalImports={originalImports})
     val timeline=com.soundq.android.data.timeline.TimelineRepository(session,File(directory,"timeline"),api::analysisWaveform)
     val arrangementSave=com.soundq.android.data.timeline.ArrangementSave(api,timeline)
     val library=LibraryRepository(session,api::library,api::like,LibrarySortStore(File(directory,"library-sort")))
@@ -77,7 +86,17 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     // The legacy fixture argument remains source-compatible; normal Discover now has the same path.
     val discovery=com.soundq.android.data.discovery.DiscoveryRepository(session,api,historyDirectory=File(directory,"discover-history"),radarAdmitted=true,unifiedSearch=true)
     val io=CoroutineScope(SupervisorJob()+Dispatchers.IO)
-    internal val phoneAudio=com.soundq.android.data.device.PhoneAudioRepository(this)
+    internal val phoneAudio=com.soundq.android.data.device.PhoneAudioRepository(this, openPhoneAudioStore)
+    private val phoneImportOriginals=PhoneImportOriginals(phoneAudio,session::version)
+    internal val originalImports=OriginalImportRepository(session,OriginalImportJournal(File(directory,"original-import.v1.json")),
+        phoneImportOriginals::open,phoneImportOriginals::current,sourceStamp=phoneImportOriginals::stamp) {scope,_->
+        library.scheduleImportRefresh(scope,io,api::libraryImportRefresh)
+    }.also {imports->
+        if(originalImportFixtureMode!=null) {
+            val writes=originalImportFixtureMode=="fixture"
+            imports.installTransport(api.originalImportTransport(writes),writes)
+        }
+    }
     internal val phoneFiles=com.soundq.android.data.device.PhoneFileActions(this)
     private val controllerOwner=lazy {com.soundq.android.playback.ControllerProjection(context)}
     internal val controller by controllerOwner
@@ -92,7 +111,18 @@ class AppGraph(context: Context, val endpoint: ApiEndpoint, apiClient: OkHttpCli
     init {localUnlock.loadBeforeRestore();var revision=library.state.value.pageRevision;io.launch {
         library.state.collect {accepted->if(accepted.pageRevision!=revision){revision=accepted.pageRevision;library.projectionScope(accepted)?.let {discovery.libraryChanged(it)}}}
     }}
-    fun start() {phoneAudio.start();presence.start();jam.start();io.launch {appearancePreferences.load();djModePreferences.load();keyNotationPreferences.load();queueSettings.load();storagePreferences.load();listeningPreferences.load();crossfadePreferences.load();swipeQueuePreferences.load();if(session.state.value !is AuthState.LocalLocked)api.restore()};io.launch {session.state.collect {if(it !is AuthState.SignedIn){presence.retire();jam.retire()}}}}
+    fun start() {
+        phoneAudio.start();presence.start();jam.start()
+        observeOriginalImports()
+        io.launch {appearancePreferences.load();djModePreferences.load();keyNotationPreferences.load();queueSettings.load();storagePreferences.load();listeningPreferences.load();crossfadePreferences.load();swipeQueuePreferences.load();if(session.state.value !is AuthState.LocalLocked)api.restore()}
+        io.launch {session.state.collect {if(it !is AuthState.SignedIn){presence.retire();jam.retire()}}}
+    }
+    internal fun observeOriginalImports() = io.launch {
+        originalImports.load() // Preserve journal custody even when fixtures are disabled.
+        if (originalImports.enabled) session.state.combine(session.scopeRevision) {auth,_->auth}.collect { auth ->
+            if(auth is AuthState.SignedIn) session.capture()?.let(originalImports::reconcileRestored)
+        }
+    }
     fun rememberTracks(tracks:List<Track>) {val scope=session.capture() ?: return;tracks.forEach {known[it.id]=scope to it}}
     /** Read existing account-bound acknowledgements only. Restored queue metadata needs no new API fetch. */
     fun track(id:TrackId):Track? {

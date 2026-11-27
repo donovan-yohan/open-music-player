@@ -12,6 +12,7 @@ import android.media.MediaScannerConnection
 import android.os.Environment
 import android.os.storage.StorageManager
 import androidx.annotation.RequiresApi
+import com.soundq.android.data.originalimport.OriginalAccessEpoch
 import android.net.Uri
 import android.os.Build
 import android.os.CancellationSignal
@@ -35,17 +36,22 @@ internal data class IndexKeyProof(val key: String, val sameContent: Boolean)
 
 /** All files access is the only route to phone audio: walk shared storage, index what MediaStore missed, then read
  * the MediaStore audio index. No writes to source, upload, backend or account dependency. Call on IO. */
-internal class AndroidAudioAccess(private val context: Context) {
+internal class AndroidAudioAccess(private val context: Context, private val storageDenied: () -> Unit = {}) {
     private val resolver = context.contentResolver
+    private val storageAccess = OriginalAccessEpoch(storageDenied)
     /** All files access. Before Android 11 there is none; the legacy storage permission is the equivalent read grant. */
-    fun storageAllowed() = if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
+    private fun platformStorageAllowed() = if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
         else context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+    // Both callers share one observed denial ordering, not a lock held over platform IO.
+    fun storageAccessStamp(): Long? = storageAccess.observe(::platformStorageAllowed)
+    fun storageAllowed(): Boolean = storageAccessStamp() != null
     @RequiresApi(30) fun storageRoots(): List<File> =
         context.getSystemService(StorageManager::class.java).storageVolumes.filter { it.state == Environment.MEDIA_MOUNTED || it.state == Environment.MEDIA_MOUNTED_READ_ONLY }.mapNotNull { it.directory }
     /** With all files access, ask MediaStore to index audio on shared storage it does not list yet, so the
-     * indexed scan keeps owning identity. Returns false when the walk or indexing was incomplete. */
+     * indexed scan keeps owning identity. On Android 11+, a skipped or incomplete walk is not whole coverage. */
     fun indexUnlisted(current: () -> Boolean): Boolean {
-        if (Build.VERSION.SDK_INT < 30 || !Environment.isExternalStorageManager()) return true
+        if (Build.VERSION.SDK_INT < 30) return true
+        if (!storageAllowed()) return false
         val walk = SharedStorageAudioWalker.walk(storageRoots(), current)
         val unlisted = SharedStorageAudioWalker.unlisted(walk.files, ::listedPaths)
         return scanFiles(unlisted, current) && !walk.truncated

@@ -27,7 +27,8 @@ internal class NativeListeningJournal(private val graph:AppGraph,private val job
     suspend fun bind(item:MediaItem,grant:MediaGrant,lease:NativePlaybackSource,deck:NativeCallbackDeck,slot:Int,current:()->Boolean):Long {
         val original=lease as? NativePlaybackSource.BorrowedOriginal
         val file=(lease as? NativePlaybackSource.OwnedTemporary)?.file
-        val revision=if(grant.device!=null)null else withContext(Dispatchers.IO) {
+        val phoneSource=if(original!=null||grant.device!=null)requireNotNull(grant.phoneAdmission).source else null
+        val revision=if(phoneSource!=null)null else withContext(Dispatchers.IO) {
             val digest=MessageDigest.getInstance("SHA-256")
             requireNotNull(file).inputStream().use {input->val buffer=ByteArray(65536);while(true){check(current());val n=input.read(buffer);if(n<0)break;digest.update(buffer,0,n)}}
             ContentRevision(digest.digest().joinToString(""){"%02x".format(it)},file.length())
@@ -36,7 +37,7 @@ internal class NativeListeningJournal(private val graph:AppGraph,private val job
         val peers=bindings.filterKeys {it!=slot}.values.filter {it.current()}.map {it.owner}
         val bound=graph.phoneAudio.journal {store,access->
             check(current())
-            val source=if(grant.device!=null)requireNotNull(grant.phoneAdmission).source else {
+            val source=phoneSource ?: run {
                 val key=HistoryKey.Server(ServerAccount(graph.endpoint.identity,grant.scope.accountId),ServerAudioId(grant.track.value))
                 requireNotNull(store.bindServerContent(access,key,requireNotNull(revision),deck.durationMs))
             }

@@ -32,6 +32,14 @@ internal class CaaTlsFixture:AutoCloseable {
 }
 
 class CaaArtworkReadTest {
+ @Test fun retryAfterZeroDoesNotSendAnImplicitSecondArtworkRequest() {
+  CaaTlsFixture().use {f->
+   f.server.enqueue(MockResponse.Builder().code(503).addHeader("Retry-After","0").build())
+   f.reply("should not be read")
+   f.read().use {assertNull(it.load(f.ref){true})}
+   assertEquals(1,f.server.requestCount)
+  }
+ }
  @Test fun observedChainUsesAnonymousTransportAndRealTls() {
   CaaTlsFixture().use {f->
    var inheritedEvents=0

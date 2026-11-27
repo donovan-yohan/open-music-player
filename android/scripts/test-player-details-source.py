@@ -150,7 +150,7 @@ class DetailCallerGraph(val session:AccountSession,val trackDetails:TrackDetails
 fun FullPlayerClock(p:PlaybackProjection,seek:(PlaybackProjection,com.soundq.android.playback.PlayerClockMode,Long,()->Boolean,(Boolean)->Unit)->Unit){}
 class DetailCallerController {var commands=0;fun toggle(){commands++};fun seek(p:Long){commands++};fun previous(){commands++};fun next(){commands++};fun shuffle(){commands++};fun repeat(){commands++};fun seekClock(p:PlaybackProjection,m:com.soundq.android.playback.PlayerClockMode,t:Long,v:()->Boolean,d:(Boolean)->Unit){error("Out of scope clock")};fun setListeningSpeed(p:PlaybackProjection,s:Double,v:()->Boolean,d:(Boolean)->Unit){error("Out of scope speed")}}
 class DetailCallerModel(val graph:DetailCallerGraph,p:PlaybackProjection) {val playback=MutableStateFlow(p);val controller=DetailCallerController();var scheduled:DetailsRoute?=null;fun loadTrackDetails(r:DetailsRoute){scheduled=r}}
-class DetailCaller(val model:DetailCallerModel) {internal var selectedPhone:com.soundq.android.data.deviceaudio.DeviceAudio?=null;
+class DetailCaller(val model:DetailCallerModel) {internal var selectedPhone:com.soundq.android.data.deviceaudio.DeviceAudio?=null;var phoneImportVisit=0L;
  var panel:String?="Player";var detailsRoute:DetailsRoute?=null
  var transportReturn:String?=null
  val auth:AuthState=AuthState.SignedIn(model.graph.session.capture()!!.accountId)

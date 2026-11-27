@@ -43,6 +43,7 @@ open class ProductFixtureRunner:AndroidJUnitRunner() {
 open class FixtureApplication:SoundQApplication() {
     protected open fun prepareGraph(graph:AppGraph) {}
     @Volatile internal var beforeFixtureSessionSave:((SecretTokens)->Unit)?=null
+    @Volatile internal var phoneAudioCommitFault:((String)->Unit)?=null
     lateinit var fixtureClient:OkHttpClient
         private set
     lateinit var bootstrapThread:Thread
@@ -67,7 +68,9 @@ open class FixtureApplication:SoundQApplication() {
                     override fun load(endpoint:ApiEndpoint)=tokens
                     override fun save(endpoint:ApiEndpoint,tokens:SecretTokens){beforeFixtureSessionSave?.invoke(tokens);this.tokens=tokens}
                     override fun clear(){tokens=null}
-                },fixtureClient).also {graph ->
+                },fixtureClient,openPhoneAudioStore={file->
+                    com.soundq.android.data.deviceaudio.DeviceListeningStore(file){phase->phoneAudioCommitFault?.invoke(phase)}
+                }).also {graph ->
                     graph.directory.listFiles()?.filter {it.name.startsWith("queue-")}?.forEach {it.delete()}
                     prepareGraph(graph)
                 })

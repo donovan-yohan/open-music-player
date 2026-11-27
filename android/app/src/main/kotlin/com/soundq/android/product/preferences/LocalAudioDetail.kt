@@ -14,6 +14,9 @@ import com.soundq.designsystem.*
 /** Plain Local audio states from the phone owner's published state only. */
 internal enum class LocalAudioStatus { Off, Scanning, Failed, Empty, Found }
 internal fun localAudioStatus(state:PhoneAudioState):LocalAudioStatus? = when {
+    // Startup/reset has no observed grant. An accepted scope can still have access with no
+    // snapshot; keep it retryable even if a cancelled refresh already cleared its message.
+    !state.ready && state.permission -> if (state.refreshing) LocalAudioStatus.Scanning else LocalAudioStatus.Failed
     !state.ready->null
     !state.permission->LocalAudioStatus.Off
     state.refreshing->LocalAudioStatus.Scanning
@@ -30,13 +33,16 @@ internal fun localAudioSongs(state:PhoneAudioState):Int = state.snapshot?.files?
     val alive = remember(version) { java.util.concurrent.atomic.AtomicBoolean(true) }
     DisposableEffect(alive) { onDispose { alive.set(false) } }
     val valid = { alive.get() && owner.current(version) }
+    // Recheck the route/session after sampling access as well as before it. The refresh
+    // owner keeps this predicate when dispatch is deferred or the scan is already running.
+    val retryValid = { valid() && owner.platform.storageAllowed() && valid() }
     // Resume re-reads OS access; a rescan runs only when access changed since the last finished scan.
     val allowFileAccess = rememberFileAccess(graph) {
         if (valid() && com.soundq.android.product.localAudioAccessChanged(owner.state.value, owner.platform.storageAllowed())) owner.refresh(valid)
     }
     val status = localAudioStatus(state)
     SoundQSettingsSectionLabel("Access", first = true)
-    SoundQSettingsRow("File access", value = if (!state.ready) "Loading…" else if (state.permission) "Allowed" else "Off")
+    SoundQSettingsRow("File access", value = if (state.permission) "Allowed" else if (state.ready) "Off" else "Loading…")
     val scanAgain: @Composable () -> Unit = {
         SoundQSettingsBlock(Modifier.padding(top = SoundQ.spacing.large)) {
             SoundQButton("Scan again", { owner.refresh(valid) }, Modifier.fillMaxWidth(), variant = SoundQButtonVariant.Secondary, enabled = status != LocalAudioStatus.Scanning)
@@ -62,7 +68,9 @@ internal fun localAudioSongs(state:PhoneAudioState):Int = state.snapshot?.files?
         }
         LocalAudioStatus.Failed -> {
             if (localAudioSongs(state) > 0) SoundQSettingsRow("Songs", value = "${localAudioSongs(state)}")
-            SoundQSettingsBlock { SoundQFeedback("Couldn’t scan audio", FeedbackKind.Error, action = "Try again", onAction = { owner.refresh(valid) }) }
+            SoundQSettingsBlock { SoundQFeedback("Couldn’t scan audio", FeedbackKind.Error, action = "Try again", onAction = {
+                if (retryValid()) owner.refresh(retryValid)
+            }) }
             return
         }
         LocalAudioStatus.Empty -> SoundQSettingsBlock(Modifier.heightIn(min = SoundQSettingsMetrics.rowMin)) {

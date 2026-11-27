@@ -54,11 +54,12 @@ class OkHttpDataSource(private val client:okhttp3.OkHttpClient):DataSource {
  override fun close(){}
 }
 object HttpDataSource {class InvalidResponseCodeException(val responseCode:Int):Exception()}
-class Graph(val session:AccountSession,val downloads:DeviceDownloads,val api:SoundQApi,val mediaClient:okhttp3.OkHttpClient,val swipeQueuePreferences:SwipeQueuePreferences){val endpoint=session.endpoint;
+class OriginalImportBoundary {fun playbackTrack(s:AccountScope,t:TrackId,operation:String):Track=error("Verified originals outside managed-download fixture")}
+class Graph(val session:AccountSession,val downloads:DeviceDownloads,val api:SoundQApi,val mediaClient:okhttp3.OkHttpClient,val swipeQueuePreferences:SwipeQueuePreferences){val originalImports=OriginalImportBoundary();val endpoint=session.endpoint;
  val temporaryAudio=TemporaryCache();val storagePreferences=StoragePreferences();val known=mutableMapOf<TrackId,Track>()
  fun rememberTracks(t:List<Track>){t.forEach{known[it.id]=it}};fun track(id:TrackId)=known[id]
 }
-class MediaGrant(val scope:AccountScope,val track:TrackId,val localOnly:Boolean=false)
+class MediaGrant(val scope:AccountScope,val track:TrackId,val localOnly:Boolean=false,val originalOnly:Boolean=false)
 class Source(val graph:Graph,val grants:ConcurrentHashMap<String,MediaGrant>){var grant:MediaGrant?=null;var internalUri:Uri?=null;var upstream:DataSource?=null;var local:LocalAudioLease?=null;var remaining=0L;var writing:CacheWrite?=null;var expectedCacheBytes=0L;var readCacheBytes=0L;val listeners=mutableListOf<TransferListener>()
 SOURCE
 }

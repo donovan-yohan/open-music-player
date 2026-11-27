@@ -27,7 +27,8 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
         return AccessCapture(instance, epoch, account)
     }
     @Synchronized fun lock() { if (!closed) { epoch = Math.addExact(epoch, 1); unlocked = false; scans.clear(); active.clear() } }
-    private fun current(access: AccessCapture): Boolean = !closed && unlocked && access == AccessCapture(instance, epoch, account) && disk.intact()
+    private fun owns(access: AccessCapture): Boolean = !closed && unlocked && access == AccessCapture(instance, epoch, account)
+    private fun current(access: AccessCapture): Boolean = owns(access) && disk.intact()
     private fun permitted(key: HistoryKey): Boolean = key is HistoryKey.Device || (key is HistoryKey.Server && key.scope == account)
     private fun accessChanged() { sourceEpoch = Math.addExact(sourceEpoch, 1); scans.clear(); active.clear() }
     private fun commit(next: DomainState): Mutation = if (next == state) Mutation.UNCHANGED else if (disk.commit(next)) Mutation.APPLIED else Mutation.REFUSED
@@ -85,6 +86,7 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
         // Fold rows stored under a provider-proved former key into the published object before reconciling
         // aliases, so the object stays one row and its listening history moves with it.
         val fold = IdentityFold.before(state.files, audio)
+        val foldedRows = fold.merges.associate { it.survivor to it.retired }
         var files = fold.files.map { f -> f.copy(aliases = f.aliases.map { a ->
             val movedTo = audio.find { it.locator == a.locator }
             if (a.state != AccessState.REMOVED && ((complete && a.grantId == capture.grantId && audio.none { it.objectId == f.objectId && it.locator == a.locator }) || (movedTo != null && movedTo.objectId != f.objectId))) a.copy(state = AccessState.MISSING) else a
@@ -93,9 +95,18 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
             val at = files.indexOfFirst { it.objectId == d.objectId }
             val old = files.getOrNull(at)
             val alias = LocatorAccess(capture.grantId, d.locator, d.state)
+            // Exact revision only, and only through this scan's provider-proven object fold. If
+            // two accepted edits meet, the most recent store revision wins (never equal bytes alone).
+            val overlay = old?.let {
+                // The common (non-fold) path needs no intermediate collection.
+                val peers = foldedRows[it.id]
+                if (peers == null) it.displayOverride?.takeIf { _ -> it.revision == d.revision }
+                else (sequenceOf(it) + peers.asSequence()).filter { member -> member.revision == d.revision }
+                    .mapNotNull { member -> member.displayOverride }.maxByOrNull { edit -> edit.revision }
+            }
             val next = DeviceAudio(old?.id ?: DeviceFileId(UUID.randomUUID()), d.objectId, d.revision,
                 if (old == null) 1 else if (old.revision == d.revision) old.incarnation else Math.addExact(old.incarnation, 1),
-                d.metadata, d.durationMs, (old?.aliases.orEmpty().filterNot { it.grantId == alias.grantId && it.locator == alias.locator } + alias))
+                d.metadata, d.durationMs, (old?.aliases.orEmpty().filterNot { it.grantId == alias.grantId && it.locator == alias.locator } + alias), overlay)
             if (at < 0) files.add(next) else files[at] = next
         }
         files = files.map { f -> f.copy(aliases = f.aliases.sortedWith(compareBy({ it.grantId.value.toString() }, { it.locator.provider }, { it.locator.value }))) }.toMutableList()
@@ -146,6 +157,39 @@ internal class DeviceListeningStore(file: File, commitFault: (String) -> Unit = 
         if (!current(access)) return null
         val f = snapshot(access)?.files?.find { it.id == id && it.available } ?: return null
         return SourceCapture(access, f.owner, sourceEpoch, UUID.randomUUID()).also { sources[it.owner.key] = it }
+    }
+    @Synchronized fun captureMetadata(access: AccessCapture, owner: ContentOwner): DeviceMetadataCapture? {
+        val row = snapshot(access)?.files?.singleOrNull { it.owner == owner && it.available } ?: return null
+        return DeviceMetadataCapture(access, row, sourceEpoch)
+    }
+
+    @Synchronized fun applyMetadata(capture: DeviceMetadataCapture, changes: LocalDisplayText,
+        artwork: LocalAppliedCover? = null, replaceIfCurrent: (() -> Unit) -> Boolean): MetadataApplyResult {
+        val refused = MetadataApplyResult.Refused
+        if ((changes.empty && artwork == null) || capture.accessGeneration != sourceEpoch) return refused
+        // Compare entire captured metadata (including the prior override revision) and direct owner.
+        // A fold or scan can give a fresh UI a successor but never renew a held preview.
+        val observed = snapshot(capture.access)?.files?.singleOrNull { it.owner == capture.row.owner && it.available }
+        if (observed != capture.row) return refused
+        val row = state.files.singleOrNull { it.owner == capture.row.owner } ?: return refused
+        val merged = LocalDisplayText(changes.title ?: row.displayOverride?.text?.title,
+            changes.artist ?: row.displayOverride?.text?.artist, changes.album ?: row.displayOverride?.text?.album)
+        val retainedCover = artwork ?: row.displayOverride?.artwork
+        val previous = row.displayOverride
+        if (previous != null && merged == previous.text && retainedCover == previous.artwork) return refused
+        if (artwork != null && state.files.sumOf { f ->
+                (if (f.id == row.id) artwork else f.displayOverride?.artwork)?.jpegBase64?.length?.toLong() ?: 0L
+            } > LocalAppliedCover.MAX_STORED_CHARS) return refused
+        if (state.revision == Long.MAX_VALUE) return refused
+        val overlay = LocalDisplayOverride(state.revision + 1, merged, retainedCover)
+        val updated = state.copy(files = state.files.map { if (it.id == row.id) it.copy(displayOverride = overlay) else it })
+        return disk.commitMetadata(updated, capture, replaceIfCurrent)
+    }
+
+    /** A later visit can refresh the acknowledged store, but cannot inherit the earlier visit's receipt. */
+    @Synchronized fun readbackMetadata(access: AccessCapture, receipt: MetadataApplyResult.Unconfirmed? = null): MetadataApplyResult? {
+        if (!owns(access)) return receipt
+        return disk.readbackMetadata(receipt)
     }
     private fun entry(key: HistoryKey): JournalEntry = state.journal.find { it.key == key } ?: JournalEntry(key)
     private fun journal(next: JournalEntry): Mutation = commit(state.copy(journal = state.journal.filterNot { it.key == next.key } + next))

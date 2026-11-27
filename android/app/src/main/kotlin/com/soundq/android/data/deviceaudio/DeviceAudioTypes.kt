@@ -39,10 +39,33 @@ internal data class DiscoveredAudio(
     val formerObjectIds: Set<ProviderObjectId> = emptySet(),
 ) { init { require(durationMs == null || durationMs > 0) } }
 internal data class LocatorAccess(val grantId: ScanGrantId, val locator: ProviderLocator, val state: AccessState)
+/** Sparse, device-only display values. No provider identity, artwork or original-file mutation. */
+internal data class LocalDisplayText(val title: String?, val artist: String?, val album: String?) {
+    init { require(listOf(title, artist, album).filterNotNull().all(::validLocalDisplayText)) }
+    val empty get() = title == null && artist == null && album == null
+    override fun toString() = "LocalDisplayText([redacted])"
+}
+
+internal fun validLocalDisplayText(value: String): Boolean = value.isNotBlank() && value == value.trim() &&
+    value.codePointCount(0, value.length) <= 200 && value.codePoints().allMatch { cp ->
+        // Letters, marks, numbers, punctuation, symbols and ASCII space (Go unicode.IsPrint).
+        val category = Character.getType(cp)
+        cp != 0xfffd && (cp == 32 || category in Character.UPPERCASE_LETTER..Character.OTHER_NUMBER ||
+            category in Character.DASH_PUNCTUATION..Character.FINAL_QUOTE_PUNCTUATION)
+    }
+
+internal data class LocalDisplayOverride(val revision: Long, val text: LocalDisplayText, val artwork: LocalAppliedCover? = null) {
+    init { require(revision > 0 && (!text.empty || artwork != null)) }
+}
+
 internal data class DeviceAudio(
     val id: DeviceFileId, val objectId: ProviderObjectId, val revision: ContentRevision, val incarnation: Long,
     val metadata: OriginalMetadata, val durationMs: Long?, val aliases: List<LocatorAccess>,
+    val displayOverride: LocalDisplayOverride? = null,
 ) {
+    val displayTitle: String get() = displayOverride?.text?.title ?: metadata.displayTitle
+    val displayArtist: String? get() = displayOverride?.text?.artist ?: metadata.artist
+    val displayAlbum: String? get() = displayOverride?.text?.album ?: metadata.album
     val canonicalId: String = id.value.toString()
     val available: Boolean get() = aliases.any { it.state == AccessState.AVAILABLE }
     /** Explicitly deleted originals retain identity/history, but are not active Library members. */
@@ -64,6 +87,8 @@ internal data class ContentOwner(val key: HistoryKey, val revision: ContentRevis
 internal data class AccessCapture(val instance: UUID, val epoch: Long, val account: ServerAccount?)
 internal data class ScanCapture(val access: AccessCapture, val grantId: ScanGrantId, val sequence: Long)
 internal data class SourceCapture(val access: AccessCapture, val owner: ContentOwner, val accessGeneration: Long, val admission: UUID)
+/** A compare-and-apply read, never a playback admission. It does not replace SourceCapture. */
+internal class DeviceMetadataCapture(val access: AccessCapture, val row: DeviceAudio, val accessGeneration: Long)
 internal data class TraversalCapture(
     val source: SourceCapture, val traversal: UUID, val occurrence: UUID,
     val sourceGeneration: Long, val seekIdentity: Long, val consumedEndBaseline: Long,

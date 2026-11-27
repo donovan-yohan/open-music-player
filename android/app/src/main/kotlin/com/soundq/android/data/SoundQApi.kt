@@ -1,6 +1,9 @@
 package com.soundq.android.data
 
 import kotlinx.serialization.json.*
+import com.soundq.android.data.device.LOCAL_ENRICHMENT_PATH
+import com.soundq.android.data.device.LocalEnrichmentReply
+import com.soundq.android.data.device.LocalEnrichmentTerms
 import com.soundq.android.data.discovery.DiscoveryCalls
 import com.soundq.android.data.discovery.DiscoveryCatalogRouteMissing
 import com.soundq.android.data.discovery.DiscoveryProvider
@@ -9,6 +12,10 @@ import com.soundq.android.data.discovery.SourceProvider
 import com.soundq.android.data.discovery.isDiscoverBrowsePath
 import com.soundq.android.data.catalog.RecordingMbid
 import com.soundq.android.data.imports.*
+import com.soundq.android.data.originalimport.OriginalImportRepository
+import com.soundq.android.data.originalimport.OriginalImportTransport
+import com.soundq.android.data.originalimport.OriginalUploadNotAdmitted
+import com.soundq.android.data.originalimport.WireOriginalImportTransport
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
@@ -18,14 +25,32 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Only authenticated HTTP path. Response bodies/credentials/signed URLs never enter errors or logs. */
-class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient(), val intakeReceipts:com.soundq.android.data.acquisition.IntakeReceipts = com.soundq.android.data.acquisition.IntakeReceipts(), private val libraryOwnershipReadback:(AccountScope)->Unit = {}) {
-    private class WireGuard(val singleExchange:Boolean=false,val valid: () -> Boolean) {
+class SoundQApi internal constructor(
+    val session: AccountSession,
+    client: OkHttpClient,
+    val intakeReceipts: com.soundq.android.data.acquisition.IntakeReceipts,
+    private val libraryOwnershipReadback: (AccountScope) -> Unit,
+    private val originalImports: () -> OriginalImportRepository?,
+) {
+    constructor(session: AccountSession, client: OkHttpClient = OkHttpClient(),
+        intakeReceipts: com.soundq.android.data.acquisition.IntakeReceipts = com.soundq.android.data.acquisition.IntakeReceipts(),
+        libraryOwnershipReadback: (AccountScope) -> Unit = {},
+    ) : this(session, client, intakeReceipts, libraryOwnershipReadback, { null })
+    private class WireGuard(val originalImport: Boolean = false, private val singleExchange: Boolean = false,
+        val originalUpload: Boolean = false, val valid: () -> Boolean) {
         private val entered=AtomicBoolean(false)
-        fun check() {
-            if(!valid())throw SafeFailure(SafeFailure.Reason.Retired)
+        val uploadEntered get() = entered.get()
+        fun check(isCanceled: () -> Boolean) {
+            val admitted = if (valid is LibraryMutationAdmission) valid.admit(isCanceled) else valid()
+            if(!admitted)throw SafeFailure(SafeFailure.Reason.Retired)
             // OkHttp can otherwise replay an HTTP 503 with Retry-After: 0.
             if(singleExchange&&!entered.compareAndSet(false,true))throw SafeFailure(SafeFailure.Reason.ServiceUnavailable)
+            if(originalUpload)entered.set(true)
         }
+    }
+    // Carried by the existing dispatch slot, but only the network chain may admit it.
+    private class LibraryMutationAdmission(val admit: (() -> Boolean) -> Boolean) : () -> Boolean {
+        override fun invoke(): Boolean = false
     }
     private val http = client.newBuilder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
         .callTimeout(20, TimeUnit.SECONDS)
@@ -35,15 +60,25 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
             // Keep total calls bounded and leave ordinary request deadlines alone.
             val discoveryRead=r.method=="GET"&&r.url.encodedPath=="/api/v1/discovery/search"
             val previewRead=r.method=="POST"&&r.url.encodedPath=="/api/v1/discovery/preview"
-            val readChain=if(discoveryRead||previewRead)chain.withReadTimeout(20,TimeUnit.SECONDS)else chain
+            val readChain=when {
+                r.tag(WireGuard::class.java)?.originalImport==true -> if(r.method=="POST")
+                    chain.withReadTimeout(95,TimeUnit.SECONDS).withWriteTimeout(66,TimeUnit.SECONDS)
+                    else chain.withReadTimeout(30,TimeUnit.SECONDS)
+                discoveryRead||previewRead -> chain.withReadTimeout(20,TimeUnit.SECONDS)
+                else -> chain
+            }
             readChain.proceed(r)
         }
         .addNetworkInterceptor { chain ->
             val r = chain.request()
-            val guard=r.tag(WireGuard::class.java) ?: throw SafeFailure(SafeFailure.Reason.Retired)
-            guard.check()
             val base = session.endpoint.base
             if (r.url.scheme != base.scheme || r.url.host != base.host || r.url.port != base.port || !r.url.encodedPath.startsWith("/api/v1/")) throw SafeFailure(SafeFailure.Reason.Endpoint)
+            val guard = r.tag(WireGuard::class.java) ?: throw SafeFailure(SafeFailure.Reason.Retired)
+            val submitted = chain.call().request()
+            val submittedGuard = submitted.tag(WireGuard::class.java)
+            if (submittedGuard?.originalUpload == true && (guard !== submittedGuard || r.url != submitted.url ||
+                    r.method != submitted.method || r.body !== submitted.body)) throw SafeFailure(SafeFailure.Reason.Endpoint)
+            guard.check(chain.call()::isCanceled)
             chain.proceed(r)
         }.build()
     private val json = Json { ignoreUnknownKeys = true }
@@ -51,9 +86,30 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
     private fun tokens(body: JsonObject): SecretTokens = try {
         SecretTokens(body.getValue("accessToken").jsonPrimitive.content,body.getValue("refreshToken").jsonPrimitive.content,body.getValue("user").jsonObject.getValue("id").jsonPrimitive.content)
     } catch (_: Exception) { throw SafeFailure(SafeFailure.Reason.InvalidResponse) }
-    private class Reply(val code: Int, val body: JsonObject, val text: String = "", val missingDiscoverCatalogRoute:Boolean=false)
-    private fun wire(path: String, method: String = "GET", body: JsonObject? = null, access: String? = null, dispatchValid: (() -> Boolean)? = null, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, rawJson:String?=null, calls:DiscoveryCalls?=null, responseValid:(()->Boolean)?=null, valid: () -> Boolean): Reply {
-        if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
+    private class Reply(val code: Int, val body: JsonObject, val text: String = "", val missingDiscoverCatalogRoute:Boolean=false,
+        val libraryAuthRefusal:Boolean=false)
+
+    /** Exact pre-handler error emitted by Go auth.Middleware, not arbitrary HTTP 401 text. */
+    private fun isLibraryAuthRefusal(response: Response): Boolean {
+        val content = response.body.contentType()
+        if (content?.type != "text" || content.subtype != "plain" || content.charset() != Charsets.UTF_8 ||
+            response.header("X-Content-Type-Options") != "nosniff") return false
+        val source = response.body.source()
+        if (source.request(161)) return false
+        return when (source.readUtf8()) {
+            "{\"code\":\"TOKEN_EXPIRED\",\"message\":\"access token has expired\"}\n",
+            "{\"code\":\"UNAUTHORIZED\",\"message\":\"invalid access token\"}\n",
+            "{\"code\":\"UNAUTHORIZED\",\"message\":\"invalid user ID in token\"}\n",
+            "{\"code\":\"UNAUTHORIZED\",\"message\":\"missing authorization header\"}\n",
+            "{\"code\":\"UNAUTHORIZED\",\"message\":\"invalid authorization header format\"}\n" -> true
+            else -> false
+        }
+    }
+    private fun wire(path: String, method: String = "GET", body: JsonObject? = null, access: String? = null, dispatchValid: (() -> Boolean)? = null, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, rawJson:String?=null, calls:DiscoveryCalls?=null, responseValid:(()->Boolean)?=null, originalImport:Boolean=false, originalBody:RequestBody?=null, libraryRemovalAccepted:(()->Unit)?=null, valid: () -> Boolean): Reply {
+        if (!valid()) {
+            if (originalBody != null) throw OriginalUploadNotAdmitted()
+            throw SafeFailure(SafeFailure.Reason.Retired)
+        }
         val pathOnly=path.substringBefore('?')
         require(path.startsWith("/") && !path.startsWith("//") && '#' !in path && '\\' !in pathOnly)
         require(pathOnly.split('/').none {part->
@@ -63,21 +119,78 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         val url = (session.endpoint.identity + path).toHttpUrlOrNull() ?: throw SafeFailure(SafeFailure.Reason.Endpoint)
         val discoverBrowse=method=="GET"&&isDiscoverBrowsePath(pathOnly)
         val singleExchange=discoverBrowse||method=="GET"&&(pathOnly=="/discovery/search"||pathOnly=="/discovery/catalog")
-        val request = Request.Builder().url(url).tag(WireGuard::class.java,WireGuard(singleExchange) { valid() && (dispatchValid?.invoke() ?: true) }).header("Accept","application/json")
+        val guard: () -> Boolean = if (dispatchValid is LibraryMutationAdmission) {
+            LibraryMutationAdmission { isCanceled -> valid() && dispatchValid.admit(isCanceled) }
+        } else {
+            { valid() && (dispatchValid?.invoke() ?: true) }
+        }
+        val requestGuard = WireGuard(originalImport, singleExchange, originalUpload = originalBody != null, valid = guard)
+        val request = Request.Builder().url(url).tag(WireGuard::class.java,requestGuard).header("Accept","application/json")
+        val enrichment = method == "POST" && path == LOCAL_ENRICHMENT_PATH
+        if (enrichment) request.header("Cache-Control", "no-store")
         if (access != null) request.header("Authorization","Bearer $access")
         headers.forEach {(name,value)->
             require(name=="Idempotency-Key" || name=="X-SoundQ-Radar-Policy"&&value=="recording-radar-v2"&&path=="/me/discovery/releases"&&method=="GET")
             request.header(name,value)
         }
         require(rawJson==null || path=="/mix-plans/import" && method=="POST" && body==null && !emptyBody)
-        request.method(method, if (method in listOf("GET","HEAD")) null else (rawJson ?: if(emptyBody)"" else body?.toString() ?: "{}").toRequestBody("application/json".toMediaType()))
+        require(originalBody==null || originalImport && path=="/library/uploads" && method=="POST" && body==null && rawJson==null && !emptyBody)
+        val content = if (method in listOf("GET","HEAD")) null else originalBody ?: (rawJson ?: if(emptyBody)"" else body?.toString() ?: "{}").toRequestBody("application/json".toMediaType())
+        // OkHttp can follow up a 503 Retry-After: 0 even with connection retries disabled.
+        // A reviewed Enrich lookup authorizes one request body, including under that response.
+        request.method(method, if (enrichment) object : RequestBody() {
+            private val delegate = requireNotNull(content)
+            override fun contentType() = delegate.contentType()
+            override fun contentLength() = delegate.contentLength()
+            override fun isOneShot() = true
+            override fun writeTo(sink: okio.BufferedSink) = delegate.writeTo(sink)
+        } else content)
         val call=http.newCall(request.build())
+        // A terminal synchronous Call can fail at connect/TLS before reaching the sole header gate.
+        // Only this bound original upload may turn that absence into a no-entry certificate.
+        fun uploadNotEntered() = requestGuard.originalUpload && call.isExecuted() &&
+            call.request().tag(WireGuard::class.java) === requestGuard && !requestGuard.uploadEntered
+        fun ownsNetworkReply(response: Response): Boolean {
+            val sent = response.networkResponse?.takeIf { it.code == response.code }?.request ?: return false
+            val submitted = call.request()
+            return response.cacheResponse == null && sent.tag(WireGuard::class.java) === requestGuard &&
+                sent.url == submitted.url && sent.method == submitted.method &&
+                sent.header("Authorization") == submitted.header("Authorization") &&
+                sent.header("Idempotency-Key") == submitted.header("Idempotency-Key")
+        }
+        if(originalImport)call.timeout().timeout(if(method=="POST")100 else 32,TimeUnit.SECONDS)
         val cancel=call::cancel
         if(calls!=null&&!calls.track(cancel))throw SafeFailure(SafeFailure.Reason.Retired)
         try {
             call.execute().use { response ->
+                if (uploadNotEntered()) throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+                // Take custody of narrow producer evidence before checking the old presentation scope.
+                if (response.code == 204 && libraryRemovalAccepted != null) {
+                    if (!ownsNetworkReply(response)) throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+                    libraryRemovalAccepted()
+                }
+                if (response.code == 401 && requestGuard.originalUpload && ownsNetworkReply(response) &&
+                    response.cacheControl.isPrivate && response.cacheControl.noStore && response.header("ETag") == null &&
+                    isLibraryAuthRefusal(response))
+                    return Reply(401, buildJsonObject {}, libraryAuthRefusal = true)
                 if (!(responseValid?.invoke() ?: valid())) throw SafeFailure(SafeFailure.Reason.Retired)
+                if (response.code == 204 && libraryRemovalAccepted != null) return Reply(204, buildJsonObject {})
                 if (response.code in 300..399) throw SafeFailure(SafeFailure.Reason.Endpoint)
+                if (response.code == 401 && method == "DELETE" && dispatchValid is LibraryMutationAdmission)
+                    return Reply(401, buildJsonObject {}, libraryAuthRefusal = isLibraryAuthRefusal(response))
+                if(originalImport && response.code!=401) {
+                    if(!response.cacheControl.isPrivate||!response.cacheControl.noStore||response.header("ETag")!=null||
+                        response.body.contentType()?.let {it.type=="application"&&it.subtype=="json"}!=true)throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+                    val source=response.body.source()
+                    if(source.request(8193))throw SafeFailure(SafeFailure.Reason.InvalidResponse)
+                    val parsed=json.parseToJsonElement(source.readByteArray().decodeToString(throwOnInvalidSequence=true)).jsonObject
+                    if(!valid())throw SafeFailure(SafeFailure.Reason.Retired)
+                    if(response.code in 200..299)return Reply(response.code,parsed)
+                    // Do not retain server messages or any other error fields.
+                    val code=(parsed["code"] as? JsonPrimitive)?.takeIf {it.isString}?.content
+                        ?.takeIf {it in setOf("NOT_FOUND","INVALID_UPLOAD","UPLOAD_TOO_LARGE","UPLOAD_MEDIA")}
+                    return Reply(response.code,buildJsonObject {code?.let {put("code",it)}})
+                }
                 // Never parse/display server error text, which can echo sensitive input.
                 if (response.code !in 200..299) {
                     // Only this collection GET recognizes the bounded Go ServeMux route-miss
@@ -105,9 +218,10 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
                     return Reply(response.code,if(code==null)buildJsonObject {} else buildJsonObject {put("code",code.name)})
                 }
                 val source = response.body.source()
-                // Canonical analysis and typed edition tracklists have their own byte caps.
+                // Enrichment, canonical analysis and typed edition tracklists have their own byte caps.
                 // Auth, endpoint and retirement fences apply regardless of response size.
                 val responseLimit = when {
+                    enrichment->32768L
                     method=="GET"&&path=="/me/discovery/releases"->262144L
                     discoverBrowse&&pathOnly.endsWith("/tracklist")->4L * 1024 * 1024
                     method=="GET"&&Regex("^/tracks/[1-9][0-9]*/analysis$").matches(path)->16L * 1024 * 1024
@@ -119,10 +233,11 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
                 if (!(responseValid?.invoke() ?: valid())) throw SafeFailure(SafeFailure.Reason.Retired)
                 return Reply(response.code, parsed, text)
             }
-        } catch (e: SafeFailure) { throw e }
-        catch (_: java.net.UnknownHostException) { throw SafeFailure(SafeFailure.Reason.Network) }
-        catch (_: java.io.IOException) { throw SafeFailure(if (method == "GET") SafeFailure.Reason.Network else SafeFailure.Reason.Uncertain) }
-        catch (_: Exception) { throw SafeFailure(SafeFailure.Reason.InvalidResponse) }
+        } catch (e: java.io.IOException) {
+            if (uploadNotEntered()) throw OriginalUploadNotAdmitted()
+            if (e is SafeFailure || e is ImportRefreshRead.NotSent) throw e
+            throw SafeFailure(if (method == "GET" || e is java.net.UnknownHostException) SafeFailure.Reason.Network else SafeFailure.Reason.Uncertain)
+        } catch (_: Exception) { throw SafeFailure(SafeFailure.Reason.InvalidResponse) }
         finally {calls?.untrack(cancel)}
     }
     fun authenticate(email: String, password: String, username: String? = null): Boolean {
@@ -151,9 +266,9 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
             else throw error
         }
     }
-    private fun authorized(scope: AccountScope, path: String, method: String = "GET", body: JsonObject? = null, readOnly: Boolean = method == "GET", valid: () -> Boolean = { true }, expectedStatus: Int? = null, acceptedStatuses:Set<Int>? = null, dispatchValid: (() -> Boolean)? = null, allowMissing: Boolean = false, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, privateFeature: Boolean = false, rawJson:String?=null, calls:DiscoveryCalls?=null, received:((String)->Unit)?=null, previewRecording:String?=null): JsonObject {
+    private fun authorized(scope: AccountScope, path: String, method: String = "GET", body: JsonObject? = null, readOnly: Boolean = method == "GET", valid: () -> Boolean = { true }, expectedStatus: Int? = null, acceptedStatuses:Set<Int>? = null, dispatchValid: (() -> Boolean)? = null, allowMissing: Boolean = false, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, privateFeature: Boolean = false, rawJson:String?=null, calls:DiscoveryCalls?=null, received:((String)->Unit)?=null, previewRecording:String?=null, importRead:ImportRefreshRead?=null): JsonObject {
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
-        val access = session.access(scope)
+        val access = importRead?.access(session,scope) ?: session.access(scope)
         val discoveryRead=method=="GET"&&(path.startsWith("/discovery/search?")||path.startsWith("/discovery/catalog?")||isDiscoverBrowsePath(path.substringBefore('?'))||
             (previewRecording!=null&&path=="/catalog/recordings/$previewRecording/source"))
         fun exchange(bearer:String, admit:(()->Boolean)?):Reply = if(discoveryRead) {
@@ -162,6 +277,11 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
             // Ordinary Add lookup and resolve POST do not borrow this custody.
             wire(path,access=bearer,calls=calls,dispatchValid={session.discoveryDispatchCurrent(scope,bearer)},
                 responseValid={valid()&&session.awaitDiscoveryRead(scope)&&valid()},valid=valid)
+        } else if(importRead!=null) {
+            // Only this GET can retain proof of a credential refusal before the first
+            // network-chain admission. Response retirement never supplies that proof.
+            wire(path,access=bearer,dispatchValid={importRead.enter(session,scope)},
+                responseValid={session.remoteCurrent(scope)&&valid()},valid=valid)
         } else wire(path,method,body,bearer,admit,headers,emptyBody,rawJson,calls) {session.remoteCurrent(scope) && valid()}
         var result = exchange(access,dispatchValid)
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
@@ -200,6 +320,57 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
     internal fun privateExchange(scope:AccountScope,path:String,method:String="GET",body:JsonObject?=null,status:Int=200,valid:()->Boolean):JsonObject {
         require(path=="/me/devices" || Regex("^/me/devices/[0-9a-f-]{36}$").matches(path) || path=="/jams" || Regex("^/jams/[0-9a-f-]{36}(/(host|invites)|/requests/[0-9a-f-]{36}(/approval)?)?$").matches(path))
         return authorized(scope,path,method,body,valid=valid,expectedStatus=status,privateFeature=true)
+    }
+    /** Released original import routes, admitted only for a disposable loopback fixture. */
+    internal fun originalImportTransport(writes:Boolean):OriginalImportTransport {
+        require(session.endpoint.base.host=="127.0.0.1")
+        return WireOriginalImportTransport(session.endpoint.identity) {scope,path,body,operation,current->
+            val upload=body!=null
+            require(when {
+                upload -> writes && path == "/library/uploads" && operation != null && current != null
+                current != null -> operation == null && Regex("^/library/uploads/[0-9a-f-]{36}$").matches(path)
+                else -> operation == null && Regex("^/library/tracks/[1-9][0-9]*$").matches(path)
+            })
+            var entered = false
+            fun exchange(access:String):Reply = wire(path,if(upload)"POST"else "GET",access=access,
+                headers=operation?.let {mapOf("Idempotency-Key" to it.toString())}.orEmpty(),
+                originalImport=true,originalBody=body,
+                dispatchValid=if(current!=null) LibraryMutationAdmission { isCanceled ->
+                    if (entered) false
+                    else if (!requireNotNull(current).invoke() || isCanceled()) false
+                    else { entered = true; true }
+                } else null) {session.remoteCurrent(scope)}
+            val access = try { session.access(scope) } catch (failure: SafeFailure) {
+                if (upload && failure.reason == SafeFailure.Reason.Retired) throw OriginalUploadNotAdmitted()
+                throw failure
+            }
+            val first=exchange(access)
+            // Only ordinary exact membership is read-only. Never replay a commit-capable status GET.
+            val result=if(current==null&&first.code==401&&refresh(scope,access))exchange(session.access(scope))else first
+            if (!result.libraryAuthRefusal) session.checkRemote(scope)
+            WireOriginalImportTransport.Reply(result.code, result.body, result.libraryAuthRefusal)
+        }
+    }
+    /** One disclosed lookup, without a 401 refresh/replay or transport follow-up. */
+    internal fun localEnrichment(scope: AccountScope, terms: LocalEnrichmentTerms, calls: DiscoveryCalls, valid: () -> Boolean): LocalEnrichmentReply {
+        val dispatched = java.util.concurrent.atomic.AtomicBoolean(false)
+        return try {
+            val body = authorized(scope, LOCAL_ENRICHMENT_PATH, "POST", terms.json(), readOnly = false,
+                expectedStatus = 200, privateFeature = true, calls = calls, valid = valid,
+                dispatchValid = { dispatched.compareAndSet(false, true) })
+            LocalEnrichmentReply.decode(body)
+        } catch (error: com.soundq.android.data.connect.FeatureFailure) {
+            when (error.status) {
+                404 -> LocalEnrichmentReply.Disabled
+                401, 403 -> LocalEnrichmentReply.SignIn
+                400, 413, 415 -> LocalEnrichmentReply.InvalidTerms
+                429 -> LocalEnrichmentReply.Busy
+                else -> LocalEnrichmentReply.Unavailable
+            }
+        } catch (error: SafeFailure) {
+            if (error.reason == SafeFailure.Reason.Retired) throw error
+            LocalEnrichmentReply.Unavailable
+        }
     }
     /** Narrow nearby metadata read through the sole authenticated client. */
     fun nearbyTracks(scope:AccountScope,query:com.soundq.android.data.harmonic.HarmonicQuery,valid:()->Boolean):com.soundq.android.data.harmonic.NearbyResult {
@@ -252,8 +423,80 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         val body=authorized(scope,"/tracks/${id.value}/$path","POST",payload,readOnly=false,valid=valid,expectedStatus=200)
         return com.soundq.android.data.trackdetails.TrackDetailsJson.verificationAck(body,id,action)
     }
-    fun trackDetailsRemove(scope:AccountScope,id:TrackId,valid:()->Boolean) {
-        authorized(scope,"/library/tracks/${id.value}","DELETE",readOnly=false,valid=valid,expectedStatus=204)
+    internal fun libraryRemovalFenceStatus(scope: AccountScope, id: TrackId) =
+        observeLibraryRemovalFence(scope, id) { it?.status }
+    internal fun <T> observeLibraryRemovalFence(scope: AccountScope, id: TrackId, publish: (LibraryRemovalFence?) -> T): T {
+        val imports = originalImports() ?: return publish(null)
+        return imports.observeRemovalFence(scope, id, publish)
+    }
+    internal fun retryUnenteredLibraryRemoval(scope: AccountScope, id: TrackId, valid: () -> Boolean) =
+        originalImports()?.retryRemovalSettlement(scope, id, valid, retractionOnly = true) != null
+
+    internal fun retryLibraryRemovalSettlement(scope: AccountScope, id: TrackId, valid: () -> Boolean) =
+        originalImports()?.retryRemovalSettlement(scope, id, valid)
+
+    fun trackDetailsRemove(scope: AccountScope, id: TrackId, valid: () -> Boolean): LibraryRemovalReceipt =
+        removeLibraryTrack(scope, id, valid = valid).receipt
+
+    internal fun removeLibraryTrack(scope: AccountScope, id: TrackId, commitInVisit: ((() -> Boolean) -> Boolean)? = null,
+        valid: () -> Boolean): LibraryRemovalResult {
+        if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
+        val imports = originalImports()
+        var fence: OriginalImportRepository.RemovalFence? = null
+        var entered = false
+        var canceledBeforeEntry = false
+        val response = try {
+            // Admission belongs to the route; the one entered exchange belongs to the account.
+            wire("/library/tracks/${id.value}", "DELETE", access = session.access(scope),
+                dispatchValid = LibraryMutationAdmission { isCanceled ->
+                    if (entered || !valid() || !session.remoteCurrent(scope)) return@LibraryMutationAdmission false
+                    fun live(): Boolean {
+                        if (!valid() || !session.remoteCurrent(scope)) return false
+                        if (!isCanceled()) return true
+                        canceledBeforeEntry = true
+                        return false
+                    }
+                    fence = imports?.prepareRemoval(scope, id, commitInVisit, valid)
+                    if (!live()) return@LibraryMutationAdmission false
+                    fence?.takeIf { it.durable }?.let {
+                        try { checkNotNull(imports).enterRemoval(it) }
+                        catch (_: Exception) {
+                            throw SafeFailure(if (session.remoteCurrent(scope)) SafeFailure.Reason.RemovalNotSent else SafeFailure.Reason.Retired)
+                        }
+                        if (!live()) return@LibraryMutationAdmission false
+                    }
+                    fence?.wireEntered = true
+                    entered = true
+                    true
+                }, libraryRemovalAccepted = {
+                    if (entered) fence?.let { checkNotNull(imports).receiveRemovalAcknowledgement(it) }
+                }) { session.remoteCurrent(scope) }.also { session.checkRemote(scope) }
+        } catch (failure: Exception) {
+            fence?.let {
+                if (!entered) {
+                    if (!checkNotNull(imports).retractUnenteredRemoval(it) && session.remoteCurrent(scope)) throw it.observe().failure()
+                } else checkNotNull(imports).unconfirmedRemoval(it)?.let { pending -> throw pending.failure() }
+            }
+            // OkHttp can wrap an interceptor's refusal in a timeout IOException.
+            if (canceledBeforeEntry && session.remoteCurrent(scope)) throw SafeFailure(SafeFailure.Reason.RemovalNotSent)
+            throw failure
+        }
+        if (!entered) throw SafeFailure(SafeFailure.Reason.RemovalNotSent)
+        val admitted = fence
+        if (response.libraryAuthRefusal) {
+            if (admitted != null && !checkNotNull(imports).retractUnenteredRemoval(admitted) && session.remoteCurrent(scope))
+                throw admitted.observe().failure()
+            throw SafeFailure(SafeFailure.Reason.Refused)
+        }
+        if (response.code != 204) {
+            admitted?.let { checkNotNull(imports).unconfirmedRemoval(it) }?.let { throw it.failure() }
+            throw SafeFailure(if (response.code >= 500) SafeFailure.Reason.Uncertain else
+                if (response.code in 200..299) SafeFailure.Reason.InvalidResponse else SafeFailure.Reason.Refused)
+        }
+        val result = if (admitted == null || checkNotNull(imports).confirmRemoval(admitted)) LibraryRemovalResult(LibraryRemovalReceipt.Confirmed)
+            else LibraryRemovalResult(LibraryRemovalReceipt.ConfirmedLocalSettleFailed, admitted.observe())
+        session.checkRemote(scope)
+        return result
     }
     fun trackDetailsMetadata(scope:AccountScope,id:TrackId,draft:com.soundq.android.data.trackdetails.MetadataDraft,valid:()->Boolean) {
         val body=authorized(scope,"/tracks/${id.value}/metadata-override","PUT",com.soundq.android.data.trackdetails.TrackDetailsJson.metadata(draft),valid=valid,expectedStatus=200)
@@ -578,8 +821,12 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
     }
     fun logout() = finishLogout(revokeLogout())
     fun library(scope:AccountScope,query:LibraryQuery,offset:Int):LibraryPage=ownedLibraryPage(scope,query,offset){true}
+    internal fun libraryImportRefresh(scope:AccountScope,query:LibraryQuery,offset:Int,read:ImportRefreshRead):LibraryPage =
+        ownedLibraryPage(scope,query,offset,20,read,read.current)
     internal fun ownedLibraryPage(scope: AccountScope, query: LibraryQuery, offset: Int, valid: () -> Boolean): LibraryPage = ownedLibraryPage(scope,query,offset,20,valid)
-    internal fun ownedLibraryPage(scope: AccountScope, query: LibraryQuery, offset: Int, limit:Int, valid: () -> Boolean): LibraryPage {
+    internal fun ownedLibraryPage(scope: AccountScope, query: LibraryQuery, offset: Int, limit:Int, valid: () -> Boolean): LibraryPage =
+        ownedLibraryPage(scope,query,offset,limit,null,valid)
+    private fun ownedLibraryPage(scope:AccountScope,query:LibraryQuery,offset:Int,limit:Int,importRead:ImportRefreshRead?,valid:()->Boolean):LibraryPage {
         require(offset >= 0 && limit in 1..100)
         val url = session.endpoint.base.newBuilder().encodedPath("/api/v1/library").query(null)
             .addQueryParameter("limit",limit.toString()).addQueryParameter("offset",offset.toString())
@@ -589,7 +836,7 @@ class SoundQApi(val session: AccountSession, client: OkHttpClient = OkHttpClient
         if(query.liked) url.addQueryParameter("liked","true")
         query.verified?.let { url.addQueryParameter("mb_verified",it.toString()) }
         if(query.genre.isNotBlank()) url.addQueryParameter("genre",query.genre)
-        val body = authorized(scope,"/library?"+url.build().encodedQuery,valid=valid)
+        val body = authorized(scope,"/library?"+url.build().encodedQuery,valid=valid,importRead=importRead)
         return try {
             val rows=body.getValue("tracks").jsonArray
             val scannedIds=rows.map {it.jsonObject.getValue("id").jsonPrimitive.long}

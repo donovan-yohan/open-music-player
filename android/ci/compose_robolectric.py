@@ -34,10 +34,11 @@ def native(extension, size, digest):
     return Pin(path, 'maven/' + path, size, digest)
 
 
-# Robolectric 4.16: app API 28, designsystem API 34, JDK 21 compile resources API 36.
+# Robolectric 4.16: app APIs 28/30/34, designsystem API 34, JDK 21 compile resources API 36.
 # SHA-512 pins verified against official Maven Central sidecars and full bytes.
 PINS = (
     sdk('9-robolectric-4913185-2-i7', 106130412, '24687b9ea919eb20f5e27e47274f2aa711e98eb332d4769d34044a3b4952a71393831d0a3f61ba726dc8fe220673a76138c11a0716f304999e5b029146fe88eb'),
+    sdk('11-robolectric-6757853-i7', 126899852, '686c3d5faf7772795fc28f356baf9a92dcd89dedc2f7a16720ce4eb8d7b5ee5932500c623c3028355cc13a14c855210bcba796180681a01b0a7f2a276eb5303d'),
     sdk('14-robolectric-10818077-i7', 151142227, '7cdc0b1306e7865f1acd25a363073149654caee5b8e278c5ae37ff4724185724eff39f0b0111800b521e640bb28698d9d2e655134a801569a0f07470e7b5f455'),
     sdk('16-robolectric-13921718-i7', 213431622, '0576318b89abb0a1c9a760a61bb68ccd2d509b33164b8265d6b1fb587a4b7629e1e805b6c7f8fbefab94fc03c8db8100b1d4856a32728803c242d2677aa7ec76'),
     native('pom', 1334, 'fe784d6dfb4c860c95c768dcb285522f1cfd29e2b88aabb188b3623ea33525c794551dcdb4b014c22c63848d85f71af967481b762b82ac02d7bb936ee8c5b041'),
@@ -189,7 +190,7 @@ def main():
                 shutil.rmtree(scratch)
         # The successful step hands the complete stage to the hosted job, not to
         # the Gradle launcher. Runner teardown owns removal, even on gate cancellation.
-        print('Compose Robolectric: verified API 28/34 runtimes, API 36 compile resources and native distribution', flush=True)
+        print('Compose Robolectric: verified API 28/30/34 runtimes, API 36 compile resources and native distribution', flush=True)
         return 0
     except Cancelled as exc:
         print('Compose Robolectric: cancelled before publishing the stage', file=sys.stderr)

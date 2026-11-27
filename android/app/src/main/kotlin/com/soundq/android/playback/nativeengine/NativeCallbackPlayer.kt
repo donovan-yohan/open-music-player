@@ -9,6 +9,7 @@ import com.soundq.android.data.AccountScope
 import com.soundq.android.data.AuthState
 import com.soundq.android.data.DiscoveryPreviewInput
 import com.soundq.android.data.SafeFailure
+import com.soundq.android.data.deviceaudio.HistoryKey
 import com.soundq.android.playback.*
 import com.soundq.android.playback.QueuePolicy
 import com.soundq.android.data.timeline.*
@@ -29,7 +30,7 @@ internal class NativeCallbackPlayer(
     private val grants: ConcurrentHashMap<String, MediaGrant>,
     jobs: CoroutineScope,
     calls: NativeCallbackCalls = JniNativeCallbackCalls,
-    private val source: NativeCallbackSource = GrantedNativeCallbackSource(graph, grants),
+    private val source: NativeCallbackSource = OriginalAwareNativeSource(graph, grants),
     private val random: Random = Random.Default,
 ) : SimpleBasePlayer(Looper.getMainLooper()), ListeningCompletionPlayer {
     private var items = emptyList<MediaItem>()
@@ -166,11 +167,14 @@ internal class NativeCallbackPlayer(
         val deck: Int, val identity: Long, val outgoing: MediaItem, val outgoingGrant: MediaGrant,
         val outgoingUri: String, val outgoingDeck: Int, val outgoingIdentity: Long, val outgoingEof: Long,
         val speed: Double = 1.0) {
+        var canArm = false
+        var bindingFollowsSource = false
         var armed = false
         var arming = false
         var completed = false
     }
-    private var successor: Successor? = null
+    @Volatile private var successor: Successor? = null
+    @Volatile private var retainedSuccessor: Successor? = null
     private var successorJob: Job? = null
     private var successorRevision = 0L
     private var successorAttempt: String? = null
@@ -180,15 +184,25 @@ internal class NativeCallbackPlayer(
 
     /** Explicit edits permit retry; a failed optional source stays latched across polls. */
     private fun cancelSuccessor(preserveAttempt: Boolean = false,natural:Boolean=false) {
-        successorRevision++; successorJob?.cancel()
+        val c = successor
+        // Publish the exact kept deck to the reader before revoking pair authority.
+        // This also covers an edit after the overlap already selected the incoming deck.
+        val kept = c?.takeIf { ordinaryDeck == it.deck && ordinaryIdentity == it.identity }
+        if (kept != null) retainedSuccessor = kept
+        val keepBinding = kept?.bindingFollowsSource == true
+        val preparation = successorJob
+        successorRevision++
+        if (c != null && !keepBinding) preparation?.cancel()
         if (!preserveAttempt) successorAttempt = null
-        val c = successor; successor = null
+        successor = null
         if (c != null) {
             val keepDeck = ordinaryDeck; val keepIdentity = ordinaryIdentity
             val otherDeck = if (keepDeck == c.deck) c.outgoingDeck else c.deck
             val otherIdentity = if (keepDeck == c.deck) c.outgoingIdentity else c.identity
             journal.retire(otherDeck,drain=natural)
-            val predecessor = tail
+            // The borrowed decoder's load/gain commands already settled before arm.
+            // Its retained journal wait does not own the outgoing decoder's drain.
+            val predecessor = tail.takeUnless { keepBinding && it === preparation }
             tail = lifetime.launch {
                 predecessor?.join()
                 if (c.armed || c.arming) owner.crossfade(keepDeck, keepIdentity, otherDeck, otherIdentity, 0) { true }
@@ -218,21 +232,42 @@ internal class NativeCallbackPlayer(
             activeGrant ?: return, activeUri ?: return, ordinaryDeck, ordinaryIdentity, eofCount, loadSpeed(item))
         successor = c
         fun current() = !released && epoch == generation && successorRevision == revision && successorCurrent(c)
+        // Acquisition/JNI still need the pair. A kept decoder and listening binding
+        // outlive that pair and require only their own grant and the selection lifetime.
+        fun sourceCurrent() = current() || (!released && epoch == generation && retainedSuccessor === c &&
+            currentScope() && grants[uri] === grant && grant.current(graph))
         val predecessor = tail
         preparing.incrementAndGet()
         val job = lifetime.launch(start = CoroutineStart.LAZY) {
             var file: NativePlaybackSource? = null; var transferred = false
             try {
                 predecessor?.join(); check(current())
-                withContext(NonCancellable + Dispatchers.IO) { file = source.acquire(item, ::current) }
+                withContext(NonCancellable + Dispatchers.IO) { file = source.acquire(item, ::sourceCurrent) }
                 ensureActive(); check(current())
+                val acquired = requireNotNull(file)
                 transferred = true
-                check(withContext(NonCancellable) { owner.loadDeck(c.deck, requireNotNull(file), c.identity, c.identity, journal.initialResume(requireNotNull(file),grant,c.deck), ::current, c.speed) })
+                check(withContext(NonCancellable) { owner.loadDeck(c.deck, acquired, c.identity, c.identity, journal.initialResume(acquired,grant,c.deck), ::current, c.speed) })
                 check(current())
-                bindJournal(item,grant,requireNotNull(file),c.deck,c.identity,true,::current)
-                owner.controlDeck(c.deck, 7, volume.toDouble(), ::current)
+                if (acquired is NativePlaybackSource.BorrowedOriginal) {
+                    owner.controlDeck(c.deck, 7, volume.toDouble(), ::current)
+                    check(current())
+                    c.bindingFollowsSource = true
+                    c.canArm = true
+                    // A borrowed original has no post-bind resume Seek. Its journal can
+                    // follow the retained assignment without delaying native playback.
+                    fun bindingCurrent() = sourceCurrent() && acquired.versionCurrent()
+                    bindJournal(item,grant,acquired,c.deck,c.identity,true,::bindingCurrent)
+                } else {
+                    c.canArm = true
+                    bindJournal(item,grant,acquired,c.deck,c.identity,true,::current,::sourceCurrent)
+                    owner.controlDeck(c.deck, 7, volume.toDouble(), ::current)
+                }
             } catch (_: CancellationException) { }
-            catch (_: Exception) { if (current()) cancelSuccessor(preserveAttempt = true) }
+            catch (_: Exception) {
+                if (c.bindingFollowsSource && ordinaryDeck == c.deck && ordinaryIdentity == c.identity && sourceCurrent())
+                    fail("Audio source could not be prepared. Check Local audio access or choose the file again.")
+                else if (current()) cancelSuccessor(preserveAttempt = true)
+            }
             finally {
                 try {
                     if (!transferred) withContext(NonCancellable + Dispatchers.IO) { file?.let {owner.releaseUnborrowed(it)} }
@@ -255,7 +290,7 @@ internal class NativeCallbackPlayer(
         val b = snapshot.decks.getOrNull(c.deck) ?: return false
         if (a.identity != c.outgoingIdentity || b.identity != c.identity || a.generation != c.outgoingIdentity || b.generation != c.identity) return false
         if (b.error != 0) { cancelSuccessor(preserveAttempt = true); return false }
-        if (!c.armed && !c.arming && b.ready && a.ready && a.eofCount == c.outgoingEof) {
+        if (c.canArm && !c.armed && !c.arming && b.ready && a.ready && a.eofCount == c.outgoingEof) {
             val preference = graph.crossfadePreferences.state.value
             if (!preference.ready || preference.error || preference.seconds == 0) { cancelSuccessor(); return false }
             val length = minOf(preference.seconds * 1000L, a.durationMs / 2, b.durationMs / 2)
@@ -332,26 +367,52 @@ internal class NativeCallbackPlayer(
     internal val listeningSpeedBounds get() = speedBounds
     /** Explicit original-file mutation barrier. It grants no filesystem deletion authority. */
     internal suspend fun retirePhoneFile(ref:com.soundq.android.playback.PlaybackRef.Device):Boolean {
-        fun matches(item:MediaItem)=(com.soundq.android.playback.PlaybackRef.read(item.mediaMetadata.extras?.getString("playbackRef")) as? com.soundq.android.playback.PlaybackRef.Device)?.let {graph.phoneAudio.sameFile(it,ref)}==true
-        if (parkedQueue?.items?.any(::matches) == true) finishDiscoveryPreview()
-        if(arrangement!=null&&arrangementSourceItems.any(::matches))return false
-        val fileId=graph.phoneAudio.sourceFileId(ref).value.toString()
+        fun logical(item:MediaItem)=(PlaybackRef.read(item.mediaMetadata.extras?.getString("playbackRef")) as? PlaybackRef.Device)?.let {graph.phoneAudio.sameFile(it,ref)}==true
+        if (parkedQueue?.items?.any(::logical) == true) finishDiscoveryPreview()
+        if(arrangement!=null&&arrangementSourceItems.any(::logical))return false
+        val catalog = graph.phoneAudio.state.value.snapshot
+        val target = catalog?.authorityTarget(ref.contentOwner) ?: ref.fileId
+        val fileIds = mutableSetOf(target.value.toString())
+        // A fold changes the catalog ID, not the ID already registered by a decoder
+        // or a failed descriptor close. The catalog normalizes redirects to the survivor.
+        catalog?.retired?.forEach { if (it.into == target) fileIds += (it.from.key as HistoryKey.Device).id.value.toString() }
+        fun borrowed(grant: MediaGrant?): Boolean {
+            val row = grant?.takeIf { it.device == null }?.phoneAdmission?.row ?: return false
+            if (graph.phoneAudio.sourceFileId(graph.phoneAudio.reference(row)) != target) return false
+            fileIds += row.canonicalId // registered lease key can predate an acknowledged provider fold
+            return true
+        }
+        val selectedLogical = selected()?.let(::logical) == true
+        val selectedPhysical = borrowed(activeGrant)
+        val selectedTarget = selectedLogical || selectedPhysical
+        val pair = successor
+        val incomingTarget = pair?.let { borrowed(it.grant) || logical(it.item) } == true
+        val outgoingTarget = pair?.let { borrowed(it.outgoingGrant) || logical(it.outgoing) } == true
+        val logicalRows = items.any(::logical)
         // A previously failed close can retain custody without a native identity or queue row.
-        if(items.none(::matches))return owner.sourcesDrained(fileId)
-        val acquisition=if(selected()?.let(::matches)==true)pending else null
-        val nextAcquisition=successorJob
+        if (!selectedTarget && !incomingTarget && !outgoingTarget && !logicalRows)
+            return fileIds.all { owner.sourcesDrained(it) }
+        val acquisition=if(selectedTarget)pending else null
+        val nextAcquisition=if(selectedTarget || incomingTarget || outgoingTarget || logicalRows) successorJob else null
         val identities=mutableSetOf<Long>()
-        if(selected()?.let(::matches)==true)identities+=ordinaryIdentity
-        successor?.let {if(matches(it.item))identities+=it.identity;if(matches(it.outgoing))identities+=it.outgoingIdentity}
-        if(selected()?.let(::matches)==true) {pause();stop()}
-        val remaining=items.filterNot(::matches)
-        val fallback=index.coerceIn(0,(remaining.size-1).coerceAtLeast(0))
-        mutate(remaining,rebuilt(remaining,fallback),fallback,selected()?.let(::matches)!=true)
+        if(selectedTarget)identities+=ordinaryIdentity
+        if(incomingTarget && pair!=null)identities+=pair.identity
+        if(outgoingTarget && pair!=null)identities+=pair.outgoingIdentity
+        if(selectedTarget) {pause();stop()}
+        else if(incomingTarget||outgoingTarget) cancelSuccessor(preserveAttempt = true)
+        // Numeric occurrences keep their identity and queue slot. Only an authored phone row
+        // gets removed by the pre-existing device Delete policy. Never re-prepare here.
+        if(logicalRows) {
+            val remaining=items.filterNot(::logical)
+            val fallback=index.coerceIn(0,(remaining.size-1).coerceAtLeast(0))
+            mutate(remaining,rebuilt(remaining,fallback),fallback,!selectedLogical)
+        }
         invalidateState()
+        val retired = tail
         return withTimeoutOrNull(30_000) {
-            acquisition?.join();nextAcquisition?.join();tail?.join()
+            acquisition?.join();nextAcquisition?.join();retired?.join()
             val snapshot=owner.snapshot {true} ?: return@withTimeoutOrNull false
-            snapshot.decks.none {it.identity in identities} && owner.sourcesDrained(fileId)
+            snapshot.decks.none {it.identity > 0 && it.identity in identities} && fileIds.all { owner.sourcesDrained(it) }
         }==true
     }
     /** Set when the native capability first arrives (or changes): a deck loaded before it
@@ -1119,6 +1180,8 @@ internal class NativeCallbackPlayer(
         revokePerformance()
         performanceIdentity = null; durablePerformanceDocument = null; syncQualifications.clear(); performanceDecks = emptyMap(); onPerformanceChanged?.invoke()
         epoch++
+        retainedSuccessor = null
+        successorJob?.cancel()
         transportRevision++
         pending?.cancel()
         pending = null
@@ -1246,7 +1309,7 @@ internal class NativeCallbackPlayer(
                 dispatchIntent(generation)
             } catch (failure: Exception) {
                 if (failure is CancellationException) { /* Superseded work cannot affect the successor. */ }
-                else if (generation==epoch&&currentScope()&&grants[uri]===grant) { fail(if(grant.device!=null)"Audio source could not be prepared. Check Local audio access or choose the file again." else "Audio source could not be prepared. Try again when the server is available."); retireSelection() }
+                else if (generation==epoch&&currentScope()&&grants[uri]===grant) { fail(if(grant.device!=null||item.mediaMetadata.extras?.getString("originalImportOperation")!=null)"Audio source could not be prepared. Check Local audio access or choose the file again." else "Audio source could not be prepared. Try again when the server is available."); retireSelection() }
             } finally {
                 if (!transferred) withContext(NonCancellable + Dispatchers.IO) { file?.let {owner.releaseUnborrowed(it)} }
                 if (generation == epoch) {
@@ -1285,9 +1348,9 @@ internal class NativeCallbackPlayer(
         } ?: throw DeckReadinessExpired()
     }
 
-    private suspend fun bindJournal(item:MediaItem,grant:MediaGrant,file:NativePlaybackSource,slot:Int,identity:Long,allowResume:Boolean,current:()->Boolean) {
+    private suspend fun bindJournal(item:MediaItem,grant:MediaGrant,file:NativePlaybackSource,slot:Int,identity:Long,allowResume:Boolean,current:()->Boolean,journalCurrent:()->Boolean=current) {
         val ready=awaitDeckReady(slot,identity,current)
-        val resume=try {journal.bind(item,grant,file,ready,slot,current)}catch(failure:Exception){if(grant.device!=null)throw failure else {check(current());return}}
+        val resume=try {journal.bind(item,grant,file,ready,slot,journalCurrent)}catch(failure:Exception){if(grant.device!=null||file is NativePlaybackSource.BorrowedOriginal)throw failure else {check(current());return}}
         if(allowResume&&resume>0 && file !is NativePlaybackSource.BorrowedOriginal) {
             journal.fenceSeek(slot)
             check(journal.beginSeek(slot,2,ready.naturalEnd?.count ?: 0))

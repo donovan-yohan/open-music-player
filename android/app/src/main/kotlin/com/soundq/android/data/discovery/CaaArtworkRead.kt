@@ -40,7 +40,12 @@ internal class CaaArtworkRead(
             return b.size==16&&(b[0] and 0xe0)==0x20&&!(b[0]==0x20&&b[1]==0x01&&(b[2]<2||b[2]==0x0d&&b[3]==0xb8))&&!(b[0]==0x20&&b[1]==0x02)&&!(b[0]==0x3f&&(b[1] and 0xf0)==0xf0)
         }
     }
-    private class Owner(val valid:()->Boolean)
+    private class Owner(private val valid:()->Boolean) {
+        private val sent=java.util.concurrent.atomic.AtomicBoolean(false)
+        // OkHttp can follow 503 Retry-After: 0 even with connection retries disabled.
+        // Each manual allowlisted hop gets a new owner; a hidden repeat never reaches HTTP.
+        fun admit()=valid()&&sent.compareAndSet(false,true)
+    }
     private var closed=false
     private var call:Call?=null
     private var loading=false
@@ -61,8 +66,8 @@ internal class CaaArtworkRead(
         addNetworkInterceptor {chain->
             val request=chain.request();val owner=request.tag(Owner::class.java)
             val remote=(chain.connection()?.socket()?.remoteSocketAddress as? java.net.InetSocketAddress)?.address
-            if(!current()||owner?.valid?.invoke()!=true||trustedUrl(request.url.toString())==null||remote==null||!addressAllowed(remote)||
-                listOf("Authorization","Proxy-Authorization","Cookie","Referer").any {request.header(it)!=null})throw java.io.IOException("Refused artwork")
+            if(!current()||trustedUrl(request.url.toString())==null||remote==null||!addressAllowed(remote)||
+                listOf("Authorization","Proxy-Authorization","Cookie","Referer").any {request.header(it)!=null}||owner?.admit()!=true)throw java.io.IOException("Refused artwork")
             chain.proceed(request)
         }
     }.build()

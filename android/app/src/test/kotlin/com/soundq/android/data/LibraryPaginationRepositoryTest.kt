@@ -1,10 +1,19 @@
 package com.soundq.android.data
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.job
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.*
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 class LibraryPaginationRepositoryTest {
     private fun session()=AccountSession(ApiEndpoint.parse("https://fixture.test/api/v1"),MemoryStore()).also {
@@ -121,6 +130,186 @@ class LibraryPaginationRepositoryTest {
                 assertFalse(repository.state.value.loading)
             }finally {release.countDown();pool.shutdownNow();assertTrue(pool.awaitTermination(3,TimeUnit.SECONDS))}
         }
+    }
+
+    @Test fun retiredAppendSettlesAfterHeldCollectionHandoffAndLetsDeferredImportAndReturnContinue() {
+        val account=session();val scope=checkNotNull(account.capture())
+        val corpus=(1L..501L).map {track(it).copy(liked=true)}
+        val imported=track(502).copy(liked=true)
+        val query=LibraryQuery(text="liked",liked=true,sort=LibrarySort.Title,ascending=true)
+        val visible=AtomicBoolean(true);val append=CountDownLatch(1);val releaseAppend=CountDownLatch(1)
+        val refresh=CountDownLatch(1);val releaseRefresh=CountDownLatch(1)
+        val firstPages=AtomicInteger();val secondPages=AtomicInteger();var starts=0
+        val repository=LibraryRepository(account,{readScope,readQuery,offset->
+            assertEquals(scope.epoch,readScope.epoch);assertEquals(query,readQuery)
+            if(offset==0&&firstPages.incrementAndGet()==3) {
+                refresh.countDown();check(releaseRefresh.await(5,TimeUnit.SECONDS))
+                LibraryPage(listOf(imported)+corpus.take(499),502,500,offset)
+            }else{
+                if(offset==500&&secondPages.incrementAndGet()==2) {
+                    append.countDown();check(releaseAppend.await(5,TimeUnit.SECONDS))
+                }
+                val current=if(firstPages.get()>=3)listOf(imported)+corpus else corpus
+                LibraryPage(current.drop(offset).take(500),current.size,500,offset)
+            }
+        },{_,_,_->throw AssertionError("no mutation")})
+        val pool=Executors.newSingleThreadExecutor()
+        val jobs=CoroutineScope(SupervisorJob()+Dispatchers.Default)
+        try {
+            repository.refine(query);val accepted=repository.state.value
+            val play=checkNotNull(repository.claimCollectionPlay(accepted,selected=corpus[499].id){visible.get()})
+            repository.readCollection(play)
+            repository.startCollection(play,holdForDelivery=true) {rows,index->
+                assertEquals(corpus,rows);assertEquals(499,index);assertTrue(repository.collectionPlaybackCurrent(play));starts++;null
+            }
+            assertEquals(1,starts);assertTrue(repository.state.value.collectionLoading)
+            repository.scheduleImportRefresh(scope,jobs)
+            val importJob=jobs.coroutineContext.job.children.single()
+            val page=checkNotNull(repository.claimNextPage(repository.state.value){visible.get()})
+            val work=pool.submit {repository.executeNextPage(page)}
+            assertTrue(append.await(3,TimeUnit.SECONDS));assertTrue(repository.state.value.loading)
+            assertFalse("handoff must not consume collection Play while a page can replace its acknowledged rows",
+                repository.collectionPlaybackCurrent(play))
+            visible.set(false);repository.abandonCollection(play)
+            assertFalse(repository.state.value.collectionLoading);assertTrue(repository.state.value.loading)
+            assertEquals(1L,refresh.count)
+            releaseAppend.countDown();work.get(3,TimeUnit.SECONDS)
+            assertFalse("retired append must clear its own loading after collection retirement copied the state",repository.state.value.loading)
+            assertFalse(repository.state.value.collectionLoading);assertNull(repository.state.value.error)
+            assertSame(accepted.rows,repository.state.value.rows)
+            assertEquals(accepted.pageRevision,repository.state.value.pageRevision)
+            assertTrue("deferred import must be admitted after append retirement",refresh.await(3,TimeUnit.SECONDS))
+            releaseRefresh.countDown();runBlocking {withTimeout(5000){importJob.join()}}
+            assertEquals(imported.id,repository.state.value.rows.first().id)
+            assertFalse(repository.state.value.collectionLoading);assertEquals(query,repository.state.value.query)
+            val returned=checkNotNull(repository.claimNextPage(repository.state.value){true})
+            repository.executeNextPage(returned)
+            assertFalse(repository.state.value.loading);assertTrue(repository.state.value.endReached)
+            assertEquals(listOf(imported)+corpus,repository.state.value.rows)
+            assertEquals(3,firstPages.get());assertEquals(3,secondPages.get());assertEquals(1,starts)
+        }finally {
+            releaseAppend.countDown();releaseRefresh.countDown();jobs.cancel();pool.shutdownNow()
+            assertTrue(pool.awaitTermination(3,TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun deferredImportRefreshSurvivesSameScopeCredentialSave() = deferredRefreshDuringSave("success")
+
+    @Test fun deferredImportRefreshDoesNotSurviveFailedSaveOrRetiredScopeOrQuery() {
+        for (end in listOf("failure", "scope", "query")) deferredRefreshDuringSave(end)
+    }
+
+    private fun deferredRefreshDuringSave(end: String) {
+        val saving = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val store = object : SessionStore by MemoryStore() {
+            override fun save(endpoint: ApiEndpoint, tokens: SecretTokens) {
+                if (tokens.access != "rotated") return
+                saving.countDown()
+                check(release.await(5,TimeUnit.SECONDS))
+                if (end == "failure") throw java.io.IOException("secure save unavailable")
+            }
+        }
+        val auth = AccountSession(ApiEndpoint.parse("https://fixture.test/api/v1"),store)
+        assertTrue(auth.accept(auth.beginIntent(), SecretTokens("initial","refresh","A")))
+        val scope = checkNotNull(auth.capture())
+        val reads = mutableListOf<LibraryQuery>()
+        val query = LibraryQuery(text="matches",liked=true)
+        val first = track(1).copy(liked=true)
+        val imported = track(77).copy(liked=true)
+        val repository = LibraryRepository(auth,{ actual, q, offset ->
+            assertEquals(scope.epoch,actual.epoch)
+            assertEquals(0,offset)
+            reads += q
+            LibraryPage(listOf(if (reads.size <= 2) first else imported),1,20,offset)
+        },{_,_,_->throw AssertionError("no mutation")})
+        val queue = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+        val jobs = CoroutineScope(SupervisorJob()+object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) { queue.add(block) }
+        })
+        fun drain() { while (true) (queue.poll() ?: return).run() }
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            repository.refine(query)
+            val play = checkNotNull(repository.claimCollectionPlay(repository.state.value) { true })
+            repository.readCollection(play)
+            repository.startCollection(play,holdForDelivery=true) { rows, _ -> assertEquals(listOf(first),rows); null }
+            assertTrue(repository.state.value.collectionLoading)
+            repository.scheduleImportRefresh(scope,jobs)
+            val refresh = jobs.coroutineContext.job.children.single()
+            drain()
+            assertFalse(refresh.isCompleted)
+            val rotate = pool.submit<Boolean> { auth.refresh(scope) { SecretTokens("rotated","rotated-refresh","A") } }
+            assertTrue(saving.await(3,TimeUnit.SECONDS))
+            assertFalse(auth.remoteCurrent(scope))
+            repository.abandonCollection(play)
+            drain() // Deliver collection release while the original bearer is withdrawn.
+            assertEquals(listOf(query,query),reads)
+            if (end == "scope") auth.beginIntent()
+            if (end == "query") repository.retire()
+            drain()
+            release.countDown()
+            assertEquals(end == "success" || end == "query",rotate.get(3,TimeUnit.SECONDS))
+            drain()
+            assertTrue(refresh.isCompleted)
+            if (end == "success") {
+                assertEquals(scope.epoch,auth.capture()?.epoch)
+                assertEquals("rotated",auth.access(scope))
+                assertEquals("collection release must not consume the pending import observation during secure save",
+                    listOf(query,query,query),reads)
+                assertEquals(listOf(TrackId(77)),repository.state.value.rows.map(Track::id))
+                assertEquals(query,repository.state.value.query)
+            } else assertEquals(end,listOf(query,query),reads)
+        } finally {
+            release.countDown();jobs.cancel();drain();pool.shutdownNow()
+            assertTrue(pool.awaitTermination(3,TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun abandonedAppendRetryRestoresPriorFailureButCannotEraseTerminalSuccess() {
+        var fail=true
+        val repository=LibraryRepository(session(),{_,_,offset->
+            if(offset!=0&&fail)throw SafeFailure(SafeFailure.Reason.Network)
+            LibraryPage(listOf(track(offset+1L)),2,20,offset)
+        },{_,_,_->})
+        repository.refine(LibraryQuery());repository.loadMore();val failed=repository.state.value
+        assertTrue(failed.failedAppend);assertEquals(SafeFailure.Reason.Network,failed.error)
+        val abandoned=checkNotNull(repository.claimPageRetry(failed){true})
+        assertFalse(repository.state.value.failedAppend);assertNull(repository.state.value.error)
+        repository.abandonNextPage(abandoned)
+        assertEquals(failed,repository.state.value)
+        fail=false
+        val completed=checkNotNull(repository.claimPageRetry(repository.state.value){true})
+        repository.executeNextPage(completed);repository.abandonNextPage(completed)
+        assertFalse(repository.state.value.failedAppend);assertNull(repository.state.value.error)
+        assertEquals(listOf(TrackId(1),TrackId(2)),repository.state.value.rows.map {it.id})
+    }
+
+    @Test fun heldAppendCleanupCannotSettleNewRefinementOrLaterPage() {
+        val entered=CountDownLatch(1);val release=CountDownLatch(1)
+        val original=LibraryQuery(liked=true);val replacement=original.copy(text="replacement")
+        val repository=LibraryRepository(session(),{_,query,offset->
+            if(query==original&&offset>0){entered.countDown();check(release.await(3,TimeUnit.SECONDS))}
+            val base=if(query==original)1L else 10L
+            LibraryPage(listOf(track(base+offset)),2,20,offset)
+        },{_,_,_->})
+        repository.refine(original)
+        val old=checkNotNull(repository.claimNextPage(repository.state.value){true})
+        val pool=Executors.newSingleThreadExecutor()
+        try {
+            val work=pool.submit {repository.executeNextPage(old)}
+            assertTrue(entered.await(3,TimeUnit.SECONDS))
+            val refinement=checkNotNull(repository.claimRefinement(replacement));val loading=repository.state.value
+            release.countDown();work.get(3,TimeUnit.SECONDS)
+            assertTrue(loading.loading);assertSame(loading,repository.state.value)
+            repository.executeRefinement(refinement)
+            val later=checkNotNull(repository.claimNextPage(repository.state.value){true});val laterLoading=repository.state.value
+            repository.abandonNextPage(old)
+            assertSame(laterLoading,repository.state.value)
+            repository.executeNextPage(later)
+            assertEquals(replacement,repository.state.value.query)
+            assertEquals(listOf(TrackId(10),TrackId(11)),repository.state.value.rows.map {it.id})
+        }finally {release.countDown();pool.shutdownNow();assertTrue(pool.awaitTermination(3,TimeUnit.SECONDS))}
     }
 
     @Test fun partiallyOverlappingPagesUseWireCursorAndPreserveAcknowledgedRows() {

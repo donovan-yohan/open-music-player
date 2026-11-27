@@ -2,6 +2,7 @@ package com.soundq.android.data
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import java.util.concurrent.CompletableFuture
 
 /** Revocable capability; refresh preserves identity, account intents replace it. */
@@ -17,6 +18,18 @@ internal sealed interface DiscoveryReadState {
     class Saving(val completion:CompletableFuture<Boolean>) : DiscoveryReadState
     data object Retired : DiscoveryReadState
 }
+internal enum class RemoteReadiness { Ready, Saving, Retired }
+/** One synchronous import observation, including all of its collection pages. */
+internal class ImportRefreshRead(val current: () -> Boolean) {
+    class NotSent(val save: CompletableFuture<Boolean>) : java.io.IOException()
+    private var entered = false
+    fun access(session: AccountSession, scope: AccountScope): String = session.importRefreshAccess(scope, !entered)
+    fun enter(session: AccountSession, scope: AccountScope): Boolean {
+        access(session, scope)
+        entered = true
+        return true
+    }
+}
 class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore) {
     private val mutable = MutableStateFlow<AuthState>(AuthState.Restoring)
     val state: StateFlow<AuthState> = mutable
@@ -25,6 +38,9 @@ class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore)
     private val revisions = MutableStateFlow(0L)
     /** Capability identity changes even when equal auth states are conflated. */
     val scopeRevision: StateFlow<Long> = revisions
+    private val savedCredentials = MutableStateFlow(0L)
+    /** Observation wake only: a successful save can restore remote admission without changing epoch or auth. */
+    internal val credentialSaveRevision: StateFlow<Long> = savedCredentials
     private var tokens: SecretTokens? = null
     private var deviceAccount: String? = null
     private var deviceAdmission: Long? = null
@@ -104,7 +120,13 @@ class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore)
         return retrySave(intent)
     }
     @Synchronized private fun saveCurrent(intent:Long)=owns(intent)||(localLocked&&lockedFromEpoch==intent)
-    fun retrySave(intent: Long = version()): Boolean = synchronized(storeLock) {
+    fun retrySave(intent: Long = version()): Boolean {
+        val saved = saveTokens(intent)
+        // Do not resume observers under either the session or the store monitor.
+        if (saved) savedCredentials.update { it + 1 }
+        return saved
+    }
+    private fun saveTokens(intent: Long): Boolean = synchronized(storeLock) {
         val accepted = synchronized(this) {
             if (!saveCurrent(intent)) return false
             if (rejectedStore) { tokens = null; pending = null; mutable.value = AuthState.SignedOut(SafeFailure.Reason.StoreRejected); return false }
@@ -132,6 +154,11 @@ class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore)
     @Synchronized fun capture(): AccountScope? = if(localLocked)null else (deviceAccount ?: tokens?.accountId)?.let { AccountScope(this, epoch, it, discoveryReadRevision) }
     @Synchronized fun current(scope: AccountScope): Boolean = !localLocked && scope.owner === this && scope.epoch == epoch && (deviceAccount ?: tokens?.accountId) == scope.accountId
     @Synchronized fun remoteCurrent(scope: AccountScope): Boolean = current(scope) && deviceAccount == null && tokens != null
+    /** Retain exact import no-write evidence through a same-session save/lock, not through a replacement login. */
+    @Synchronized internal fun continuesUploadScope(scope: AccountScope): Boolean =
+        scope.owner === this && deviceAccount == null && (tokens ?: pending)?.accountId == scope.accountId &&
+            (scope.epoch == epoch || (localLocked || resumedFromEpoch != null) &&
+                localResumeStart?.let { scope.epoch in it until epoch } == true)
     /** Pending/installed preview ownership is not a token or new dispatch admission. */
     @Synchronized internal fun previewOwnerCurrent(scope: AccountScope): Boolean =
         discoveryReadState(scope) != DiscoveryReadState.Retired
@@ -150,9 +177,23 @@ class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore)
         if(remoteCurrent(scope))return DiscoveryReadState.Current
         return discoverySave(scope)?.let {DiscoveryReadState.Saving(it)} ?: DiscoveryReadState.Retired
     }
+    /** Observation only: Saving does not grant a bearer or permit another exchange. */
+    @Synchronized internal fun remoteReadiness(scope:AccountScope):RemoteReadiness = when {
+        remoteCurrent(scope) -> RemoteReadiness.Ready
+        rotationSave(scope)!=null -> RemoteReadiness.Saving
+        else -> RemoteReadiness.Retired
+    }
+    /** Capture the exact active save at the unsent exchange's credential gate. */
+    @Synchronized internal fun importRefreshAccess(scope:AccountScope, unsent:Boolean):String {
+        if(remoteCurrent(scope))return tokens!!.access
+        if(unsent)rotationSave(scope)?.let {throw ImportRefreshRead.NotSent(it)}
+        throw SafeFailure(SafeFailure.Reason.Retired)
+    }
     private fun discoverySave(scope:AccountScope):CompletableFuture<Boolean>? =
+        if(scope.discoveryReadRevision==discoveryReadRevision)rotationSave(scope) else null
+    private fun rotationSave(scope:AccountScope):CompletableFuture<Boolean>? =
         refresh?.takeIf { (intent,flight)->
-            scope.discoveryReadRevision==discoveryReadRevision&&!localLocked&&scope.owner===this&&scope.epoch==epoch&&intent==epoch&&
+            !localLocked&&scope.owner===this&&scope.epoch==epoch&&intent==epoch&&
                 tokens==null&&deviceAccount==null&&pending?.accountId==scope.accountId&&
                 (mutable.value as? AuthState.SignedIn)?.accountId==scope.accountId&&!flight.isDone
         }?.second

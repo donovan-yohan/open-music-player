@@ -403,7 +403,7 @@ class SoundQLibraryService : MediaLibraryService() {
         check(parkedQueue == null) // A transient decoder selection cannot be serialized as a Library queue.
         return QueueSnapshot(graph.endpoint.identity,scope.accountId,(0 until player.mediaItemCount).map {i ->
         val m=player.getMediaItemAt(i);val e=m.mediaMetadata.extras!!
-        SavedOccurrence(m.mediaId,e.getLong("trackId"),m.mediaMetadata.title?.toString().orEmpty(),m.mediaMetadata.artist?.toString().orEmpty(),e.getBoolean("manual"),e.getBoolean("localOnly"),e.getLong("durationMs"),QueueOrigin.read(e.getString("origin"),e.getBoolean("manual")),com.soundq.android.data.jam.JamOccurrence.decode(e.getString("soundqJam")),PlaybackRef.read(e.getString("playbackRef")))
+        SavedOccurrence(m.mediaId,e.getLong("trackId"),m.mediaMetadata.title?.toString().orEmpty(),m.mediaMetadata.artist?.toString().orEmpty(),e.getBoolean("manual"),e.getBoolean("localOnly"),e.getLong("durationMs"),QueueOrigin.read(e.getString("origin"),e.getBoolean("manual")),com.soundq.android.data.jam.JamOccurrence.decode(e.getString("soundqJam")),PlaybackRef.read(e.getString("playbackRef")),e.getString("originalImportOperation"))
     },player.currentMediaItemIndex.coerceAtLeast(0),player.currentPosition.coerceAtLeast(0),player.shuffleModeEnabled,when(player.repeatMode) {
         Player.REPEAT_MODE_ONE -> SavedRepeatMode.One
         Player.REPEAT_MODE_ALL -> SavedRepeatMode.All
@@ -502,10 +502,11 @@ class SoundQLibraryService : MediaLibraryService() {
         require(savedCompatible(saved))
         return saved.items.map {i ->
             val uri=Uri.parse(if(i.ref is PlaybackRef.Device)"soundqdevice://source/${i.occurrence}" else "soundq://track/${i.track}/${i.occurrence}")
-            grants[uri.toString()]=if(i.ref is PlaybackRef.Device)MediaGrant(i.ref,graph.session.version(),graph.phoneAudio.sourceAuthority(i.ref)) else MediaGrant(scope,TrackId(i.track),i.localOnly)
+            grants[uri.toString()]=if(i.ref is PlaybackRef.Device)MediaGrant(i.ref,graph.session.version(),graph.phoneAudio.sourceAuthority(i.ref)) else MediaGrant(scope,TrackId(i.track),i.localOnly,i.originalOperation!=null)
             val extras=Bundle().apply {putLong("trackId",i.track);putString("occurrenceId",i.occurrence);putBoolean("manual",i.manual);putBoolean("localOnly",i.localOnly);putLong("durationMs",i.durationMs);putString("origin",i.origin.name)}
             extras.putString("playbackRef",saved.reference(i).wire())
             i.jam?.let {extras.putString("soundqJam",it.encode())}
+            i.originalOperation?.let {extras.putString("originalImportOperation",it)}
             MediaItem.Builder().setMediaId(i.occurrence).setUri(uri).setMediaMetadata(MediaMetadata.Builder().setTitle(i.title).setArtist(i.artist).setIsPlayable(true).setIsBrowsable(false).setExtras(extras).build()).build()
         }
     }
@@ -687,7 +688,7 @@ class SoundQLibraryService : MediaLibraryService() {
     private fun grantFor(item:MediaItem,scope:AccountScope?,renewal:Boolean=false):MediaGrant {
         val ref=PlaybackRef.read(item.mediaMetadata.extras?.getString("playbackRef"))
         return if(ref is PlaybackRef.Device) {check(renewal||localAccess());MediaGrant(ref,graph.session.version(),graph.phoneAudio.sourceAuthority(ref))}
-        else MediaGrant(requireNotNull(scope),TrackId(item.mediaMetadata.extras!!.getLong("trackId")),item.mediaMetadata.extras!!.getBoolean("localOnly"))
+        else MediaGrant(requireNotNull(scope),TrackId(item.mediaMetadata.extras!!.getLong("trackId")),item.mediaMetadata.extras!!.getBoolean("localOnly"),item.mediaMetadata.extras!!.getString("originalImportOperation")!=null)
     }
     private fun resolve(items:List<MediaItem>,startIndex:Int=0,startPositionMs:Long=0,compose:((List<MediaItem>)->List<MediaItem>)?=null):List<MediaItem> {
         val scope=graph.session.capture()
@@ -699,11 +700,14 @@ class SoundQLibraryService : MediaLibraryService() {
             if(item.mediaId.startsWith("device:"))return@map resolveDevice(item)
             requireNotNull(scope)
             val id=TrackId(item.mediaId.toLongOrNull() ?: throw IllegalArgumentException("Track ID required"))
-            val track=graph.track(id) ?: throw SafeFailure(SafeFailure.Reason.AudioUnavailable)
-            val localOnly=item.requestMetadata.extras?.getBoolean("localOnly")==true || !graph.session.remoteCurrent(scope)
+            val originalOperation=item.requestMetadata.extras?.getString("originalImportOperation")
+            val originalTrack=originalOperation?.let {graph.originalImports.playbackTrack(scope,id,it) ?: throw SafeFailure(SafeFailure.Reason.AudioUnavailable)}
+            val track=graph.track(id) ?: originalTrack ?: throw SafeFailure(SafeFailure.Reason.AudioUnavailable)
+            val localOnly=originalOperation!=null || item.requestMetadata.extras?.getBoolean("localOnly")==true || !graph.session.remoteCurrent(scope)
             val occurrence=UUID.randomUUID().toString()
             val uri=Uri.parse("soundq://track/${id.value}/$occurrence")
             val extra=Bundle().apply {putLong("trackId",id.value);putString("playbackRef",PlaybackRef.Server(graph.endpoint.identity,scope.accountId,id.value).wire());putString("occurrenceId",occurrence);putBoolean("manual",item.requestMetadata.extras?.getBoolean("manual")==true);putBoolean("localOnly",localOnly);putLong("durationMs",track.durationMs);putString("origin",if(item.requestMetadata.extras?.getBoolean("manual")==true)"Manual" else "Context")}
+            originalOperation?.let {extra.putString("originalImportOperation",it)}
 
             MediaItem.Builder().setMediaId(occurrence).setUri(uri).setMimeType("audio/*")
                 .setMediaMetadata(MediaMetadata.Builder().setTitle(track.title).setArtist(track.artist).setAlbumTitle(track.album)
