@@ -52,6 +52,12 @@ at `sample_rate`, not always 48 kHz. Buffer capacity is bytes, not float count.
 - WAV scratch is fixed 32 KiB; Opus preserves its existing bounded decoder.
   All indexing, seeking, page fills and destruction are off callback.
 
+For a caller that already verified and pinned the file, `sq_file_decoder_open_fd`
+takes ownership of an exclusively held POSIX descriptor, including on failure.
+The file must stay immutable; a descriptor pins the inode, not its contents.
+The decoder ignores the initial offset and never reopens by pathname, including
+when delegating Ogg Opus. The path-based entry point still rejects final symlinks.
+
 ## Build and exercise
 
 ```sh

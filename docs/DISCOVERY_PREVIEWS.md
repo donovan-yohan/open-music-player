@@ -52,6 +52,18 @@ or a direct SoundCloud track permalink. SoundCloud API keys must be exact numeri
 track URLs. Search omits the hint for ambiguous or unsupported URLs and never
 follows redirects. Neither the manifest nor the preview POST accepts aliases.
 
+## Stored full-song source lookup
+
+`POST /api/v1/discovery/audition-source` accepts the same exact `{"url":"…"}`
+source key and returns a track ID only when the caller's Library has a unique
+matching primary provider source with a stored audio reference. It does not
+fetch an excerpt, check object storage, or issue a playback grant. The client
+must still request authorized playback for that ID and treat the source as
+unavailable if permission or object availability changed. Missing, unsupported,
+foreign, ambiguous, and metadata-only matches get the same lookup refusal.
+The endpoint changes neither Library nor playback state; it is separate from
+the two preview configuration modes and does not by itself add a playback UI.
+
 ## Mounted clips
 
 To use only pre-prepared clips, set `DISCOVERY_PREVIEW_DIR` to an absolute,

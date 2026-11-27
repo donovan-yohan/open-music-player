@@ -19,16 +19,25 @@ struct FakeOutput final : Output {
     bool failClose = false, failStart = false, failOpen = false;
     uint32_t actualRate = 44100;
     int closes = 0, opens = 0, starts = 0;
+    int32_t streamXRuns = 0;
     float lastSample = 0;
-    bool open(Callbacks& cb, uint32_t& rate) override { ++opens; callback = &cb; rate = actualRate; return !failOpen; }
+    bool open(Callbacks& cb, uint32_t& rate) override { ++opens; streamXRuns = 0; callback = &cb; rate = actualRate; return !failOpen; }
     bool start() override { ++starts; return !failStart; }
-    bool stopClose() override { ++closes; return !failClose; }
-    int32_t xRuns() const noexcept override { return 0; }
+    bool stopClose() override { ++closes; if (!failClose) streamXRuns = -1; return !failClose; }
+    int32_t xRuns() const noexcept override { return streamXRuns; }
     void block() { std::array<float, 512> pcm{}; callback->render(pcm.data(), 256); lastSample = pcm.back(); }
 };
-std::string deck(const std::string& json) {
-    const auto start = json.find("\"decks\":[") + 9;
+std::string deck(const std::string& json, unsigned slot = 0) {
+    auto start = json.find("\"decks\":[") + 9;
+    while (slot--) start = json.find('{', json.find('}', start));
     return json.substr(start, json.find('}', start) - start + 1);
+}
+uint64_t firstOutput(const std::string& json, unsigned slot = 0) {
+    const auto detail = deck(json, slot);
+    const std::string key = "\"firstNonSilentRenderNanos\":";
+    const auto at = detail.find(key);
+    assert(at != std::string::npos && "native diagnostics must expose the deck-owned first output receipt");
+    return std::stoull(detail.substr(at + key.size()));
 }
 std::string until(Registry& r, uint64_t h, FakeOutput& out, const std::string& needle) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -39,6 +48,76 @@ std::string until(Registry& r, uint64_t h, FakeOutput& out, const std::string& n
         std::this_thread::yield();
     } while (std::chrono::steady_clock::now() < deadline);
     assert(!"native host condition deadline"); return {};
+}
+std::string terminal(const std::string& state) {
+    const std::string key = "\"terminalDecks\":[";
+    const auto at = state.find(key);
+    assert(at != std::string::npos);
+    const auto start = at + key.size();
+    if (state.compare(start, 4, "null") == 0) return "null";
+    assert(state[start] == '{');
+    return state.substr(start, state.find('}', start) - start + 1);
+}
+uint64_t field(const std::string& json, const std::string& name) {
+    const auto key = "\"" + name + "\":";
+    const auto at = json.find(key);
+    assert(at != std::string::npos);
+    return std::stoull(json.substr(at + key.size()));
+}
+void terminalRecovery(Registry& registry, uint64_t handle, FakeOutput& output, bool readBeforeRecovery) {
+    output.streamXRuns = 7;
+    assert(registry.load(handle, 0, "/fake/end-on-first-stream", 91, 3, 9980));
+    assert(registry.control(handle, 1, 0, 0, 0));
+    const auto playing = until(registry, handle, output, "\"playing\":true");
+    const auto traversal = field(deck(playing), "traversalRevision");
+    assert(traversal > 0 && field(deck(playing), "naturalEndCount") == 0);
+    assert(terminal(playing) == "null" && output.lastSample == .125f);
+    assert(field(playing, "outputStreamEpoch") == 1 && field(playing, "xRuns") == 7);
+    // PCM crosses the sealed endpoint with no state sampling. A decoded last
+    // tap followed by silence is then confirmed by the actual natural-end receipt.
+    for (int i = 0; i < 4 && output.lastSample != 0; ++i) output.block();
+    assert(output.lastSample == 0);
+    const auto early = readBeforeRecovery ? terminal(registry.state(handle)) : "null";
+    if (readBeforeRecovery) {
+        assert(field(early, "outputStreamEpoch") == 1 && field(early, "xRuns") == 7);
+    }
+
+    output.streamXRuns = -1; // the disconnected stream can no longer be sampled
+    output.callback->outputError(-899);
+    output.failStart = true;
+    assert(registry.recoverOutput(handle) == OutputRecovery::Failed);
+    output.failStart = false;
+    assert(registry.recoverOutput(handle) == OutputRecovery::Reset);
+    assert(output.opens == 3 && output.closes == 2 && output.xRuns() == 0);
+    output.block(); // successor can already publish snapshots before the reader returns
+    assert(output.lastSample == 0);
+    const auto recovered = registry.state(handle);
+    assert(field(recovered, "error") == 0 && field(recovered, "outputStreamEpoch") == 2 && field(recovered, "xRuns") == 0);
+    const auto ended = terminal(recovered);
+    std::cout << "after recovery: " << ended << std::endl;
+    assert(field(ended, "generation") == 3 && field(ended, "identity") == 91);
+    assert(field(ended, "traversalRevision") == traversal && field(ended, "naturalEndCount") == 1);
+    assert(field(ended, "sourceFrame") == 320000 && field(ended, "sourceFrames") == 320000);
+    assert(field(ended, "outputStreamEpoch") == 1 && "terminal epoch must name the stream that rendered EOF");
+    if (readBeforeRecovery) assert(ended == early);
+    else assert(ended.find("\"xRuns\":-1,") != std::string::npos);
+
+    assert(registry.control(handle, 3, 0, 10000, 0));
+    output.block();
+    const auto sought = registry.state(handle);
+    assert(field(deck(sought), "traversalRevision") != traversal);
+    assert(terminal(sought) == ended); // a seek to EOF does not replace natural evidence
+    assert(registry.control(handle, 3, 0, 9980, 0));
+    output.block();
+    assert(registry.control(handle, 1, 0, 0, 0));
+    const auto replay = until(registry, handle, output, "\"naturalEndCount\":2");
+    const auto fresh = terminal(replay);
+    assert(field(fresh, "generation") == 3 && field(fresh, "identity") == 91);
+    assert(field(fresh, "traversalRevision") == field(deck(replay), "traversalRevision"));
+    assert(field(fresh, "traversalRevision") != traversal && field(fresh, "naturalEndCount") == 2);
+    assert(field(fresh, "firstNonSilentRenderNanos") == field(ended, "firstNonSilentRenderNanos"));
+    assert(field(fresh, "outputStreamEpoch") == 2 && field(fresh, "xRuns") == 0);
+    std::cout << "after new traversal: " << fresh << '\n';
 }
 int main(int argc, char** argv) {
     Registry registry;
@@ -53,6 +132,88 @@ int main(int argc, char** argv) {
     assert(testDecoders == 0);
     if (argc == 2 && std::string(argv[1]) == "--json") {
         std::cout << json << '\n'; assert(registry.close(handle)); return 0;
+    }
+    if (argc == 2 && (std::string(argv[1]) == "--terminal-recovery" || std::string(argv[1]) == "--terminal-recovery-retained")) {
+        terminalRecovery(registry, handle, *out, std::string(argv[1]) == "--terminal-recovery-retained");
+        assert(registry.close(handle)); return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--output-epoch") {
+        const auto read = [&](const std::string& key) {
+            const auto state = registry.state(handle);
+            const auto field = "\"" + key + "\":";
+            const auto at = state.find(field);
+            assert(at != std::string::npos && "diagnostic field missing");
+            return std::stoull(state.substr(at + field.size()));
+        };
+        const auto initial = read("outputStreamEpoch");
+        assert(initial > 0 && read("renderedFrames") == 0 && read("xRuns") == 0);
+        out->block();
+        assert(read("renderedFrames") == 256 && read("outputStreamEpoch") == initial);
+        assert(registry.recoverOutput(handle) == OutputRecovery::Healthy);
+        assert(read("outputStreamEpoch") == initial);
+        out->callback->outputError(-899);
+        out->failStart = true;
+        assert(registry.recoverOutput(handle) == OutputRecovery::Failed);
+        assert(read("outputStreamEpoch") == initial);
+        out->failStart = false;
+        assert(registry.recoverOutput(handle) == OutputRecovery::Reset);
+        const auto recovered = read("outputStreamEpoch");
+        assert(recovered == initial + 1 && read("xRuns") == 0);
+        const auto before = read("renderedFrames");
+        out->block();
+        assert(read("renderedFrames") == before + 256 && read("outputStreamEpoch") == recovered);
+        assert(registry.close(handle));
+        handle = registry.open(std::make_unique<FakeOutput>());
+        assert(handle != 0 && read("outputStreamEpoch") == recovered + 1);
+        assert(registry.close(handle)); return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--first-output") {
+        assert(firstOutput(json) == 0);
+        assert(registry.load(handle, 0, "/fake/first", 17, 17, 0));
+        assert(registry.load(handle, 2, "/fake/preview", 18, 18, 0));
+        assert(registry.control(handle, 1, 0, 0, 0));
+        until(registry, handle, *out, "\"playing\":true");
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        do {
+            out->block(); json=registry.state(handle);
+            assert(std::chrono::steady_clock::now()<deadline);
+        } while (deck(json,2).find("\"ready\":true")==std::string::npos);
+        const auto ordinary=firstOutput(json);
+        assert(ordinary>0 && firstOutput(json,2)==0);
+
+        assert(registry.control(handle, 7, 2, 0, 0)); // muted while PCM advances
+        for (unsigned i=0; i<3; ++i) out->block();
+        assert(registry.control(handle, 1, 2, 0, 0));
+        for (unsigned i=0; i<3; ++i) out->block();
+        json=registry.state(handle);
+        assert(deck(json,2).find("\"playing\":true")!=std::string::npos && firstOutput(json,2)==0);
+        assert(registry.control(handle, 7, 2, 1, 0));
+        assert(firstOutput(registry.state(handle),2)==0);
+        out->block();
+        json=registry.state(handle);
+        const auto preview=firstOutput(json,2);
+        assert(preview>ordinary);
+        out->block();
+        json=registry.state(handle);
+        assert(firstOutput(json,2)==preview && firstOutput(json)==ordinary);
+
+        assert(registry.control(handle, 8, 2, 0, 0));
+        assert(firstOutput(registry.state(handle),2)==0);
+        do {
+            out->block(); json=registry.state(handle);
+            assert(std::chrono::steady_clock::now()<deadline);
+        } while (deck(json,2).find("\"identity\":0")==std::string::npos);
+        assert(registry.load(handle, 2, "/fake/preview", 18, 19, 0));
+        assert(firstOutput(registry.state(handle),2)==0);
+        assert(registry.control(handle, 1, 2, 0, 0));
+        do {
+            out->block(); json=registry.state(handle);
+            assert(std::chrono::steady_clock::now()<deadline);
+        } while (firstOutput(json,2)==0);
+        assert(firstOutput(json,2)>preview && firstOutput(json)==ordinary);
+        assert(registry.close(handle));
+        std::cout << "PASS first non-silent render belongs to the current audible deck generation\n";
+        return 0;
     }
     if (argc == 2 && std::string(argv[1]) == "--handoff-pause") {
         assert(registry.load(handle, 0, "/fake/first", 17, 17, 321));
@@ -142,6 +303,32 @@ int main(int argc, char** argv) {
     assert(deck(json).find("\"naturalEndCount\":1") != std::string::npos);
     assert(deck(json).find("\"naturalEndGeneration\":1") != std::string::npos);
     assert(deck(json).find("\"naturalEndIdentity\":11") != std::string::npos);
+    if (argc == 2 && std::string(argv[1]) == "--terminal-receipt") {
+        const auto ended = terminal(json);
+        for (const char* exact : {"\"generation\":1,", "\"identity\":11,", "\"naturalEndCount\":1,",
+                 "\"sourceFrame\":320000,", "\"sourceFrames\":320000,", "\"sourceRate\":32000,", "\"xRuns\":0,",
+                 "\"outputStreamEpoch\":1,"}) {
+            if (ended.find(exact) == std::string::npos) std::cerr << "Missing " << exact << " in " << ended << '\n';
+            assert(ended.find(exact) != std::string::npos);
+        }
+        const auto liveEnd = deck(json);
+        const auto missing = liveEnd.find("\"missingPcmFrames\":");
+        assert(missing != std::string::npos);
+        assert(ended.find(liveEnd.substr(missing, liveEnd.find(',', missing) - missing + 1)) != std::string::npos);
+        assert(registry.control(handle, 8, 0, 0, 0));
+        json = until(registry, handle, *out, "\"identity\":0");
+        assert(terminal(json) == ended); // delayed reader missed the live end and the unload ACK
+        assert(registry.load(handle, 0, "/fake/replacement", 22, 2, 10000));
+        assert(registry.control(handle, 1, 0, 0, 0));
+        json = until(registry, handle, *out, "\"eofCount\":1"); // endpoint admission, not a natural end
+        assert(deck(json).find("\"naturalEndCount\":0") != std::string::npos);
+        assert(terminal(json) == ended);
+        assert(registry.control(handle, 3, 0, 9000, 0)); out->block();
+        assert(registry.control(handle, 1, 0, 0, 0));
+        json = until(registry, handle, *out, "\"naturalEndCount\":1");
+        assert(terminal(json).find("\"generation\":2,\"identity\":22,") != std::string::npos);
+        assert(registry.close(handle)); return 0;
+    }
     if (argc == 2 && std::string(argv[1]) == "--natural-json") {
         std::cout << json << '\n'; assert(registry.close(handle)); return 0;
     }

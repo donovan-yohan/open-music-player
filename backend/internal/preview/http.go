@@ -47,10 +47,8 @@ func (c *Catalog) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if ctx.Err() != nil {
 		return
 	}
-	var key string
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes))
-	if r.URL.RawQuery != "" || r.URL.ForceQuery || !decodeObject(dec, map[string]any{"url": &key}) ||
-		!atEOF(dec) || len(key) == 0 || len(key) > maxURLBytes {
+	key, ok := ReadSourceRequest(w, r)
+	if !ok {
 		http.Error(w, "invalid preview request", http.StatusBadRequest)
 		return
 	}
@@ -133,4 +131,18 @@ func (c *Catalog) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func unavailable(w http.ResponseWriter) {
 	http.Error(w, "preview unavailable", http.StatusNotFound)
+}
+
+// ReadSourceRequest admits one bounded URL field with the Discover preview wire
+// grammar. Callers still decide which exact keys they can serve.
+func ReadSourceRequest(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if r.URL.RawQuery != "" || r.URL.ForceQuery {
+		return "", false
+	}
+	var key string
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes))
+	if !decodeObject(dec, map[string]any{"url": &key}) || !atEOF(dec) || len(key) == 0 || len(key) > maxURLBytes {
+		return "", false
+	}
+	return key, true
 }

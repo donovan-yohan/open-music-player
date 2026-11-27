@@ -2,8 +2,9 @@
 """Generated MP3/Opus only; real decoder/Host and independent every-sample oracle."""
 from pathlib import Path
 import argparse, array, json, math, subprocess, wave
+from file_oracle_build import build_file_oracle
 p=argparse.ArgumentParser();p.add_argument('--build',type=Path,required=True);p.add_argument('--decoder',type=Path,required=True);p.add_argument('--codec',choices=['mp3','opus'],required=True);p.add_argument('--controls',action='store_true');a=p.parse_args()
-r=Path(__file__).resolve().parents[7];h=r/'android/app/src/main/cpp/nativeengine';a.build.mkdir(parents=True,exist_ok=True)
+a.build=a.build.resolve();a.build.mkdir(parents=True,exist_ok=True)
 paths=[];sources=[]
 for name,frames,rate,channel in [('a',182400,48000,0),('b',159131,44100,1)]:
     pcm=array.array('h')
@@ -16,8 +17,7 @@ for name,frames,rate,channel in [('a',182400,48000,0),('b',159131,44100,1)]:
     hz=48000 if a.codec=='opus' else rate
     subprocess.run(['ffmpeg','-threads','1','-v','error','-y','-i',str(path),'-f','f32le','-acodec','pcm_f32le','-ac','2','-ar',str(hz),str(decoded)],check=True)
     data=array.array('f');data.frombytes(decoded.read_bytes());sources.append((hz,data));paths.append(path)
-exe=a.build/'eof-file-test'
-subprocess.run(['c++','-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer','-Wall','-Wextra','-Werror',f'-I{h}',f'-I{r}/client/native/transport/include',f'-I{r}/client/native/file_decoder/include',str(h/'tests/eof_file_tests.cpp'),str(h/'callback_host.cpp'),str(h/'worker_deck.cpp'),str(r/'client/native/transport/src/soundq_transport.cpp'),str(a.decoder),f'-Wl,-rpath,{a.decoder.resolve().parent}','-o',str(exe)],check=True)
+exe=build_file_oracle(a.build,a.decoder,'eof')
 subprocess.run([str(exe),*map(str,paths),str(a.build/'mixed.f32'),'controls' if a.controls else 'rounded'],check=True)
 if a.controls:raise SystemExit(0)
 actual=array.array('f');actual.frombytes((a.build/'mixed.f32').read_bytes());maximum=0;ends=[]

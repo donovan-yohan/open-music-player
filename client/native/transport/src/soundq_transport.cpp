@@ -26,7 +26,7 @@ void barrier(unsigned stage) noexcept {
 #endif
 namespace {
 constexpr uint64_t queueCapacity = 64;
-constexpr std::size_t deckWords = 30;
+constexpr std::size_t deckWords = 32;
 constexpr std::size_t stemAt = 5 + 4 * deckWords + 10 + 64 * 3;
 constexpr std::size_t snapshotWords = stemAt + 9;
 constexpr uint32_t stemRate = 48000, stemRampFrames = 480;
@@ -145,6 +145,8 @@ struct Deck {
     uint64_t traversalRevision = 0;
     uint64_t naturalEndCount = 0, naturalEndGeneration = 0, naturalEndIdentity = 0;
     uint64_t naturalEndTraversalRevision = 0;
+    uint64_t naturalEndOutputStreamEpoch = 0;
+    uint64_t firstNonSilentRenderNanos = 0;
     bool atEnd = false;
     bool performance = false;
     double nominal = 0;
@@ -298,6 +300,8 @@ struct Engine::Impl {
             data[at+25]=d.traversalRevision; data[at+26]=d.naturalEndCount;
             data[at+27]=d.naturalEndGeneration; data[at+28]=d.naturalEndIdentity;
             data[at+29]=d.naturalEndTraversalRevision;
+            data[at+30]=d.firstNonSilentRenderNanos;
+            data[at+31]=d.naturalEndOutputStreamEpoch;
         }
         constexpr auto at=5+4*deckWords;
         data[at] = schedule ? schedule->revision : 0;
@@ -1228,9 +1232,17 @@ bool Engine::move(const ScratchMove& movement) noexcept {
 }
 
 void Engine::render(float* output, uint32_t frames) noexcept {
-    renderAt(output,frames,static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()));
+    renderOutput(output, frames, 0);
 }
-void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
+void Engine::renderOutput(float* output, uint32_t frames, uint64_t outputStreamEpoch) noexcept {
+    const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    renderBlock(output, frames, now, outputStreamEpoch);
+}
+void Engine::renderAt(float* output, uint32_t frames, uint64_t now) noexcept {
+    renderBlock(output, frames, now, 0);
+}
+void Engine::renderBlock(float* output, uint32_t frames, uint64_t now, uint64_t outputStreamEpoch) noexcept {
     auto& p = *impl_;
     p.callbackNanos=now;
     auto tail = p.tail.load(std::memory_order_relaxed);
@@ -1284,6 +1296,9 @@ void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
             if (stemDeck) p.sampleStem(index,l,r);
             left += level * l;
             right += level * r;
+            if (!d.firstNonSilentRenderNanos && output &&
+                (std::abs(level * l) > 0.000001 || std::abs(level * r) > 0.000001))
+                d.firstNonSilentRenderNanos = now;
             d.cursor = position + d.rate.value * d.source.sourceRate / p.outputRate;
             if (d.source.frames && d.cursor >= static_cast<double>(d.source.frames)) {
                 d.cursor = static_cast<double>(d.source.frames);
@@ -1295,6 +1310,7 @@ void Engine::renderAt(float* output, uint32_t frames,uint64_t now) noexcept {
                     d.naturalEndGeneration = d.generation;
                     d.naturalEndIdentity = d.source.identity;
                     d.naturalEndTraversalRevision = d.traversalRevision;
+                    d.naturalEndOutputStreamEpoch = outputStreamEpoch;
                 }
                 if (!d.atEnd) { ++d.eofCount; d.atEnd = true; }
                 if (!d.scratching) d.playing = false;
@@ -1346,6 +1362,8 @@ bool Engine::snapshot(Snapshot& destination) const noexcept {
         d.traversalRevision=data[at+25]; d.naturalEndCount=data[at+26];
         d.naturalEndGeneration=data[at+27]; d.naturalEndIdentity=data[at+28];
         d.naturalEndTraversalRevision=data[at+29];
+        d.firstNonSilentRenderNanos=data[at+30];
+        d.naturalEndOutputStreamEpoch=data[at+31];
         d.missingPcmFrames = data[at + 8]; d.residentPages = static_cast<uint32_t>(data[at + 9]);
         d.nominalSourceFrame=number(data[at+10]);d.lastMoveEventNanos=data[at+11];d.lastMoveAppliedNanos=data[at+12];d.lastMoveSequence=data[at+13];d.heldZero=data[at+14]!=0;
         d.syncReference=data[at+15];d.syncBeats=static_cast<uint32_t>(data[at+16]);d.syncState=static_cast<uint32_t>(data[at+17]);d.syncPhaseErrorFrames=number(data[at+18]);d.demandSourceFrame=number(data[at+19]);d.syncBoundaryFrame=data[at+20];d.processingEpoch=data[at+21];d.effectiveBpm=number(data[at+22]);d.tempoGeneration=data[at+23];

@@ -93,6 +93,11 @@ struct DeckSnapshot {
     uint64_t traversalRevision = 0;
     uint64_t naturalEndCount = 0, naturalEndGeneration = 0, naturalEndIdentity = 0;
     uint64_t naturalEndTraversalRevision = 0;
+    // Output stream of the crossing, not of the latest block or observer.
+    uint64_t naturalEndOutputStreamEpoch = 0;
+    // Start of the first output block with a non-silent ordinary deck
+    // contribution after assignment. Zero until observed; not hardware presentation.
+    uint64_t firstNonSilentRenderNanos = 0;
 };
 struct LiveSync {
     uint64_t incoming = 0, reference = 0;
@@ -265,9 +270,14 @@ public:
     bool move(const ScratchMove& movement) noexcept;
     // No heap operations, mutex, IO, decoder, JNI or caller callbacks here.
     void render(float* stereoOutput, uint32_t frames) noexcept;
+    // Host output callback with its admitted stream epoch. Offline renders and
+    // control drains leave the stream coordinate unspecified (zero).
+    void renderOutput(float* stereoOutput, uint32_t frames, uint64_t outputStreamEpoch) noexcept;
     // Coherent published snapshot. Nonblocking: false if reader falls behind.
     bool snapshot(Snapshot& destination) const noexcept;
 private:
+    void renderBlock(float* stereoOutput, uint32_t frames, uint64_t callbackNanos,
+                     uint64_t outputStreamEpoch) noexcept;
     bool attachPreparedStem(uint64_t sequence, const PreparedStemKey& key, const PcmWindow& window,
                             uint64_t traversal) noexcept;
     struct Impl;

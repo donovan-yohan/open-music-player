@@ -33,6 +33,10 @@ typedef enum sq_opus_status {
 #define SQ_OPUS_MAX_WINDOW_FRAMES UINT32_C(48000)
 SQ_OPUS_API int sq_opus_decoder_open(const char *absolute_path,
   uint64_t max_file_bytes, sq_opus_decoder **out_decoder);
+/* Consumes an exclusively owned, readable, close-on-exec POSIX file descriptor
+ * at any offset. A nonnegative fd transfers even on failure. No path reopen. */
+SQ_OPUS_API int sq_opus_decoder_open_fd(int fd, uint64_t max_file_bytes,
+  sq_opus_decoder **out_decoder);
 SQ_OPUS_API uint32_t sq_opus_decoder_sample_rate(const sq_opus_decoder *decoder);
 SQ_OPUS_API uint32_t sq_opus_decoder_channels(const sq_opus_decoder *decoder);
 /* Trimmed 48k frames: pre-skip and EOS end trim already excluded. */

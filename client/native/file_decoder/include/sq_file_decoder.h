@@ -39,6 +39,12 @@ typedef enum sq_file_status {
  * Success returns a new owned handle; every failure clears *out_decoder. */
 SQ_FILE_API int sq_file_decoder_open(const char *absolute_path,
   uint64_t max_file_bytes, sq_file_decoder **out_decoder);
+/* Consume an exclusively owned, readable, close-on-exec POSIX descriptor for
+ * the same immutable regular file. Never reopens a path. Initial offset is
+ * ignored; do not use any alias with a shared file position while decoding.
+ * A nonnegative fd transfers even on failure (including NULL out_decoder). */
+SQ_FILE_API int sq_file_decoder_open_fd(int fd, uint64_t max_file_bytes,
+  sq_file_decoder **out_decoder);
 /* Source rate (no resampling); output is always interleaved float stereo.
  * Mono is duplicated, not attenuated. Normalized float units (PCM16 /32768);
  * codec overshoots are preserved, not clipped. Float WAV must be finite.

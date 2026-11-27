@@ -2,8 +2,9 @@
 """Real generated MP3/Opus -> worker -> Host callback, every-sample independent oracle."""
 from pathlib import Path
 import argparse, array, json, math, subprocess, wave
+from file_oracle_build import build_file_oracle
 p=argparse.ArgumentParser();p.add_argument('--build',type=Path,required=True);p.add_argument('--decoder',type=Path,required=True);p.add_argument('--codec',choices=['mp3','opus'],required=True);a=p.parse_args()
-r=Path(__file__).resolve().parents[7];h=r/'android/app/src/main/cpp/nativeengine';a.build.mkdir(parents=True,exist_ok=True)
+a.build=a.build.resolve();a.build.mkdir(parents=True,exist_ok=True)
 paths=[];sources=[]
 for voice in range(4):
     rate=44100 if voice==1 else 48000
@@ -18,8 +19,7 @@ for voice in range(4):
     hz=48000 if a.codec=='opus' else rate
     subprocess.run(['ffmpeg','-threads','1','-v','error','-y','-i',str(path),'-f','f32le','-acodec','pcm_f32le','-ac','2','-ar',str(hz),str(decoded)],check=True)
     data=array.array('f');data.frombytes(decoded.read_bytes());sources.append((hz,data));paths.append(path)
-exe=a.build/'performance-file-test'
-subprocess.run(['c++','-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer','-Wall','-Wextra','-Werror',f'-I{h}',f'-I{r}/client/native/transport/include',f'-I{r}/client/native/file_decoder/include',str(h/'tests/performance_file_tests.cpp'),str(h/'callback_host.cpp'),str(h/'worker_deck.cpp'),str(r/'client/native/transport/src/soundq_transport.cpp'),str(a.decoder),f'-Wl,-rpath,{a.decoder.resolve().parent}','-o',str(exe)],check=True)
+exe=build_file_oracle(a.build,a.decoder,'performance')
 prefix=a.build/'performance';subprocess.run([str(exe),*map(str,paths),str(prefix)],check=True)
 actual=array.array('f');actual.frombytes(prefix.with_suffix('.f32').read_bytes());rows=[json.loads(l) for l in prefix.with_suffix('.jsonl').read_text().splitlines()]
 commands={v['global']:v for v in rows if 'operation' in v};sync=next(v['global'] for v in rows if 'sync' in v);final=rows[-1]['finalState']

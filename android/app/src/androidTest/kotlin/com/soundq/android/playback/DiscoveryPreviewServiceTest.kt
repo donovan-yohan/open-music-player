@@ -208,28 +208,39 @@ class DiscoveryPreviewServiceTest {
                 }
                 val exclusiveSamples=if (moving) ExclusivePreviewSamples() else null
                 val previewStarted=SystemClock.elapsedRealtime()
+                var requestStartedNanos=0L
+                var firstRenderNanos=0L
                 val accepted=async(Dispatchers.Main) {
                     val guard=projection.captureContextRead(preview=true)
+                    requestStartedNanos=System.nanoTime()
                     projection.startDiscoveryPreview(scope,source,"Ephemeral preview","Synthetic",valid=guard)
                 }
                 assertTrue(tail.prefixSent.await(5,TimeUnit.SECONDS))
                 val previewTransportBound=minOf(app.fixtureClient.readTimeoutMillis.toLong(),20_000L,15_000L)
                 await("preview did not render non-silence while tail was held") {
                     val snapshot=state()
-                    if (exclusiveSamples != null) {
+                    val deck=snapshot.getJSONArray("decks").getJSONObject(2)
+                    val renderNanos=deck.getLong("firstNonSilentRenderNanos")
+                    if (!snapshot.getBoolean("coherent") || requestStartedNanos==0L || deck.getLong("identity")<=0L ||
+                        deck.getLong("identity")!=deck.getLong("generation") ||
+                        renderNanos !in requestStartedNanos..System.nanoTime()) return@await false
+                    val rendered=if (exclusiveSamples != null) {
                         val item=native.currentMediaItem
-                        return@await item!=null && item.mediaId.startsWith(DISCOVERY_PREVIEW_PREFIX) &&
+                        item!=null && item.mediaId.startsWith(DISCOVERY_PREVIEW_PREFIX) &&
                             item.mediaMetadata.title=="Ephemeral preview" && native.playWhenReady && native.playerError==null &&
                             tail.release.count==1L && tail.tailSent.count==1L &&
                             SystemClock.elapsedRealtime()-previewStarted<previewTransportBound && exclusiveSamples.observe(item.mediaId,snapshot)
+                    } else {
+                        native.currentMediaItem?.mediaId?.startsWith(DISCOVERY_PREVIEW_PREFIX)==true &&
+                            deck.getDouble("sourceFrame")>=800 && deck.getLong("sourceFrames")==0L &&
+                            !snapshot.getJSONArray("decks").getJSONObject(0).getBoolean("playing") &&
+                            snapshot.getLong("nonSilentCallbacks")>beforeSamples
                     }
-                    val deck=snapshot.getJSONArray("decks").getJSONObject(2)
-                    native.currentMediaItem?.mediaId?.startsWith(DISCOVERY_PREVIEW_PREFIX)==true &&
-                        deck.getDouble("sourceFrame")>=800 && deck.getLong("sourceFrames")==0L &&
-                        !snapshot.getJSONArray("decks").getJSONObject(0).getBoolean("playing") &&
-                        snapshot.getLong("nonSilentCallbacks")>beforeSamples
+                    if (rendered) firstRenderNanos=renderNanos
+                    rendered
                 }
                 assertTrue(accepted.await())
+                android.util.Log.i("MountDiag","fixture preview request-to-first-render ns=${firstRenderNanos-requestStartedNanos}")
                 val firstPreview=if(removeBeforeSecondPreview)main {
                     checkNotNull(native.currentMediaItem).mediaId to state().getJSONArray("decks").getJSONObject(2).getLong("generation")
                 } else null

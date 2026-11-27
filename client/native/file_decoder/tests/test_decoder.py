@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Real byte fixtures and independent ffmpeg oracle (no runtime dependencies)."""
-import argparse, array, ctypes as C, json, math, random, struct, subprocess
+import argparse, array, ctypes as C, errno, json, math, os, random, struct, subprocess, tempfile
 from pathlib import Path
 
 def run(args):
@@ -129,6 +129,74 @@ class API:
         assert all(x==91. for x in b[got.value*2:]),('tail',start,count,got.value)
         return list(b[:got.value*2])
 
+def descriptor_qualification(api, records, directory):
+    open_fd = getattr(api.lib, 'sq_file_decoder_open_fd', None)
+    assert open_fd is not None, 'decoder must accept the pinned descriptor without reopening a path'
+    open_fd.argtypes = [C.c_int, C.c_uint64, C.POINTER(C.c_void_p)]
+    open_fd.restype = C.c_int
+
+    def assert_closed(fd):
+        try:
+            os.fstat(fd)
+        except OSError as exc:
+            assert exc.errno == errno.EBADF
+        else:
+            raise AssertionError('decoder did not close its owned descriptor')
+
+    with tempfile.TemporaryDirectory(dir=directory) as work:
+        path = Path(work) / 'staged.encoded'
+        for suffix in ('.wav', '.mp3', '.opus'):
+            item = next(record for record in records if Path(record['path']).suffix == suffix)
+            data = Path(item['path']).read_bytes()
+            path.write_bytes(data)
+            status, expected = api.load(path)
+            assert status == 0
+            try:
+                windows = [(0, 128), (91_003, 257), (item['frames'] - 7, 64)]
+                decoded = [api.window(expected, start, count) for start, count in windows]
+            finally:
+                api.destroy(expected)
+
+            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            os.lseek(fd, 17, os.SEEK_SET)
+            path.unlink()
+            replacement = b'?' * len(data)
+            path.write_bytes(replacement)
+            assert os.fstat(fd).st_ino != path.stat().st_ino
+            handle = C.c_void_p(123)
+            status = open_fd(fd, 1 << 27, C.byref(handle))
+            assert status == 0 and handle.value, (suffix, status)
+            try:
+                assert api.lib.sq_file_decoder_frame_count(handle) == item['frames']
+                assert api.lib.sq_file_decoder_sample_rate(handle) == item['rate']
+                assert [api.window(handle, start, count) for start, count in windows] == decoded
+            finally:
+                api.destroy(handle)
+            assert_closed(fd)
+            assert path.read_bytes() == replacement
+
+        invalid_ogg = Path(work) / 'invalid.ogg'
+        invalid_ogg.write_bytes(b'OggS' + b'?' * 64)
+        failures = (
+            (path, os.O_RDONLY, 1 << 27, -3),
+            (invalid_ogg, os.O_RDONLY, 1 << 27, -3),
+            (path, os.O_RDONLY, 1, -5),
+            (path, os.O_RDONLY, 0, -1),
+            (path, os.O_WRONLY, 1 << 27, -2),
+            (Path(work), os.O_RDONLY, 1 << 27, -2),
+        )
+        for source, flags, limit, status in failures:
+            fd = os.open(source, flags | os.O_CLOEXEC)
+            handle = C.c_void_p(123)
+            assert open_fd(fd, limit, C.byref(handle)) == status and not handle.value
+            assert_closed(fd)
+        handle = C.c_void_p(123)
+        assert open_fd(-1, 1 << 27, C.byref(handle)) == -1 and not handle.value
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+        assert open_fd(fd, 1 << 27, None) == -1
+        assert_closed(fd)
+    print(json.dumps({'pinned_descriptor_codecs': ['wav', 'mp3', 'opus'], 'failure_contract_checks': len(failures) + 2}))
+
 def qualification(api,records,directory):
     metrics=[]
     for item in records:
@@ -168,8 +236,9 @@ def qualification(api,records,directory):
     (directory/'metrics.json').write_text(json.dumps(metrics,indent=2)); print(json.dumps(metrics,indent=2))
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser(); p.add_argument('--library'); p.add_argument('--directory',required=True); p.add_argument('--generate',action='store_true'); p.add_argument('--oboe',type=Path); a=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument('--library'); p.add_argument('--directory',required=True); p.add_argument('--generate',action='store_true'); p.add_argument('--oboe',type=Path); p.add_argument('--descriptor-only',action='store_true'); a=p.parse_args()
     directory=Path(a.directory).resolve(); records=make(directory) if a.generate else json.loads((directory/'records.json').read_text())
     if a.oboe: records=music(directory,a.oboe)
     if a.library:
-        api=API(Path(a.library).resolve()); qualification(api,records,directory); malformed(api,directory)
+        api=API(Path(a.library).resolve()); descriptor_qualification(api,records,directory)
+        if not a.descriptor_only: qualification(api,records,directory); malformed(api,directory)

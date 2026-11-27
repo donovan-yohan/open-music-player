@@ -299,6 +299,24 @@ func (r *LibraryRepository) IsTrackInLibrary(ctx context.Context, userID uuid.UU
 	return exists, nil
 }
 
+// ExactStoredSourceInLibrary returns a unique shared track whose primary
+// download source matches, or zero when no unambiguous stored match exists.
+// Secondary catalog associations are not provenance for the stored audio.
+func (r *LibraryRepository) ExactStoredSourceInLibrary(ctx context.Context, userID uuid.UUID, provider, sourceURL string) (int64, error) {
+	var id int64
+	err := r.db.QueryRowContext(ctx, `
+		SELECT CASE WHEN count(*) = 1 THEN min(id) ELSE 0 END
+		FROM (
+			SELECT t.id
+			FROM user_library ul JOIN tracks t ON t.id = ul.track_id
+			WHERE ul.user_id = $1 AND t.private_owner_id IS NULL
+			  AND t.source_type COLLATE "C" = $2 AND t.source_url COLLATE "C" = $3
+			  AND t.file_size_bytes > 0 AND btrim(t.storage_key) <> ''
+			LIMIT 2
+		) stored`, userID, provider, sourceURL).Scan(&id)
+	return id, err
+}
+
 // AddFavorite marks a track as liked ("Liked Songs") for a user. Idempotent:
 // liking an already-liked track is a no-op success. Favorites are membership +
 // timestamp only and do NOT change user_library membership.

@@ -575,6 +575,12 @@ func (db *DB) Migrate() error {
 	-- Block account deletion until an explicit private object retirement workflow
 	-- exists: cascading here would leave original bytes without their custodian.
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS private_owner_id UUID REFERENCES users(id) ON DELETE RESTRICT;
+	-- Audition uses byte-exact URL equality. A hash index avoids btree tuple
+	-- limits on legacy, unbounded TEXT URLs and PostgreSQL rechecks equality.
+	CREATE INDEX IF NOT EXISTS idx_tracks_audition_source
+		ON tracks USING hash (source_url COLLATE "C")
+		WHERE private_owner_id IS NULL AND source_url IS NOT NULL
+			AND file_size_bytes > 0 AND btrim(storage_key) <> '';
 	DO $$ BEGIN
 		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'tracks'::regclass AND conname = 'tracks_private_exact_source') THEN
 			ALTER TABLE tracks ADD CONSTRAINT tracks_private_exact_source CHECK (

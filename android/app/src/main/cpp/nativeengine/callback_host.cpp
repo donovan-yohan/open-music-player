@@ -49,6 +49,15 @@ struct Host final : Callbacks {
     std::array<std::unique_ptr<WorkerDeck>, 4> workers;
     std::array<Intent, 4> intents;
     Snapshot last{};
+    struct TerminalDeckReceipt {
+        DeckSnapshot deck;
+        uint64_t sourceFrames, callbackOverruns;
+        uint32_t sourceRate;
+        int32_t xRuns;
+    };
+    // Diagnostics only: one immutable observation per slot, until a different
+    // natural end supersedes it. Never use this history as live deck authority.
+    std::array<std::optional<TerminalDeckReceipt>, 4> terminalDecks;
     // One control-owned copy. Engine only borrows the validated window and
     // never refcounts, allocates or destroys its backing bytes on callback.
     std::unique_ptr<const std::vector<float>> stemPcm;
@@ -86,6 +95,8 @@ struct Host final : Callbacks {
     uint64_t sequence = 0;
     uint32_t sampleRate = 0;
     std::atomic<int32_t> error{0};
+    // Set before releasing the gate; changed only after the old callback exits.
+    uint64_t renderOutputEpoch = 0;
     std::atomic<bool> gated{true};
     std::atomic<uint64_t> overruns{0};
     std::atomic<uint64_t> nonSilentCallbacks{0};
@@ -95,10 +106,11 @@ struct Host final : Callbacks {
         error.compare_exchange_strong(expected, e == 0 ? internalError : e, std::memory_order_acq_rel);
         gated.store(true, std::memory_order_release);
     }
-    bool open() {
+    bool open(uint64_t epoch) {
         if (!output || !output->open(*this, sampleRate) || sampleRate == 0) return false;
         engine = std::make_unique<Engine>(sampleRate);
         for (uint32_t i = 0; i < 4; ++i) workers[i] = std::make_unique<WorkerDeck>(i, *engine, sequence);
+        renderOutputEpoch = epoch;
         gated.store(false, std::memory_order_release);
         return output->start();
     }
@@ -112,7 +124,8 @@ struct Host final : Callbacks {
 #if defined(SOUNDQ_CALLBACK_TEST_SCHEDULE_DRIVER) || defined(SOUNDQ_CALLBACK_TEST_STEM_DRIVER)
         if(!frames){engine->render(stereo,0);return;}
 #endif
-        for(uint32_t at=0;at<frames;) {const auto count=std::min(256U,frames-at);engine->render(stereo+size_t{at}*2,count);at+=count;}
+        const auto epoch = renderOutputEpoch;
+        for(uint32_t at=0;at<frames;) {const auto count=std::min(256U,frames-at);engine->renderOutput(stereo+size_t{at}*2,count,epoch);at+=count;}
         bool nonSilent = false;
         for (uint64_t i = 0; i < uint64_t{frames} * 2; ++i)
             nonSilent = nonSilent || std::abs(stereo[i]) > 0.000001f;
@@ -166,7 +179,7 @@ struct Host final : Callbacks {
         if (settleRate) engine->render(nullptr, 128);
         return true;
     }
-    OutputRecovery recoverOutput() {
+    OutputRecovery recoverOutput(uint64_t nextEpoch) {
         if (error.load(std::memory_order_acquire) == 0 && !routeRecovery) return OutputRecovery::Healthy;
         routeRecovery = true;
         if (!quiesce()) return OutputRecovery::Failed;
@@ -189,6 +202,7 @@ struct Host final : Callbacks {
             return OutputRecovery::Failed;
         }
         routeRecovery = false;
+        renderOutputEpoch = nextEpoch;
         gated.store(false, std::memory_order_release);
         if (error.load(std::memory_order_acquire) != 0) return OutputRecovery::Failed;
         return OutputRecovery::Reset;
@@ -707,7 +721,7 @@ struct Host final : Callbacks {
         default: return false;
         }
     }
-    std::string state() {
+    std::string state(uint64_t outputStreamEpoch) {
         pump();
         // Read the post-block FIFO frontier BEFORE the coherent capture. The
         // reverse order could bless an older, already-quiet pre-Pause snapshot.
@@ -718,12 +732,16 @@ struct Host final : Callbacks {
         uint32_t decoders = retainedPlatformDecoders.load(std::memory_order_acquire);
         for (const auto& w : workers) if (w) decoders += w->stats().openDecoders;
         for (const auto& w : scheduleWorkers) if (w) decoders += w->openDecoders();
+        const auto outputError = error.load();
+        const auto xRuns = output->xRuns();
+        const auto callbackOverruns = overruns.load();
         std::ostringstream out; out.imbue(std::locale::classic()); out << std::setprecision(17);
-        out << "{\"error\":" << error.load() << ",\"sampleRate\":" << sampleRate
+        out << "{\"error\":" << outputError << ",\"sampleRate\":" << sampleRate
+            << ",\"outputStreamEpoch\":" << outputStreamEpoch
             << ",\"naturalEndVersion\":1"
             << ",\"speedMin\":" << minSpeed << ",\"speedMax\":" << maxSpeed
-            << ",\"renderedFrames\":" << snap.renderedFrames << ",\"xRuns\":" << output->xRuns()
-            << ",\"callbackOverruns\":" << overruns.load()
+            << ",\"renderedFrames\":" << snap.renderedFrames << ",\"xRuns\":" << xRuns
+            << ",\"callbackOverruns\":" << callbackOverruns
             << ",\"nonSilentCallbacks\":" << nonSilentCallbacks.load() << ",\"pcmPoolBytes\":" << fixedPoolBytes
             << ",\"tempoAllocationUpperBytes\":" << ([&]{uint64_t n=0;for(const auto& w:scheduleWorkers)if(w)n+=w->tempoAllocationUpperBytes();return n;})()
             << ",\"tempoApplied\":" << snap.tempoApplied << ",\"tempoTerminal\":" << snap.tempoTerminal << ",\"tempoRefused\":" << tempoRefused
@@ -774,6 +792,17 @@ struct Host final : Callbacks {
             const auto frame = matching ? d.sourceFrame : 0;
             const auto rate = w ? w->sourceRate() : 0;
             const auto extent = w ? w->sourceFrames() : 0;
+            auto& terminal = terminalDecks[i];
+            if (outputError == 0 && ready && completionSource && !stats.preparing && !d.playing &&
+                d.naturalEndCount > 0 && d.naturalEndGeneration == d.generation && d.naturalEndIdentity == d.identity &&
+                d.traversalRevision != 0 && d.naturalEndTraversalRevision == d.traversalRevision &&
+                (!terminal || terminal->deck.generation != d.generation || terminal->deck.identity != d.identity ||
+                 terminal->deck.traversalRevision != d.traversalRevision || terminal->deck.naturalEndCount != d.naturalEndCount)) {
+                // xRuns is a control-side sample of the current stream, not a
+                // host-lifetime counter. Never backfill from a successor stream.
+                terminal = TerminalDeckReceipt{d, extent, callbackOverruns, rate,
+                    d.naturalEndOutputStreamEpoch == outputStreamEpoch ? xRuns : -1};
+            }
             out << "{\"generation\":" << intent.generation << ",\"identity\":" << intent.identity
                 << ",\"boundaryGain\":" << d.boundaryGain << ",\"sourceFrame\":" << frame << ",\"sourceRate\":" << rate
                 << ",\"sourceFrames\":" << extent << ",\"positionMs\":" << milliseconds(frame, rate)
@@ -786,12 +815,28 @@ struct Host final : Callbacks {
                 << ",\"preparing\":" << (stats.preparing || intent.unloading ? "true" : "false")
                 << ",\"eofCount\":" << (matching ? d.eofCount : 0)
                 << ",\"traversalRevision\":" << (completionSource ? d.traversalRevision : 0)
+                << ",\"firstNonSilentRenderNanos\":" << (completionSource ? d.firstNonSilentRenderNanos : 0)
                 << ",\"naturalEndCount\":" << (completionSource ? d.naturalEndCount : 0)
                 << ",\"naturalEndGeneration\":" << (completionSource ? d.naturalEndGeneration : 0)
                 << ",\"naturalEndIdentity\":" << (completionSource ? d.naturalEndIdentity : 0)
                 << ",\"naturalEndTraversalRevision\":" << (completionSource ? d.naturalEndTraversalRevision : 0)
                 << ",\"missingPcmFrames\":" << (matching ? d.missingPcmFrames : 0)
                 << ",\"openDecoders\":" << stats.openDecoders << ",\"error\":" << stats.error << '}';
+        }
+        out << "],\"terminalDecks\":[";
+        for (unsigned i = 0; i < terminalDecks.size(); ++i) {
+            if (i) out << ',';
+            if (!terminalDecks[i]) { out << "null"; continue; }
+            const auto& receipt = *terminalDecks[i];
+            const auto& d = receipt.deck;
+            out << "{\"generation\":" << d.generation << ",\"identity\":" << d.identity
+                << ",\"traversalRevision\":" << d.traversalRevision
+                << ",\"naturalEndCount\":" << d.naturalEndCount << ",\"eofCount\":" << d.eofCount
+                << ",\"sourceFrame\":" << d.sourceFrame << ",\"sourceFrames\":" << receipt.sourceFrames
+                << ",\"sourceRate\":" << receipt.sourceRate << ",\"positionMs\":" << milliseconds(d.sourceFrame, receipt.sourceRate)
+                << ",\"firstNonSilentRenderNanos\":" << d.firstNonSilentRenderNanos << ",\"missingPcmFrames\":" << d.missingPcmFrames
+                << ",\"outputStreamEpoch\":" << d.naturalEndOutputStreamEpoch << ",\"xRuns\":" << receipt.xRuns
+                << ",\"callbackOverruns\":" << receipt.callbackOverruns << '}';
         }
         out << "]}"; return out.str();
     }
@@ -801,6 +846,9 @@ struct Registry::Impl {
     std::mutex mutex; // Defends accidental concurrent JNI callers, never callback.
     std::unique_ptr<Host> host;
     uint64_t handle = 0, counter = 0;
+    // Registry-owned so that replacing the entire Host cannot reuse an epoch.
+    // Assigned only by the serialized control path; render has its own copy.
+    uint64_t outputStreamEpoch = 0;
     std::atomic<bool> stopping{false};
     std::thread maintenance;
     Impl():maintenance([this]{
@@ -827,7 +875,11 @@ uint64_t Registry::open(std::unique_ptr<Output> output) {
     if (impl_->host || impl_->counter == static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) return 0;
     impl_->host = std::make_unique<Host>(std::move(output));
     try {
-        if (impl_->host->open()) { impl_->handle = ++impl_->counter; return impl_->handle; }
+        if (impl_->host->open(impl_->outputStreamEpoch + 1)) {
+            ++impl_->outputStreamEpoch;
+            impl_->handle = ++impl_->counter;
+            return impl_->handle;
+        }
     } catch (...) { impl_->host->outputError(internalError); }
     if (impl_->host->close()) impl_->host.reset(); // failure deliberately retains the singleton
     return 0;
@@ -846,7 +898,10 @@ bool Registry::loadReader(uint64_t h,int d,std::shared_ptr<const PcmReaderFactor
 }
 OutputRecovery Registry::recoverOutput(uint64_t h) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    return impl_->valid(h) ? impl_->host->recoverOutput() : OutputRecovery::Failed;
+    if (!impl_->valid(h)) return OutputRecovery::Failed;
+    const auto result = impl_->host->recoverOutput(impl_->outputStreamEpoch + 1);
+    if (result == OutputRecovery::Reset) ++impl_->outputStreamEpoch;
+    return result;
 }
 bool Registry::control(uint64_t h, int op, int d, double v, uint64_t t) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -946,7 +1001,7 @@ bool Registry::liveTempo(uint64_t h,uint64_t revision,uint64_t instance,uint64_t
 }
 std::string Registry::state(uint64_t h) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    return impl_->valid(h) ? impl_->host->state() : "{\"error\":-10002,\"decks\":[]}";
+    return impl_->valid(h) ? impl_->host->state(impl_->outputStreamEpoch) : "{\"error\":-10002,\"decks\":[]}";
 }
 bool Registry::close(uint64_t h) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
