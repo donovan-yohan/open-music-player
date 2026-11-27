@@ -84,8 +84,13 @@ object Player {const val STATE_IDLE=1;const val STATE_BUFFERING=2;const val STAT
 class PlaybackException(s:String,c:Throwable?,v:Int):Exception(s){companion object{const val ERROR_CODE_IO_UNSPECIFIED=1}}
 class ListenableFuture<T>
 val String.mediaId:String get()=this
-class Grant(val scope:Int) { fun current(graph:Graph)=graph.session.current(scope) }
-class Session {var scope=1;fun current(s:Int)=s==scope;fun previewOwnerCurrent(s:Int)=current(s)}
+// This output-recovery fixture has a server grant and no pending Discover preview/save.
+class Grant(val scope:Int) { val device:Any?=null;fun current(graph:Graph)=graph.session.current(scope) }
+sealed interface DiscoveryReadState { object Saving:DiscoveryReadState }
+class Session {
+ var scope=1;fun current(s:Int)=s==scope;fun previewOwnerCurrent(s:Int)=current(s)
+ fun discoveryReadState(s:Int):DiscoveryReadState=error("unexpected pending preview")
+}
 class Graph {val session=Session()}
 class Preview(val scope:Int) {val input get()=this;fun cancel()=Unit}
 class Journal {

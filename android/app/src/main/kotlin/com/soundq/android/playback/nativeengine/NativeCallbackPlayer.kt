@@ -8,6 +8,7 @@ import com.soundq.android.AppGraph
 import com.soundq.android.data.AccountScope
 import com.soundq.android.data.AuthState
 import com.soundq.android.data.DiscoveryPreviewInput
+import com.soundq.android.data.DiscoveryReadState
 import com.soundq.android.data.SafeFailure
 import com.soundq.android.data.deviceaudio.HistoryKey
 import com.soundq.android.playback.*
@@ -1728,10 +1729,18 @@ internal class NativeCallbackPlayer(
         if (observeSuccessor(snapshot)) return
         val deck = snapshot.decks.getOrNull(ordinaryDeck) ?: return
         if (!selectedLoaded || deck.identity != ordinaryIdentity || deck.generation != ordinaryIdentity) return
-        if (!assignmentCurrent()) {
+        val scope = queueScope
+        val current = if (preview == null && previewPreparation != null && scope != null && activeGrant?.device == null) {
+            // Credential publication cannot split these samples: an ordinary grant
+            // refused during Saving is not evidence of retirement after the save.
+            synchronized(graph.session) {
+                val assigned = assignmentCurrent()
+                if (!assigned && graph.session.discoveryReadState(scope) is DiscoveryReadState.Saving) return
+                assigned
+            }
+        } else assignmentCurrent()
+        if (!current) {
             if (preview != null) return // account observer restores or discards the parked owner
-            if (previewPreparation != null && queueScope?.let(graph.session::previewOwnerCurrent) == true &&
-                queueScope?.let(graph.session::current) == false) return // held save cannot retire the pending read via the old grant
             intent = false; retireSelection(); playback = Player.STATE_IDLE; invalidateState(); return
         }
         if (deck.error != 0) { fail("Audio format could not be decoded"); return }
