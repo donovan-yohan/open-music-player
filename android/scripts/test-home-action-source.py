@@ -28,6 +28,8 @@ code = r'''package com.soundq.android.homeactionprobe
 import com.soundq.android.data.*
 import com.soundq.android.data.home.*
 import com.soundq.android.playback.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
 import java.io.File
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -44,13 +46,13 @@ class Graph(val session:AccountSession,val home:HomeFeedRepository,directory:Fil
 }
 class Scheduler {
  val tasks=mutableListOf<()->Unit>()
- fun launch(block:()->Unit){tasks+=block}
+ fun launch(block:()->Unit)=Job().also {job->tasks+={try {block()}finally {job.complete()}}}
  fun drain(){while(tasks.isNotEmpty())tasks.removeAt(0)()}
 }
 class Handler {
  val tasks=mutableListOf<()->Unit>()
- fun post(block:()->Unit){tasks+=block}
- fun post(block:Runnable){tasks+={block.run()}}
+ fun post(block:()->Unit):Boolean {tasks+=block;return true}
+ fun post(block:Runnable):Boolean {tasks+={block.run()};return true}
  fun drain(){while(tasks.isNotEmpty())tasks.removeAt(0)()}
 }
 class Bundle {

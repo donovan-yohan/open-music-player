@@ -31,9 +31,15 @@ runner = (root/'scripts/test-overlap-compile.py').read_text()
 runner = runner.replace('r=Path(__file__).resolve().parents[2]', 'r=Path('+repr(str(root.parent))+')')
 runner = runner.replace("cache=Path.home()/'.gradle/caches/modules-2/files-2.1'", "cache=Path(os.environ['GRADLE_USER_HOME'])/'caches/modules-2/files-2.1'")
 runner = runner.replace("r/'android/app/build/intermediates/built_in_kotlinc/debug/compileDebugKotlin/classes'", 'Path('+repr(str(collaborators))+')')
+# Recompiled owners must export the same Kotlin internal JVM names as the
+# retained callers (e.g. AppGraph.getApplicationContext$app).
+module, = (collaborators/'META-INF').glob('*.kotlin_module')
+compiler_flags = "'-no-stdlib','-no-reflect',"
+assert runner.count(compiler_flags) == 1
+runner = runner.replace(compiler_flags, compiler_flags+"'-module-name',"+repr(module.stem)+',')
 owned = ['data/timeline/TimelineOwner.kt', 'playback/QueuePolicy.kt', 'playback/QueueOrigin.kt', 'playback/QueueSnapshot.kt', 'playback/QueueSnapshotStore.kt', 'playback/ContextStartAdmission.kt', 'data/LibraryRepository.kt', 'SoundQApplication.kt', 'product/ProductViewModel.kt']
 added = ['app/src/test/kotlin/com/soundq/android/data/timeline/TimelineOwnerTest.kt', 'app/src/test/kotlin/com/soundq/android/data/TimelineRepositoryTest.kt', 'app/src/test/kotlin/com/soundq/android/playback/LargeContextTest.kt', 'app/src/test/kotlin/com/soundq/android/data/LargeLibraryPlaybackTest.kt']
-added += ['app/src/test/kotlin/com/soundq/android/'+x for x in ['playback/ContextAdmissionTest.kt','data/PlaylistCapacityTest.kt','data/PlaylistCandidateTest.kt','data/ScopeRaceTest.kt','data/AccountSessionTest.kt']]
+added += ['app/src/test/kotlin/com/soundq/android/'+x for x in ['playback/ContextAdmissionTest.kt','data/PlaylistCapacityTest.kt','data/PlaylistCandidateTest.kt','data/ScopeRaceTest.kt','data/DiscoveryWireFixture.kt','data/AccountSessionTest.kt']]
 if not a.pure_only:
     added += ['scripts/LargeContextPlayerTest.kt', 'scripts/OrdinaryCrossfadePlayerTest.kt']
 insert = '\nsources += '+repr([str(root/'app/src/main/kotlin/com/soundq/android'/x) for x in owned])+'\nsources += '+repr([str(root/x) for x in added])+'\nsources=[Path(x) for x in sources]\n'
@@ -58,11 +64,38 @@ if not a.pure_only:
     witness.write_text(observed)
     (a.build/'entry-witness.json').write_text(json.dumps({'original_sha256': hashlib.sha256(original.encode()).hexdigest(), 'observed_sha256': hashlib.sha256(observed.encode()).hexdigest(), 'original_body_reconstruction_exact': True, 'insertions': probes}, indent=2)+'\n')
     insert += '\nsources=[Path('+repr(str(witness))+') if str(x)=='+repr(str(native))+' else x for x in sources]\n'
+    # Record the actual Job identity at the editor/import coroutine entry and
+    # at the auth helper's returned Job. Do not change scheduling or callbacks.
+    model = root/'app/src/main/kotlin/com/soundq/android/product/ProductViewModel.kt'
+    original_model = model.read_text()
+    owner = 'viewModelScope.coroutineContext.job'
+    probe = 'com.soundq.android.playback.nativeengine.LargeContextStartupProbe.record'
+    progress = '            graph.imports.progressObservation.observe(merge(imports.map {Unit},graph.acquisition.state.map {Unit}))'
+    editor = '        viewModelScope.launch(mainObserverDispatcher) {'
+    auth = '                else {loadedAccount=null;graph.retireCatalog()}\n        }'
+    startup = {
+        progress: f'            {probe}({owner},"import-progress",coroutineContext.job)\n'+progress,
+        editor: editor+f'\n            {probe}({owner},"editor",coroutineContext.job)',
+        auth: auth+f'.also {{ {probe}({owner},"auth",it) }}',
+    }
+    observed_model = original_model
+    for anchor, binding in startup.items():
+        assert observed_model.count(anchor) == 1
+        observed_model = observed_model.replace(anchor, binding)
+    reverse_model = observed_model
+    for anchor, binding in startup.items():
+        reverse_model = reverse_model.replace(binding, anchor)
+    assert reverse_model == original_model
+    model_witness = a.build/'ProductViewModel.kt'
+    model_witness.write_text(observed_model)
+    (a.build/'startup-witness.json').write_text(json.dumps({'original_sha256': hashlib.sha256(original_model.encode()).hexdigest(), 'observed_sha256': hashlib.sha256(observed_model.encode()).hexdigest(), 'original_body_reconstruction_exact': True, 'bindings': startup}, indent=2)+'\n')
+    insert += '\nsources=[Path('+repr(str(model_witness))+') if str(x)=='+repr(str(model))+' else x for x in sources]\n'
 runner = runner.replace("java=Path('/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/java')", insert+"java=Path(os.environ['JAVA_HOME'])/'bin/java'")
 tests = ['com.soundq.android.data.timeline.TimelineOwnerTest', 'com.soundq.android.data.TimelineRepositoryTest', 'com.soundq.android.playback.LargeContextTest', 'com.soundq.android.data.LargeLibraryPlaybackTest', 'com.soundq.android.playback.ContextAdmissionTest', 'com.soundq.android.data.PlaylistCapacityTest']
 if not a.pure_only:
     tests += ['com.soundq.android.playback.nativeengine.LargeContextPlayerTest', 'com.soundq.android.playback.nativeengine.OrdinaryCrossfadePlayerTest']
-runner = runner.replace("'org.junit.runner.JUnitCore','com.soundq.android.playback.nativeengine.NativeArrangementPlayerTest'", "'org.junit.runner.JUnitCore',"+','.join(repr(x) for x in tests))
+junit_main = 'org.junit.runner.JUnitCore' if a.pure_only else 'com.soundq.android.playback.nativeengine.LargeContextNamedJUnit'
+runner = runner.replace("'org.junit.runner.JUnitCore','com.soundq.android.playback.nativeengine.NativeArrangementPlayerTest'", repr(junit_main)+','+','.join(repr(x) for x in tests))
 runner = runner.replace("print('PASS pinned Kotlin 2.4.21 owned playback and service compile against cached Media3 1.11.1 and existing app dependencies')", "print('PASS large-context production/persistence/Library tests with pinned Kotlin 2.4.21 and Media3 1.11.1')")
 # AGP emits BuildConfig.java before Kotlin compilation. Compile that exact
 # generated fixture configuration privately; do not synthesize build values.

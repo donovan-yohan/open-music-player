@@ -1616,7 +1616,7 @@ class OriginalImportCompositionTest {
             return route
         }
         fun tokens(id: String = account) = SecretTokens("opaque-test-access", "opaque-test-refresh", id)
-        fun graph(mode: String?, memory: MemoryStore = MemoryStore(), endpoint: ApiEndpoint = this.endpoint, listener: EventListener? = null,
+        fun graph(mode: String?, memory: SessionStore = MemoryStore(), endpoint: ApiEndpoint = this.endpoint, listener: EventListener? = null,
             openPhoneAudioStore: (File) -> DeviceListeningStore = { DeviceListeningStore(it) }) =
             AppGraph(context, endpoint, if (listener == null) client else client.newBuilder().eventListener(listener).build(),
                 store = memory, originalImportFixtureMode = mode, openPhoneAudioStore = openPhoneAudioStore)

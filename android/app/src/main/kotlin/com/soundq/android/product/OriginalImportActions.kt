@@ -47,7 +47,7 @@ import kotlinx.coroutines.withContext
         addedVerified -> Text("Added to Library · Original stays on this phone", style = SoundQ.typography.caption)
         added != null -> Text("Upload saved · Library membership not verified", style = SoundQ.typography.caption)
         pending != null -> {
-            if (pending.intent.original == row.owner) OriginalImportRecovery(model, scope, latestCurrent)
+            if (pending.intent.original == row.owner) OriginalImportRecovery(model, scope, current = latestCurrent)
             else Text("Check the pending import in Library before adding another file.", style = SoundQ.typography.caption)
         }
         closed -> Text("Upload closed. This upload cannot be retried.", style = SoundQ.typography.caption)
@@ -121,32 +121,41 @@ internal fun captureOriginalImportDisplay(
 }
 
 /** Recovery remains reachable even when the selected original went missing or the sheet closed. */
-@Composable internal fun OriginalImportRecovery(model: ProductViewModel, scope: AccountScope?, current: () -> Boolean) {
+@Composable internal fun OriginalImportRecovery(model: ProductViewModel, scope: AccountScope?,
+    localRefusalVisit: LibraryRowLifetime? = null, current: () -> Boolean) {
     val graph = model.graph
     val repository = graph.originalImports
     val snapshot by repository.state.collectAsState()
     val work by repository.work.collectAsState()
-    if (scope == null || !snapshot.ready || !repository.ready(scope)) return
-    val pending = repository.entries(scope).singleOrNull { it.phase in activeImportPhases } ?: return
+    if (scope == null) return
+    val local = if (snapshot.rejected && localRefusalVisit?.current() == true) repository.localRefusalCheck(scope) else null
+    val pending = if (snapshot.ready && repository.ready(scope))
+        repository.entries(scope).singleOrNull { it.phase in activeImportPhases } else null
+    val id = local?.operation ?: pending?.intent?.operation ?: return
     val latestCurrent by rememberUpdatedState(current)
-    val id = pending.intent.operation
-    val activeWork = work[pending.intent.destination]
-    var checking by remember(scope, id) { mutableStateOf(false) }
-    var message by remember(scope, id) { mutableStateOf<String?>(null) }
+    val activeWork = work[local?.destination ?: requireNotNull(pending).intent.destination]
+    // Capture the Library visit for the local operation; never borrow a replacement route's callback.
+    val visit = localRefusalVisit.takeIf { local != null }
+    val mounted: () -> Boolean = if (visit == null) { { latestCurrent() } } else visit::current
+    var checking by remember(scope, id, visit) { mutableStateOf(false) }
+    var message by remember(scope, id, visit) { mutableStateOf<String?>(null) }
     Column {
         Text(message ?: when {
             activeWork == OriginalImportRepository.Work.Upload -> "Uploading to your Library…"
             activeWork == OriginalImportRepository.Work.Check -> "Checking the same upload. No audio is being sent."
-            pending.phase == OriginalImportPhase.ReadbackRequired -> "Upload acknowledged. Confirm its Library entry."
+            local != null -> "The server didn’t add this file. Check to finish saving its status on this phone."
+            pending?.phase == OriginalImportPhase.ReadbackRequired -> "Upload acknowledged. Confirm its Library entry."
             else -> "Upload not confirmed. Your server may already have the file. You can still play the phone file."
         }, style = SoundQ.typography.caption)
         TextButton({
-            if (!checking && activeWork == null && latestCurrent()) {
+            if (!checking && activeWork == null && mounted()) {
                 checking = true; message = null
                 graph.io.launch {
-                    val result = repository.check(scope, id) { latestCurrent() }
+                    val commitInVisit = localRefusalVisit?.let { it::commitIfCurrent }
+                    val result = if (local == null) repository.check(scope, id, commitInVisit, mounted)
+                        else repository.checkLocalRefusal(local, commitInVisit, mounted)
                     withContext(Dispatchers.Main) {
-                        if (latestCurrent() && graph.session.current(scope)) { checking = false; message = originalImportMessage(result) }
+                        if (mounted() && graph.session.current(scope)) { checking = false; message = originalImportMessage(result) }
                     }
                 }
             }

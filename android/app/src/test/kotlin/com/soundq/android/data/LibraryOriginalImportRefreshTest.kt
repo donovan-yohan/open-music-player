@@ -114,6 +114,219 @@ class LibraryOriginalImportRefreshTest {
         s.assertReadCount(2)
     }
 
+    @Test fun collectionReadyBeforeImportCallbackRetainsRowsUntilExplicitPlay() = CollectionScenario().use { s ->
+        val play = s.claim()
+        s.readCollection(play)
+        val refresh = s.importCallback()
+        s.assertWaiting(refresh, play)
+        s.playOnce(play)
+        s.finishRefresh(refresh)
+    }
+
+    @Test fun collectionClaimDuringImportGetDefersTheBoundedReplacementUntilExplicitPlay() = CollectionScenario().use { s ->
+        val refresh = s.importCallback()
+        val first = s.takeImportPage(66)
+        val play = s.claim()
+        s.readCollection(play)
+        first.release.countDown()
+        s.assertWaiting(refresh, play)
+        s.playOnce(play)
+        s.finishRefresh(refresh)
+    }
+
+    @Test fun equalCollectionAdmissionRoundTripDoesNotRevalidateAnEnteredImportGet() = CollectionScenario().use { s ->
+        val refresh = s.importCallback()
+        val first = s.takeImportPage(66)
+        val before = s.library.state.value
+        val play = s.claim()
+        s.readCollection(play)
+        s.playOnce(play)
+        assertEquals(before, s.library.state.value)
+        assertNotSame(before, s.library.state.value)
+        first.release.countDown()
+        s.finishRefresh(refresh)
+    }
+
+    @Test fun collectionFinishedBeforeImportAdmissionNeedsNoReplacement() = CollectionScenario().use { s ->
+        val play = s.claim()
+        s.readCollection(play)
+        s.playOnce(play)
+        s.finishRefresh(s.importCallback())
+    }
+
+    @Test fun abandonBeforeCollectionReadReleasesWaitingImportWithoutPlaying() = CollectionScenario().use { s ->
+        val play = s.claim()
+        val refresh = s.importCallback()
+        s.assertWaiting(refresh, play)
+        s.library.abandonCollection(play)
+        s.assertCannotPlay(play)
+        s.finishRefresh(refresh, playCount = 0)
+    }
+
+    @Test fun failedCollectionReadReleasesWaitingImportWithoutPlaying() = CollectionScenario().use { s ->
+        val play = s.claim()
+        val refresh = s.importCallback()
+        s.assertWaiting(refresh, play)
+        s.readCollection(play, status = 503)
+        assertNotNull(s.library.state.value.collectionError)
+        s.assertCannotPlay(play)
+        s.finishRefresh(refresh, playCount = 0)
+    }
+
+    @Test fun failedImportGetIsNotRetriedEvenIfCollectionClaimOverlapped() = CollectionScenario().use { s ->
+        val refresh = s.importCallback()
+        val first = s.takeImportPage(66, status = 503)
+        val play = s.claim()
+        s.readCollection(play)
+        first.release.countDown()
+        s.join(refresh)
+        s.playOnce(play)
+        s.assertIdle(listOf(TrackId(11)), playCount = 1)
+    }
+
+    @Test fun secondCollectionSupersessionDoesNotAdmitAThirdImportGet() = CollectionScenario().use { s ->
+        val refresh = s.importCallback()
+        val first = s.takeImportPage(66)
+        val play = s.claim()
+        s.readCollection(play)
+        first.release.countDown()
+        s.assertWaiting(refresh, play)
+        s.playOnce(play)
+        val second = s.takeImportPage(77)
+        val successor = s.claim()
+        // Cleanup for the previous claim must not release the matching successor.
+        s.library.abandonCollection(play)
+        s.readCollection(successor)
+        second.release.countDown()
+        s.join(refresh)
+        s.playOnce(successor)
+        s.assertIdle(listOf(TrackId(11)), playCount = 2)
+    }
+
+    /** The original-import membership GET reaches AppGraph's real callback. Play uses the
+     * repository's actual canonical-start callback, with a recorder at the queue boundary. */
+    private class CollectionScenario : AutoCloseable {
+        private val fixture = OriginalImportCompositionTest.Fixture(seedReceipt = false)
+        private val graph = fixture.graph("fixture")
+        private val scope = fixture.signIn(graph)
+        val library = graph.library
+        private val query = LibraryQuery(text = "mix", liked = true, sort = LibrarySort.Title, ascending = true)
+        private val responses = java.util.concurrent.LinkedBlockingQueue<Step>()
+        private val executor = Executors.newSingleThreadExecutor()
+        private val starts = mutableListOf<Pair<List<TrackId>, Int>>()
+        private val barriers = mutableListOf<Barrier>()
+        private var requestCount = 0
+
+        private class Step(val barrier: Barrier, val response: MockResponse)
+
+        init {
+            val intent = fixture.intent
+            OriginalImportJournal(File(fixture.directory, "original-import.v1.json")).put(
+                OriginalImportEntry(intent, OriginalImportPhase.ReadbackRequired, CommittedOriginal(fixture.track, intent.original.revision)), null) { true }
+            fixture.server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = when (request.method to request.url.encodedPath) {
+                    "GET" to fixture.memberPath -> fixture.member()
+                    "GET" to "/api/v1/library" -> {
+                        val step = responses.poll(6, SECONDS) ?: returnFailure()
+                        step.barrier.await()
+                        step.response
+                    }
+                    else -> fixture.reply(500, "{}")
+                }
+            }
+            page(11).release.countDown()
+            library.refine(query)
+            takePage()
+        }
+
+        private fun returnFailure(): Step = Step(Barrier().also { it.release.countDown() }, fixture.reply(500, "{}"))
+
+        private fun page(vararg ids: Int, status: Int = 200): Barrier {
+            val rows = ids.joinToString(",") { """{"id":$it,"title":"mix $it","is_liked":true}""" }
+            val body = if (status == 200) """{"tracks":[$rows],"total":${ids.size},"limit":20,"offset":0}""" else "{}"
+            val barrier = Barrier().also { barriers += it }
+            responses.add(Step(barrier, fixture.reply(status, body)))
+            return barrier
+        }
+
+        private fun takePage(text: String = query.text) {
+            val req = fixture.next("/api/v1/library").also { requestCount++ }
+            assertEquals("GET", req.method)
+            assertEquals("0", req.url.queryParameter("offset"))
+            assertEquals(text, req.url.queryParameter("q"))
+            assertEquals("true", req.url.queryParameter("liked"))
+            assertEquals("title", req.url.queryParameter("sort"))
+            assertEquals("asc", req.url.queryParameter("order"))
+        }
+
+        fun importCallback(): Job {
+            val previous = graph.io.coroutineContext.job.children.toSet()
+            assertEquals(OriginalImportRepository.Action.Added, graph.originalImports.check(scope, fixture.intent.operation) { true })
+            assertEquals("GET", fixture.next(fixture.memberPath).method)
+            requestCount++
+            return (graph.io.coroutineContext.job.children.toSet() - previous).single()
+        }
+
+        fun claim() = checkNotNull(library.claimCollectionPlay(library.state.value, selected = TrackId(11)) { true })
+
+        fun readCollection(play: LibraryRepository.CollectionRequest, status: Int = 200) {
+            page(9, 11, status = status).release.countDown()
+            executor.submit { library.readCollection(play) }.get(5, SECONDS)
+            takePage()
+        }
+
+        fun assertWaiting(refresh: Job, play: LibraryRepository.CollectionRequest) {
+            assertNull("import GET must wait for the matching collection release", fixture.server.takeRequest(300, java.util.concurrent.TimeUnit.MILLISECONDS))
+            assertFalse(refresh.isCompleted)
+            assertSame(play.expected.rows, library.state.value.rows)
+            assertTrue(library.state.value.collectionLoading)
+        }
+
+        fun playOnce(play: LibraryRepository.CollectionRequest) {
+            val before = starts.size
+            library.startCollection(play) { tracks, index ->
+                assertTrue(library.collectionPlaybackCurrent(play))
+                assertSame(play.expected.rows, library.state.value.rows)
+                starts += tracks.map(Track::id) to index
+                null
+            }
+            assertEquals("explicit collection Play must reach canonical start", before + 1, starts.size)
+            assertEquals(listOf(TrackId(9), TrackId(11)) to 1, starts.last())
+            assertCannotPlay(play)
+        }
+
+        fun assertCannotPlay(play: LibraryRepository.CollectionRequest) {
+            library.startCollection(play) { _, _ -> throw AssertionError("retired claim must not send Play") }
+        }
+
+        fun takeImportPage(id: Int, status: Int = 200): Barrier = page(id, status = status).also {
+            takePage()
+            assertTrue(it.entered.await(5, SECONDS))
+        }
+
+        fun finishRefresh(refresh: Job, playCount: Int = 1) {
+            takeImportPage(77).release.countDown()
+            join(refresh)
+            assertIdle(listOf(TrackId(77)), playCount)
+        }
+
+        fun join(job: Job) = runBlocking { withTimeout(5000) { job.join() }; assertFalse(job.isCancelled) }
+
+        fun assertIdle(ids: List<TrackId>, playCount: Int) {
+            assertEquals(ids, library.state.value.rows.map(Track::id))
+            assertEquals(query, library.state.value.query)
+            assertEquals(playCount, starts.size)
+            assertFalse(library.state.value.collectionLoading)
+            assertEquals(requestCount, fixture.server.requestCount)
+        }
+
+        override fun close() {
+            barriers.forEach { it.release.countDown() }
+            executor.shutdownNow()
+            try { graph.close() } finally { fixture.close() }
+        }
+    }
+
     private class Barrier {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)

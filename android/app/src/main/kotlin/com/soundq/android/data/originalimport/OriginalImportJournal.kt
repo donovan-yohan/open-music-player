@@ -49,8 +49,12 @@ internal data class OriginalImportSnapshot(val ready: Boolean = false, val rejec
 /** A DELETE may race an earlier upload whose canonical track is still unknown. */
 private data class RemovalConflict(val upload: UUID, val track: TrackId, val removal: UUID, val confirmed: Boolean = false)
 
-/** One app-owned, no-backup file. A rejected/future journal never authorizes upload or overwrite. */
-internal class OriginalImportJournal(private val file: File) {
+/** One app-owned, no-backup file. Rejected bytes alone never authorize a mutation. */
+internal class OriginalImportJournal @JvmOverloads constructor(
+    private val file: File,
+    private val beforeRefusalCommit: () -> Unit = {},
+    private val beforeDirectorySync: () -> Unit = {},
+) {
     private val mutable = MutableStateFlow(OriginalImportSnapshot())
     val state: StateFlow<OriginalImportSnapshot> = mutable
     private var loadedBytes: ByteArray? = null
@@ -64,6 +68,14 @@ internal class OriginalImportJournal(private val file: File) {
     private data class UnverifiedRemoval(val write: RemovalWrite, val bytes: ByteArray,
         val rows: List<OriginalImportEntry>, val conflicts: List<RemovalConflict>, val prepared: Set<UUID>)
     private var unverifiedRemoval: UnverifiedRemoval? = null
+    // While rejected, loadedBytes is still the exact predecessor of this replacement.
+    private data class UnverifiedRefusal(val pending: OriginalImportEntry, val bytes: ByteArray,
+        val rows: List<OriginalImportEntry>, val conflicts: List<RemovalConflict>, val prepared: Set<UUID>)
+    @Volatile private var unverifiedRefusal: UnverifiedRefusal? = null
+
+    // A read-only hint from the live failed write, never from loading rejected bytes.
+    fun hasUnverifiedRefusal(pending: OriginalImportEntry): Boolean =
+        state.value.rejected && unverifiedRefusal?.pending == pending
 
     @Synchronized fun load() {
         if (state.value.ready || state.value.rejected) return
@@ -90,7 +102,11 @@ internal class OriginalImportJournal(private val file: File) {
         }
     }
 
-    @Synchronized fun put(entry: OriginalImportEntry, expected: OriginalImportEntry?, current: () -> Boolean): OriginalImportEntry {
+    @Synchronized fun put(entry: OriginalImportEntry, expected: OriginalImportEntry?, current: () -> Boolean): OriginalImportEntry =
+        putEntry(entry, expected, current)
+
+    private fun putEntry(entry: OriginalImportEntry, expected: OriginalImportEntry?, current: () -> Boolean,
+        commitRefusal: ((() -> Unit) -> Boolean)? = null): OriginalImportEntry {
         load()
         check(state.value.ready && current())
         val rows = state.value.rows
@@ -112,8 +128,33 @@ internal class OriginalImportJournal(private val file: File) {
         replace(rows.filterNot { it.intent.operation == entry.intent.operation } + settled, current, nextConflicts,
             mayReclaimRefusals = previous == null || previous.phase == OriginalImportPhase.Unconfirmed && entry.commit != null,
             admittingUpload = previous == null && entry.phase == OriginalImportPhase.Unconfirmed,
-            refusingUpload = previous?.phase == OriginalImportPhase.Unconfirmed && entry.phase == OriginalImportPhase.Refused)
+            refusingUpload = previous?.takeIf { it.phase == OriginalImportPhase.Unconfirmed && entry.phase == OriginalImportPhase.Refused },
+            commitRefusal = commitRefusal)
         return settled
+    }
+
+    /** The caller must still hold positive no-write evidence for this exact pending entry. */
+    @Synchronized fun finishUploadRefusal(pending: OriginalImportEntry, current: () -> Boolean, commit: (() -> Unit) -> Boolean) {
+        check(pending.phase == OriginalImportPhase.Unconfirmed && current())
+        if (state.value.ready) {
+            putEntry(pending.copy(phase = OriginalImportPhase.Refused), pending, current, commit)
+            return
+        }
+        val refusal = checkNotNull(unverifiedRefusal)
+        check(refusal.pending == pending)
+        val disk = read()
+        check(current())
+        if (disk.contentEquals(refusal.bytes)) {
+            syncDirectory()
+            check(read().contentEquals(refusal.bytes) && current())
+            publishRefusal(refusal.bytes, refusal.rows, refusal.conflicts, refusal.prepared, commit)
+        } else {
+            check(disk.contentEquals(loadedBytes))
+            // A rollback did not revoke the live no-write proof. Rewrite only this exact
+            // refusal, without making the old pending snapshot available to other callers.
+            write(refusal.bytes, refusal.rows, refusal.conflicts, refusal.prepared, current,
+                refusingUpload = pending, commitRefusal = commit)
+        }
     }
 
     /** An owned GET absence retires live receipts; it cannot settle or undo a DELETE fence. */
@@ -234,7 +275,8 @@ internal class OriginalImportJournal(private val file: File) {
 
     private fun replace(next: List<OriginalImportEntry>, current: () -> Boolean, nextConflicts: List<RemovalConflict> = conflicts,
         removalWrite: RemovalWrite? = null, mayReclaimRefusals: Boolean = false, nextPrepared: Set<UUID> = prepared,
-        admittingUpload: Boolean = false, refusingUpload: Boolean = false) {
+        admittingUpload: Boolean = false, refusingUpload: OriginalImportEntry? = null,
+        commitRefusal: ((() -> Unit) -> Boolean)? = null) {
         require(nextConflicts.size <= MAX_ROWS)
         // Legacy bytes did not reserve room. Keep their cleanup usable without letting
         // a new upload or any subsequent write consume more of its receipts' allowance.
@@ -262,7 +304,13 @@ internal class OriginalImportJournal(private val file: File) {
             persisted = next.filterNot { it.phase == OriginalImportPhase.Refused && it.intent.operation !in referenced }
             encoded = encode(persisted)
         }
-        val bytes = requireNotNull(encoded)
+        write(requireNotNull(encoded), persisted, nextConflicts, nextPrepared, current, removalWrite, admittingUpload, refusingUpload, commitRefusal)
+    }
+
+    private fun write(bytes: ByteArray, persisted: List<OriginalImportEntry>, nextConflicts: List<RemovalConflict>,
+        nextPrepared: Set<UUID>, current: () -> Boolean, removalWrite: RemovalWrite? = null,
+        admittingUpload: Boolean = false, refusingUpload: OriginalImportEntry? = null,
+        commitRefusal: ((() -> Unit) -> Boolean)? = null) {
         check(read().contentEquals(loadedBytes)) { "Original import journal changed outside its owner" }
         val dir = requireNotNull(file.parentFile).toPath()
         val stage = Files.createTempFile(dir, ".original-import-", ".pending")
@@ -271,26 +319,55 @@ internal class OriginalImportJournal(private val file: File) {
             check(current())
             check(read().contentEquals(loadedBytes)) { "Original import journal changed outside its owner" }
             check(current())
+            var renamed = false
             try {
                 Files.move(stage, file.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+                renamed = true
                 // Readback proves visibility, not crash durability. A definitive refusal also
                 // must survive restart before the caller drops its exact no-write witness.
-                if (removalWrite != null || admittingUpload || refusingUpload) syncDirectory()
+                if (removalWrite != null || admittingUpload || refusingUpload != null) syncDirectory()
                 check(read().contentEquals(bytes)) { "Original import journal replacement could not be verified" }
+                if (refusingUpload != null) check(current())
+                if (commitRefusal != null) {
+                    check(refusingUpload != null)
+                    publishRefusal(bytes, persisted, nextConflicts, nextPrepared, commitRefusal)
+                    return
+                }
             } catch (failure: Exception) {
                 // An ambiguous replacement must not leave cached Added rows authorizing reads.
-                if (!runCatching { read().contentEquals(loadedBytes) }.getOrDefault(false)) {
+                if (renamed && refusingUpload != null) {
+                    unverifiedRefusal = UnverifiedRefusal(refusingUpload, bytes, persisted, nextConflicts, nextPrepared)
+                    mutable.value = OriginalImportSnapshot(rejected = true)
+                } else if (!runCatching { read().contentEquals(loadedBytes) }.getOrDefault(false)) {
                     unverifiedRemoval = removalWrite?.let { UnverifiedRemoval(it, bytes, persisted, nextConflicts, nextPrepared) }
                     mutable.value = OriginalImportSnapshot(rejected = true)
                 }
                 throw failure
             }
+            loadedBytes = bytes
+            if (refusingUpload != null) unverifiedRefusal = null
+            publish(persisted, nextConflicts, nextPrepared)
         } finally { runCatching { Files.deleteIfExists(stage) } }
-        loadedBytes = bytes
-        publish(persisted, nextConflicts, nextPrepared)
+    }
+
+    // All encoding, force, byte comparison and row indexing take place before the
+    // short visit/account admission. The journal monitor still excludes other writes.
+    private fun publishRefusal(bytes: ByteArray, rows: List<OriginalImportEntry>, nextConflicts: List<RemovalConflict>,
+        nextPrepared: Set<UUID>, commit: (() -> Unit) -> Boolean) {
+        val ready = OriginalImportSnapshot(ready = true, rows = java.util.Collections.unmodifiableList(rows))
+        beforeRefusalCommit()
+        check(commit {
+            loadedBytes = bytes
+            loadedRows = ready.rows
+            conflicts = nextConflicts
+            prepared = nextPrepared
+            unverifiedRefusal = null
+            mutable.value = ready
+        })
     }
 
     private fun syncDirectory() {
+        beforeDirectorySync()
         FileChannel.open(requireNotNull(file.parentFile).toPath(), READ).use { it.force(true) }
     }
 

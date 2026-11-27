@@ -16,7 +16,7 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
     private var sortStore:LibrarySortStore?=null
     constructor(session:AccountSession,fetch:(AccountScope,LibraryQuery,Int)->LibraryPage,mutate:(AccountScope,TrackId,Boolean)->Unit,sortStore:LibrarySortStore):this(session,fetch,mutate){this.sortStore=sortStore}
     class RefinementRequest internal constructor(internal val owner:LibraryRepository,internal val scope:AccountScope,internal val query:LibraryQuery,internal val version:Long,internal val restore:Boolean) {internal var entered=false}
-    class CollectionRequest internal constructor(internal val owner:LibraryRepository,internal val scope:AccountScope,internal val expected:LibraryState,internal val lifetime:Long,internal val mutation:Long,internal val selected:TrackId?,internal val shuffle:Boolean,internal val current:()->Boolean) {internal var entered=false;internal var result:List<Track>?=null}
+    class CollectionRequest internal constructor(internal val owner:LibraryRepository,internal val scope:AccountScope,internal val expected:LibraryState,internal val lifetime:Long,internal val mutation:Long,internal val selected:TrackId?,internal val shuffle:Boolean,internal val current:()->Boolean) {internal var entered=false;internal var started=false;internal var result:List<Track>?=null}
     private var pendingCollection:CollectionRequest?=null
     private var sortScope:AccountScope?=null
     private var acceptedSort=LibrarySortChoice()
@@ -217,17 +217,20 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
             val rows=readLibraryCorpus(request.scope,request.expected.query,fetch) {synchronized(this){ownsCollection(request)}}.tracks
             synchronized(this){if(ownsCollection(request))request.result=if(request.shuffle)rows.shuffled()else rows}
         }catch(e:Exception){synchronized(this){if(ownsCollection(request)){
-            mutable.value=mutable.value.copy(collectionLoading=false,collectionError=(e as? SafeFailure)?.reason?.message ?: "Could not load collection")
             pendingCollection=null
+            mutable.value=mutable.value.copy(collectionLoading=false,collectionError=(e as? SafeFailure)?.reason?.message ?: "Could not load collection")
         }}}
     }
     /** Main-thread consumer invokes the existing canonical start, never partial rows. */
-    @Synchronized fun startCollection(request:CollectionRequest,start:(List<Track>,Int)->String?) {
-        if(!ownsCollection(request))return
+    @Synchronized fun startCollection(request:CollectionRequest,holdForDelivery:Boolean=false,start:(List<Track>,Int)->String?) {
+        if(request.started||!ownsCollection(request))return
         val rows=request.result ?: return
         val index=if(request.selected==null)0 else rows.indexOfFirst {it.id==request.selected}
+        request.started=true
         val error=if(rows.isEmpty())"No matching tracks" else if(index<0)"Selected track is no longer in this collection" else start(rows,index)
-        mutable.value=mutable.value.copy(collectionLoading=false,collectionError=error);pendingCollection=null
+        if(pendingCollection===request&&(!holdForDelivery||error!=null)) {
+            pendingCollection=null;mutable.value=mutable.value.copy(collectionLoading=false,collectionError=error)
+        }
     }
     @Synchronized fun abandonCollection(request:CollectionRequest) {
         if(pendingCollection!==request)return
@@ -289,7 +292,11 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
     @Synchronized fun abandonNextPage(request:PageRequest) {
         if(request.owner!==this||pendingPage!==request)return
         pendingPage=null
-        if(mutable.value===request.loading)mutable.value=request.expected
+        val current=mutable.value
+        if(generation!=request.version||!current.loading)return
+        // Restore the exact acknowledgement unless collection settlement has copied the loading state.
+        mutable.value=if(current===request.loading)request.expected else current.copy(
+            loading=request.expected.loading,error=request.expected.error,failedAppend=request.expected.failedAppend)
     }
     private fun read(scope:AccountScope,query:LibraryQuery,offset:Int,version:Long,current:()->Boolean={true}) {
         val revision=synchronized(this){mutationRevision}
@@ -407,9 +414,10 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
                     synchronized(this@LibraryRepository) {
                         when {
                             !current()->true
-                            // A Like readback can still own rows after loading becomes false. Its final
-                            // release signals likeRevision even if LibraryState itself does not change.
-                            mutable.value.loading||mutations.values.any {same(it.offer.view.scope,scope)}->false
+                            // Collection Play still owns the displayed rows until its consumer runs.
+                            // A Like readback can also own rows after loading becomes false.
+                            mutable.value.loading||pendingCollection?.let {it.lifetime==lifetime&&same(it.scope,scope)}==true||
+                                mutations.values.any {same(it.offer.view.scope,scope)}->false
                             else->{expected=mutable.value.takeIf {acceptedScope?.let {same(it,scope)}==true};true}
                         }
                     }
@@ -456,5 +464,5 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
         }
         retire()
     }
-    @Synchronized fun retire(){generation++;queryLifetime++;pendingPage=null;mutations.clear();acknowledged.clear();acceptedScope=null;mutable.value=LibraryState();changed()}
+    @Synchronized fun retire(){generation++;queryLifetime++;pendingPage=null;pendingCollection=null;mutations.clear();acknowledged.clear();acceptedScope=null;mutable.value=LibraryState();changed()}
 }

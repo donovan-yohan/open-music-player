@@ -53,7 +53,8 @@ import com.soundq.android.product.preferences.*
     val downloads by model.downloads.collectAsStateWithLifecycle()
     val incomingShare by model.graph.incomingShares.state.collectAsStateWithLifecycle()
     val catalog by model.graph.catalog.state.collectAsStateWithLifecycle()
-    var importView by remember {mutableStateOf<ImportView?>(null)}
+    val recoveryRetirement=remember {LibraryRecoveryRetirement()}
+    var importView by recoveryRetirement.fence(remember {mutableStateOf<ImportView?>(null)}) {it!=null}
     val libraryScroll=rememberSoundQThumbnailListState()
     var revealImported by remember {mutableStateOf<TrackId?>(null)}
     DisposableEffect(Unit) {onDispose {importView?.let(model.graph.imports::close)}}
@@ -85,7 +86,7 @@ import com.soundq.android.product.preferences.*
     LaunchedEffect(playlistDetail.detail) {model.graph.playlistBlend.sourceChanged()}
     val playlistOrder by model.playlistOrder.collectAsStateWithLifecycle()
     val queuePlaylist by model.queuePlaylist.collectAsStateWithLifecycle()
-    var destination by rememberSaveable {mutableStateOf("Library")}
+    var destination by recoveryRetirement.fence(rememberSaveable {mutableStateOf("Library")}) {it!="Library"}
     val acquisitionSavedState=androidx.compose.runtime.saveable.rememberSaveableStateHolder()
     val acquisitionOwner=(auth as? AuthState.SignedIn)?.let {
         com.soundq.android.product.acquisition.PlaylistSavedOwner(model.graph.endpoint.identity,it.accountId)
@@ -93,7 +94,7 @@ import com.soundq.android.product.preferences.*
     var acquisitionReturn by rememberSaveable {mutableStateOf(emptyList<String>())}
     val acquisitionPlaylistJob=acquisitionOwner?.restoreJob(acquisitionReturn)
     // Settings replaces the detail rather than covering its mounted route.
-    var settingsRoutes by rememberSaveable {mutableStateOf(emptyList<String>())}
+    var settingsRoutes by recoveryRetirement.fence(rememberSaveable {mutableStateOf(emptyList<String>())}) {it.isNotEmpty()}
     val blendVisible=destination=="Playlists" && importView==null && playlistDetail.id!=null && auth is AuthState.SignedIn && settingsRoutes.isEmpty()
     DisposableEffect(model,blendLifecycle,blendVisible) {
         var syncDisposed=false
@@ -161,7 +162,7 @@ import com.soundq.android.product.preferences.*
     DisposableEffect(playlistActions) {onDispose {playlistActions?.close();if(playlistActions!=null)model.closePlaylistDetail()}}
     val membership by model.playlistMembership.collectAsStateWithLifecycle()
     val libraryActions = if(destination=="Library" && importView==null && auth is AuthState.SignedIn) remember(model,accountVersion) { model.libraryPlaylistActions() } else null
-    var picker by remember {mutableStateOf<MembershipPickerActions?>(null)}
+    var picker by recoveryRetirement.fence(remember {mutableStateOf<MembershipPickerActions?>(null)}) {it!=null}
     var detailsRoute by remember {mutableStateOf<com.soundq.android.data.trackdetails.DetailsRoute?>(null)}
     val trackDetails by model.trackDetails.collectAsStateWithLifecycle()
     val keyNotation by model.graph.keyNotationPreferences.state.collectAsStateWithLifecycle()
@@ -172,7 +173,7 @@ import com.soundq.android.product.preferences.*
     DisposableEffect(libraryActions) {onDispose {libraryActions?.close()}}
     DisposableEffect(picker) {val captured=picker;onDispose {captured?.close()}}
     LaunchedEffect(picker) {picker?.let {if(membership.outcome==null)it.reload()}}
-    var panel by remember {mutableStateOf<String?>(null)}
+    var panel by recoveryRetirement.fence(remember {mutableStateOf<String?>(null)}) {it!=null}
     // Settings is a full-screen route family, not a panel. Names are saveable; decode drops unknown entries.
     var settingsReturn by rememberSaveable {mutableStateOf<List<String>?>(null)}
     var settingsOrigin by rememberSaveable {mutableStateOf("Library")}
@@ -193,7 +194,7 @@ import com.soundq.android.product.preferences.*
     DisposableEffect(queueSave) {val captured=queueSave;onDispose {captured?.close()}}
     DisposableEffect(panel,detailsRoute) {val captured=detailsRoute;val owns=panel=="Details";onDispose {if(owns)captured?.let(model.graph.trackDetails::close)}}
     var selected by remember {mutableStateOf<Track?>(null)}
-    var gallery by remember {mutableStateOf(false)}
+    var gallery by recoveryRetirement.fence(remember {mutableStateOf(false)}) {it}
     val paginationScope=remember(accountVersion,auth is AuthState.SignedIn){model.graph.session.capture()}
     var paginationNavigation by remember {mutableLongStateOf(0L)}
     var rowVisit by remember {mutableLongStateOf(0L)}
@@ -210,9 +211,18 @@ import com.soundq.android.product.preferences.*
     }
     DisposableEffect(rowLifetime) {onDispose {rowLifetime.close();revealOwner.close()}}
     val currentRowLifetime by rememberUpdatedState(rowLifetime)
+    val recoveryVisit=remember(paginationVisit,settingsRoutes.isEmpty(),rowLifecycle,recoveryRetirement.generation) { LibraryRowLifetime {
+        paginationVisit.current() && destination=="Library" && panel==null && picker==null &&
+            importView==null && !gallery && settingsRoutes.isEmpty() &&
+            rowLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+    } }
+    DisposableEffect(recoveryVisit) {
+        recoveryRetirement.attach(recoveryVisit)
+        onDispose {recoveryRetirement.detach(recoveryVisit)}
+    }
     DisposableEffect(rowLifecycle) {
         val observer=LifecycleEventObserver {_,event->when(event) {
-            Lifecycle.Event.ON_PAUSE,Lifecycle.Event.ON_STOP->{currentCollectionVisit.close();currentPaginationVisit.close();currentRowLifetime.close();revealOwner.close()}
+            Lifecycle.Event.ON_PAUSE,Lifecycle.Event.ON_STOP->{recoveryRetirement.retire();currentCollectionVisit.close();currentPaginationVisit.close();currentRowLifetime.close();revealOwner.close()}
             Lifecycle.Event.ON_RESUME->{rowVisit++}
             else->Unit
         }}
@@ -230,6 +240,7 @@ import com.soundq.android.product.preferences.*
     fun openAccount() {openSettings(SettingsRoute.decode(settingsRoutes)+accountEntry(auth))}
     fun navigate(next:String) {
         if(auth !is AuthState.SignedIn&&next !in setOf("Library","Downloads")){openAccount();return}
+        recoveryRetirement.retire() // Pagination also retires on navigation to the same destination.
         settingsReturn=null
         acquisitionReturn=emptyList()
         collectionVisit.close();paginationVisit.close();paginationNavigation++
@@ -420,7 +431,14 @@ import com.soundq.android.product.preferences.*
                         LibraryHeader({openSettings()},{navigate("Catalog")})
                         LibrarySearch(mixedQuery.text) {if(auth is AuthState.SignedIn)model.refine(library.query.copy(text=it))else localQuery=localQuery.copy(text=it)}
                         LibraryFilters(mixedQuery.liked,if(mixedNeeded)mixedRows.size else library.total,{if(auth is AuthState.SignedIn)model.refine(library.query.copy(liked=it))else localQuery=localQuery.copy(liked=it)},{panel="Refine"})
-                        if(panel!="PhoneTrack") OriginalImportRecovery(model,originalScope) {localAudioVisit.get()&&destination=="Library"&&rowLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)}
+                        if(panel!="PhoneTrack") {
+                            val recoveryVersion by model.graph.session.scopeRevision.collectAsStateWithLifecycle()
+                            val savedRevision by model.graph.session.credentialSaveRevision.collectAsStateWithLifecycle()
+                            val recoveryScope=remember(recoveryVersion,auth,savedRevision){model.graph.session.capture()}
+                            OriginalImportRecovery(model,recoveryScope,localRefusalVisit=recoveryVisit) {
+                                localAudioVisit.get()&&destination=="Library"&&rowLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                            }
+                        }
 
                         if(mixedNeeded&&auth is AuthState.SignedIn&&!library.completeProjection)Text(if(library.projectionError||library.error!=null)"Partial server coverage · ordering shown results only" else "Loading complete server coverage · ordering shown results only",Modifier.padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.caption,color=SoundQ.colors.muted)
                         phone.message?.takeIf {librarySource!=LibrarySource.Server&&phone.snapshot==null}?.let {Text(it,Modifier.padding(horizontal=SoundQ.spacing.gutter),style=SoundQ.typography.caption)}
@@ -622,6 +640,40 @@ import com.soundq.android.product.preferences.*
         }
     }
 }
+
+/** Main-owned root transitions close only the recovery visit, before changing its visibility. */
+private class LibraryRecoveryRetirement {
+    private var mounted: LibraryRowLifetime? = null
+    var generation by mutableLongStateOf(0L)
+        private set
+
+    fun attach(visit: LibraryRowLifetime) { mounted = visit }
+    fun detach(visit: LibraryRowLifetime) {
+        visit.close()
+        if (mounted === visit) mounted = null
+    }
+
+    fun retire() {
+        val visit = mounted ?: return
+        visit.close()
+        mounted = null
+        // A same-frame exit and return may leave every other remember key unchanged.
+        generation++
+    }
+
+    @Composable fun <T> fence(state: MutableState<T>, covered: (T) -> Boolean): MutableState<T> =
+        remember(this, state) {
+            object : MutableState<T> by state {
+                override var value: T
+                    get() = state.value
+                    set(next) {
+                        if (covered(next) && !covered(state.value)) retire()
+                        state.value = next
+                    }
+            }
+        }
+}
+
 // Header/search/filter are fixed chrome. Loading and the local-audio notice precede rows; recovery follows them.
 internal fun libraryRowScrollIndex(index:Int,loading:Boolean,@Suppress("UNUSED_PARAMETER") error:Boolean,notice:Boolean=false):Int = index+(if(loading)1 else 0)+(if(notice)1 else 0)
 

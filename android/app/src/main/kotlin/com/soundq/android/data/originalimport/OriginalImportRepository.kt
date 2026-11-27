@@ -31,7 +31,9 @@ internal class OriginalImportRepository(
     // not a new login. Cold journal fences carry no live acknowledgement.
     private val removals = mutableMapOf<Member, RemovalFence>()
     private var removalEpoch: Long? = null
-    private val uploadRefusals = mutableMapOf<ServerAccount, OriginalImportEntry>()
+    private data class UploadRefusal(val scope: AccountScope, val pending: OriginalImportEntry)
+    // Writes remain serialized by membershipLock; composition must not wait for storage IO.
+    @Volatile private var uploadRefusals = emptyMap<ServerAccount, UploadRefusal>()
     private val proofs = MutableStateFlow<Map<Member, Proof>>(emptyMap())
     private val proofSequence = MutableStateFlow(0L)
     val membershipRevision: StateFlow<Long> = proofSequence
@@ -183,6 +185,14 @@ internal class OriginalImportRepository(
     fun prepareRemoval(scope: AccountScope, track: TrackId, mounted: () -> Boolean): RemovalFence = synchronized(membershipLock) {
         fun current() = session.remoteCurrent(scope) && mounted()
         if (!current()) throw SafeFailure(SafeFailure.Reason.Retired)
+        // A rejected snapshot hides the import UI. An explicit Remove may recover this
+        // account's local upload refusal, but still needs its own ordinary removal fence.
+        if (state.value.rejected) {
+            val refusal = uploadRefusals[owner(scope)]
+            if (refusal != null && !finishUploadRefusal(scope, refusal, mounted = mounted))
+                throw SafeFailure(if (current()) SafeFailure.Reason.RemovalNotSent else SafeFailure.Reason.Retired)
+            if (!current()) throw SafeFailure(SafeFailure.Reason.Retired)
+        }
         removalFence(scope, track)?.let { throw it.failure() }
         val key = Member(owner(scope), track)
         val fence = RemovalFence(scope, key.owner, track, UUID.randomUUID())
@@ -275,6 +285,27 @@ internal class OriginalImportRepository(
     }
     enum class Action { Added, Unconfirmed, ReadbackRequired, Closed, Absent, RemovalUnconfirmed, Refused, Unavailable, StorageUnavailable, AlreadyInProgress, Retired }
 
+    /** Presentation-only target. It is not an entry, playback permit or status-read authority. */
+    data class LocalRefusalCheck internal constructor(
+        internal val scope: AccountScope, val destination: ServerAccount, val operation: UUID,
+    )
+
+    fun localRefusalCheck(scope: AccountScope): LocalRefusalCheck? {
+        if (!enabled || !state.value.rejected) return null
+        val destination = owner(scope)
+        val refusal = uploadRefusals[destination] ?: return null
+        if (!journal.hasUnverifiedRefusal(refusal.pending) || !ownsUploadRefusal(scope, refusal)) return null
+        return LocalRefusalCheck(scope, destination, refusal.pending.intent.operation)
+    }
+
+    /** A stale local-only click cannot fall through to receipt GET, even after the state changes. */
+    fun checkLocalRefusal(target: LocalRefusalCheck, commitInVisit: ((() -> Boolean) -> Boolean)? = null,
+        mounted: () -> Boolean): Action {
+        if (target.destination != owner(target.scope)) return Action.Retired
+        return interact(target.scope, Work.Check, mounted, target.operation, localOnly = true,
+            commitInVisit = commitInVisit) { Action.Retired }
+    }
+
     fun choose(scope: AccountScope, original: ContentOwner, display: ImportDisplay, overrideRevision: Long? = null, mounted: () -> Boolean): Choice? {
         if (!writeReady(scope) || !mounted()) return null
         val stamp = sourceStamp(original) ?: return null
@@ -287,7 +318,7 @@ internal class OriginalImportRepository(
 
     fun confirm(choice: Choice): Action {
         if (choice.repository !== this || !mayWrite || !choice.used.compareAndSet(false, true)) return Action.Retired
-        return interact(choice.scope, Work.Upload) { adapter ->
+        return interact(choice.scope, Work.Upload, choice.mounted) { adapter ->
             if (!choice.mounted() || sourceStamp(choice.intent.original) != choice.stamp) return@interact Action.Unavailable
             val rows = entries(choice.scope)
             if (rows.any { it.intent.original.revision == choice.intent.original.revision && it.phase == OriginalImportPhase.RemovalPending })
@@ -302,8 +333,9 @@ internal class OriginalImportRepository(
         }
     }
 
-    /** Explicit recovery is GET only: a generic 404 or transient error is not a replay permit. */
-    fun check(scope: AccountScope, operation: UUID, mounted: () -> Boolean): Action = interact(scope, Work.Check) { adapter ->
+    /** Explicit recovery is local or GET only: an ambiguous response is not a replay permit. */
+    fun check(scope: AccountScope, operation: UUID, commitInVisit: ((() -> Boolean) -> Boolean)? = null,
+        mounted: () -> Boolean): Action = interact(scope, Work.Check, mounted, operation, commitInVisit = commitInVisit) { adapter ->
         if (!mounted()) return@interact Action.Retired
         val entry = entries(scope).singleOrNull { it.intent.operation == operation } ?: return@interact Action.Retired
         when (entry.phase) {
@@ -322,7 +354,9 @@ internal class OriginalImportRepository(
     }
 
 
-    private inline fun interact(scope: AccountScope, work: Work, block: (OriginalImportTransport) -> Action): Action {
+    private inline fun interact(scope: AccountScope, work: Work, noinline mounted: () -> Boolean, operation: UUID? = null,
+        localOnly: Boolean = false, noinline commitInVisit: ((() -> Boolean) -> Boolean)? = null,
+        block: (OriginalImportTransport) -> Action): Action {
         val adapter = transport ?: return Action.Retired
         if (!session.remoteCurrent(scope)) return Action.Retired
         val owner = owner(scope)
@@ -332,12 +366,25 @@ internal class OriginalImportRepository(
         }
         try {
             journal.load()
-            if (!state.value.ready) return Action.StorageUnavailable
             if (!session.remoteCurrent(scope)) return Action.Retired
-            val cleaned = synchronized(membershipLock) {
-                uploadRefusals[owner]?.let { finishUploadRefusal(scope, it) } ?: true
+            synchronized(membershipLock) {
+                val refusal = uploadRefusals[owner]?.takeIf {
+                    when {
+                        localOnly -> it.pending.intent.operation == operation && journal.hasUnverifiedRefusal(it.pending)
+                        // An older login's late refusal may not shadow ordinary receipt-status recovery.
+                        state.value.ready && !session.continuesUploadScope(it.scope) -> false
+                        operation == null -> state.value.ready
+                        else -> it.pending.intent.operation == operation
+                    }
+                }
+                if (refusal != null) {
+                    if (!finishUploadRefusal(scope, refusal, commitInVisit, mounted))
+                        return if (mounted() && session.remoteCurrent(scope)) Action.StorageUnavailable else Action.Retired
+                    if (operation != null) return Action.Refused
+                }
             }
-            if (!cleaned) return if (session.remoteCurrent(scope)) Action.StorageUnavailable else Action.Retired
+            if (localOnly) return Action.Retired
+            if (!state.value.ready) return Action.StorageUnavailable
             return block(adapter)
         } finally { synchronized(mutableWork) { mutableWork.value = mutableWork.value - owner } }
     }
@@ -384,16 +431,42 @@ internal class OriginalImportRepository(
 
     /** Only a positive non-entry or producer no-write result can schedule local cleanup. */
     private fun retainUploadRefusal(scope: AccountScope, entry: OriginalImportEntry, result: Action): Action = synchronized(membershipLock) {
-        uploadRefusals[entry.intent.destination] = entry
+        val refusal = UploadRefusal(scope, entry)
+        synchronized(session) {
+            if (!session.continuesUploadScope(scope)) return Action.Retired
+            uploadRefusals = uploadRefusals + (entry.intent.destination to refusal)
+        }
         if (!session.remoteCurrent(scope)) Action.Retired
-        else if (finishUploadRefusal(scope, entry)) result
+        else if (finishUploadRefusal(scope, refusal) { true }) result
         else if (!session.remoteCurrent(scope)) Action.Retired else Action.StorageUnavailable
     }
 
-    private fun finishUploadRefusal(scope: AccountScope, entry: OriginalImportEntry): Boolean {
-        check(entry.intent.destination == owner(scope))
-        if (save(scope, entry.copy(phase = OriginalImportPhase.Refused), entry) == null) return false
-        uploadRefusals.remove(entry.intent.destination)
+    private fun ownsUploadRefusal(scope: AccountScope, refusal: UploadRefusal): Boolean {
+        val destination = refusal.pending.intent.destination
+        return destination == owner(scope) && uploadRefusals[destination] === refusal &&
+            session.continuesUploadScope(refusal.scope) && session.remoteCurrent(scope)
+    }
+
+    private fun finishUploadRefusal(scope: AccountScope, refusal: UploadRefusal,
+        commitInVisit: ((() -> Boolean) -> Boolean)? = null, mounted: () -> Boolean): Boolean {
+        fun current() = mounted() && ownsUploadRefusal(scope, refusal)
+        val remaining = uploadRefusals - refusal.pending.intent.destination
+        try {
+            journal.finishUploadRefusal(refusal.pending, ::current) { publish ->
+                // membershipLock -> journal -> session -> visit (Library only).
+                // UI retirement only takes the visit fence; it never waits for the session.
+                if (!mounted()) false else synchronized(session) {
+                    if (!ownsUploadRefusal(scope, refusal)) return@synchronized false
+                    fun commit(): Boolean {
+                        uploadRefusals = remaining
+                        publish()
+                        return true
+                    }
+                    if (commitInVisit == null) commit() else commitInVisit(::commit)
+                }
+            }
+        }
+        catch (_: Exception) { return false }
         return true
     }
 

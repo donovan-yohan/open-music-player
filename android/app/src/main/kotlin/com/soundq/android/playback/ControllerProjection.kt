@@ -9,6 +9,7 @@ import com.soundq.android.data.*
 import com.soundq.android.data.timeline.globalAt
 import com.soundq.android.data.timeline.globalEndMs
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
@@ -128,25 +129,28 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
             !closed && connection.accepts(c) && graph.session.previewOwnerCurrent(scope) && valid()
         }, wireValid = { contextIntent == revision && wireValid() })
     }
-    fun playContext(tracks:List<Track>,index:Int,localOnly:Boolean=false,valid:(()->Boolean)?=null) {
-        contextIntent++;contextError=null
-        val c=controller ?: return
-        if(valid?.invoke()==false)return
-        if(index !in tracks.indices || !QueuePolicy.acceptsContext(tracks.size)){refuseContext(QueuePolicy.CONTEXT_LIMIT_MESSAGE);return}
-        if(tracks.size>QueuePolicy.MAX_CONTEXT_TRACKS){startLargeContext(tracks,index,localOnly,valid ?: {true});return}
-        val extras=Bundle().apply {putBoolean("localOnly",localOnly)}
-        c.setMediaItems(tracks.map {MediaItem.Builder().setMediaId(it.id.value.toString()).setRequestMetadata(MediaItem.RequestMetadata.Builder().setExtras(extras).build()).build()},index,0)
-        c.prepare();c.play()
+    fun playContext(tracks:List<Track>,index:Int,localOnly:Boolean=false,valid:(()->Boolean)?=null,delivery:CompletableDeferred<Unit>?=null) {
+        var asynchronous=false
+        try {
+            contextIntent++;contextError=null
+            val c=controller ?: return
+            if(valid?.invoke()==false)return
+            if(index !in tracks.indices || !QueuePolicy.acceptsContext(tracks.size)){refuseContext(QueuePolicy.CONTEXT_LIMIT_MESSAGE);return}
+            if(tracks.size>QueuePolicy.MAX_CONTEXT_TRACKS){asynchronous=startLargeContext(tracks,index,localOnly,valid ?: {true},delivery);return}
+            val extras=Bundle().apply {putBoolean("localOnly",localOnly)}
+            c.setMediaItems(tracks.map {MediaItem.Builder().setMediaId(it.id.value.toString()).setRequestMetadata(MediaItem.RequestMetadata.Builder().setExtras(extras).build()).build()},index,0)
+            c.prepare();c.play()
+        }finally {if(!asynchronous)delivery?.complete(Unit)}
     }
-    private fun startLargeContext(tracks:List<Track>,index:Int,localOnly:Boolean,valid:()->Boolean) {
-        val c=controller ?: return
+    private fun startLargeContext(tracks:List<Track>,index:Int,localOnly:Boolean,valid:()->Boolean,delivery:CompletableDeferred<Unit>?):Boolean {
+        val c=controller ?: return false
         val graph=(appContext as com.soundq.android.SoundQApplication).graph
-        val scope=graph.session.capture() ?: return
+        val scope=graph.session.capture() ?: return false
         val intent=contextIntent
         val selection=selectionIncarnation
         fun currentIntent() = !closed && contextIntent==intent && selectionIncarnation==selection && connection.accepts(c)
         val command=SessionCommand(SoundQLibraryService.START_CONTEXT,Bundle.EMPTY)
-        if(!connection.accepts(c)||!c.isSessionCommandAvailable(command)){refuseContext("Playback context is unavailable. The existing queue is unchanged.");return}
+        if(!connection.accepts(c)||!c.isSessionCommandAvailable(command)){refuseContext("Playback context is unavailable. The existing queue is unchanged.");return false}
         val capture=graph.contextStarts.capture(graph.endpoint.identity,scope.accountId) {
             currentIntent() && graph.session.current(scope) && valid()
         }
@@ -156,20 +160,39 @@ internal class ControllerProjection(context:Context,private val sessionToken:Ses
         graph.io.launch {
             try {
                 graph.contextStarts.stage(capture,saved)
-                handler.post {
-                    if(!graph.contextStarts.current(capture)||!connection.accepts(c)) {graph.io.launch {graph.contextStarts.finish(capture)};return@post}
-                    val result=c.sendCustomCommand(command,Bundle().apply {putString("ticket",capture.ticket)})
-                    result.addListener({
-                        if(runCatching {result.get().resultCode==SessionResult.RESULT_SUCCESS}.getOrDefault(false))return@addListener
-                        if(currentIntent()&&valid())refuseContext("Playback context was refused. The existing queue is unchanged.")
+                if(!handler.post {
+                    try {
+                        if(!graph.contextStarts.current(capture)||!connection.accepts(c)) {
+                            graph.io.launch {graph.contextStarts.finish(capture)}
+                            delivery?.complete(Unit)
+                            return@post
+                        }
+                        val result=c.sendCustomCommand(command,Bundle().apply {putString("ticket",capture.ticket)})
+                        result.addListener({
+                            try {
+                                if(runCatching {result.get().resultCode==SessionResult.RESULT_SUCCESS}.getOrDefault(false))return@addListener
+                                if(currentIntent()&&valid())refuseContext("Playback context was refused. The existing queue is unchanged.")
+                                graph.io.launch {graph.contextStarts.finish(capture)}
+                            }finally {delivery?.complete(Unit)}
+                        },Executor {if(!handler.post(it))delivery?.complete(Unit)})
+                    }catch(_:Exception) {
                         graph.io.launch {graph.contextStarts.finish(capture)}
-                    },Executor {handler.post(it)})
+                        if(currentIntent()&&valid())refuseContext("Playback context was refused. The existing queue is unchanged.")
+                        delivery?.complete(Unit)
+                    }
+                }) {
+                    graph.contextStarts.finish(capture)
+                    delivery?.complete(Unit)
                 }
             }catch(_:Exception){
                 graph.contextStarts.finish(capture)
-                handler.post {if(currentIntent()&&valid())refuseContext(QueuePolicy.CONTEXT_LIMIT_MESSAGE)}
+                if(!handler.post {
+                    try {if(currentIntent()&&valid())refuseContext(QueuePolicy.CONTEXT_LIMIT_MESSAGE)}
+                    finally {delivery?.complete(Unit)}
+                })delivery?.complete(Unit)
             }
-        }
+        }.invokeOnCompletion {if(it!=null)delivery?.complete(Unit)}
+        return true
     }
     fun playDevice(ref:PlaybackRef.Device,valid:()->Boolean) {
         contextIntent++;contextError=null

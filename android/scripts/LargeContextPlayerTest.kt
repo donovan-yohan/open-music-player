@@ -12,7 +12,12 @@ import com.soundq.android.product.ProductViewModel
 import com.soundq.android.playback.system.ServiceTransportPlayer
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.internal.TextListener
+import org.junit.runner.Description
+import org.junit.runner.JUnitCore
 import org.junit.runner.RunWith
+import org.junit.runner.notification.Failure
+import org.junit.runner.notification.RunListener
 import org.robolectric.*
 import org.robolectric.annotation.Config
 import java.io.File
@@ -22,6 +27,39 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal object LargeContextCallProbe {
     val prepares=java.util.concurrent.atomic.AtomicInteger()
     val plays=java.util.concurrent.atomic.AtomicInteger()
+}
+
+/** Passive witnesses inserted by the host runner at the three actual startup sites. */
+internal object LargeContextStartupProbe {
+    private val byOwner=mutableMapOf<Job,MutableMap<String,Job>>()
+    @Synchronized fun record(owner:Job,role:String,job:Job) {
+        val jobs=byOwner.getOrPut(owner){mutableMapOf()}
+        check(jobs.putIfAbsent(role,job)==null){"Duplicate startup role: $role"}
+        owner.invokeOnCompletion {synchronized(this){byOwner.remove(owner)}}
+    }
+    @Synchronized fun snapshot(owner:Job)=byOwner[owner]?.toMap().orEmpty()
+}
+
+/** The same JUnitCore and suite classes, with one terminal outcome per real named case. */
+internal object LargeContextNamedJUnit {
+    @JvmStatic fun main(args:Array<String>) {
+        val failed=mutableSetOf<Description>()
+        val skipped=mutableSetOf<Description>()
+        val junit=JUnitCore()
+        junit.addListener(TextListener(System.out))
+        junit.addListener(object:RunListener() {
+            private fun emit(outcome:String,test:Description) {println("\nCASE $outcome ${test.className}#${test.methodName}")}
+            override fun testStarted(description:Description)=emit("START",description)
+            override fun testFailure(failure:Failure) {failed+=failure.description}
+            override fun testAssumptionFailure(failure:Failure) {skipped+=failure.description}
+            override fun testIgnored(description:Description) {skipped+=description;emit("SKIP",description)}
+            override fun testFinished(description:Description)=emit(
+                if(description in failed)"FAIL" else if(description in skipped)"SKIP" else "PASS",description)
+        })
+        val result=junit.run(*args.map {Class.forName(it)}.toTypedArray())
+        // Match JUnitCore.main: shut down even after success (Robolectric owns JVM workers).
+        kotlin.system.exitProcess(if(result.wasSuccessful()&&skipped.isEmpty())0 else 1)
+    }
 }
 
 /** Real Media3 controller, service, canonical player and durable pages. Only the
@@ -77,12 +115,38 @@ internal class LargeContextPlayerTest {
             controller.seek(1300);drain {player.currentPosition==1300L}
             return (0 until player.mediaItemCount).map(player::getMediaItemAt)
         }
+        fun startupObservers(model:ProductViewModel):StartupObservers {
+            val owner=model.viewModelScope.coroutineContext.job
+            val required=setOf("editor","auth","import-progress")
+            // The caller already observed the auth-owned default Library restore.
+            // Require the real editor to have consumed this fixture's current queue.
+            val occurrences=(0 until player.mediaItemCount).map {player.getMediaItemAt(it).mediaId}
+            drain {
+                LargeContextStartupProbe.snapshot(owner).keys.containsAll(required)&&
+                    model.timeline.value.document.clips.map {it.occurrence}==occurrences
+            }
+            val jobs=LargeContextStartupProbe.snapshot(owner).filterKeys {it in required}
+            assertEquals(required,jobs.keys)
+            assertEquals("Each startup producer owns a distinct Job",required.size,jobs.values.toSet().size)
+            return StartupObservers(owner,jobs).also {it.assertRetained()}
+        }
         override fun close() {
             controller.close();app.hardware.allowRetire=true;lifecycle.destroy()
             drain {player.nativeReleased.isDone};assertTrue(player.nativeReleased.get())
             app.graph.close()
         }
     }
+    private class StartupObservers(private val owner:Job,private val jobs:Map<String,Job>) {
+        fun assertRetained() {
+            val activeChildren=owner.children.filter {it.isActive}.toList()
+            val current=LargeContextStartupProbe.snapshot(owner)
+            jobs.forEach {(role,job)->
+                assertSame("Keep the original $role startup job",job,current[role])
+                assertTrue("The $role startup job must remain an active direct child",activeChildren.any {it===job})
+            }
+        }
+    }
+
     @Test fun actualControllerServiceStarts500501And12037WithoutEagerAudioOrRecordingDedupe() {
         Fixture().use {f->for(n in listOf(500,501,12037)) {
             val before=f.app.acquired.size;val rows=f.rows(n)
@@ -109,8 +173,7 @@ internal class LargeContextPlayerTest {
                     val count=model.library.value.rows.size
                     model.loadMore();f.drain {model.library.value.rows.size>count&&!model.library.value.loading}
                 }
-                val observers=model.viewModelScope.coroutineContext[Job]!!.children.filter {it.isActive}.toList()
-                assertEquals("Normal editor and auth startup collectors",2,observers.size)
+                val observers=f.startupObservers(model)
                 val repo=f.app.graph.timeline;val scope=f.app.graph.session.capture()!!
                 val original=repo.state.value.document
                 assertTrue(repo.commit(com.soundq.android.data.timeline.TimelineEdit(original.revision,original.clips[1],com.soundq.android.data.timeline.EditKind.TrimIn,1000)){true})
@@ -122,7 +185,7 @@ internal class LargeContextPlayerTest {
                 model.play(n-1,model.library.value.rows)
                 f.drain {f.player.mediaItemCount==n&&f.player.currentMediaItemIndex==n-1&&f.player.isPlaying}
                 f.drain {if(n<=500)model.timeline.value.document.clips.size==n else !model.timeline.value.writable}
-                assertTrue("Normal startup collectors survived $n known-duration occurrences",observers.all {it.isActive})
+                observers.assertRetained()
                 assertEquals(corpus,model.library.value.rows)
                 assertEquals(corpus.map {it.id.value},model.playback.value.queue.map {it.trackId})
                 assertEquals(n,model.playback.value.queue.map {it.occurrenceId}.toSet().size)
@@ -143,8 +206,8 @@ internal class LargeContextPlayerTest {
                 assertFalse("Former callback cannot revive after source queue Undo",repo.commit(stale){true})
                 val fresh=repo.state.value.document
                 assertTrue(repo.commit(com.soundq.android.data.timeline.TimelineEdit(fresh.revision,fresh.clips[1],com.soundq.android.data.timeline.EditKind.TrimOut,2500)){true})
-                assertTrue(observers.all {it.isActive});assertFalse(bytes.contentEquals(file.readBytes()))
-                println("NORMAL_STARTUP n=$n collectors=2 alive=true browse=$n queue=$n selected=${n-1} draftBytesPreserved=true undoCursor=1300 recoveredEditing=true")
+                observers.assertRetained();assertFalse(bytes.contentEquals(file.readBytes()))
+                println("NORMAL_STARTUP n=$n observers=editor,auth,import-progress alive=true browse=$n queue=$n selected=${n-1} draftBytesPreserved=true undoCursor=1300 recoveredEditing=true")
             } finally {model.viewModelScope.cancel()}
         }
     }
@@ -173,8 +236,7 @@ internal class LargeContextPlayerTest {
             val model=ProductViewModel(f.app)
             try {
                 f.drain {model.library.value.rows.size==500&&!model.library.value.loading}
-                val observers=model.viewModelScope.coroutineContext[Job]!!.children.filter {it.isActive}.toList()
-                assertEquals("Both normal startup collectors remain active",2,observers.size)
+                val observers=f.startupObservers(model)
                 held.set(true)
                 val priorJobs=model.viewModelScope.coroutineContext[Job]!!.children.toSet()
                 if(collection)model.playLibraryCollection(model.library.value,selected=model.library.value.rows[1].id,current={true}) else model.play(1,model.library.value.rows)
@@ -216,7 +278,6 @@ internal class LargeContextPlayerTest {
                     assertEquals(1,f.player.currentMediaItemIndex);assertEquals(acquired.size+1,f.app.acquired.size)
                     assertTrue(LargeContextCallProbe.prepares.get()>prepares);assertTrue(LargeContextCallProbe.plays.get()>plays)
                     f.drain {!model.timeline.value.writable}
-                    assertTrue("Normal startup collectors survive the complete held Library start",observers.all {it.isActive})
                 } else {
                     assertEquals("$action must not install the delayed Library context",items,(0 until f.player.mediaItemCount).map(f.player::getMediaItemAt))
                     assertEquals(selected,f.player.currentMediaItemIndex);assertEquals(position,f.player.currentPosition)
@@ -227,6 +288,7 @@ internal class LargeContextPlayerTest {
                     assertEquals("No native Play after the accepted command",ops.count {it==101},f.app.hardware.ops.count {it==101})
                     if(action=="pause")assertEquals(old,items)
                 }
+                observers.assertRetained()
             } finally {permit.countDown();model.viewModelScope.cancel();MediaController.releaseFuture(secondFuture)}
         }
     }
@@ -380,11 +442,10 @@ internal class LargeContextPlayerTest {
             val model=ProductViewModel(f.app)
             try {
                 f.drain {!model.library.value.loading&&model.library.value.rows.isNotEmpty()}
+                val observers=f.startupObservers(model)
                 val query=LibraryQuery(liked=liked,collection=LibraryCollection(artist,album))
                 model.refine(query)
                 f.drain {!model.library.value.loading&&model.library.value.query==query&&model.library.value.rows.size==n}
-                val observers=model.viewModelScope.coroutineContext[Job]!!.children.filter {it.isActive}.toList()
-                assertEquals(2,observers.size)
                 val repo=f.app.graph.timeline
                 val before=repo.state.value.document
                 val selected=eligible[n-2].id
@@ -399,7 +460,7 @@ internal class LargeContextPlayerTest {
                 assertSame(carried,f.player.getMediaItemAt(n-1))
                 assertEquals("Off acquires only selected source",acquisitions+1,f.app.acquired.size)
                 assertTrue(f.app.crossfadeHardware.pairs.isEmpty())
-                assertTrue(observers.all {it.isActive})
+                observers.assertRetained()
                 assertEquals(before,repo.state.value.document)
                 // The same installed large metadata queue now enables optional overlap.
                 f.app.crossfadeHardware.failIncoming=true
@@ -422,12 +483,13 @@ internal class LargeContextPlayerTest {
                 f.controller.select(f.player.getMediaItemAt(n).mediaId)
                 f.drain {f.player.currentMediaItemIndex==n&&!f.player.playWhenReady}
                 assertEquals(eligible.last().id.value,f.player.currentMediaItem!!.mediaMetadata.extras!!.getLong("trackId"))
-                assertTrue(observers.all {it.isActive})
+                observers.assertRetained()
                 f.controller.pause();f.drain {!f.player.playWhenReady&&!f.player.isPlaying}
                 f.controller.undo();f.drain {f.player.mediaItemCount==4&&model.timeline.value.writable}
                 assertEquals(old,(0 until 3).map(f.player::getMediaItemAt));assertSame(carried,f.player.getMediaItemAt(3))
                 assertEquals(2,f.player.currentMediaItemIndex);assertEquals(1300L,f.player.currentPosition);assertFalse(f.player.playWhenReady)
-                println("JOINT producer=${if(liked)"Liked" else "literal"} n=$n selected=${selected.value} membership=complete collectors=2 off=selected-only failedDecoder=latched recovery=preference dominance=later-row manualCarry=true undo=1300")
+                observers.assertRetained()
+                println("JOINT producer=${if(liked)"Liked" else "literal"} n=$n selected=${selected.value} membership=complete observers=editor,auth,import-progress off=selected-only failedDecoder=latched recovery=preference dominance=later-row manualCarry=true undo=1300")
             }finally {model.viewModelScope.cancel()}
         }
     }
@@ -443,23 +505,33 @@ internal class LargeContextPlayerTest {
             AppGraph::class.java.getDeclaredField("controllerOwner").apply {isAccessible=true}.set(f.app.graph,lazyOf(f.controller))
             val model=ProductViewModel(f.app);val entered=CountDownLatch(1);val release=CountDownLatch(1)
             val lock=QueueSnapshotStore::class.java.getDeclaredField("lock").apply {isAccessible=true}.get(null)
-            val executor=Executors.newSingleThreadExecutor();var route=true
+            val executor=Executors.newSingleThreadExecutor();val route=AtomicBoolean(true)
             try {
                 f.drain {model.library.value.rows.size==500&&!model.library.value.loading}
-                val holder=executor.submit {synchronized(lock){entered.countDown();check(release.await(10,TimeUnit.SECONDS))}}
+                val holder=executor.submit {synchronized(lock){entered.countDown();check(release.await(20,TimeUnit.SECONDS))}}
                 assertTrue(entered.await(5,TimeUnit.SECONDS))
                 val beforeAcquired=f.app.acquired.toList();val beforePrepares=LargeContextCallProbe.prepares.get();val beforePlays=LargeContextCallProbe.plays.get()
-                model.playLibraryCollection(model.library.value,selected=model.library.value.rows.last().id,current={route})
+                val library=f.app.graph.library;val contexts=f.app.graph.contextStarts;val expected=model.library.value
                 val pending=LibraryRepository::class.java.getDeclaredField("pendingCollection").apply {isAccessible=true}
-                f.drain {pending.get(f.app.graph.library)==null}
-                assertEquals("The producer has consumed its request",false,model.library.value.collectionLoading)
-                route=false;release.countDown();holder.get(5,TimeUnit.SECONDS)
-                f.drain {ContextStartAdmission::class.java.getDeclaredField("active").apply {isAccessible=true}.get(f.app.graph.contextStarts)==null}
+                val active=ContextStartAdmission::class.java.getDeclaredField("active").apply {isAccessible=true}
+                model.playLibraryCollection(expected,selected=expected.rows.last().id,current=route::get)
+                val claim=pending.get(library) as LibraryRepository.CollectionRequest
+                assertSame(expected,claim.expected)
+                f.drain {active.get(contexts) is ContextStartAdmission.Capture}
+                val ticket=active.get(contexts) as ContextStartAdmission.Capture
+                assertFalse("Staging lock must still be held",holder.isDone)
+                assertTrue("The handed-off ticket must be current before route retirement",contexts.current(ticket))
+                assertSame("Keep the matching claim until the command settles",claim,pending.get(library))
+                assertTrue(claim.started);assertTrue(model.library.value.collectionLoading)
+                assertSame(expected.rows,model.library.value.rows)
+                route.set(false);release.countDown();holder.get(5,TimeUnit.SECONDS)
+                f.drain {active.get(contexts)==null&&pending.get(library)==null&&!model.library.value.collectionLoading}
+                assertFalse(contexts.current(ticket));assertFalse(library.collectionPlaybackCurrent(claim))
                 assertEquals(old,(0 until f.player.mediaItemCount).map(f.player::getMediaItemAt))
                 assertEquals(2,f.player.currentMediaItemIndex);assertEquals(1300L,f.player.currentPosition)
-                assertFalse(f.player.playWhenReady);assertEquals(beforeAcquired,f.app.acquired)
+                assertFalse(f.player.playWhenReady);assertFalse(f.player.isPlaying);assertEquals(beforeAcquired,f.app.acquired)
                 assertEquals(beforePrepares,LargeContextCallProbe.prepares.get());assertEquals(beforePlays,LargeContextCallProbe.plays.get())
-                println("JOINT consumedProducer=true heldPagedStage=true retiredRoute=true oldQueue=exact prepares=0 plays=0")
+                println("JOINT jointConsumedCollectionSourceRetirementRefusesHeldPagedStagingWithoutOldPlayerEffects heldTicket=true claimAndTicketReleased=true oldQueue=exact acquire=0 prepare=0 play=0")
             }finally {release.countDown();executor.shutdownNow();model.viewModelScope.cancel()}
         }
     }

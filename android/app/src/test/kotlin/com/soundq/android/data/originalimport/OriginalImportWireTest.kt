@@ -188,6 +188,246 @@ class OriginalImportWireTest {
         assertNotEquals(choice.intent.operation, f.added().intent.operation)
     }
 
+    @Test fun lateCanonicalUploadRefusalCannotShadowSameAccountReplacementStatusCheck() = fixture().use { f ->
+        val choice = f.choice()
+        val id = choice.intent.operation
+        val entered = CountDownLatch(1)
+        val reply = CountDownLatch(1)
+        f.server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.method to request.url.encodedPath) {
+                "POST" to "/api/v1/library/uploads" -> {
+                    entered.countDown(); check(reply.await(8, TimeUnit.SECONDS)); authRefusal()
+                }
+                "GET" to "/api/v1/library/uploads/$id" -> f.reply(200, f.receipt(id, "closed"))
+                else -> f.reply(500, "{}")
+            }
+        }
+        val submit = java.util.concurrent.FutureTask { f.repository.confirm(choice) }
+        Thread(submit, "held-original-post").start()
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            assertEquals(id.toString(), f.next("/api/v1/library/uploads").headers["Idempotency-Key"])
+            f.signIn(f.account)
+        } finally { reply.countDown() }
+        assertEquals(OriginalImportRepository.Action.Retired, submit.get(6, TimeUnit.SECONDS))
+        assertEquals(OriginalImportPhase.Unconfirmed, f.repository.state.value.entry(id)?.phase)
+        assertNull(f.repository.localRefusalCheck(f.scope))
+        val localOnly = OriginalImportRepository.LocalRefusalCheck(f.scope, choice.intent.destination, id)
+        assertEquals(OriginalImportRepository.Action.Retired, f.repository.checkLocalRefusal(localOnly) { true })
+        assertEquals(1, f.server.requestCount)
+        assertEquals(OriginalImportRepository.Action.Closed, f.repository.check(f.scope, id) { true })
+        assertEquals("GET", f.next("/api/v1/library/uploads/$id").method)
+        assertEquals(OriginalImportRepository.Action.Retired, f.repository.confirm(choice))
+        assertEquals(2, f.server.requestCount)
+    }
+
+    @Test fun checkForcesExactRenamedRefusalAndAllowsOnlyAFreshExplicitUpload() = fixture().use { f ->
+        val added = f.added()
+        val unrelated = f.repository.state.value.entry(added.intent.operation)
+        val failed = failRefusalSync(f, f.differentChoice())
+        var failedForces = 0
+        f.beforeDirectorySync = { failedForces++; throw java.io.IOException("refusal retry force unavailable") }
+        assertEquals(OriginalImportRepository.Action.StorageUnavailable, f.repository.check(f.scope, failed.operation) { true })
+        assertTrue(f.repository.state.value.rejected)
+        assertArrayEquals(failed.candidate, f.file.readBytes())
+        assertEquals(OriginalImportRepository.Action.StorageUnavailable, f.repository.check(f.scope, added.intent.operation) { true })
+        assertEquals(3, f.server.requestCount)
+        var forced = 0
+        f.beforeDirectorySync = {
+            assertTrue(f.repository.state.value.rejected)
+            assertArrayEquals(failed.candidate, f.file.readBytes())
+            forced++
+        }
+        assertEquals(OriginalImportRepository.Action.Refused, f.repository.check(f.scope, failed.operation) { true })
+        assertEquals(1, failedForces)
+        assertEquals(1, forced)
+        assertArrayEquals(failed.candidate, f.file.readBytes())
+        assertEquals(unrelated, f.repository.state.value.entry(added.intent.operation))
+        assertEquals(OriginalImportPhase.Refused, f.repository.state.value.entry(failed.operation)?.phase)
+        assertEquals(OriginalImportRepository.Action.Retired, f.repository.confirm(failed.choice))
+        assertEquals(3, f.server.requestCount)
+        f.beforeDirectorySync = {}
+        val fresh = f.differentChoice()
+        assertNotEquals(failed.operation, fresh.intent.operation)
+        f.server.enqueue(authRefusal())
+        assertEquals(OriginalImportRepository.Action.Refused, f.repository.confirm(fresh))
+        f.next("/api/v1/library/uploads").also {
+            assertEquals("POST", it.method)
+            assertEquals(fresh.intent.operation.toString(), it.headers["Idempotency-Key"])
+        }
+        assertEquals(4, f.server.requestCount)
+    }
+
+    @Test fun checkRewritesExactPredecessorWithoutPublishingPendingOrSendingStatus() = fixture().use { f ->
+        val failed = failRefusalSync(f, f.choice())
+        f.file.writeBytes(failed.predecessor)
+        var forced = 0
+        f.beforeDirectorySync = {
+            assertArrayEquals(failed.candidate, f.file.readBytes())
+            assertTrue(f.repository.state.value.rejected)
+            if (++forced == 1) throw java.io.IOException("restored predecessor force unavailable")
+        }
+        assertEquals(OriginalImportRepository.Action.StorageUnavailable, f.repository.check(f.scope, failed.operation) { true })
+        assertArrayEquals(failed.candidate, f.file.readBytes())
+        assertTrue(f.repository.state.value.rejected)
+        assertEquals(OriginalImportRepository.Action.Refused, f.repository.check(f.scope, failed.operation) { true })
+        assertEquals(2, forced)
+        assertEquals(OriginalImportPhase.Refused, OriginalImportJournal(f.file).apply { load() }.state.value.entry(failed.operation)?.phase)
+        assertEquals(1, f.server.requestCount)
+    }
+
+    @Test fun explicitLibraryRemoveAfterRefusalFailureUsesItsOwnOrdinaryFenceAndOneDelete() = fixture().use { f ->
+        val added = f.added()
+        val failed = failRefusalSync(f, f.differentChoice())
+        val track = TrackId(77)
+        f.beforeDirectorySync = { throw java.io.IOException("refusal retry force unavailable") }
+        assertEquals(SafeFailure.Reason.RemovalNotSent, assertThrows(SafeFailure::class.java) {
+            f.api.removeLibraryTrack(f.scope, track) { true }
+        }.reason)
+        assertEquals(3, f.server.requestCount)
+        assertArrayEquals(failed.candidate, f.file.readBytes())
+        f.beforeDirectorySync = {}
+        f.server.enqueue(MockResponse.Builder().code(204).build())
+        assertEquals(LibraryRemovalReceipt.Confirmed, f.api.removeLibraryTrack(f.scope, track) { true }.receipt)
+        assertEquals("DELETE", f.next("/api/v1/library/tracks/77").method)
+        val reopened = OriginalImportJournal(f.file).apply { load() }.state.value
+        assertEquals(OriginalImportPhase.Removed, reopened.entry(added.intent.operation)?.phase)
+        assertNotNull(reopened.entry(added.intent.operation)?.removal)
+        assertEquals(OriginalImportPhase.Refused, reopened.entry(failed.operation)?.phase)
+        assertEquals(4, f.server.requestCount)
+    }
+
+    @Test fun refusalRetryRejectsSupersedingValidCorruptAndAbsentBytesWithoutForcing() = fixture().use { f ->
+        val failed = failRefusalSync(f, f.choice())
+        var forced = 0
+        f.beforeDirectorySync = { forced++ }
+        val other = UUID.randomUUID()
+        val valid = failed.candidate.decodeToString().replace(failed.operation.toString(), other.toString()).encodeToByteArray()
+        for (bytes in listOf(valid, "not a journal".encodeToByteArray(), null)) {
+            if (bytes == null) assertTrue(f.file.delete()) else f.file.writeBytes(bytes)
+            if (bytes === valid) assertEquals(OriginalImportPhase.Refused,
+                OriginalImportJournal(f.file).apply { load() }.state.value.entry(other)?.phase)
+            assertEquals(OriginalImportRepository.Action.StorageUnavailable, f.repository.check(f.scope, failed.operation) { true })
+            assertTrue(f.repository.state.value.rejected)
+            if (bytes == null) assertFalse(f.file.exists()) else assertArrayEquals(bytes, f.file.readBytes())
+        }
+        assertEquals(0, forced)
+        f.file.writeBytes(failed.candidate)
+        assertEquals(OriginalImportRepository.Action.Refused, f.repository.check(f.scope, failed.operation) { true })
+        assertEquals(1, forced)
+        assertEquals(1, f.server.requestCount)
+    }
+
+    @Test fun refusalRetryRechecksBytesAndMountedAuthorityAfterDirectoryForce() = fixture().use { f ->
+        val failed = failRefusalSync(f, f.choice())
+        var mounted = true
+        f.beforeDirectorySync = { mounted = false }
+        assertEquals(OriginalImportRepository.Action.Retired, f.repository.check(f.scope, failed.operation) { mounted })
+        assertTrue(f.repository.state.value.rejected)
+        mounted = true
+        f.beforeDirectorySync = { f.file.writeBytes(failed.predecessor) }
+        assertEquals(OriginalImportRepository.Action.StorageUnavailable, f.repository.check(f.scope, failed.operation) { mounted })
+        assertTrue(f.repository.state.value.rejected)
+        assertArrayEquals(failed.predecessor, f.file.readBytes())
+        f.beforeDirectorySync = {}
+        assertEquals(OriginalImportRepository.Action.Refused, f.repository.check(f.scope, failed.operation) { mounted })
+        assertEquals(1, f.server.requestCount)
+    }
+
+    @Test fun foreignAccountAndReplacementLoginCannotSpendLiveRefusalWitness() = fixture().use { f ->
+        val failed = failRefusalSync(f, f.choice())
+        val originalScope = f.scope
+        var forced = 0
+        f.beforeDirectorySync = { forced++ }
+        val foreign = AccountSession(ApiEndpoint.parse("https://127.0.0.1:1/api/v1"), MemoryStore())
+        check(foreign.accept(foreign.beginIntent(), SecretTokens("fixture-access", "fixture-refresh", f.account)))
+        assertEquals(OriginalImportRepository.Action.Retired, f.repository.check(requireNotNull(foreign.capture()), failed.operation) { true })
+        f.signIn(UUID.randomUUID().toString())
+        assertEquals(OriginalImportRepository.Action.StorageUnavailable, f.repository.check(f.scope, failed.operation) { true })
+        f.signIn(f.account)
+        assertEquals(OriginalImportRepository.Action.StorageUnavailable, f.repository.check(f.scope, failed.operation) { true })
+        assertEquals(OriginalImportRepository.Action.Retired, f.repository.check(originalScope, failed.operation) { true })
+        assertEquals(0, forced)
+        assertTrue(f.repository.state.value.rejected)
+        assertArrayEquals(failed.candidate, f.file.readBytes())
+        assertEquals(1, f.server.requestCount)
+    }
+
+    @Test fun refusalRetryDoesNotPublishAfterReplacementLoginDuringForce() = fixture().use { f ->
+        val failed = failRefusalSync(f, f.choice())
+        val originalScope = f.scope
+        var forced = 0
+        f.beforeDirectorySync = { forced++; f.signIn(f.account) }
+        assertEquals(OriginalImportRepository.Action.Retired, f.repository.check(originalScope, failed.operation) { true })
+        assertEquals(1, forced)
+        assertTrue(f.repository.state.value.rejected)
+        assertArrayEquals(failed.candidate, f.file.readBytes())
+        assertEquals(OriginalImportRepository.Action.StorageUnavailable, f.repository.check(f.scope, failed.operation) { true })
+        assertEquals(1, forced)
+        assertEquals(1, f.server.requestCount)
+    }
+
+    @Test fun refusalRetryCanUseExplicitlyResumedOwnerAfterLocalUnlock() = fixture().use { f ->
+        val failed = failRefusalSync(f, f.choice())
+        val originalScope = f.scope
+        assertTrue(f.auth.lockLocal())
+        assertEquals(OriginalImportRepository.Action.Retired, f.repository.check(originalScope, failed.operation) { true })
+        f.unlock()
+        assertEquals(OriginalImportRepository.Action.Refused, f.repository.check(f.scope, failed.operation) { true })
+        assertEquals(1, f.server.requestCount)
+    }
+
+    @Test fun restartedJournalWithOnlyPredecessorHasStrictPendingReceiptNotLocalRefusal() = fixture().use { f ->
+        val failed = failRefusalSync(f, f.choice())
+        f.file.writeBytes(failed.predecessor)
+        f.reconstruct(true)
+        assertEquals(OriginalImportPhase.Unconfirmed, f.repository.state.value.entry(failed.operation)?.phase)
+        assertEquals(OriginalImportRepository.Action.AlreadyInProgress, f.repository.confirm(f.choice()))
+        assertEquals(1, f.server.requestCount)
+        f.server.enqueue(authRefusal())
+        assertEquals(OriginalImportRepository.Action.Unconfirmed, f.repository.check(f.scope, failed.operation) { true })
+        assertEquals("GET", f.next("/api/v1/library/uploads/${failed.operation}").method)
+        assertArrayEquals(failed.predecessor, f.file.readBytes())
+        assertEquals(2, f.server.requestCount)
+    }
+
+    private class FailedRefusal(val choice: OriginalImportRepository.Choice, val predecessor: ByteArray, val candidate: ByteArray) {
+        val operation get() = choice.intent.operation
+    }
+
+    private fun failRefusalSync(f: Fixture, choice: OriginalImportRepository.Choice): FailedRefusal {
+        var predecessor: ByteArray? = null
+        var candidate: ByteArray? = null
+        f.beforeUpload = { predecessor = f.file.readBytes() }
+        f.beforeDirectorySync = {
+            val op = choice.intent.operation
+            val renamed = OriginalImportJournal(f.file).apply { load() }.state.value.entry(op)
+            if (renamed?.phase == OriginalImportPhase.Refused) {
+                assertEquals(OriginalImportPhase.Unconfirmed, f.repository.state.value.entry(op)?.phase)
+                candidate = f.file.readBytes()
+                throw java.io.IOException("directory force after refusal rename unavailable")
+            } else assertEquals(OriginalImportPhase.Unconfirmed, renamed?.phase)
+        }
+        try {
+            f.server.enqueue(authRefusal())
+            assertEquals(OriginalImportRepository.Action.StorageUnavailable, f.repository.confirm(choice))
+            f.next("/api/v1/library/uploads").also {
+                assertEquals("POST", it.method)
+                assertEquals(choice.intent.operation.toString(), it.headers["Idempotency-Key"])
+            }
+            assertTrue(f.repository.state.value.rejected)
+            assertNull(f.repository.state.value.entry(choice.intent.operation))
+            assertEquals(OriginalImportRepository.Action.Retired, f.repository.confirm(choice))
+            return FailedRefusal(choice, requireNotNull(predecessor), requireNotNull(candidate)).also {
+                assertFalse(it.predecessor.contentEquals(it.candidate))
+                assertArrayEquals(it.candidate, f.file.readBytes())
+            }
+        } finally {
+            f.beforeUpload = null
+            f.beforeDirectorySync = {}
+        }
+    }
+
     @Test fun upload401WithExactTextButNoMiddlewareHeadersRemainsUnknown() = fixture().use { f ->
         val choice = f.choice()
         f.server.enqueue(f.reply(401, authBody))
@@ -1005,6 +1245,7 @@ class OriginalImportWireTest {
         val endpoint = ApiEndpoint.parse(server.url("/api/v1").newBuilder().host("127.0.0.1").build().toString())
         var beforeSave: () -> Unit = {}
         var beforeUpload: (() -> Unit)? = null
+        var beforeDirectorySync: () -> Unit = {}
         private val store = MemoryStore()
         val auth = AccountSession(endpoint, object : SessionStore by store {
             override fun save(endpoint: ApiEndpoint, tokens: SecretTokens) { beforeSave(); store.save(endpoint, tokens) }
@@ -1074,7 +1315,7 @@ class OriginalImportWireTest {
             assertEquals("POST", next("/api/v1/library/uploads").method)
             assertEquals("GET", next("/api/v1/library/tracks/77").method)
         }
-        private fun build(writes: Boolean?) = OriginalImportRepository(auth, OriginalImportJournal(file), { original, current ->
+        private fun build(writes: Boolean?) = OriginalImportRepository(auth, OriginalImportJournal(file) { beforeDirectorySync() }, { original, current ->
             val audio = when (original) { owner -> bytes; otherOwner -> otherBytes; else -> error("unknown source") }
             object : ImportOriginalRead {
                 override val length = audio.size.toLong()
