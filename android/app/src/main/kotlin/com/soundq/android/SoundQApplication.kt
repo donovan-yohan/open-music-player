@@ -90,7 +90,7 @@ class AppGraph internal constructor(context: Context, val endpoint: ApiEndpoint,
     private val phoneImportOriginals=PhoneImportOriginals(phoneAudio,session::version)
     internal val originalImports=OriginalImportRepository(session,OriginalImportJournal(File(directory,"original-import.v1.json")),
         phoneImportOriginals::open,phoneImportOriginals::current,sourceStamp=phoneImportOriginals::stamp) {scope,_->
-        library.scheduleImportRefresh(scope,io)
+        library.scheduleImportRefresh(scope,io,api::libraryImportRefresh)
     }.also {imports->
         if(originalImportFixtureMode!=null) {
             val writes=originalImportFixtureMode=="fixture"

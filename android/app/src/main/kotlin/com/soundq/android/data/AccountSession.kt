@@ -19,6 +19,17 @@ internal sealed interface DiscoveryReadState {
     data object Retired : DiscoveryReadState
 }
 internal enum class RemoteReadiness { Ready, Saving, Retired }
+/** One synchronous import observation, including all of its collection pages. */
+internal class ImportRefreshRead(val current: () -> Boolean) {
+    class NotSent(val save: CompletableFuture<Boolean>) : java.io.IOException()
+    private var entered = false
+    fun access(session: AccountSession, scope: AccountScope): String = session.importRefreshAccess(scope, !entered)
+    fun enter(session: AccountSession, scope: AccountScope): Boolean {
+        access(session, scope)
+        entered = true
+        return true
+    }
+}
 class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore) {
     private val mutable = MutableStateFlow<AuthState>(AuthState.Restoring)
     val state: StateFlow<AuthState> = mutable
@@ -171,6 +182,12 @@ class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore)
         remoteCurrent(scope) -> RemoteReadiness.Ready
         rotationSave(scope)!=null -> RemoteReadiness.Saving
         else -> RemoteReadiness.Retired
+    }
+    /** Capture the exact active save at the unsent exchange's credential gate. */
+    @Synchronized internal fun importRefreshAccess(scope:AccountScope, unsent:Boolean):String {
+        if(remoteCurrent(scope))return tokens!!.access
+        if(unsent)rotationSave(scope)?.let {throw ImportRefreshRead.NotSent(it)}
+        throw SafeFailure(SafeFailure.Reason.Retired)
     }
     private fun discoverySave(scope:AccountScope):CompletableFuture<Boolean>? =
         if(scope.discoveryReadRevision==discoveryReadRevision)rotationSave(scope) else null

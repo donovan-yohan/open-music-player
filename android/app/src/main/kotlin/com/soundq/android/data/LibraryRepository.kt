@@ -6,6 +6,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.future.await
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import com.soundq.android.data.playlists.LibraryTrackCapture
@@ -191,10 +193,11 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
         read(request.scope,query,0,request.version)
     }
     /** Exact collection reads materialize all eligible members before exposing rows or totals. */
-    private fun fetchPage(scope:AccountScope,query:LibraryQuery,offset:Int,current:()->Boolean={true}):LibraryPage =
-        if(query.collection==null)fetch(scope,query,offset) else {
+    private fun fetchPage(scope:AccountScope,query:LibraryQuery,offset:Int,pageFetch:((AccountScope,LibraryQuery,Int)->LibraryPage)?=null,
+        current:()->Boolean={true}):LibraryPage =
+        if(query.collection==null)(pageFetch ?: fetch)(scope,query,offset) else {
             check(offset==0)
-            readLibraryCorpus(scope,query,fetch) {session.remoteCurrent(scope)&&current()}
+            readLibraryCorpus(scope,query,pageFetch ?: fetch) {(pageFetch!=null||session.remoteCurrent(scope))&&current()}
         }
     @Synchronized fun claimCollectionPlay(expected:LibraryState,selected:TrackId?=null,shuffle:Boolean=false,current:()->Boolean):CollectionRequest? {
         val scope=acceptedScope ?: return null
@@ -403,13 +406,27 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
         }
     }
     /** An import owes this query an observation, even if a local update retires its first page. */
-    internal fun scheduleImportRefresh(scope:AccountScope,jobs:CoroutineScope) {
+    internal fun scheduleImportRefresh(scope:AccountScope,jobs:CoroutineScope,
+        fetchImportRefresh:((AccountScope,LibraryQuery,Int,ImportRefreshRead)->LibraryPage)?=null) {
         val lifetime=synchronized(this){if(!session.remoteCurrent(scope))return;queryLifetime}
         jobs.launch {
-            fun current()=isActive&&session.remoteCurrent(scope)&&synchronized(this@LibraryRepository){queryLifetime==lifetime}
+            fun ownsQuery()=isActive&&synchronized(this@LibraryRepository){queryLifetime==lifetime}
+            fun current()=ownsQuery()&&(fetchImportRefresh!=null||session.remoteCurrent(scope))
+            suspend fun awaitSave(refusal:ImportRefreshRead.NotSent):Boolean {
+                val settled=flow<Boolean?> {
+                    emit(null)
+                    // Cancel only the observer's dependent future, never the shared refresh flight.
+                    emit(refusal.save.thenApply {it}.await())
+                }
+                val saved=combine(state,session.scopeRevision,session.state,settled){_,_,_,value->value}.first {
+                    it!=null||!ownsQuery()||session.remoteReadiness(scope)==RemoteReadiness.Retired
+                }
+                return saved==true&&ownsQuery()&&session.remoteReadiness(scope)!=RemoteReadiness.Retired
+            }
+            var deferredUnsent=false
             // One fresh attempt after supersession, never a retry of a failed GET or an import command.
             repeat(2) {
-                var expected:LibraryState?=null
+                var expected:Pair<LibraryState,Long>?=null
                 combine(state,likeRevision,session.scopeRevision,session.credentialSaveRevision,session.state){_,_,_,_,_->Unit}.first {
                     synchronized(this@LibraryRepository) {
                         if(!isActive||queryLifetime!=lifetime)return@synchronized true
@@ -421,37 +438,58 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
                                 // own its readback even after loading becomes false.
                                 mutable.value.loading||pendingCollection?.let {it.lifetime==lifetime&&same(it.scope,scope)}==true||
                                     mutations.values.any {same(it.offer.view.scope,scope)}->false
-                                else->{expected=mutable.value.takeIf {acceptedScope?.let {same(it,scope)}==true};true}
+                                else->{if(acceptedScope?.let {same(it,scope)}==true)expected=mutable.value to generation;true}
                             }
                         }
                     }
                 }
-                val observed=expected ?: return@launch
-                try {
-                    if(tryRefreshObserved(scope,observed,::current,recoverSuperseded=true))return@launch
-                } catch(cancelled:CancellationException) {throw cancelled}
-                catch(_:Exception) {return@launch}
+                val (observed,version)=expected ?: return@launch
+                val observation=fetchImportRefresh?.let { readPage ->
+                    val read=ImportRefreshRead(::current)
+                    val fetchSnapshot:(AccountScope,LibraryQuery,Int)->LibraryPage={s,q,offset->readPage(s,q,offset,read)}
+                    fetchSnapshot
+                }
+                while(true) {
+                    try {
+                        if(tryRefreshObserved(scope,observed,::current,version,observation))return@launch
+                        break // Only snapshot supersession consumes the existing replacement allowance.
+                    } catch(cancelled:CancellationException) {throw cancelled}
+                    catch(refusal:ImportRefreshRead.NotSent) {
+                        if(deferredUnsent||!awaitSave(refusal))return@launch
+                        deferredUnsent=true // Resume the same snapshot once; no headers were admitted.
+                    } catch(_:Exception) {return@launch}
+                }
             }
         }
     }
     fun refreshObserved(scope:AccountScope,expected:LibraryState,valid:()->Boolean={true}) {
         tryRefreshObserved(scope,expected,valid)
     }
+    private class ImportRefreshSuperseded : RuntimeException()
     /** False means the observed snapshot lost authority, not that its transport failed. */
-    private fun tryRefreshObserved(scope:AccountScope,expected:LibraryState,valid:()->Boolean,recoverSuperseded:Boolean=false):Boolean {
-        val version=synchronized(this){if(!valid()||!session.current(scope)||mutable.value!==expected||expected.loading)return false;generation}
+    private fun tryRefreshObserved(scope:AccountScope,expected:LibraryState,valid:()->Boolean,
+        expectedGeneration:Long?=null,observation:((AccountScope,LibraryQuery,Int)->LibraryPage)?=null):Boolean {
+        // The guarded fetch must see a temporary credential withdrawal itself, including
+        // before the first collection page. Local checks still fence the exact snapshot.
+        val version=synchronized(this) {
+            if(!valid()||(observation==null&&!session.current(scope))||mutable.value!==expected||expected.loading||
+                (expectedGeneration!=null&&generation!=expectedGeneration))return false
+            generation
+        }
         fun snapshotCurrent()=generation==version&&mutable.value===expected
         val page=try {
-            fetchPage(scope,expected.query,0) {valid()&&session.current(scope)&&synchronized(this){
-                generation==version&&(!recoverSuperseded||mutable.value===expected)
+            fetchPage(scope,expected.query,0,observation) {valid()&&synchronized(this){
+                if(expectedGeneration!=null&&!snapshotCurrent())throw ImportRefreshSuperseded()
+                generation==version&&(observation!=null||session.remoteCurrent(scope))
             }}
-        } catch(e:SafeFailure) {
+        } catch(_:ImportRefreshSuperseded) {
             // The collection reader stops between pages on supersession, rather than returning a stale page.
-            if(recoverSuperseded&&e.reason==SafeFailure.Reason.Retired&&!synchronized(this){snapshotCurrent()})return false
-            throw e
+            return false
         }
         return synchronized(this) {
-            if(!valid()||!session.current(scope)||!snapshotCurrent())return false
+            // A completed exchange losing account authority is terminal, not superseded.
+            if(!valid()||!session.current(scope))return true
+            if(!snapshotCurrent())return false
             generation++
             observe(scope,page.tracks,true)
             mutable.value=expected.copy(completeProjection=false,projectionError=false,rows=page.tracks,total=page.total,error=null,analysis=pageAnalysis(page),nextOffset=page.scannedIds.size,endReached=page.tracks.isEmpty()||page.scannedIds.size>=page.total,pageRevision=++paginationSerial)

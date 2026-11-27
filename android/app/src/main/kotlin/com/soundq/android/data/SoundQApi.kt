@@ -235,7 +235,7 @@ class SoundQApi internal constructor(
             }
         } catch (e: java.io.IOException) {
             if (uploadNotEntered()) throw OriginalUploadNotAdmitted()
-            if (e is SafeFailure) throw e
+            if (e is SafeFailure || e is ImportRefreshRead.NotSent) throw e
             throw SafeFailure(if (method == "GET" || e is java.net.UnknownHostException) SafeFailure.Reason.Network else SafeFailure.Reason.Uncertain)
         } catch (_: Exception) { throw SafeFailure(SafeFailure.Reason.InvalidResponse) }
         finally {calls?.untrack(cancel)}
@@ -266,9 +266,9 @@ class SoundQApi internal constructor(
             else throw error
         }
     }
-    private fun authorized(scope: AccountScope, path: String, method: String = "GET", body: JsonObject? = null, readOnly: Boolean = method == "GET", valid: () -> Boolean = { true }, expectedStatus: Int? = null, acceptedStatuses:Set<Int>? = null, dispatchValid: (() -> Boolean)? = null, allowMissing: Boolean = false, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, privateFeature: Boolean = false, rawJson:String?=null, calls:DiscoveryCalls?=null, received:((String)->Unit)?=null, previewRecording:String?=null): JsonObject {
+    private fun authorized(scope: AccountScope, path: String, method: String = "GET", body: JsonObject? = null, readOnly: Boolean = method == "GET", valid: () -> Boolean = { true }, expectedStatus: Int? = null, acceptedStatuses:Set<Int>? = null, dispatchValid: (() -> Boolean)? = null, allowMissing: Boolean = false, headers:Map<String,String> = emptyMap(), emptyBody:Boolean=false, privateFeature: Boolean = false, rawJson:String?=null, calls:DiscoveryCalls?=null, received:((String)->Unit)?=null, previewRecording:String?=null, importRead:ImportRefreshRead?=null): JsonObject {
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
-        val access = session.access(scope)
+        val access = importRead?.access(session,scope) ?: session.access(scope)
         val discoveryRead=method=="GET"&&(path.startsWith("/discovery/search?")||path.startsWith("/discovery/catalog?")||isDiscoverBrowsePath(path.substringBefore('?'))||
             (previewRecording!=null&&path=="/catalog/recordings/$previewRecording/source"))
         fun exchange(bearer:String, admit:(()->Boolean)?):Reply = if(discoveryRead) {
@@ -277,6 +277,11 @@ class SoundQApi internal constructor(
             // Ordinary Add lookup and resolve POST do not borrow this custody.
             wire(path,access=bearer,calls=calls,dispatchValid={session.discoveryDispatchCurrent(scope,bearer)},
                 responseValid={valid()&&session.awaitDiscoveryRead(scope)&&valid()},valid=valid)
+        } else if(importRead!=null) {
+            // Only this GET can retain proof of a credential refusal before the first
+            // network-chain admission. Response retirement never supplies that proof.
+            wire(path,access=bearer,dispatchValid={importRead.enter(session,scope)},
+                responseValid={session.remoteCurrent(scope)&&valid()},valid=valid)
         } else wire(path,method,body,bearer,admit,headers,emptyBody,rawJson,calls) {session.remoteCurrent(scope) && valid()}
         var result = exchange(access,dispatchValid)
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
@@ -816,8 +821,12 @@ class SoundQApi internal constructor(
     }
     fun logout() = finishLogout(revokeLogout())
     fun library(scope:AccountScope,query:LibraryQuery,offset:Int):LibraryPage=ownedLibraryPage(scope,query,offset){true}
+    internal fun libraryImportRefresh(scope:AccountScope,query:LibraryQuery,offset:Int,read:ImportRefreshRead):LibraryPage =
+        ownedLibraryPage(scope,query,offset,20,read,read.current)
     internal fun ownedLibraryPage(scope: AccountScope, query: LibraryQuery, offset: Int, valid: () -> Boolean): LibraryPage = ownedLibraryPage(scope,query,offset,20,valid)
-    internal fun ownedLibraryPage(scope: AccountScope, query: LibraryQuery, offset: Int, limit:Int, valid: () -> Boolean): LibraryPage {
+    internal fun ownedLibraryPage(scope: AccountScope, query: LibraryQuery, offset: Int, limit:Int, valid: () -> Boolean): LibraryPage =
+        ownedLibraryPage(scope,query,offset,limit,null,valid)
+    private fun ownedLibraryPage(scope:AccountScope,query:LibraryQuery,offset:Int,limit:Int,importRead:ImportRefreshRead?,valid:()->Boolean):LibraryPage {
         require(offset >= 0 && limit in 1..100)
         val url = session.endpoint.base.newBuilder().encodedPath("/api/v1/library").query(null)
             .addQueryParameter("limit",limit.toString()).addQueryParameter("offset",offset.toString())
@@ -827,7 +836,7 @@ class SoundQApi internal constructor(
         if(query.liked) url.addQueryParameter("liked","true")
         query.verified?.let { url.addQueryParameter("mb_verified",it.toString()) }
         if(query.genre.isNotBlank()) url.addQueryParameter("genre",query.genre)
-        val body = authorized(scope,"/library?"+url.build().encodedQuery,valid=valid)
+        val body = authorized(scope,"/library?"+url.build().encodedQuery,valid=valid,importRead=importRead)
         return try {
             val rows=body.getValue("tracks").jsonArray
             val scannedIds=rows.map {it.jsonObject.getValue("id").jsonPrimitive.long}

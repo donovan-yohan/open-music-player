@@ -114,6 +114,138 @@ class LibraryOriginalImportRefreshTest {
         s.assertReadCount(2)
     }
 
+    @Test fun importReadDeniedBeforeHeadersResumesAfterTheSave() = importReadAtRotation("saving")
+
+    @Test fun importReadDeniedBeforeHeadersResumesEvenIfSaveFinishedBeforeCatch() = importReadAtRotation("already-saved")
+
+    @Test fun failedSaveOrRetiredQueryOrScopeCannotResumeTheUnsentImportRead() {
+        importReadAtRotation("save-failed")
+        importReadAtRotation("query-retired")
+        importReadAtRotation("scope-retired")
+    }
+
+    @Test fun importReadThatEnteredHeadersIsNotResentAfterTheSave() = importReadAtRotation("entered")
+
+    private fun importReadAtRotation(end: String) = OriginalImportCompositionTest.Fixture(seedReceipt = false).use { fixture ->
+        val saving = Barrier()
+        val beforeHeaders = Barrier()
+        val terminalCall = Barrier()
+        val enteredGet = Barrier()
+        val arm = java.util.concurrent.atomic.AtomicBoolean()
+        val firstCall = java.util.concurrent.atomic.AtomicReference<okhttp3.Call>()
+        val headers = AtomicInteger()
+        val reads = AtomicInteger()
+        val savedGet = AtomicInteger()
+        val entered = end == "entered"
+        val failSave = java.util.concurrent.atomic.AtomicBoolean(end == "save-failed")
+        val store = object : SessionStore by MemoryStore() {
+            override fun save(endpoint: ApiEndpoint, tokens: SecretTokens) {
+                if (tokens.access != "rotated-access") return
+                saving.await()
+                if (failSave.get()) throw java.io.IOException("fixture save failed")
+            }
+        }
+        val listener = object : okhttp3.EventListener() {
+            override fun connectionAcquired(call: okhttp3.Call, connection: okhttp3.Connection) {
+                if (arm.get() && call.request().url.queryParameter("q") == "matches" && firstCall.compareAndSet(null,call) && !entered)
+                    beforeHeaders.await() // TLS is connected; SoundQ's real header guard has not run.
+            }
+            override fun requestHeadersStart(call: okhttp3.Call) {
+                if (arm.get() && call.request().url.queryParameter("q") == "matches") headers.incrementAndGet()
+            }
+            override fun callFailed(call: okhttp3.Call, ioe: java.io.IOException) {
+                if (!entered && call === firstCall.get()) terminalCall.await()
+            }
+        }
+        fixture.graph("fixture",memory=store,listener=listener).use { graph ->
+            val scope = fixture.signIn(graph)
+            val query = LibraryQuery(text="matches")
+            val library = graph.library
+            val intent = fixture.intent
+            OriginalImportJournal(File(graph.directory,"original-import.v1.json")).put(
+                OriginalImportEntry(intent,OriginalImportPhase.ReadbackRequired,CommittedOriginal(fixture.track,intent.original.revision)),null) { true }
+            fun page(id: Int) = fixture.reply(200,"""{"tracks":[{"id":$id,"title":"Track $id"}],"total":1,"offset":0,"limit":20}""")
+            fixture.server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = when (request.method to request.url.encodedPath) {
+                    "GET" to fixture.memberPath -> fixture.member()
+                    "POST" to "/api/v1/auth/refresh" -> fixture.reply(200,
+                        """{"accessToken":"rotated-access","refreshToken":"rotated-refresh","user":{"id":"${scope.accountId}"}}""")
+                    "GET" to "/api/v1/library" -> when (request.url.queryParameter("q")) {
+                        "rotate" -> if (request.headers["Authorization"] == "Bearer rotated-access") page(33) else fixture.reply(401,"{}")
+                        "matches" -> if (reads.incrementAndGet() == 1) page(11) else if (entered) {
+                            enteredGet.await(); fixture.reply(503,"{}")
+                        } else if (request.headers["Authorization"] == "Bearer rotated-access") {
+                            savedGet.incrementAndGet(); page(77)
+                        } else fixture.reply(500,"{}")
+                        else -> fixture.reply(500,"{}")
+                    }
+                    else -> fixture.reply(500,"{}")
+                }
+            }
+            val executor = Executors.newSingleThreadExecutor()
+            try {
+                library.refine(query)
+                val accepted = library.state.value
+                assertEquals(listOf(TrackId(11)),accepted.rows.map(Track::id))
+                arm.set(true)
+                val earlierJobs = graph.io.coroutineContext.job.children.toSet()
+                assertEquals(OriginalImportRepository.Action.Added,graph.originalImports.check(scope,intent.operation) { true })
+                assertTrue((if (entered) enteredGet else beforeHeaders).entered.await(5,SECONDS))
+                val job = (graph.io.coroutineContext.job.children.toSet()-earlierJobs).single()
+                val rotate = executor.submit<Boolean> { runCatching { graph.api.library(scope,LibraryQuery(text="rotate"),0) }.isSuccess }
+                assertTrue(saving.entered.await(5,SECONDS))
+                assertFalse(graph.session.remoteCurrent(scope))
+                assertSame(accepted,library.state.value)
+                if (entered) {
+                    assertEquals(1,headers.get())
+                    enteredGet.release.countDown()
+                    runBlocking { withTimeout(5000) { job.join() } } // Entered failure is terminal, even while saving.
+                } else {
+                    beforeHeaders.release.countDown()
+                    assertTrue(terminalCall.entered.await(5,SECONDS))
+                    assertEquals("the original import GET did not send headers",0,headers.get())
+                    assertEquals(1,reads.get())
+                }
+                if (end == "already-saved" || end == "save-failed") {
+                    saving.release.countDown()
+                    assertEquals(end != "save-failed",rotate.get(5,SECONDS))
+                    if (end == "save-failed") {
+                        failSave.set(false)
+                        assertTrue(graph.session.retrySave()) // Later readiness cannot turn the failed flight into success.
+                    }
+                    assertTrue(graph.session.remoteCurrent(scope))
+                }
+                terminalCall.release.countDown()
+                if (end == "query-retired") {
+                    library.retire()
+                    runBlocking { withTimeout(5000) { job.join() } }
+                }
+                if (end == "scope-retired") {
+                    graph.session.beginIntent()
+                    runBlocking { withTimeout(5000) { job.join() } }
+                }
+                saving.release.countDown()
+                val rotated = end !in setOf("save-failed","scope-retired")
+                assertEquals(rotated,rotate.get(5,SECONDS))
+                runBlocking { withTimeout(5000) { job.join() } }
+                assertFalse(job.isCancelled)
+                val shouldResume = end in setOf("saving","already-saved")
+                assertEquals("only the owed unsent read may use the newly saved credentials",if (shouldResume) 1 else 0,savedGet.get())
+                assertEquals(if (shouldResume || entered) 1 else 0,headers.get())
+                assertEquals(if (shouldResume || entered) 2 else 1,reads.get())
+                assertEquals(4 + (if (rotated) 1 else 0) + (if (shouldResume || entered) 1 else 0),fixture.server.requestCount)
+                if (shouldResume) {
+                    assertEquals(query,library.state.value.query)
+                    assertEquals(listOf(TrackId(77)),library.state.value.rows.map(Track::id))
+                } else if (end != "query-retired") assertSame(accepted,library.state.value)
+            } finally {
+                listOf(saving,beforeHeaders,terminalCall,enteredGet).forEach { it.release.countDown() }
+                executor.shutdownNow()
+                assertTrue(executor.awaitTermination(5,SECONDS))
+            }
+        }
+    }
+
     @Test fun collectionReadyBeforeImportCallbackRetainsRowsUntilExplicitPlay() = CollectionScenario().use { s ->
         val play = s.claim()
         s.readCollection(play)
