@@ -182,15 +182,29 @@ internal class OriginalImportRepository(
         }
 
     /** Called at the authenticated DELETE's dispatch boundary, even when import is disabled. */
-    fun prepareRemoval(scope: AccountScope, track: TrackId, mounted: () -> Boolean): RemovalFence = synchronized(membershipLock) {
+    fun prepareRemoval(scope: AccountScope, track: TrackId, commitInVisit: ((() -> Boolean) -> Boolean)? = null,
+        mounted: () -> Boolean): RemovalFence = synchronized(membershipLock) {
         fun current() = session.remoteCurrent(scope) && mounted()
         if (!current()) throw SafeFailure(SafeFailure.Reason.Retired)
-        // A rejected snapshot hides the import UI. An explicit Remove may recover this
-        // account's local upload refusal, but still needs its own ordinary removal fence.
+        // An explicit Remove can reload an already verified replacement without the old
+        // publisher's witness. A genuinely unverified write still needs that exact witness.
+        // In either case the current visit must then prepare its own independent DELETE fence.
         if (state.value.rejected) {
-            val refusal = uploadRefusals[owner(scope)]
-            if (refusal != null && !finishUploadRefusal(scope, refusal, mounted = mounted))
+            try {
+                if (!journal.reloadVerifiedRefusal { pending, publish ->
+                    commitRefusalInVisit(scope, commitInVisit, mounted) {
+                        val destination = pending.intent.destination
+                        if (uploadRefusals[destination]?.pending == pending) uploadRefusals = uploadRefusals - destination
+                        publish()
+                        true
+                    }
+                }) {
+                    val refusal = uploadRefusals[owner(scope)]
+                    if (refusal != null) check(finishUploadRefusal(scope, refusal, commitInVisit, mounted))
+                }
+            } catch (_: Exception) {
                 throw SafeFailure(if (current()) SafeFailure.Reason.RemovalNotSent else SafeFailure.Reason.Retired)
+            }
             if (!current()) throw SafeFailure(SafeFailure.Reason.Retired)
         }
         removalFence(scope, track)?.let { throw it.failure() }
@@ -294,7 +308,7 @@ internal class OriginalImportRepository(
         if (!enabled || !state.value.rejected) return null
         val destination = owner(scope)
         val refusal = uploadRefusals[destination] ?: return null
-        if (!journal.hasUnverifiedRefusal(refusal.pending) || !ownsUploadRefusal(scope, refusal)) return null
+        if (!journal.hasUnpublishedRefusal(refusal.pending) || !ownsUploadRefusal(scope, refusal)) return null
         return LocalRefusalCheck(scope, destination, refusal.pending.intent.operation)
     }
 
@@ -370,7 +384,7 @@ internal class OriginalImportRepository(
             synchronized(membershipLock) {
                 val refusal = uploadRefusals[owner]?.takeIf {
                     when {
-                        localOnly -> it.pending.intent.operation == operation && journal.hasUnverifiedRefusal(it.pending)
+                        localOnly -> it.pending.intent.operation == operation && journal.hasUnpublishedRefusal(it.pending)
                         // An older login's late refusal may not shadow ordinary receipt-status recovery.
                         state.value.ready && !session.continuesUploadScope(it.scope) -> false
                         operation == null -> state.value.ready
@@ -447,22 +461,26 @@ internal class OriginalImportRepository(
             session.continuesUploadScope(refusal.scope) && session.remoteCurrent(scope)
     }
 
+    // Lock order: membership -> journal -> session -> visit. Visit retirement never
+    // waits for the session while holding the visit fence. This block does no IO.
+    private fun commitRefusalInVisit(scope: AccountScope, commitInVisit: ((() -> Boolean) -> Boolean)?,
+        mounted: () -> Boolean, commit: () -> Boolean): Boolean = synchronized(session) {
+        if (!session.remoteCurrent(scope)) false
+        else if (commitInVisit != null) commitInVisit(commit)
+        else mounted() && commit()
+    }
+
     private fun finishUploadRefusal(scope: AccountScope, refusal: UploadRefusal,
         commitInVisit: ((() -> Boolean) -> Boolean)? = null, mounted: () -> Boolean): Boolean {
         fun current() = mounted() && ownsUploadRefusal(scope, refusal)
         val remaining = uploadRefusals - refusal.pending.intent.destination
         try {
             journal.finishUploadRefusal(refusal.pending, ::current) { publish ->
-                // membershipLock -> journal -> session -> visit (Library only).
-                // UI retirement only takes the visit fence; it never waits for the session.
-                if (!mounted()) false else synchronized(session) {
-                    if (!ownsUploadRefusal(scope, refusal)) return@synchronized false
-                    fun commit(): Boolean {
-                        uploadRefusals = remaining
-                        publish()
-                        return true
-                    }
-                    if (commitInVisit == null) commit() else commitInVisit(::commit)
+                commitRefusalInVisit(scope, commitInVisit, mounted) {
+                    if (!ownsUploadRefusal(scope, refusal)) return@commitRefusalInVisit false
+                    uploadRefusals = remaining
+                    publish()
+                    true
                 }
             }
         }

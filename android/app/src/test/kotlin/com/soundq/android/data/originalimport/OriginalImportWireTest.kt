@@ -297,6 +297,109 @@ class OriginalImportWireTest {
         assertEquals(4, f.server.requestCount)
     }
 
+    @Test fun replacementLoginCanRemoveAfterVerifiedRefusalLostItsPublisher() = verifiedRefusalAfterLoginChange(tamper = false)
+
+    @Test fun replacementLoginCannotReloadChangedVerifiedRefusalBytes() = verifiedRefusalAfterLoginChange(tamper = true)
+
+    private fun verifiedRefusalAfterLoginChange(tamper: Boolean) = fixture().use { f ->
+        val choice = f.choice()
+        val oldScope = f.scope
+        lateinit var candidate: ByteArray
+        f.afterRefusalReadback = {
+            assertEquals(OriginalImportPhase.Unconfirmed, f.repository.state.value.entry(choice.intent.operation)?.phase)
+            candidate = f.file.readBytes()
+            assertEquals(OriginalImportPhase.Refused,
+                OriginalImportJournal(f.file).apply { load() }.state.value.entry(choice.intent.operation)?.phase)
+            f.signIn(f.account) // Same account, different epoch.
+        }
+        f.server.enqueue(authRefusal())
+        assertEquals(OriginalImportRepository.Action.Retired, f.repository.confirm(choice))
+        assertEquals("POST", f.next("/api/v1/library/uploads").method)
+        assertArrayEquals(candidate, f.file.readBytes())
+        assertTrue(f.repository.state.value.rejected)
+        assertTrue(f.repository.entries(oldScope).isEmpty())
+        assertNull(f.repository.localRefusalCheck(f.scope))
+        assertEquals(OriginalImportRepository.Action.Retired, f.repository.confirm(choice))
+        if (tamper) f.file.appendText(" ") // Still parseable, but not the verified replacement.
+        val persisted = f.file.readBytes()
+        f.beforeDirectorySync = { throw AssertionError("a reload of verified bytes is not a second force or write") }
+        if (tamper) {
+            assertEquals(SafeFailure.Reason.RemovalNotSent, assertThrows(SafeFailure::class.java) {
+                f.api.removeLibraryTrack(f.scope, TrackId(91)) { true }
+            }.reason)
+            assertTrue(f.repository.state.value.rejected)
+            assertEquals(1, f.server.requestCount)
+        } else {
+            f.server.enqueue(MockResponse.Builder().code(204).build())
+            assertEquals(LibraryRemovalReceipt.Confirmed, f.api.removeLibraryTrack(f.scope, TrackId(91)) { true }.receipt)
+            assertEquals("DELETE", f.next("/api/v1/library/tracks/91").method)
+            assertEquals(2, f.server.requestCount)
+            assertEquals(OriginalImportPhase.Refused, f.repository.state.value.entry(choice.intent.operation)?.phase)
+            assertTrue(f.repository.entries(oldScope).isEmpty())
+            assertNull(f.repository.localRefusalCheck(f.scope))
+            assertTrue(f.repository.associations(f.scope).isEmpty())
+        }
+        assertArrayEquals(persisted, f.file.readBytes())
+    }
+
+    @Test fun detailsCloseWhileRefusalPublisherWaitsForSessionCannotPublishOrSendDelete() = fixture().use { f ->
+        val failed = failRefusalSync(f, f.choice())
+        val track = TrackId(77)
+        val details = TrackDetailsRepository(f.api, f.library)
+        f.server.enqueue(f.reply(200, f.page(added = true)))
+        f.library.restore()
+        assertEquals("GET", f.next("/api/v1/library").method)
+        fun openDetails(): com.soundq.android.data.trackdetails.DetailsTicket {
+            val route = checkNotNull(details.open(checkNotNull(f.library.captureTrack(f.library.state.value.rows.single()))))
+            val detailRow = JsonObject(Json.parseToJsonElement(f.membership()).jsonObject + mapOf(
+                "has_metadata_override" to JsonPrimitive(false), "mb_verified" to JsonPrimitive(false)))
+            f.server.enqueue(f.reply(200, """{"tracks":[$detailRow],"total":1,"offset":0,"limit":100}"""))
+            f.server.enqueue(f.reply(404, ""))
+            details.load(route)
+            assertEquals("GET", f.next("/api/v1/library").method)
+            assertEquals("GET", f.next("/api/v1/tracks/77/analysis").method)
+            return checkNotNull(details.claim(route, checkNotNull(details.state.value.detail), DetailsAction.Remove))
+        }
+        val command = openDetails()
+        val verified = CountDownLatch(1)
+        val proceed = CountDownLatch(1)
+        f.afterRefusalReadback = { verified.countDown(); check(proceed.await(5, TimeUnit.SECONDS)) }
+        val task = java.util.concurrent.FutureTask { details.execute(command) }
+        val worker = Thread(task, "test-remove-refusal-publication").also { it.start() }
+        try {
+            assertTrue(verified.await(4, TimeUnit.SECONDS))
+            synchronized(f.auth) {
+                proceed.countDown()
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+                while (worker.state != Thread.State.BLOCKED && System.nanoTime() < deadline) Thread.yield()
+                assertEquals(Thread.State.BLOCKED, worker.state)
+                val blocked = java.lang.management.ManagementFactory.getThreadMXBean().getThreadInfo(worker.id)
+                assertEquals(System.identityHashCode(f.auth), blocked.lockInfo.identityHashCode)
+                assertEquals(Thread.currentThread().id, blocked.lockOwnerId)
+                details.close(command.route)
+            }
+            task.get(4, TimeUnit.SECONDS)
+            assertFalse(details.current(command.route))
+            assertEquals(4, f.server.requestCount)
+            assertTrue("the retired Details route must not publish the verified refusal", f.repository.state.value.rejected)
+            assertArrayEquals(failed.candidate, f.file.readBytes())
+        } finally { proceed.countDown(); worker.join(5_000) }
+
+        f.afterRefusalReadback = {}
+        val fresh = openDetails()
+        f.server.enqueue(MockResponse.Builder().code(204).build())
+        f.server.enqueue(f.reply(200, """{"tracks":[],"total":0,"offset":0,"limit":100}"""))
+        f.server.enqueue(f.reply(200, f.page(added = false)))
+        details.execute(fresh)
+        assertEquals("DELETE", f.next("/api/v1/library/tracks/${track.value}").method)
+        assertEquals("GET", f.next("/api/v1/library").method)
+        assertEquals("GET", f.next("/api/v1/library").method)
+        assertTrue(details.state.value.missing)
+        assertEquals(OriginalImportPhase.Refused, f.repository.state.value.entry(failed.operation)?.phase)
+        assertArrayEquals(failed.candidate, f.file.readBytes())
+        assertEquals(9, f.server.requestCount)
+    }
+
     @Test fun refusalRetryRejectsSupersedingValidCorruptAndAbsentBytesWithoutForcing() = fixture().use { f ->
         val failed = failRefusalSync(f, f.choice())
         var forced = 0
@@ -1315,7 +1418,9 @@ class OriginalImportWireTest {
             assertEquals("POST", next("/api/v1/library/uploads").method)
             assertEquals("GET", next("/api/v1/library/tracks/77").method)
         }
-        private fun build(writes: Boolean?) = OriginalImportRepository(auth, OriginalImportJournal(file) { beforeDirectorySync() }, { original, current ->
+        var afterRefusalReadback: () -> Unit = {}
+        private fun build(writes: Boolean?) = OriginalImportRepository(auth, OriginalImportJournal(file,
+            beforeRefusalCommit = { afterRefusalReadback() }, beforeDirectorySync = { beforeDirectorySync() }), { original, current ->
             val audio = when (original) { owner -> bytes; otherOwner -> otherBytes; else -> error("unknown source") }
             object : ImportOriginalRead {
                 override val length = audio.size.toLong()

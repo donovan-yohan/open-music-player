@@ -410,15 +410,19 @@ class LibraryRepository(val session: AccountSession, private val fetch: (Account
             // One fresh attempt after supersession, never a retry of a failed GET or an import command.
             repeat(2) {
                 var expected:LibraryState?=null
-                combine(state,likeRevision,session.scopeRevision){_,_,_->Unit}.first {
+                combine(state,likeRevision,session.scopeRevision,session.credentialSaveRevision,session.state){_,_,_,_,_->Unit}.first {
                     synchronized(this@LibraryRepository) {
-                        when {
-                            !current()->true
-                            // Collection Play still owns the displayed rows until its consumer runs.
-                            // A Like readback can also own rows after loading becomes false.
-                            mutable.value.loading||pendingCollection?.let {it.lifetime==lifetime&&same(it.scope,scope)}==true||
-                                mutations.values.any {same(it.offer.view.scope,scope)}->false
-                            else->{expected=mutable.value.takeIf {acceptedScope?.let {same(it,scope)}==true};true}
+                        if(!isActive||queryLifetime!=lifetime)return@synchronized true
+                        when(session.remoteReadiness(scope)) {
+                            RemoteReadiness.Retired->true
+                            RemoteReadiness.Saving->false
+                            RemoteReadiness.Ready->when {
+                                // Collection Play retains its rows through delivery; Like can
+                                // own its readback even after loading becomes false.
+                                mutable.value.loading||pendingCollection?.let {it.lifetime==lifetime&&same(it.scope,scope)}==true||
+                                    mutations.values.any {same(it.offer.view.scope,scope)}->false
+                                else->{expected=mutable.value.takeIf {acceptedScope?.let {same(it,scope)}==true};true}
+                            }
                         }
                     }
                 }

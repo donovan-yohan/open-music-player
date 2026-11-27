@@ -18,6 +18,7 @@ internal sealed interface DiscoveryReadState {
     class Saving(val completion:CompletableFuture<Boolean>) : DiscoveryReadState
     data object Retired : DiscoveryReadState
 }
+internal enum class RemoteReadiness { Ready, Saving, Retired }
 class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore) {
     private val mutable = MutableStateFlow<AuthState>(AuthState.Restoring)
     val state: StateFlow<AuthState> = mutable
@@ -165,9 +166,17 @@ class AccountSession(val endpoint: ApiEndpoint, private val store: SessionStore)
         if(remoteCurrent(scope))return DiscoveryReadState.Current
         return discoverySave(scope)?.let {DiscoveryReadState.Saving(it)} ?: DiscoveryReadState.Retired
     }
+    /** Observation only: Saving does not grant a bearer or permit another exchange. */
+    @Synchronized internal fun remoteReadiness(scope:AccountScope):RemoteReadiness = when {
+        remoteCurrent(scope) -> RemoteReadiness.Ready
+        rotationSave(scope)!=null -> RemoteReadiness.Saving
+        else -> RemoteReadiness.Retired
+    }
     private fun discoverySave(scope:AccountScope):CompletableFuture<Boolean>? =
+        if(scope.discoveryReadRevision==discoveryReadRevision)rotationSave(scope) else null
+    private fun rotationSave(scope:AccountScope):CompletableFuture<Boolean>? =
         refresh?.takeIf { (intent,flight)->
-            scope.discoveryReadRevision==discoveryReadRevision&&!localLocked&&scope.owner===this&&scope.epoch==epoch&&intent==epoch&&
+            !localLocked&&scope.owner===this&&scope.epoch==epoch&&intent==epoch&&
                 tokens==null&&deviceAccount==null&&pending?.accountId==scope.accountId&&
                 (mutable.value as? AuthState.SignedIn)?.accountId==scope.accountId&&!flight.isDone
         }?.second

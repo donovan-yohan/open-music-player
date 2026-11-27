@@ -431,9 +431,10 @@ class SoundQApi internal constructor(
         originalImports()?.retryRemovalSettlement(scope, id, valid)
 
     fun trackDetailsRemove(scope: AccountScope, id: TrackId, valid: () -> Boolean): LibraryRemovalReceipt =
-        removeLibraryTrack(scope, id, valid).receipt
+        removeLibraryTrack(scope, id, valid = valid).receipt
 
-    internal fun removeLibraryTrack(scope: AccountScope, id: TrackId, valid: () -> Boolean): LibraryRemovalResult {
+    internal fun removeLibraryTrack(scope: AccountScope, id: TrackId, commitInVisit: ((() -> Boolean) -> Boolean)? = null,
+        valid: () -> Boolean): LibraryRemovalResult {
         if (!valid()) throw SafeFailure(SafeFailure.Reason.Retired)
         val imports = originalImports()
         var fence: OriginalImportRepository.RemovalFence? = null
@@ -450,7 +451,7 @@ class SoundQApi internal constructor(
                         canceledBeforeEntry = true
                         return false
                     }
-                    fence = imports?.prepareRemoval(scope, id, valid)
+                    fence = imports?.prepareRemoval(scope, id, commitInVisit, valid)
                     if (!live()) return@LibraryMutationAdmission false
                     fence?.takeIf { it.durable }?.let {
                         try { checkNotNull(imports).enterRemoval(it) }

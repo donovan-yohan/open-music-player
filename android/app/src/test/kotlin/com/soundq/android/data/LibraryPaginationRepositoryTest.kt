@@ -168,6 +168,8 @@ class LibraryPaginationRepositoryTest {
             val page=checkNotNull(repository.claimNextPage(repository.state.value){visible.get()})
             val work=pool.submit {repository.executeNextPage(page)}
             assertTrue(append.await(3,TimeUnit.SECONDS));assertTrue(repository.state.value.loading)
+            assertFalse("handoff must not consume collection Play while a page can replace its acknowledged rows",
+                repository.collectionPlaybackCurrent(play))
             visible.set(false);repository.abandonCollection(play)
             assertFalse(repository.state.value.collectionLoading);assertTrue(repository.state.value.loading)
             assertEquals(1L,refresh.count)
@@ -187,6 +189,79 @@ class LibraryPaginationRepositoryTest {
             assertEquals(3,firstPages.get());assertEquals(3,secondPages.get());assertEquals(1,starts)
         }finally {
             releaseAppend.countDown();releaseRefresh.countDown();jobs.cancel();pool.shutdownNow()
+            assertTrue(pool.awaitTermination(3,TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun deferredImportRefreshSurvivesSameScopeCredentialSave() = deferredRefreshDuringSave("success")
+
+    @Test fun deferredImportRefreshDoesNotSurviveFailedSaveOrRetiredScopeOrQuery() {
+        for (end in listOf("failure", "scope", "query")) deferredRefreshDuringSave(end)
+    }
+
+    private fun deferredRefreshDuringSave(end: String) {
+        val saving = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val store = object : SessionStore by MemoryStore() {
+            override fun save(endpoint: ApiEndpoint, tokens: SecretTokens) {
+                if (tokens.access != "rotated") return
+                saving.countDown()
+                check(release.await(5,TimeUnit.SECONDS))
+                if (end == "failure") throw java.io.IOException("secure save unavailable")
+            }
+        }
+        val auth = AccountSession(ApiEndpoint.parse("https://fixture.test/api/v1"),store)
+        assertTrue(auth.accept(auth.beginIntent(), SecretTokens("initial","refresh","A")))
+        val scope = checkNotNull(auth.capture())
+        val reads = mutableListOf<LibraryQuery>()
+        val query = LibraryQuery(text="matches",liked=true)
+        val first = track(1).copy(liked=true)
+        val imported = track(77).copy(liked=true)
+        val repository = LibraryRepository(auth,{ actual, q, offset ->
+            assertEquals(scope.epoch,actual.epoch)
+            assertEquals(0,offset)
+            reads += q
+            LibraryPage(listOf(if (reads.size <= 2) first else imported),1,20,offset)
+        },{_,_,_->throw AssertionError("no mutation")})
+        val queue = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+        val jobs = CoroutineScope(SupervisorJob()+object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) { queue.add(block) }
+        })
+        fun drain() { while (true) (queue.poll() ?: return).run() }
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            repository.refine(query)
+            val play = checkNotNull(repository.claimCollectionPlay(repository.state.value) { true })
+            repository.readCollection(play)
+            repository.startCollection(play,holdForDelivery=true) { rows, _ -> assertEquals(listOf(first),rows); null }
+            assertTrue(repository.state.value.collectionLoading)
+            repository.scheduleImportRefresh(scope,jobs)
+            val refresh = jobs.coroutineContext.job.children.single()
+            drain()
+            assertFalse(refresh.isCompleted)
+            val rotate = pool.submit<Boolean> { auth.refresh(scope) { SecretTokens("rotated","rotated-refresh","A") } }
+            assertTrue(saving.await(3,TimeUnit.SECONDS))
+            assertFalse(auth.remoteCurrent(scope))
+            repository.abandonCollection(play)
+            drain() // Deliver collection release while the original bearer is withdrawn.
+            assertEquals(listOf(query,query),reads)
+            if (end == "scope") auth.beginIntent()
+            if (end == "query") repository.retire()
+            drain()
+            release.countDown()
+            assertEquals(end == "success" || end == "query",rotate.get(3,TimeUnit.SECONDS))
+            drain()
+            assertTrue(refresh.isCompleted)
+            if (end == "success") {
+                assertEquals(scope.epoch,auth.capture()?.epoch)
+                assertEquals("rotated",auth.access(scope))
+                assertEquals("collection release must not consume the pending import observation during secure save",
+                    listOf(query,query,query),reads)
+                assertEquals(listOf(TrackId(77)),repository.state.value.rows.map(Track::id))
+                assertEquals(query,repository.state.value.query)
+            } else assertEquals(end,listOf(query,query),reads)
+        } finally {
+            release.countDown();jobs.cancel();drain();pool.shutdownNow()
             assertTrue(pool.awaitTermination(3,TimeUnit.SECONDS))
         }
     }

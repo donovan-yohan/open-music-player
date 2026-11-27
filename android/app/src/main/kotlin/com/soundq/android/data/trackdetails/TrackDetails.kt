@@ -15,7 +15,12 @@ data class MetadataDraft(val title:String?=null,val artist:String?=null,val albu
 data class TrackDetails(val track:Track,val edited:Boolean,val verified:Boolean,val sourceQuality:String?=null,val recording:RecordingMbid?=null,val suggestions:List<MatchSuggestion> = emptyList(),val sourceUrl:String?=null)
 sealed interface DetailsAction {data class Metadata(val draft:MetadataDraft):DetailsAction; data object Remove:DetailsAction; data class Verification(val action:VerificationAction):DetailsAction; data class Analysis(val observed:AnalysisDetail,val correction:AnalysisCorrection):DetailsAction}
 class PlayerDetailsCapture internal constructor(val scope:AccountScope,val trackId:TrackId,internal val valid:()->Boolean)
-class DetailsRoute internal constructor(val scope:AccountScope,val trackId:TrackId,internal val sourceValid:()->Boolean={true},val fromPlayer:Boolean=false) {@Volatile internal var active=true}
+class DetailsRoute internal constructor(val scope:AccountScope,val trackId:TrackId,internal val sourceValid:()->Boolean={true},val fromPlayer:Boolean=false) {
+    @Volatile internal var active=true
+        private set
+    @Synchronized internal fun retire() {active=false}
+    @Synchronized internal fun commitIfActive(commit:()->Boolean)=active&&commit()
+}
 class DetailsTicket internal constructor(val route:DetailsRoute,val observed:TrackDetails,val action:DetailsAction,internal val libraryState:LibraryState) {internal var consumed=false}
 enum class RemovalIssue { NotSent, NotSentLocalCleanupFailed, Unconfirmed, ConfirmedLocalSettleFailed }
 data class TrackDetailsState(val detail:TrackDetails?=null,val outcome:MutationOutcome?=null,val loading:Boolean=false,val error:SafeFailure.Reason?=null,val missing:Boolean=false,val analysis:AnalysisDetail?=null,val analysisError:SafeFailure.Reason?=null,val analysisAbsent:Boolean=false,val reconciled:Boolean=false,val removalBlocked:Boolean=false,val removalIssue:RemovalIssue?=null,private val outcomeDescribedByRemovalNotice:Boolean=false) {
@@ -71,11 +76,11 @@ class TrackDetailsRepository(private val api:SoundQApi,private val library:Libra
     }
     @Synchronized private fun admit(route:DetailsRoute):DetailsRoute? {
         if(!api.session.remoteCurrent(route.scope)||!route.sourceValid())return null
-        selected?.active=false
+        selected?.retire()
         return route.also {selected=it;ticket=null;readVersion++;resetRemoval();mutable.value=TrackDetailsState()}
     }
     fun current(route:DetailsRoute)=selected===route&&route.active&&api.session.remoteCurrent(route.scope)&&route.sourceValid()
-    @Synchronized fun close(route:DetailsRoute) {route.active=false;if(selected===route){selected=null;ticket=null;readVersion++;resetRemoval();mutable.value=TrackDetailsState()}}
+    @Synchronized fun close(route:DetailsRoute) {route.retire();if(selected===route){selected=null;ticket=null;readVersion++;resetRemoval();mutable.value=TrackDetailsState()}}
     @Synchronized fun retire(){selected?.let(::close)}
     fun load(route:DetailsRoute) {
         val version=synchronized(this){if(!current(route)||ticket!=null||mutable.value.loading)return;readVersion++;mutable.value=mutable.value.copy(loading=true,error=null);readVersion}
@@ -121,7 +126,9 @@ class TrackDetailsRepository(private val api:SoundQApi,private val library:Libra
             when(val action=command.action) {
                 is DetailsAction.Metadata->api.trackDetailsMetadata(scope,id,action.draft){current(route)}
                 DetailsAction.Remove->{
-                    val accepted=api.removeLibraryTrack(scope,id){current(route)}
+                    val accepted=api.removeLibraryTrack(scope,id,commitInVisit={ commit ->
+                        route.commitIfActive {current(route)&&commit()}
+                    }) {current(route)}
                     if(accepted.receipt==LibraryRemovalReceipt.ConfirmedLocalSettleFailed) {
                         result=RemovalIssue.ConfirmedLocalSettleFailed
                         fence=accepted.unsettled
