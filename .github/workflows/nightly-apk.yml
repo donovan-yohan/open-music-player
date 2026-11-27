@@ -52,11 +52,25 @@ jobs:
         run: |
           python3 -B scripts/test-android-product.py
           python3 -B scripts/test-native-publication.py
+          python3 -B android/ci/test-compose-robolectric.py
           python3 scripts/android-product preflight
+      - name: Acquire verified Compose Robolectric dependencies
+        id: compose-robolectric
+        # Only the fresh GitHub-hosted job owns the lifetime of this RUNNER_TEMP stage.
+        # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#runner-context
+        run: |
+          if [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then
+            printf '%s\n' 'Compose Robolectric staging requires a GitHub-hosted runner' >&2
+            exit 1
+          fi
+          exec python3 -B android/ci/compose_robolectric.py
       - name: Check native Android product
+        if: success() && steps.compose-robolectric.outcome == 'success'
+        env:
+          SOUNDQ_COMPOSE_ROBOLECTRIC_STAGE: ${{ steps.compose-robolectric.outputs.stage }}
         run: |
           export PATH="$ANDROID_HOME/cmake/3.22.1/bin:$PATH"
-          python3 scripts/android-product check -Pkotlin.compiler.execution.strategy=in-process '-Dorg.gradle.jvmargs=-Xmx3g -XX:ActiveProcessorCount=2'
+          python3 scripts/android-product check --init-script ci/compose-robolectric.init.gradle -Pkotlin.compiler.execution.strategy=in-process '-Dorg.gradle.jvmargs=-Xmx3g -XX:ActiveProcessorCount=2'
       - name: Upload nightly APK
         uses: actions/upload-artifact@v4
         with:

@@ -160,6 +160,28 @@ class NativePublicationTest(unittest.TestCase):
                             workflow.index("actions/setup-java@v4"))
             self.assertIn('export PATH="$ANDROID_HOME/cmake/3.22.1/bin:$PATH"', workflow)
 
+    def test_nightly_uses_verified_compose_staging_without_pr_publication(self):
+        workflows = ROOT / ".github/workflows"
+        nightly = (workflows / "nightly-apk.yml").read_text()
+        native = (workflows / "native-clients.yml").read_text()
+
+        def step(workflow, name):
+            match = re.search(rf"(?m)^      - name: {re.escape(name)}\n((?:        .*\n)+)", workflow)
+            if match is None:
+                self.fail(f"missing workflow step: {name}")
+            return [line for line in match[1].splitlines() if not line.lstrip().startswith("#")]
+
+        acquire = "Acquire verified Compose Robolectric dependencies"
+        self.assertEqual(step(native, acquire), step(nightly, acquire))
+        self.assertEqual(step(native, "Test, assemble and lint the Compose product"),
+                         step(nightly, "Check native Android product"))
+        self.assertLess(nightly.index(acquire), nightly.index("Check native Android product"))
+        self.assertNotRegex(nightly, r"(?m)^  pull_request(?:_target)?:")
+        # The existing PR job validates nightly registration, not nightly publication.
+        self.assertRegex(native, r"(?m)^  pull_request:\n    paths:.*'\.github/workflows/nightly-apk\.yml'")
+        self.assertIn("python3 -B scripts/test-native-publication.py",
+                      "\n".join(step(native, "Check native publication tooling")))
+
     def test_default_android_build_and_dogfood_route_to_compose(self):
         import subprocess
         with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as directory:

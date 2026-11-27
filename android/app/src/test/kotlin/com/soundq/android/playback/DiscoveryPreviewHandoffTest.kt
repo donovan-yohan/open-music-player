@@ -24,6 +24,13 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.*
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
+import org.robolectric.annotation.RealObject
+import org.robolectric.shadow.api.Shadow
+import org.robolectric.util.reflector.Direct
+import org.robolectric.util.reflector.ForType
+import org.robolectric.util.reflector.Reflector.reflector
 import java.io.File
 import java.time.Duration
 import java.util.concurrent.*
@@ -299,7 +306,11 @@ class DiscoveryPreviewHandoffTest {
     @Test fun pendingPreviewSurvivesSaveCollectorWithMovingQueue() = pendingPreviewSurvivesSaveCollector(moving = true)
     @Test fun pendingPreviewSurvivesSaveCollectorWithPausedQueue() = pendingPreviewSurvivesSaveCollector(moving = false)
 
-    private fun pendingPreviewSurvivesSaveCollector(moving: Boolean) {
+    @Config(shadows = [OrdinaryAssignmentSample::class])
+    @Test fun pendingPreviewSurvivesSaveCommittedDuringOrdinaryPoll() =
+        pendingPreviewSurvivesSaveCollector(moving = false, releaseDuringPoll = true)
+
+    private fun pendingPreviewSurvivesSaveCollector(moving: Boolean, releaseDuringPoll: Boolean = false) {
         Fixture(holdAccountCollector = true).use { f ->
             val rows = f.ordinary()
             if (!moving) {
@@ -372,7 +383,21 @@ class DiscoveryPreviewHandoffTest {
             assertEquals(ordinaryLoads, f.hw.acceptedLoads.toList())
             assertEquals(listOf(0), f.hw.played.toList())
 
-            f.app.saveRelease.countDown()
+            if (releaseDuringPoll) {
+                val saving = session.discoveryReadState(f.scope) as DiscoveryReadState.Saving
+                val shadow = Shadow.extract<OrdinaryAssignmentSample>(f.player)
+                var sampled = false
+                shadow.afterSample = { current ->
+                    assertFalse("the ordinary grant was sampled while tokens were withdrawn", current)
+                    f.app.saveRelease.countDown()
+                    // An unlocked observation lets the real save publish before its decision.
+                    // An atomic observation must finish its decision before the saver can publish.
+                    if (!Thread.holdsLock(session)) assertTrue(saving.completion.get(8, TimeUnit.SECONDS))
+                    sampled = true
+                }
+                f.drain("ordinary poll sampled the held save") { sampled }
+                assertNull(shadow.afterSample)
+            } else f.app.saveRelease.countDown()
             f.drain("same preview input reopened but is still held before native readiness") { load.deck in f.hw.previewOpened }
             assertTrue(session.remoteCurrent(f.scope))
             assertSame(pending, f.pendingPreview())
@@ -1430,7 +1455,24 @@ class DiscoveryPreviewHandoffTest {
     }
 }
 
-// Held only for the two collector regressions. The service and the player's native
+/** Observe the real assignment predicate, without substituting a grant or account result. */
+@Implements(NativeCallbackPlayer::class, isInAndroidSdk = false)
+class OrdinaryAssignmentSample {
+    @RealObject private lateinit var player: NativeCallbackPlayer
+    internal var afterSample: ((Boolean) -> Unit)? = null
+
+    @Implementation protected fun assignmentCurrent(): Boolean = reflector(Real::class.java, player).assignmentCurrent().also { current ->
+        if (Looper.myLooper() == Looper.getMainLooper()) afterSample?.let { callback ->
+            afterSample = null
+            callback(current)
+        }
+    }
+
+    @ForType(NativeCallbackPlayer::class)
+    interface Real { @Direct fun assignmentCurrent(): Boolean }
+}
+
+// Held only for the collector regressions. The service and the player's native
 // observation/lifetime run on their usual dispatchers; jobs is only the account collector.
 internal class HeldAccountCollector : CoroutineDispatcher() {
     @Volatile private var initial: ArrayDeque<Runnable>? = ArrayDeque()
