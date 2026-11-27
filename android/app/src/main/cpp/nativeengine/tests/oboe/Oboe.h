@@ -16,13 +16,15 @@ enum class StreamState { Open, Closed };
 struct AudioStream;
 struct AudioStreamDataCallback { virtual ~AudioStreamDataCallback()=default; virtual DataCallbackResult onAudioReady(AudioStream*,void*,int32_t)=0; };
 struct AudioStreamErrorCallback { virtual ~AudioStreamErrorCallback()=default; virtual bool onError(AudioStream*,Result)=0; };
-struct Count { explicit operator bool() const {return true;} int32_t value()const{return 0;} };
+struct Count { bool supported=true; int32_t count=0; explicit operator bool() const {return supported;} int32_t value()const{return count;} };
 struct AudioStream {
     std::shared_ptr<AudioStreamDataCallback> data;
     std::shared_ptr<AudioStreamErrorCallback> error;
     StreamState state=StreamState::Open;
     int32_t rate=44100;
     int stops=0,closes=0;
+    Count xruns;
+    bool xrunSupported=true;
     Result start(){return Result::OK;}
     Result stop(){++stops;return Result::ErrorDisconnected;}
     Result close(){++closes;state=StreamState::Closed;return Result::OK;}
@@ -30,7 +32,8 @@ struct AudioStream {
     int32_t getSampleRate()const{return rate;}
     AudioFormat getFormat()const{return AudioFormat::Float;}
     int getChannelCount()const{return 2;}
-    Count getXRunCount()const{return {};}
+    bool isXRunCountSupported()const{return xrunSupported;}
+    Count getXRunCount()const{return xruns;}
 };
 inline std::vector<std::shared_ptr<AudioStream>> testStreams;
 inline bool testFailOpenOnce=false;

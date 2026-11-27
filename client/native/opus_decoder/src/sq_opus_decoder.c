@@ -93,7 +93,15 @@ int sq_opus_decoder_open(const char *path, uint64_t max_bytes,
   if (!path || path[0] != '/' || max_bytes == 0 ||
       max_bytes > SQ_OPUS_MAX_FILE_BYTES) return SQ_OPUS_INVALID_ARGUMENT;
   int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  if (fd < 0) return SQ_OPUS_IO;
+  return fd < 0 ? SQ_OPUS_IO : sq_opus_decoder_open_fd(fd, max_bytes, out);
+}
+
+int sq_opus_decoder_open_fd(int fd, uint64_t max_bytes, sq_opus_decoder **out) {
+  if (out) *out = NULL;
+  if (fd < 0 || !out || !max_bytes || max_bytes > SQ_OPUS_MAX_FILE_BYTES) {
+    if (fd >= 0) close(fd);
+    return SQ_OPUS_INVALID_ARGUMENT;
+  }
   struct stat st;
   if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) {
     close(fd); return SQ_OPUS_IO;
@@ -101,6 +109,7 @@ int sq_opus_decoder_open(const char *path, uint64_t max_bytes,
   if ((uint64_t)st.st_size > max_bytes) { close(fd); return SQ_OPUS_LIMIT; }
   FILE *file = fdopen(fd, "rb");
   if (!file) { close(fd); return SQ_OPUS_IO; }
+  if (fseeko(file, 0, SEEK_SET) != 0) { fclose(file); return SQ_OPUS_IO; }
   int status = validate_container(file, (uint64_t)st.st_size);
   if (status != SQ_OPUS_OK) { fclose(file); return status; }
   const OpusFileCallbacks callbacks = {local_read, local_seek, local_tell, NULL};

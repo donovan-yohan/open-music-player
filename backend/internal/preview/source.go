@@ -56,6 +56,12 @@ func canonicalSource(u *url.URL) validators.SourceType {
 	return validators.SourceUnknown
 }
 
+// CanonicalSourceType classifies an exact key without resolving aliases or
+// making a network request. It does not confer playback permission.
+func CanonicalSourceType(key string) validators.SourceType {
+	return canonicalSource(parseSource(key))
+}
+
 // SourceKey projects a candidate URL to an exact manifest key without checking
 // clip availability. Only Search uses alias resolution; the manifest and POST
 // still take exact keys. No other candidate fields or network lookup are used.

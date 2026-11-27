@@ -633,6 +633,49 @@ paths:
             text/plain:
               schema: { type: string }
 
+  /discovery/audition-source:
+    post:
+      tags: [Browse]
+      operationId: resolveDiscoveryAuditionSource
+      summary: Identify an exact stored source already in the authenticated user's Library
+      description: |
+        Pass the search result's previewSourceUrl verbatim. The lookup requires
+        an unambiguous exact match to the primary source of shared stored audio
+        in the caller's Library. No metadata, private upload, or secondary source
+        associations are used as substitutes. This returns only a track ID,
+        not a grant; use the authorized playback API to open audio. No provider
+        calls, imports, Library changes, or play events are made. No query
+        parameters. The body is capped at 8192 bytes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [url]
+              properties:
+                url: { type: string, format: uri, minLength: 1, maxLength: 4096 }
+      responses:
+        '200':
+          description: Unique stored candidate (object availability is verified separately by playback)
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: ['private, no-store'] }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [trackId]
+                properties:
+                  trackId: { type: integer, format: int64, minimum: 1 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No supported, unique exact stored source in the caller's Library
+        '503': { $ref: '#/components/responses/Unavailable' }
+
   /discovery/resolve-url:
     post:
       tags: [Browse]

@@ -2,6 +2,7 @@
 #include "sq_file_decoder.h"
 #include "sq_opus_decoder.h"
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -182,25 +183,39 @@ int sq_file_decoder_open(const char *path, uint64_t max_bytes, sq_file_decoder *
   *out=nullptr;
   if (!path || path[0]!='/' || !max_bytes || max_bytes>SQ_FILE_MAX_FILE_BYTES) return SQ_FILE_INVALID_ARGUMENT;
   int fd=open(path,O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
-  if (fd<0) return SQ_FILE_IO;
+  return fd<0 ? SQ_FILE_IO : sq_file_decoder_open_fd(fd,max_bytes,out);
+}
+int sq_file_decoder_open_fd(int fd, uint64_t max_bytes, sq_file_decoder **out) {
+  if (out) *out=nullptr;
+  if (fd<0 || !out || !max_bytes || max_bytes>SQ_FILE_MAX_FILE_BYTES) {
+    if (fd>=0) close(fd);
+    return SQ_FILE_INVALID_ARGUMENT;
+  }
   struct stat st{};
   if (fstat(fd,&st)!=0 || !S_ISREG(st.st_mode) || st.st_size<=0) { close(fd); return SQ_FILE_IO; }
   if (uint64_t(st.st_size)>max_bytes) { close(fd); return SQ_FILE_LIMIT; }
-  FILE *file=fdopen(fd,"rb"); if (!file) { close(fd); return SQ_FILE_IO; }
-  auto *d=new(std::nothrow) sq_file_decoder;
-  if (!d) { fclose(file); return SQ_FILE_OUT_OF_MEMORY; }
-  d->file=file;
   unsigned char magic[4]{};
-  int status=SQ_FILE_INVALID_STREAM;
-  if (at(file,0,magic,4)) {
-    if (!memcmp(magic,"SQP1",4)) status=pcm64_open(d,uint64_t(st.st_size));
-    else if (uint64_t(st.st_size)>SQ_FILE_MAX_ENCODED_BYTES) status=SQ_FILE_LIMIT;
-    else if (!memcmp(magic,"RIFF",4)) status=wav_open(d,uint64_t(st.st_size));
-    else if (!memcmp(magic,"OggS",4)) {
-      status=sq_opus_decoder_open(path,std::min<uint64_t>(max_bytes,SQ_FILE_MAX_ENCODED_BYTES),&d->opus);
-      if (!status) { d->rate=sq_opus_decoder_sample_rate(d->opus); d->source_channels=2; d->frames=sq_opus_decoder_frame_count(d->opus); }
-    } else if (!memcmp(magic,"ID3",3) || (magic[0]==255 && (magic[1]&224)==224)) status=mp3_open(d,uint64_t(st.st_size));
+  ssize_t count;
+  do { count=pread(fd,magic,sizeof(magic),0); } while (count<0 && errno==EINTR);
+  if (count!=sizeof(magic)) { close(fd); return count<0 ? SQ_FILE_IO : SQ_FILE_INVALID_STREAM; }
+  const bool pcm64=!memcmp(magic,"SQP1",4);
+  if (!pcm64 && uint64_t(st.st_size)>SQ_FILE_MAX_ENCODED_BYTES) { close(fd); return SQ_FILE_LIMIT; }
+  auto *d=new(std::nothrow) sq_file_decoder;
+  if (!d) { close(fd); return SQ_FILE_OUT_OF_MEMORY; }
+  if (!memcmp(magic,"OggS",4)) {
+    // The original pathname may have been removed or replaced after open.
+    // Opus validates and decodes the same descriptor we just sniffed.
+    const auto status=sq_opus_decoder_open_fd(fd,std::min<uint64_t>(max_bytes,SQ_FILE_MAX_ENCODED_BYTES),&d->opus);
+    if (status) { delete d; return status; }
+    d->rate=sq_opus_decoder_sample_rate(d->opus); d->source_channels=2; d->frames=sq_opus_decoder_frame_count(d->opus);
+    *out=d; return SQ_FILE_OK;
   }
+  FILE *file=fdopen(fd,"rb"); if (!file) { close(fd); delete d; return SQ_FILE_IO; }
+  d->file=file;
+  int status=SQ_FILE_INVALID_STREAM;
+  if (pcm64) status=pcm64_open(d,uint64_t(st.st_size));
+  else if (!memcmp(magic,"RIFF",4)) status=wav_open(d,uint64_t(st.st_size));
+  else if (!memcmp(magic,"ID3",3) || (magic[0]==255 && (magic[1]&224)==224)) status=mp3_open(d,uint64_t(st.st_size));
   if (status) { sq_file_decoder_destroy(d); return status; }
   *out=d; return SQ_FILE_OK;
 }

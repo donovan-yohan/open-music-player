@@ -17,6 +17,11 @@ int main(){
     Owner owner;auto output=soundq::nativeengine::makeOboeOutput();uint32_t rate=44100;
     assert(output->open(owner,rate));assert(output->start());
     auto old=oboe::testStreams.back();
+    old->xruns={true,0};assert(output->xRuns()==0);
+    old->xruns={true,7};assert(output->xRuns()==7);
+    old->xruns={false,0};assert(output->xRuns()==-1); // A failed query is not evidence of zero underruns.
+    old->xrunSupported=false;
+    old->xruns={true,0};assert(output->xRuns()==-1); // An unsupported callback route may return a successful zero.
     owner.hold.store(true);
     std::array<float,2> pcm{};
     std::thread callback([&]{old->data->onAudioReady(old.get(),pcm.data(),1);});
@@ -30,6 +35,7 @@ int main(){
     while(proxy->owner.load()!=nullptr)assert(std::chrono::steady_clock::now()<deadline);
     assert(!closed.load());owner.hold.store(false);callback.join();close.join();assert(closed.load());
     assert(old->closes==1);
+    assert(output->xRuns()==-1); // No stream cannot supply underrun evidence either.
     assert(output->open(owner,rate));assert(output->start());
     auto fresh=oboe::testStreams.back();assert(fresh->data!=old->data);
     old->error->onError(old.get(),oboe::Result::ErrorDisconnected);assert(owner.errors==0);

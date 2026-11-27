@@ -303,6 +303,7 @@ func (r *Router) setupRoutes() {
 
 	// Browse/discovery routes (auth required)
 	r.registerDiscoveryPreview()
+	r.registerDiscoveryAuditionSource()
 	if h := r.weeklyHandlers; h != nil {
 		r.mux.HandleFunc("GET /api/v1/me/discovery/weekly", r.withWeeklyAuth(h.Weekly))
 		r.mux.HandleFunc("GET /api/v1/me/discovery/preferences", r.withWeeklyAuth(h.Preferences))

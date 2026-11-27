@@ -92,9 +92,10 @@ public:
         return true;
     }
     int32_t xRuns() const noexcept override {
-        if (!stream_) return 0;
+        // A stream that cannot report underruns must not look like a clean run.
+        if (!stream_ || !stream_->isXRunCountSupported()) return -1;
         const auto result = stream_->getXRunCount();
-        return result ? result.value() : 0;
+        return result ? result.value() : -1;
     }
 };
 }

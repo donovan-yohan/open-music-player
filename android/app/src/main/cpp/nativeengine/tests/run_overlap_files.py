@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Bounded actual-file host and independent every-frame overlap oracle. No OS output."""
 from pathlib import Path
-import argparse, array, math, os, subprocess, wave
+import argparse, array, math, subprocess, wave
+from file_oracle_build import build_file_oracle
 p=argparse.ArgumentParser();p.add_argument('--build',type=Path,required=True);p.add_argument('--decoder',type=Path,required=True);p.add_argument('--codec',choices=['wav','mp3','opus'],default='wav');a=p.parse_args()
-r=Path(__file__).resolve().parents[7];h=r/'android/app/src/main/cpp/nativeengine'
-a.build.mkdir(parents=True,exist_ok=True)
+a.build=a.build.resolve();a.build.mkdir(parents=True,exist_ok=True)
 for name,rate,channel in [('a',48000,0),('b',44100,1)]:
     data=array.array('h')
     for frame in range(rate*4):
@@ -18,8 +18,7 @@ for name in ('a','b'):
     if a.codec!='wav':
         subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-y','-i',str(original)]+(['-c:a','libmp3lame','-b:a','192k'] if a.codec=='mp3' else ['-c:a','libopus','-b:a','128k'])+[str(target)],check=True)
     paths.append(target)
-exe=a.build/'overlap-file-test' 
-subprocess.run(['c++','-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer','-Wall','-Wextra','-Werror',f'-I{h}',f'-I{r}/client/native/transport/include',f'-I{r}/client/native/file_decoder/include',str(h/'tests/overlap_file_tests.cpp'),str(h/'callback_host.cpp'),str(h/'worker_deck.cpp'),str(r/'client/native/transport/src/soundq_transport.cpp'),str(a.decoder),f'-Wl,-rpath,{a.decoder.resolve().parent}','-o',str(exe)],check=True)
+exe=build_file_oracle(a.build,a.decoder,'overlap')
 subprocess.run([str(exe),str(paths[0]),str(paths[1]),str(a.build/'mixed.f32')],check=True)
 actual=array.array('f');actual.frombytes((a.build/'mixed.f32').read_bytes());assert len(actual)==720000*2
 sources=[]
