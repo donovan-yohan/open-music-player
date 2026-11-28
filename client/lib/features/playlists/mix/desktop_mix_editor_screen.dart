@@ -982,6 +982,11 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
     final draft = _draft!;
     final narrow = MediaQuery.sizeOf(context).width < 960;
     final hasRouter = GoRouter.maybeOf(context) != null;
+    final unavailable = <String>{
+      if (_bound)
+        for (final cue in _playback!.snapshot.cues)
+          if (cue.audioUnavailable) cue.queueItemId,
+    };
     return PopScope(
         canPop: hasRouter || _allowPop || (!draft.dirty && !draft.saving),
         onPopInvokedWithResult: (didPop, result) {
@@ -1080,6 +1085,10 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                                             : _onAir && _documentApplied
                                                 ? 'On air'
                                                 : 'Edits not applied'),
+                                        if (unavailable.isNotEmpty)
+                                          Text(unavailable.length == 1
+                                              ? '1 clip has unavailable audio'
+                                              : '${unavailable.length} clips have unavailable audio'),
                                         if (_playback != null) ...[
                                           IconButton(
                                               key: const ValueKey('mix-play'),
@@ -1145,14 +1154,15 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                                             : null)),
                               Expanded(
                                   child: narrow
-                                      ? _narrowWorkspace()
+                                      ? _narrowWorkspace(unavailable)
                                       : Row(
                                           crossAxisAlignment:
                                               CrossAxisAlignment.stretch,
                                           children: [
                                               SizedBox(
                                                   width: 220,
-                                                  child: _clipList()),
+                                                  child:
+                                                      _clipList(unavailable)),
                                               const VerticalDivider(width: 1),
                                               Expanded(child: _arrangement()),
                                               const VerticalDivider(width: 1),
@@ -1169,7 +1179,7 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                 ))));
   }
 
-  Widget _narrowWorkspace() => DefaultTabController(
+  Widget _narrowWorkspace(Set<String> unavailable) => DefaultTabController(
       length: 3,
       child: Column(children: [
         const TabBar(tabs: [
@@ -1178,11 +1188,14 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
           Tab(text: 'Inspector')
         ]),
         Expanded(
-            child: TabBarView(
-                children: [_arrangement(), _clipList(), _inspector()])),
+            child: TabBarView(children: [
+          _arrangement(),
+          _clipList(unavailable),
+          _inspector()
+        ])),
       ]));
 
-  Widget _clipList() =>
+  Widget _clipList(Set<String> unavailable) =>
       Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         const Padding(padding: EdgeInsets.all(16), child: Text('CLIPS')),
         Expanded(
@@ -1194,6 +1207,11 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                       selected: clip.clipId == _selected,
                       dense: true,
                       title: Text('Track ${clip.trackId}', maxLines: 1),
+                      trailing: unavailable.contains(clip.queueItemId)
+                          ? const Tooltip(
+                              message: 'Audio unavailable',
+                              child: Icon(Icons.volume_off_outlined))
+                          : null,
                       subtitle: Text(
                           '${clip.clipId} · ${clip.timelineStartMs} ms',
                           maxLines: 1,

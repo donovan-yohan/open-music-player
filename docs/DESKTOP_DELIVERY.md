@@ -86,6 +86,8 @@ stack up to four clips at the same time. A fifth overlap is rejected without
 dropping a clip; clips can still follow one another across the timeline.
 
 Choose **Play mix** to audition the draft and click its time ruler to seek.
+If a clip's stored audio is missing when the mix loads, the editor marks it
+unavailable and plays its time range as silence without moving the other clips.
 After changing placement or trims, pause and play again to audition the changed
 arrangement; structural edits are not applied to the playing audio. **Save**
 writes a new revision, and **Saved mixes** reopens it.

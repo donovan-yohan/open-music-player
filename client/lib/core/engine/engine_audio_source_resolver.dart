@@ -61,9 +61,15 @@ abstract class EngineAudioSourceResolver {
 }
 
 class DirectEngineAudioSourceResolver implements EngineAudioSourceResolver {
-  const DirectEngineAudioSourceResolver({this.acquireLocal});
+  const DirectEngineAudioSourceResolver({
+    this.acquireLocal,
+    this.signedAudioUrlService,
+    this.now = DateTime.now,
+  });
 
   final Future<PlaybackCacheLease?> Function(String path)? acquireLocal;
+  final SignedAudioUrlService? signedAudioUrlService;
+  final DateTime Function() now;
 
   @override
   Future<ResolvedAudioSource> resolve(MixClip clip) async {
@@ -76,6 +82,18 @@ class DirectEngineAudioSourceResolver implements EngineAudioSourceResolver {
       final localUri = uri.hasScheme ? uri : Uri.file(uri.path);
       final lease = await acquireLocal?.call(localUri.toFilePath());
       return ResolvedAudioSource.local(localUri, onRelease: lease?.release);
+    }
+    final expiry = clip.audioSourceExpiresAt;
+    final signer = signedAudioUrlService;
+    // A later occurrence may not get a voice until long after queue entry.
+    // Resolve its URL here, without rebuilding or moving the timeline.
+    if (expiry != null && !now().isBefore(expiry) && signer != null) {
+      final trackId = int.tryParse(clip.trackId);
+      if (trackId != null && trackId > 0) {
+        final descriptor = await signer.requireDescriptor(trackId);
+        return ResolvedAudioSource.remote(
+            Uri.parse(descriptor.url), descriptor);
+      }
     }
     return ResolvedAudioSource.remote(uri, null);
   }

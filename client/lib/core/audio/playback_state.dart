@@ -766,7 +766,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         final items = prepared
             ? await _preparedMediaItems(tracks)
             : await _sourceResolver.resolveQueue(tracks,
-                startIndex: startIndex);
+                startIndex: startIndex, keepUnavailableClips: true);
         if (!_isCurrentPlayRequest(generation)) return;
         final session = MixSession.fromMixPlan(plan: plan, queue: items);
         await _queueController.setQueue(
@@ -811,6 +811,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     _validateMixPlanOrder(tracks, plan);
 
     _cancelContinuation();
+    _transportCommandGeneration++;
     final generation = ++_playRequestGeneration;
     await accountRetirement;
     if (!_isCurrentPlayRequest(generation)) return;
@@ -864,6 +865,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     final snapshot = _mixPreview;
     if (snapshot == null) return;
     _mixPreview = null;
+    _transportCommandGeneration++;
     final generation = ++_playRequestGeneration;
 
     await _queueController.pause();
@@ -1246,54 +1248,72 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   Future<void> play() async {
     _cancelContinuation();
     final commandGeneration = ++_transportCommandGeneration;
+    bool stillCurrent() => commandGeneration == _transportCommandGeneration;
     await accountRetirement;
-    if (commandGeneration != _transportCommandGeneration) return;
-    await _refreshSignedUrls(commandGeneration);
-    if (commandGeneration != _transportCommandGeneration) return;
+    if (!stillCurrent()) return;
     try {
+      await _refreshSignedUrls(commandGeneration);
+      if (!stillCurrent()) return;
       if (!_queueController.engine.usesNativeBackend &&
           _queueController.hasUnsupportedStemEdits) {
         final model = _queueController.engine.model;
         final position = _queueController.engine.positionMs;
         await _queueController.engine.selectPreparedBackend();
         await _queueController.engine.loadPreparedMixAt(model, position);
-        if (commandGeneration != _transportCommandGeneration) return;
+        if (!stillCurrent()) return;
       }
-      await _queueController.play();
+      await _queueController.play(guard: stillCurrent);
     } catch (error) {
       if (!_isRecoverableObjectUrlFailure(error)) rethrow;
-      if (commandGeneration != _transportCommandGeneration) return;
-      await _refreshSignedUrls(commandGeneration, forceCurrent: true);
-      if (commandGeneration != _transportCommandGeneration) return;
-      await _queueController.play();
+      if (!stillCurrent()) return;
+      await _refreshSignedUrls(commandGeneration, force: true);
+      if (!stillCurrent()) return;
+      await _queueController.play(guard: stillCurrent);
     }
   }
 
   Future<void> _refreshSignedUrls(int commandGeneration,
-      {bool forceCurrent = false}) async {
+      {bool force = false}) async {
     final index = currentIndex;
     final currentQueue = queue;
-    // Saved arrangements disable queue continuation and can seek or overlap
-    // outside the current occurrence. Renew their later sources before resuming.
+    final engine = _queueController.engine;
     final isArrangement = !_queueController.session.continuationAllowed;
+    // Resume only depends on clips at the playhead. Future clips refresh when
+    // their voices load and must not block a playable opening section.
+    final arrangementItems = isArrangement
+        ? engine.model
+            .activeClipsAt(engine.positionMs)
+            .map((clip) => clip.queueItemId)
+            .whereType<String>()
+            .toSet()
+        : const <String>{};
     final remoteItems = <int, int>{};
     final refreshIds = <int>{};
-    final candidates = isArrangement
-        ? currentQueue.asMap().keys
-        : [
-            if (index != null && index >= 0 && index < currentQueue.length)
-              index
-          ];
+    final candidates = <int>{
+      if (arrangementItems.isNotEmpty)
+        for (final cue in snapshot.cues)
+          if (arrangementItems.contains(cue.queueItemId)) cue.queueIndex
+    };
+    if (candidates.isEmpty &&
+        (!isArrangement || engine.positionMs >= engine.durationMs) &&
+        index != null &&
+        index >= 0 &&
+        index < currentQueue.length) {
+      candidates.add(index);
+    }
     for (final i in candidates) {
       final item = currentQueue[i];
-      if (localArtifactPath(item) != null) continue;
+      if (localArtifactPath(item) != null ||
+          item.extras?['audioUnavailable'] == true) {
+        continue;
+      }
       final trackId = int.tryParse(item.id);
       if (trackId == null || trackId <= 0) continue;
       final expiry = item.extras?['expiresAt'];
       final parsed = expiry is String ? DateTime.tryParse(expiry) : null;
-      if (parsed == null && !(forceCurrent && i == index)) continue;
+      if (parsed == null && !force) continue;
       remoteItems[i] = trackId;
-      if ((forceCurrent && i == index) ||
+      if (force ||
           (parsed != null &&
               SignedAudioDescriptor(
                 trackId: trackId,

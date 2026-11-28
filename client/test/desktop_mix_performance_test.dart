@@ -13,6 +13,7 @@ import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/engine/engine_audio_source_resolver.dart';
 import 'package:open_music_player/core/engine/native_playback_backend.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
 import 'package:open_music_player/core/stems/prepared_stem_manifest.dart';
@@ -54,6 +55,7 @@ class PerformanceOwner extends ChangeNotifier implements PlaybackState {
   int generation = 0;
   int revision = 0;
   int captureOffset = 0;
+  final unavailableTracks = <String>{};
   StemGainAcknowledgement Function(StemGainAcknowledgement)? rewriteAck;
   Completer<void>? metadataGate;
   final Map<String, Map<String, double>> overrides = {};
@@ -102,7 +104,9 @@ class PerformanceOwner extends ChangeNotifier implements PlaybackState {
             id: clip.trackId,
             title: 'Fixture',
             duration: const Duration(seconds: 11),
-            extras: const {'preparedAudio': true})
+            extras: unavailableTracks.contains(clip.trackId)
+                ? const {'audioUnavailable': true}
+                : const {'preparedAudio': true})
     ];
     final cues = plan == null
         ? <PlaybackCue>[]
@@ -1342,6 +1346,24 @@ void main() {
     expect(fixture.requests, ['GET']);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
+  testWidgets('the editor marks missing audio only for its own mix',
+      (tester) async {
+    final owner = PerformanceOwner()..unavailableTracks.add('42');
+    final fixture = PerformanceFixture(owner);
+    await fixture.mount(tester);
+    final warning = find.text('1 clip has unavailable audio');
+    expect(warning, findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('mix-play')));
+    await tester.pumpAndSettle();
+    expect(warning, findsOneWidget);
+    expect(find.byTooltip('Audio unavailable'), findsOneWidget);
+
+    owner.publish(session: 'unrelated');
+    await tester.pumpAndSettle();
+    expect(warning, findsNothing);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   for (final exitDuringFetch in [false, true]) {
     testWidgets(
         exitDuringFetch
@@ -1361,22 +1383,14 @@ void main() {
         final api = mockQueueApiClient(
             (_) async => http.Response(jsonEncode(server), 200));
         final voices = <FakeVoice>[];
-        final engine = PlaybackEngine(voiceFactory: () {
-          final voice = FakeVoice('v${voices.length}');
-          voices.add(voice);
-          return voice;
-        });
         final releaseAudio = Completer<void>();
         var requests = 0;
-        late DateTime laterClipExpiry;
-        final owner = PlaybackState(engine, signedAudioUrlService:
-            SignedAudioUrlService.withRequester((body) async {
+        final now = DateTime.now().toUtc();
+        final laterClipExpiry = now.add(const Duration(minutes: 5));
+        var signingClock = now;
+        final signer = SignedAudioUrlService.withRequester((body) async {
           requests++;
           if (exitDuringFetch) await releaseAudio.future;
-          final now = DateTime.now().toUtc();
-          if (requests == 1) {
-            laterClipExpiry = now.add(const Duration(seconds: 1));
-          }
           return {
             'urls': [
               for (final id in body['trackIds'] as List)
@@ -1390,7 +1404,16 @@ void main() {
                 },
             ],
           };
-        }));
+        });
+        final engine = PlaybackEngine(
+            resolver: DirectEngineAudioSourceResolver(
+                signedAudioUrlService: signer, now: () => signingClock),
+            voiceFactory: () {
+              final voice = FakeVoice('v${voices.length}');
+              voices.add(voice);
+              return voice;
+            });
+        final owner = PlaybackState(engine, signedAudioUrlService: signer);
         Future<void> pumpUntil(bool Function() condition) async {
           for (var i = 0; i < 100 && !condition(); i++) {
             await Future<void>.delayed(const Duration(milliseconds: 4));
@@ -1440,21 +1463,21 @@ void main() {
           await pumpUntil(() => engine.positionMs == 4000);
           await tester.pump();
           // Only the later, not-yet-sounding clip's initial URL expires.
-          await Future<void>.delayed(
-              laterClipExpiry.difference(DateTime.now()) +
-                  const Duration(milliseconds: 10));
+          signingClock = laterClipExpiry.add(const Duration(seconds: 1));
           await tester.tap(play);
           await pumpUntil(() => owner.snapshot.playing);
           expect(engine.positionMs, greaterThanOrEqualTo(4000));
+          expect(requests, 1, reason: 'resume must not renew a future clip');
           await tester.pump();
           await tester.tapAt(tester.getTopLeft(ruler) + const Offset(420, 12));
           await pumpUntil(
-              () => engine.activeClips.any((clip) => clip.id == 'later'));
+              () => engine.pool.activeVoices['later']?.isPlaying == true);
           final lastLaterLoad = voices
               .expand((voice) => voice.loads)
               .where((uri) => uri.path.startsWith('/42-v'))
               .last;
           expect(lastLaterLoad.path, '/42-v2.mp3');
+          expect(requests, 2);
         } finally {
           await tester.pumpWidget(const SizedBox.shrink());
           owner.dispose();

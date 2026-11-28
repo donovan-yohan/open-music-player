@@ -131,6 +131,7 @@ Future<void> _initializeApplication() async {
         accountIdProvider: currentAccountId),
     resolver: DirectEngineAudioSourceResolver(
       acquireLocal: playbackCacheManager?.acquirePath,
+      signedAudioUrlService: signedAudioUrlService,
     ),
   );
 

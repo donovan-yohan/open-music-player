@@ -988,19 +988,22 @@ class QueueTimelineController {
     _publishQueueState();
   }
 
-  Future<void> play() async {
-    await _enqueueCommand(_play);
+  Future<void> play({bool Function()? guard}) async {
+    await _enqueueCommand(() => _play(guard: guard));
   }
 
-  Future<void> _play() async {
-    if (_queue.isEmpty) return;
+  Future<void> _play({bool Function()? guard}) async {
+    bool stillCurrent() => guard?.call() ?? true;
+    if (_queue.isEmpty || !stillCurrent()) return;
     await start();
+    if (!stillCurrent()) return;
     if (_processingState == ProcessingState.completed) {
       await _skipToIndex(_currentIndex ?? 0);
     }
+    if (!stillCurrent()) return;
     _processingState = ProcessingState.ready;
     _publishPlayerState();
-    await _engine.play();
+    await _engine.playGuarded(stillCurrent: stillCurrent);
   }
 
   Future<void> pause() async {
@@ -1509,7 +1512,8 @@ class QueueTimelineController {
   void _onGlobalPosition(int globalMs) {
     if (_suppressPositionSync || _nativeCandidatePending) return;
     final previousIndex = _currentIndex;
-    if (!_shouldDeferCurrentIndexSync(globalMs)) {
+    if (!_session.continuationAllowed ||
+        !_shouldDeferCurrentIndexSync(globalMs)) {
       _syncCurrentIndexFromGlobal(globalMs);
     }
     _publishPosition(globalMs);
@@ -1955,7 +1959,8 @@ class QueueTimelineController {
     if (_disposed || _queue.isEmpty) return;
     final clip = _clipForCompletion(event);
     if (clip == null || clip.timelineEndMs >= _engine.durationMs) return;
-    if (event.wasSkipped) {
+    if (event.wasSkipped ||
+        (!_session.continuationAllowed && _loopMode != LoopMode.one)) {
       _syncCurrentIndexFromGlobal(_engine.positionMs);
       _publishPosition(_engine.positionMs);
       _publishQueueState(includeQueue: false);
