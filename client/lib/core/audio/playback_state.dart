@@ -433,6 +433,16 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     return _queueController.endTimelineScrub(globalMs);
   }
 
+  Future<void> seekSessionTimeline(PlaybackSnapshot arrangement, int globalMs) {
+    if (snapshot.sessionId != arrangement.sessionId ||
+        !identical(snapshot.cues, arrangement.cues)) {
+      return Future.value();
+    }
+    _cancelContinuation();
+    _transportCommandGeneration++;
+    return _queueController.seekSessionTimeline(arrangement, globalMs);
+  }
+
   PlaybackState(
     PlaybackEngine engine, {
     required SignedAudioUrlService signedAudioUrlService,
@@ -909,13 +919,15 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     required PlaybackContext? context,
   }) async {
     final generation = ++_playRequestGeneration;
+    // Reserve the transport intent synchronously, before an initiating UI
+    // needs to remember which preparation it may cancel on exit.
+    _transportCommandGeneration++;
     await accountRetirement;
     if (!_isCurrentPlayRequest(generation)) return generation;
     // A new listening request owns the session. Dismissing an older preview
     // must not restore the queue that existed before this replacement.
     _mixPreview = null;
     _cancelContinuation();
-    _transportCommandGeneration++;
     _playbackContext = context;
     _playbackError = null;
 
@@ -1236,7 +1248,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     final commandGeneration = ++_transportCommandGeneration;
     await accountRetirement;
     if (commandGeneration != _transportCommandGeneration) return;
-    await _refreshCurrentSignedUrlIfNeeded();
+    await _refreshSignedUrls(commandGeneration);
     if (commandGeneration != _transportCommandGeneration) return;
     try {
       if (!_queueController.engine.usesNativeBackend &&
@@ -1250,50 +1262,79 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       await _queueController.play();
     } catch (error) {
       if (!_isRecoverableObjectUrlFailure(error)) rethrow;
-      await _refreshCurrentSignedUrl(force: true);
+      if (commandGeneration != _transportCommandGeneration) return;
+      await _refreshSignedUrls(commandGeneration, forceCurrent: true);
       if (commandGeneration != _transportCommandGeneration) return;
       await _queueController.play();
     }
   }
 
-  Future<void> _refreshCurrentSignedUrlIfNeeded() async {
-    final item = currentItem;
-    if (item == null) return;
-    // A local-backed item plays from an on-device file and never expires, so it
-    // must never trigger a signed-URL refresh (which would hit the network and,
-    // when offline, mask the real failure).
-    if (localArtifactPath(item) != null) return;
-    final expiresAt = item.extras?['expiresAt'];
-    if (expiresAt is! String) return;
-    final parsed = DateTime.tryParse(expiresAt)?.toUtc();
-    if (parsed == null) return;
-    final descriptor = SignedAudioDescriptor(
-      trackId: int.tryParse(item.id) ?? -1,
-      url: item.extras?['url'] as String? ?? '',
-      expiresAt: parsed,
+  Future<void> _refreshSignedUrls(int commandGeneration,
+      {bool forceCurrent = false}) async {
+    final index = currentIndex;
+    final currentQueue = queue;
+    // Saved arrangements disable queue continuation and can seek or overlap
+    // outside the current occurrence. Renew their later sources before resuming.
+    final isArrangement = !_queueController.session.continuationAllowed;
+    final remoteItems = <int, int>{};
+    final refreshIds = <int>{};
+    final candidates = isArrangement
+        ? currentQueue.asMap().keys
+        : [
+            if (index != null && index >= 0 && index < currentQueue.length)
+              index
+          ];
+    for (final i in candidates) {
+      final item = currentQueue[i];
+      if (localArtifactPath(item) != null) continue;
+      final trackId = int.tryParse(item.id);
+      if (trackId == null || trackId <= 0) continue;
+      final expiry = item.extras?['expiresAt'];
+      final parsed = expiry is String ? DateTime.tryParse(expiry) : null;
+      if (parsed == null && !(forceCurrent && i == index)) continue;
+      remoteItems[i] = trackId;
+      if ((forceCurrent && i == index) ||
+          (parsed != null &&
+              SignedAudioDescriptor(
+                trackId: trackId,
+                url: '',
+                expiresAt: parsed,
+              ).shouldRefreshSoon())) {
+        refreshIds.add(trackId);
+      }
+    }
+    if (refreshIds.isEmpty) return;
+    final accountGeneration = _accountGeneration;
+    bool stillCurrent() =>
+        _isCurrentAccount(accountGeneration) &&
+        commandGeneration == _transportCommandGeneration &&
+        identical(queue, currentQueue) &&
+        currentIndex == index;
+    final Map<int, SignedAudioDescriptor> descriptors;
+    try {
+      descriptors = await _signedAudioUrlService.requireDescriptors(refreshIds);
+    } catch (_) {
+      if (!stillCurrent()) return;
+      rethrow;
+    }
+    if (!stillCurrent()) return;
+    final refreshedQueue = List<MediaItem>.from(currentQueue);
+    for (final entry in remoteItems.entries) {
+      final descriptor = descriptors[entry.value];
+      if (descriptor == null) continue;
+      refreshedQueue[entry.key] =
+          _itemWithSignedUrl(currentQueue[entry.key], descriptor);
+    }
+    await _queueController.setQueue(
+      refreshedQueue,
+      preserveCurrentTransport: true,
+      preserveTimelineEdits: true,
+      guard: stillCurrent,
     );
-    if (!descriptor.shouldRefreshSoon()) return;
-    await _refreshCurrentSignedUrl(force: true);
   }
 
-  Future<void> _refreshCurrentSignedUrl({bool force = false}) async {
-    final index = currentIndex;
-    final item = currentItem;
-    final currentQueue = queue;
-    if (index == null ||
-        item == null ||
-        index < 0 ||
-        index >= currentQueue.length) {
-      return;
-    }
-    if (localArtifactPath(item) != null) return;
-    final trackId = int.tryParse(item.id);
-    if (trackId == null || trackId <= 0) return;
-    if (!force) return;
-
-    final accountGeneration = _accountGeneration;
-    final descriptor = await _signedAudioUrlService.requireDescriptor(trackId);
-    if (!_isCurrentAccount(accountGeneration)) return;
+  MediaItem _itemWithSignedUrl(
+      MediaItem item, SignedAudioDescriptor descriptor) {
     final extras = Map<String, dynamic>.from(item.extras ?? const {});
     extras['url'] = descriptor.url;
     extras['expiresAt'] = descriptor.expiresAt.toIso8601String();
@@ -1322,13 +1363,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       extras['storageKeyVersion'] = descriptor.storageKeyVersion;
     }
 
-    final refreshedQueue = List<MediaItem>.from(currentQueue);
-    refreshedQueue[index] = item.copyWith(extras: extras);
-    await _queueController.setQueue(
-      refreshedQueue,
-      preserveCurrentTransport: true,
-      preserveTimelineEdits: true,
-    );
+    return item.copyWith(extras: extras);
   }
 
   Future<void> refreshTrackAnalysis(

@@ -27,6 +27,7 @@ import '../../shared/widgets/download_button.dart';
 import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/track_tile.dart';
+import 'mix/desktop_mix_editor_screen.dart' show desktopMixEditorEligible;
 import 'mix/mix_models.dart';
 import 'mix/mix_presets.dart';
 import 'mix/mix_transition_editor.dart';
@@ -135,6 +136,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   PlaylistSelection _selection = const PlaylistSelection();
   bool _mixEnabled = false;
   bool _isMixLoading = false;
+  bool _creatingTimeline = false;
   AutoMixResult? _mixPlan;
 
   /// True while the blended list is scrolling fast; seam connectors collapse
@@ -189,6 +191,67 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     _seamExpandTimer?.cancel();
     _fastScrolling.dispose();
     super.dispose();
+  }
+
+  Future<void> _createTimeline() async {
+    final playlist = _playlist;
+    final tracks = playlist?.tracks;
+    if (_creatingTimeline ||
+        playlist == null ||
+        tracks == null ||
+        tracks.isEmpty) {
+      return;
+    }
+    final route = ModalRoute.of(context);
+    final router = GoRouter.of(context);
+    final origin = router.routerDelegate.currentConfiguration;
+    bool stillAtOrigin() =>
+        mounted &&
+        route?.isCurrent == true &&
+        identical(router.routerDelegate.currentConfiguration, origin);
+    final messenger = ScaffoldMessenger.of(context);
+    final clips = <MixPlanClip>[];
+    var cursorMs = 0;
+    for (final track in tracks) {
+      final duration = track.durationMs;
+      if (duration == null || duration <= 0) {
+        messenger.showSnackBar(AppSnackBar(
+          content:
+              Text('Cannot create a timeline: ${track.title} has no duration.'),
+        ));
+        return;
+      }
+      // The IDs are document-local. Distinguish occurrences of the same track.
+      final occurrence = clips.length + 1;
+      clips.add(MixPlanClip(
+        clipId: 'clip-$occurrence',
+        queueItemId: 'queue-$occurrence',
+        trackId: track.id.toString(),
+        sourceStartMs: 0,
+        sourceEndMs: duration,
+        timelineStartMs: cursorMs,
+      ));
+      cursorMs += duration;
+    }
+
+    setState(() => _creatingTimeline = true);
+    try {
+      final plan = await context.read<ApiClient>().createMixPlan(
+            name: playlist.name,
+            clips: clips,
+          );
+      if (!stillAtOrigin()) return;
+      // The editor reads the saved plan back by ID. The playlist is untouched.
+      unawaited(router.push('/mixes/${Uri.encodeComponent(plan.id)}'));
+    } catch (_) {
+      if (stillAtOrigin()) {
+        messenger.showSnackBar(const AppSnackBar(
+          content: Text('Could not create a timeline mix. Try again.'),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _creatingTimeline = false);
+    }
   }
 
   /// Toggles the blended view. Turning it on calls POST /auto-mix and keeps
@@ -1141,6 +1204,19 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         ),
         PopupMenuButton(
           itemBuilder: (context) => [
+            if (desktopMixEditorEligible(context) &&
+                (_playlist?.tracks?.isNotEmpty ?? false))
+              PopupMenuItem(
+                value: 'timeline',
+                enabled: !_creatingTimeline,
+                child: ListTile(
+                  leading: const Icon(Icons.view_timeline_outlined),
+                  title: Text(_creatingTimeline
+                      ? 'Creating timeline…'
+                      : 'Create timeline mix'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
             const PopupMenuItem(
               value: 'select',
               child: ListTile(
@@ -1167,6 +1243,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             ),
           ],
           onSelected: (value) {
+            if (value == 'timeline') unawaited(_createTimeline());
             if (value == 'select') _toggleSelectMode();
             if (value == 'edit') _showEditDialog();
             if (value == 'delete') _showDeleteConfirmation();

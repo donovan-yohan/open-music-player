@@ -54,6 +54,83 @@ void main() {
       expect(harness.controller.snapshot.sessionId, 'session_2');
     });
 
+    test('global seek cannot cross a queued replacement of the same mix ID',
+        () async {
+      final harness = _Harness();
+      addTearDown(harness.dispose);
+      final controller = harness.controller;
+      final items = [_item('first'), _item('second')];
+      final session = _sessionWithStarts(items, [0, 5000]);
+      await controller.setQueue(items, session: session, initialIndex: 1);
+      await controller.seekSessionTimeline(controller.snapshot, 2000);
+      expect(harness.engine.positionMs, 2000);
+      final shown = controller.snapshot;
+      final replacing = controller.setQueue(items, session: session);
+      final seek = controller.seekSessionTimeline(shown, 7500);
+      await Future.wait([replacing, seek]);
+      expect(harness.engine.positionMs, 0);
+    });
+
+    test('global seek cannot cross an in-place placement edit', () async {
+      final harness = _Harness();
+      addTearDown(harness.dispose);
+      final controller = harness.controller;
+      final items = [_item('first'), _item('second')];
+      final session = _sessionWithStarts(items, [0, 5000]);
+      await controller.setQueue(items, session: session);
+      final shown = controller.snapshot;
+      final moving =
+          controller.setTimelineStartMs(1, 6500, snapToDownbeat: false);
+      final seek = controller.seekSessionTimeline(shown, 7500);
+      await Future.wait([moving, seek]);
+      expect(controller.snapshot.cues[1].timelineStart.inMilliseconds, 6500);
+      expect(harness.engine.positionMs, 0);
+    });
+
+    test('global seek cannot use a placement still loading in the voices',
+        () async {
+      final barrier = _PauseBarrier();
+      final harness =
+          _Harness(voiceFactory: () => _PauseBarrierVoice('v', barrier));
+      addTearDown(harness.dispose);
+      final controller = harness.controller;
+      final items = [_item('first'), _item('second')];
+      final session = _sessionWithStarts(items, [0, 5000]);
+      await controller.setQueue(items, session: session);
+      await controller.play();
+      final shown = controller.snapshot;
+      barrier.arm();
+      final moving =
+          controller.setTimelineStartMs(0, 1000, snapToDownbeat: false);
+      try {
+        await barrier.entered.timeout(const Duration(seconds: 2));
+        final seek = controller.seekSessionTimeline(shown, 7500);
+        barrier.release();
+        await Future.wait([moving, seek]);
+        expect(harness.engine.positionMs, 1000);
+      } finally {
+        barrier.release();
+      }
+    });
+
+    test('last queue row finishing early does not complete the arrangement',
+        () async {
+      final harness = _Harness();
+      addTearDown(harness.dispose);
+      final controller = harness.controller;
+      final items = [_item('later'), _item('earlier')];
+      await controller.setQueue(items,
+          initialIndex: 1, session: _sessionWithStarts(items, [5000, 0]));
+      await controller.play();
+      harness.advance(const Duration(milliseconds: 6000));
+      await Future<void>.delayed(Duration.zero);
+      await controller.pause();
+      expect(controller.snapshot.processingState, ProcessingState.ready);
+      expect(controller.snapshot.currentQueueIndex, 0);
+      await controller.play();
+      expect(harness.engine.positionMs, 6000);
+    });
+
     test('fifth-overlap edit fails explicitly and retains all four instances',
         () async {
       final harness = _Harness();
