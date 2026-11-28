@@ -63,6 +63,42 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  testWidgets('fit reveals sequential clips; four overlap on distinct lanes',
+      (tester) async {
+    await mount(tester, clips: [
+      for (var i = 0; i < 5; i++) clipJson(id: 'c$i', start: i * 10000),
+    ]);
+    Finder clip(int i) => find.byKey(ValueKey('mix-clip-c$i'));
+    await tester.tap(find.byTooltip('Fit arrangement'));
+    await tester.pumpAndSettle();
+    expect(clip(4).hitTestable(), findsOneWidget);
+
+    Future<void> placeAtStart(int i) async {
+      await tester.tap(clip(i));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.byKey(const ValueKey('mix-field-placement')), '0');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+    }
+
+    for (var i = 1; i < 4; i++) {
+      await placeAtStart(i);
+    }
+    final overlap = [for (var i = 0; i < 4; i++) tester.getTopLeft(clip(i))];
+    expect(overlap.map((p) => p.dx).toSet(), hasLength(1));
+    expect(overlap.map((p) => p.dy).toSet(), hasLength(4));
+    final fifthX = tester.getTopLeft(clip(4)).dx;
+    await placeAtStart(4);
+    expect(
+        find.textContaining('At most four clips can overlap'), findsOneWidget);
+    expect(tester.getTopLeft(clip(4)).dx, fifthX);
+    await tester.tap(find.byKey(const ValueKey('mix-save')));
+    await tester.pumpAndSettle();
+    expect(find.text('Version 4'), findsOneWidget);
+    expect(find.text('Saved'), findsOneWidget);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   testWidgets('E2 accepted mouse drag PointerCancel rolls back without history',
       (tester) async {
     final server =

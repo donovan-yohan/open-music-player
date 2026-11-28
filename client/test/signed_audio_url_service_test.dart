@@ -1,8 +1,55 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
+import 'package:open_music_player/core/storage/secure_storage.dart';
+
+import 'connect_auth_scope_test.dart' show MemoryTokens, Wire, client, reply;
 
 void main() {
   group('SignedAudioUrlService', () {
+    test('remaining descriptor batches cannot cross an account change',
+        () async {
+      final storage = SecureStorage(tokenStorage: MemoryTokens());
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      final authorizations = <Object?>[];
+      final wire = Wire((request) async {
+        authorizations.add(request.headers['Authorization']);
+        if (authorizations.length == 1) {
+          entered.complete();
+          await release.future;
+        }
+        final body = request.data as Map<String, dynamic>;
+        return reply({
+          'urls': [
+            for (final id in body['trackIds'] as List<int>)
+              {
+                'trackId': id,
+                'url': 'https://objects.example/$id.mp3',
+                'expiresAt': DateTime.now()
+                    .add(const Duration(minutes: 5))
+                    .toIso8601String(),
+              },
+          ],
+        });
+      });
+      final service = SignedAudioUrlService(client(storage, wire));
+      final pending =
+          service.requireDescriptors(List.generate(51, (i) => i + 1));
+      final result =
+          pending.then<Object>((value) => value, onError: (Object e) => e);
+      try {
+        await entered.future.timeout(const Duration(seconds: 2));
+        await storage.saveTokens(
+            accessToken: 'new', refreshToken: 'new-refresh');
+      } finally {
+        release.complete();
+      }
+      expect(await result, isA<SignedAudioUrlException>());
+      expect(authorizations, ['Bearer old']);
+    });
+
     test(
       'requests signed playback descriptors with normalized track IDs',
       () async {

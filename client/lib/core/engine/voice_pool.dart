@@ -1153,7 +1153,9 @@ class VoicePool {
     final protect =
         _activeClips.values.map((clip) => clip.audioSourceRef).toSet();
     for (final clip in _model.clips) {
-      if (clip.timelineStartMs < globalMs || clip.timelineStartMs > end) {
+      if (clip.audioUnavailable ||
+          clip.timelineStartMs < globalMs ||
+          clip.timelineStartMs > end) {
         continue;
       }
       if (activeRefs.contains(clip.id)) continue;

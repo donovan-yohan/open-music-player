@@ -27,6 +27,10 @@ Uri audioSourceUriForItem(MediaItem item) {
     return Uri.file(localPath);
   }
   final url = item.extras?['url'];
+  if (item.extras?['audioUnavailable'] == true) {
+    // Authored clip still occupies time, but the engine will not load a voice.
+    return Uri(scheme: 'soundq-unavailable', path: item.id);
+  }
   if (url is! String || url.trim().isEmpty) {
     throw StateError(
       'Missing audio source for media item ${item.id}; '

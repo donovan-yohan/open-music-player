@@ -54,6 +54,7 @@ class PlaybackSourceResolver {
   Future<List<MediaItem>> resolveQueue(
     List<Map<String, dynamic>> tracks, {
     int startIndex = 0,
+    bool keepUnavailableClips = false,
   }) async {
     final likedAccountId = await _accountIdProvider?.call();
     final trackIds = tracks.map(readTrackId).toList();
@@ -82,7 +83,14 @@ class PlaybackSourceResolver {
 
     Map<int, SignedAudioDescriptor> descriptors = const {};
     if (remoteIds.isNotEmpty) {
-      descriptors = await _signedAudioUrlService.requireDescriptors(remoteIds);
+      descriptors = keepUnavailableClips
+          ? await _signedAudioUrlService.availableDescriptors(remoteIds)
+          : await _signedAudioUrlService.requireDescriptors(remoteIds);
+      if (keepUnavailableClips && descriptors.isEmpty && localPaths.isEmpty) {
+        throw const SignedAudioUrlException(
+            code: 'AUDIO_UNAVAILABLE',
+            message: 'None of the arrangement clips have available audio.');
+      }
     }
 
     // Cache layer (only for tracks without an explicit download, which already
@@ -110,6 +118,13 @@ class PlaybackSourceResolver {
     for (var i = 0; i < tracks.length; i++) {
       final track = tracks[i];
       final id = trackIds[i];
+      if (keepUnavailableClips &&
+          !localPaths.containsKey(id) &&
+          !descriptors.containsKey(id)) {
+        items.add(
+            _mediaItem(track, id, {'audioUnavailable': true}, likedAccountId));
+        continue;
+      }
       final resolution =
           await resolveAudioSourceByPolicy<SignedAudioDescriptor>(
         downloadPath: () => localPaths[id],

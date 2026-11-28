@@ -661,6 +661,7 @@ void main() {
 
     test('paused current queue occurrence refreshes an expired signed URL',
         () async {
+      SharedPreferences.setMockInitialValues({});
       var descriptorCalls = 0;
       final playback = _playbackState(
         signedAudioUrlService:
@@ -1049,7 +1050,32 @@ void main() {
       playback.dispose();
     });
 
-    test('signed URL refresh preserves active local position', () async {
+    test('late signed URL refresh cannot replace a newer queue', () async {
+      SharedPreferences.setMockInitialValues({});
+      final signed = _DelayedSignedRequester();
+      final playback = _playbackState(signedAudioUrlService: signed.service);
+      addTearDown(playback.dispose);
+      final first = playback.playQueue([_track(1, seconds: 60)]);
+      await signed.waitForRequestCount(1);
+      signed.completeRequest(0,
+          expiresAt: DateTime.now().toUtc().add(const Duration(seconds: 30)));
+      await first;
+      await playback.pause();
+      final resuming = playback.play();
+      await signed.waitForRequestCount(2);
+      final replacement = playback.playQueue([_track(2, seconds: 60)]);
+      await signed.waitForRequestCount(3);
+      signed.completeRequest(2);
+      await replacement;
+      final replacementId = playback.snapshot.sessionId;
+      signed.completeRequest(1);
+      await resuming;
+      expect(playback.snapshot.sessionId, replacementId);
+      expect(playback.queue.single.id, '2');
+    });
+
+    test('signed URL refresh preserves active local position and session ID',
+        () async {
       SharedPreferences.setMockInitialValues({});
       var descriptorCalls = 0;
       final playback = _playbackState(
@@ -1078,12 +1104,14 @@ void main() {
       );
 
       await playback.playQueue([_track(1, seconds: 60)]);
+      final sessionId = playback.snapshot.sessionId;
       await playback.seek(const Duration(seconds: 15));
       await playback.play();
       await Future<void>.delayed(Duration.zero);
 
       expect(descriptorCalls, 2);
       expect(playback.position, const Duration(seconds: 15));
+      expect(playback.snapshot.sessionId, sessionId);
       expect(
         playback.currentItem?.extras?['url'],
         'https://example.com/1-v2.mp3',

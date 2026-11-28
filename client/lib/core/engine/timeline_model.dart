@@ -13,6 +13,8 @@ class MixClip {
   final TimelineClip placement;
   final GainEnvelope envelope;
   final String audioSourceRef;
+  final DateTime? audioSourceExpiresAt;
+  final bool audioUnavailable;
   final String? queueItemId;
   final double playbackRate;
   final String pitchMode;
@@ -26,6 +28,8 @@ class MixClip {
     required this.placement,
     this.envelope = const GainEnvelope.flat(),
     String? audioSourceRef,
+    this.audioSourceExpiresAt,
+    this.audioUnavailable = false,
     this.queueItemId,
     double playbackRate = 1,
     this.pitchMode = 'preserve',
@@ -136,6 +140,8 @@ class MixClip {
         placement: placement,
         envelope: envelope,
         audioSourceRef: audioSourceRef,
+        audioSourceExpiresAt: audioSourceExpiresAt,
+        audioUnavailable: audioUnavailable,
         queueItemId: queueItemId,
         playbackRate: playbackRate,
         pitchMode: pitchMode,
@@ -149,6 +155,8 @@ class MixClip {
         placement: placement,
         envelope: nextEnvelope,
         audioSourceRef: audioSourceRef,
+        audioSourceExpiresAt: audioSourceExpiresAt,
+        audioUnavailable: audioUnavailable,
         queueItemId: queueItemId,
         playbackRate: playbackRate,
         pitchMode: pitchMode,
@@ -164,6 +172,8 @@ class MixClip {
       other.placement == placement &&
       other.envelope == envelope &&
       other.audioSourceRef == audioSourceRef &&
+      other.audioSourceExpiresAt == audioSourceExpiresAt &&
+      other.audioUnavailable == audioUnavailable &&
       other.queueItemId == queueItemId &&
       other.playbackRate == playbackRate &&
       other.pitchMode == pitchMode &&
@@ -177,6 +187,8 @@ class MixClip {
         placement,
         envelope,
         audioSourceRef,
+        audioSourceExpiresAt,
+        audioUnavailable,
         queueItemId,
         playbackRate,
         pitchMode,
@@ -448,11 +460,13 @@ class TimelineModel {
 
   bool get isSingleClip => clips.length == 1;
 
+  /// Unavailable media retains its authored timing but doesn't get a voice.
   List<MixClip> activeClipsAt(int timelineMs) => clips
-      .where((clip) => clip.isActiveAt(timelineMs))
+      .where((clip) => !clip.audioUnavailable && clip.isActiveAt(timelineMs))
       .toList(growable: false);
 
-  int overlapDepthAt(int timelineMs) => activeClipsAt(timelineMs).length;
+  int overlapDepthAt(int timelineMs) =>
+      clips.where((clip) => clip.isActiveAt(timelineMs)).length;
 
   MixClip? dominantClipAt(int timelineMs) {
     final active = activeClipsAt(timelineMs);

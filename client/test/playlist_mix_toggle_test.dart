@@ -1,13 +1,19 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/services/playlist_service.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
+import 'package:open_music_player/features/playlists/mix/desktop_mix_editor_screen.dart';
 import 'package:open_music_player/features/playlists/mix/mix_models.dart';
 import 'package:open_music_player/features/playlists/mixed_playlist_view.dart';
 import 'package:open_music_player/features/playlists/playlist_detail_screen.dart';
@@ -15,6 +21,8 @@ import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/shared/models/models.dart';
 import 'package:provider/provider.dart';
+
+import 'support/mock_dio_client.dart';
 
 Track _track(
   int id, {
@@ -253,6 +261,95 @@ void main() {
     );
     expect(trimmedPreset.preset, 'Blend');
   });
+
+  for (final leaveDuringCreate in [false, true]) {
+    testWidgets(
+        leaveDuringCreate
+            ? 'late timeline create does not open over a root route'
+            : 'desktop creates a separate timeline and Back returns to its playlist',
+        (tester) async {
+      tester.view.physicalSize = const Size(1440, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final service = _StubPlaylistService(
+        tracks: [
+          for (final id in [1, 2, 1, 3, 4]) _track(id)
+        ],
+      );
+      final calls = <String>[];
+      Map<String, dynamic>? submitted;
+      final releaseCreate = Completer<void>();
+      final api = mockQueueApiClient((request) async {
+        calls.add('${request.method} ${request.url.pathSegments.last}');
+        if (request.method == 'POST') {
+          submitted = jsonDecode(request.body) as Map<String, dynamic>;
+          if (leaveDuringCreate) await releaseCreate.future;
+        }
+        final clips = submitted!['clips'] as List<dynamic>;
+        final server = _mixPlanJson([1, 2, 1, 3, 4])
+          ..['name'] = submitted!['name']
+          ..['clips'] = clips;
+        return http.Response(jsonEncode(server), 200);
+      });
+      final router = GoRouter(initialLocation: '/playlist', routes: [
+        ShellRoute(builder: (_, __, child) => child, routes: [
+          GoRoute(
+              path: '/playlist',
+              builder: (_, __) => PlaylistDetailScreen(
+                  playlistId: 7, playlistService: service)),
+        ]),
+        GoRoute(
+            path: '/mixes',
+            builder: (_, __) => const Scaffold(body: Text('Other screen'))),
+        GoRoute(
+          path: '/mixes/:id',
+          builder: (_, state) =>
+              DesktopMixEditorScreen(planId: state.pathParameters['id']!),
+        ),
+      ]);
+      addTearDown(router.dispose);
+      await tester.pumpWidget(MultiProvider(
+        providers: [
+          Provider<ApiClient>.value(value: api),
+          ListenableProvider<PlaybackState>.value(value: _FakePlayback()),
+        ],
+        child: MaterialApp.router(routerConfig: router),
+      ));
+      await tester.pumpAndSettle();
+      expect(calls, isEmpty);
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Create timeline mix'));
+      await tester.pumpAndSettle();
+      if (leaveDuringCreate) {
+        expect(calls, ['POST mix-plans']);
+        unawaited(router.push('/mixes'));
+        await tester.pumpAndSettle();
+        expect(find.text('Other screen'), findsOneWidget);
+        releaseCreate.complete();
+        await tester.pumpAndSettle();
+        expect(find.text('Other screen'), findsOneWidget);
+        expect(find.byType(DesktopMixEditorScreen), findsNothing);
+        expect(calls, ['POST mix-plans']);
+        return;
+      }
+      expect(calls, ['POST mix-plans', 'GET plan-1']);
+      expect(find.byType(DesktopMixEditorScreen), findsOneWidget);
+      expect(find.text('5 clips'), findsOneWidget);
+      expect(submitted!['name'], 'Mix');
+      final clips = submitted!['clips'] as List<dynamic>;
+      expect(clips.map((clip) => clip['trackId']), [1, 2, 1, 3, 4]);
+      expect(clips.map((clip) => clip['clipId']).toSet(), hasLength(5));
+      expect(clips.map((clip) => clip['queueItemId']).toSet(), hasLength(5));
+      expect(clips.map((clip) => clip['timelineStartMs']),
+          [0, 200000, 400000, 600000, 800000]);
+      expect(service.autoMixCalls, 0);
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      expect(find.byType(PlaylistDetailScreen), findsOneWidget);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+  }
 
   testWidgets('mix action is unavailable for zero and one-track playlists',
       (tester) async {

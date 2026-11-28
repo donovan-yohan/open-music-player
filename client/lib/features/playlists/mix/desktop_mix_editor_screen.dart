@@ -6,9 +6,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:just_audio/just_audio.dart' show ProcessingState;
 import 'package:provider/provider.dart';
 
 import '../../../core/api/api_client.dart';
+import '../../../core/audio/playback_session.dart' show PlaybackSnapshot;
 import '../../../core/audio/playback_state.dart';
 import '../../../core/services/stems_service.dart';
 import '../../../core/services/mix_exchange_service.dart';
@@ -621,12 +623,23 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
     setState(() => _preparingAudio = true);
     try {
       DesktopMixEditorDraft.validate(plan, plan.clips);
-      if (_bound && _documentApplied && owner.usesNativePreparedPlayback) {
-        await owner.play();
+      if (_documentApplied &&
+          owner.snapshot.processingState != ProcessingState.completed) {
+        final resuming = owner.play();
+        _preparationTransportGeneration = owner.transportCommandGeneration;
+        await resuming;
       } else {
         if (plan.clips.any((clip) => clip.stemEdits != null) &&
             plan.clips.any((clip) => clip.stemEdits == null)) {
           throw StateError('Prepare stems for every clip before playback.');
+        }
+        // Queue index preserves document identity, not chronological order.
+        var first = 0;
+        for (var i = 1; i < plan.clips.length; i++) {
+          if (plan.clips[i].timelineStartMs <
+              plan.clips[first].timelineStartMs) {
+            first = i;
+          }
         }
         final starting = owner.playMixPlan([
           for (final clip in plan.clips)
@@ -637,7 +650,7 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
               if (clip.stemEdits != null)
                 'sourceFileHash': clip.stemEdits!.sourceFileHash
             }
-        ], plan);
+        ], plan, startIndex: first);
         _preparationTransportGeneration = owner.transportCommandGeneration;
         await starting;
         if (!mounted || generation != _audioGeneration) return;
@@ -665,18 +678,35 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
 
   Future<void> _transport({required bool stop}) async {
     if (!_bound) return;
+    final generation = _audioGeneration;
     _closePerformance(invalidate: true);
     try {
       await (stop ? _playback!.stop() : _playback!.pause());
-      if (stop && mounted) {
+      if (stop && mounted && generation == _audioGeneration) {
         setState(() {
+          _sessionId = null;
+          _applied = const [];
           _stemPreview.clear();
           _overridden.clear();
         });
       }
     } catch (error) {
-      if (mounted) {
+      if (mounted && generation == _audioGeneration) {
         setState(() => _draft!.error = 'Could not update playback. $error');
+      }
+    }
+  }
+
+  Future<void> _seekArrangement(
+      PlaybackSnapshot arrangement, int positionMs) async {
+    if (_preparingAudio || !_arrangementApplied || _dragOrigin != null) return;
+    final owner = _playback!;
+    setState(() => _closePerformance(invalidate: true));
+    try {
+      await owner.seekSessionTimeline(arrangement, positionMs);
+    } catch (error) {
+      if (mounted && _sessionId == arrangement.sessionId && _bound) {
+        setState(() => _draft!.error = 'Could not seek in mix. $error');
       }
     }
   }
@@ -844,7 +874,11 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
     // Router onExit owns its navigation guard. A standalone screen uses PopScope.
     final router = GoRouter.maybeOf(context);
     if (router != null) {
-      router.go('/mixes');
+      if (router.canPop()) {
+        router.pop();
+      } else {
+        router.go('/mixes');
+      }
       return;
     }
     if (!await confirmExit() || !mounted) return;
@@ -948,6 +982,11 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
     final draft = _draft!;
     final narrow = MediaQuery.sizeOf(context).width < 960;
     final hasRouter = GoRouter.maybeOf(context) != null;
+    final unavailable = <String>{
+      if (_bound)
+        for (final cue in _playback!.snapshot.cues)
+          if (cue.audioUnavailable) cue.queueItemId,
+    };
     return PopScope(
         canPop: hasRouter || _allowPop || (!draft.dirty && !draft.saving),
         onPopInvokedWithResult: (didPop, result) {
@@ -1046,6 +1085,10 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                                             : _onAir && _documentApplied
                                                 ? 'On air'
                                                 : 'Edits not applied'),
+                                        if (unavailable.isNotEmpty)
+                                          Text(unavailable.length == 1
+                                              ? '1 clip has unavailable audio'
+                                              : '${unavailable.length} clips have unavailable audio'),
                                         if (_playback != null) ...[
                                           IconButton(
                                               key: const ValueKey('mix-play'),
@@ -1087,7 +1130,12 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                                                 : null,
                                             icon: const Icon(
                                                 Icons.fiber_manual_record)),
-                                        Text('${draft.clips.length} clips'),
+                                        Tooltip(
+                                          message:
+                                              'Up to four clips can play at once',
+                                          child: Text(
+                                              '${draft.clips.length} clips'),
+                                        ),
                                       ])),
                               if (draft.error != null)
                                 Material(
@@ -1106,14 +1154,15 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                                             : null)),
                               Expanded(
                                   child: narrow
-                                      ? _narrowWorkspace()
+                                      ? _narrowWorkspace(unavailable)
                                       : Row(
                                           crossAxisAlignment:
                                               CrossAxisAlignment.stretch,
                                           children: [
                                               SizedBox(
                                                   width: 220,
-                                                  child: _clipList()),
+                                                  child:
+                                                      _clipList(unavailable)),
                                               const VerticalDivider(width: 1),
                                               Expanded(child: _arrangement()),
                                               const VerticalDivider(width: 1),
@@ -1130,7 +1179,7 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                 ))));
   }
 
-  Widget _narrowWorkspace() => DefaultTabController(
+  Widget _narrowWorkspace(Set<String> unavailable) => DefaultTabController(
       length: 3,
       child: Column(children: [
         const TabBar(tabs: [
@@ -1139,11 +1188,14 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
           Tab(text: 'Inspector')
         ]),
         Expanded(
-            child: TabBarView(
-                children: [_arrangement(), _clipList(), _inspector()])),
+            child: TabBarView(children: [
+          _arrangement(),
+          _clipList(unavailable),
+          _inspector()
+        ])),
       ]));
 
-  Widget _clipList() =>
+  Widget _clipList(Set<String> unavailable) =>
       Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         const Padding(padding: EdgeInsets.all(16), child: Text('CLIPS')),
         Expanded(
@@ -1155,6 +1207,11 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                       selected: clip.clipId == _selected,
                       dense: true,
                       title: Text('Track ${clip.trackId}', maxLines: 1),
+                      trailing: unavailable.contains(clip.queueItemId)
+                          ? const Tooltip(
+                              message: 'Audio unavailable',
+                              child: Icon(Icons.volume_off_outlined))
+                          : null,
                       subtitle: Text(
                           '${clip.clipId} · ${clip.timelineStartMs} ms',
                           maxLines: 1,
@@ -1230,9 +1287,13 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
 
     final lanes = _lanes();
     final clips = _draft!.displayClips;
+    final positionOwner = _arrangementApplied ? _playback : null;
+    final arrangement = positionOwner?.snapshot;
     final duration =
         clips.fold<int>(1, (end, clip) => math.max(end, clip.timelineEndMs));
     return LayoutBuilder(builder: (context, constraints) {
+      final fitScale =
+          math.min(.5, math.max(1, constraints.maxWidth - 64) / duration);
       final width =
           math.max(constraints.maxWidth - 48, duration * _scale + 150);
       return Column(children: [
@@ -1243,9 +1304,16 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
               const Tooltip(
                   message: 'No trusted beat grid loaded', child: Text('Free')),
               IconButton(
+                  tooltip: 'Fit arrangement',
+                  onPressed: () {
+                    setState(() => _scale = fitScale);
+                    if (_scroll.hasClients) _scroll.jumpTo(0);
+                  },
+                  icon: const Icon(Icons.fit_screen_outlined)),
+              IconButton(
                   tooltip: 'Zoom out',
-                  onPressed: () =>
-                      setState(() => _scale = math.max(.0001, _scale / 1.5)),
+                  onPressed: () => setState(() => _scale =
+                      math.max(math.min(.0001, fitScale), _scale / 1.5)),
                   icon: const Icon(Icons.zoom_out)),
               IconButton(
                   tooltip: 'Zoom in',
@@ -1302,18 +1370,48 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                                                                   color: Theme.of(
                                                                           context)
                                                                       .dividerColor))))),
-                                            // Time ruler only: these are seconds, never fabricated beats.
-                                            for (var tick = 0;
-                                                tick <= 10;
-                                                tick++)
-                                              Positioned(
-                                                  left:
-                                                      tick * (width - 80) / 10,
-                                                  top: 6,
-                                                  child: Text(
-                                                      '${((tick * (width - 80) / 10) / _scale / 1000).toStringAsFixed(1)}s',
-                                                      style: const TextStyle(
-                                                          fontSize: 11))),
+                                            Positioned(
+                                              left: 0,
+                                              right: 0,
+                                              top: 0,
+                                              height: rulerHeight,
+                                              child: GestureDetector(
+                                                key: const ValueKey(
+                                                    'mix-time-ruler'),
+                                                behavior:
+                                                    HitTestBehavior.opaque,
+                                                onTapUp: arrangement == null
+                                                    ? null
+                                                    : (event) =>
+                                                        _seekArrangement(
+                                                            arrangement,
+                                                            (event.localPosition
+                                                                        .dx /
+                                                                    _scale)
+                                                                .round()
+                                                                .clamp(
+                                                                    0,
+                                                                    duration -
+                                                                        1)),
+                                                child: Stack(children: [
+                                                  // Seconds only; no fabricated beats.
+                                                  for (var tick = 0;
+                                                      tick <= 10;
+                                                      tick++)
+                                                    Positioned(
+                                                      left: tick *
+                                                          (width - 80) /
+                                                          10,
+                                                      top: 6,
+                                                      child: Text(
+                                                        '${(tick * (width - 80) / 10 / _scale / 1000).toStringAsFixed(1)}s',
+                                                        style: const TextStyle(
+                                                            fontSize: 11),
+                                                      ),
+                                                    ),
+                                                ]),
+                                              ),
+                                            ),
                                             for (final clip in clips)
                                               Positioned(
                                                   left: clip.timelineStartMs *
@@ -1406,6 +1504,39 @@ class DesktopMixEditorScreenState extends State<DesktopMixEditorScreen> {
                                                                 }
                                                               },
                                                               child: Material(color: _laneColors[lanes[clip.clipId] ?? 0].withValues(alpha: clip.clipId == _selected ? .35 : .16), shape: RoundedRectangleBorder(side: BorderSide(color: clip.clipId == _selected ? Colors.white : _laneColors[lanes[clip.clipId] ?? 0]), borderRadius: desktop ? BorderRadius.zero : BorderRadius.circular(6)), clipBehavior: Clip.antiAlias, child: InkWell(key: ValueKey('mix-clip-${clip.clipId}'), onTap: () => _select(clip), child: Padding(padding: const EdgeInsets.all(8), child: labels(clip)))))))),
+                                            if (positionOwner != null)
+                                              Positioned.fill(
+                                                child: IgnorePointer(
+                                                  child: StreamBuilder<int>(
+                                                    key: ValueKey(_sessionId),
+                                                    stream: positionOwner
+                                                        .timelinePositionMsStream,
+                                                    builder: (context, sample) {
+                                                      final ms = sample.data ??
+                                                          positionOwner
+                                                              .snapshot
+                                                              .globalPosition
+                                                              .inMilliseconds;
+                                                      return Stack(children: [
+                                                        Positioned(
+                                                          left: ms * _scale,
+                                                          top: 0,
+                                                          bottom: 24,
+                                                          width: 2,
+                                                          child: ColoredBox(
+                                                            key: const ValueKey(
+                                                                'mix-playhead'),
+                                                            color: Theme.of(
+                                                                    context)
+                                                                .colorScheme
+                                                                .primary,
+                                                          ),
+                                                        ),
+                                                      ]);
+                                                    },
+                                                  ),
+                                                ),
+                                              ),
                                           ]))))),
                         ])))),
       ]);

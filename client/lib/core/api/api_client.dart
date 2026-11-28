@@ -32,6 +32,13 @@ class ApiClient {
     return runZoned(action, zoneValues: {_scopeZoneKey: scope});
   }
 
+  /// Keeps follow-up requests on the same account as the first request.
+  Future<T> inCapturedAuthSession<T>(Future<T> Function() action) {
+    final scope = Zone.current[_scopeZoneKey] as AuthSessionScope? ??
+        captureAuthSession();
+    return inAuthSession(scope, action);
+  }
+
   Future<Response<T>> sessionRequest<T>(AuthSessionScope scope, String path,
       {required String method, Object? data, CancelToken? cancelToken}) async {
     final wire = _WireLifetime();

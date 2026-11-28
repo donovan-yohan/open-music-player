@@ -13,6 +13,7 @@ import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/engine/engine_audio_source_resolver.dart';
 import 'package:open_music_player/core/engine/native_playback_backend.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
 import 'package:open_music_player/core/stems/prepared_stem_manifest.dart';
@@ -49,10 +50,12 @@ class PerformanceOwner extends ChangeNotifier implements PlaybackState {
   int commands = 0;
   int clears = 0;
   int starts = 0;
+  final timelineSeeks = <int>[];
   int metadataWrites = 0;
   int generation = 0;
   int revision = 0;
   int captureOffset = 0;
+  final unavailableTracks = <String>{};
   StemGainAcknowledgement Function(StemGainAcknowledgement)? rewriteAck;
   Completer<void>? metadataGate;
   final Map<String, Map<String, double>> overrides = {};
@@ -65,6 +68,17 @@ class PerformanceOwner extends ChangeNotifier implements PlaybackState {
   final gains = <double>[];
   @override
   PlaybackSnapshot get snapshot => _snapshot;
+  @override
+  Stream<int> get timelinePositionMsStream => const Stream.empty();
+  @override
+  Future<void> seekSessionTimeline(
+      PlaybackSnapshot arrangement, int globalMs) async {
+    expect(arrangement.sessionId, snapshot.sessionId);
+    timelineSeeks.add(globalMs);
+    sourceMs = globalMs + 1000;
+    publish(playing: snapshot.playing);
+  }
+
   @override
   bool get supportsNativePreparedPlayback => native;
   @override
@@ -90,7 +104,9 @@ class PerformanceOwner extends ChangeNotifier implements PlaybackState {
             id: clip.trackId,
             title: 'Fixture',
             duration: const Duration(seconds: 11),
-            extras: const {'preparedAudio': true})
+            extras: unavailableTracks.contains(clip.trackId)
+                ? const {'audioUnavailable': true}
+                : const {'preparedAudio': true})
     ];
     final cues = plan == null
         ? <PlaybackCue>[]
@@ -1328,5 +1344,176 @@ void main() {
     expect(owner.snapshot.playing, isFalse);
     expect(find.text('On air'), findsNothing);
     expect(fixture.requests, ['GET']);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('the editor marks missing audio only for its own mix',
+      (tester) async {
+    final owner = PerformanceOwner()..unavailableTracks.add('42');
+    final fixture = PerformanceFixture(owner);
+    await fixture.mount(tester);
+    final warning = find.text('1 clip has unavailable audio');
+    expect(warning, findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('mix-play')));
+    await tester.pumpAndSettle();
+    expect(warning, findsOneWidget);
+    expect(find.byTooltip('Audio unavailable'), findsOneWidget);
+
+    owner.publish(session: 'unrelated');
+    await tester.pumpAndSettle();
+    expect(warning, findsNothing);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  for (final exitDuringFetch in [false, true]) {
+    testWidgets(
+        exitDuringFetch
+            ? 'leaving during real signed URL preparation cannot start the mix'
+            : 'ordinary playback starts with four clips and resumes at the ruler seek',
+        (tester) async {
+      tester.view.physicalSize = const Size(1440, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.runAsync(() async {
+        final server = planJson(clips: [
+          clipJson(id: 'later', start: 10000),
+          for (var i = 1; i <= 4; i++)
+            {...clipJson(id: 'early-$i'), 'trackId': 42 + i},
+        ]);
+        final api = mockQueueApiClient(
+            (_) async => http.Response(jsonEncode(server), 200));
+        final voices = <FakeVoice>[];
+        final releaseAudio = Completer<void>();
+        var requests = 0;
+        final now = DateTime.now().toUtc();
+        final laterClipExpiry = now.add(const Duration(minutes: 5));
+        var signingClock = now;
+        final signer = SignedAudioUrlService.withRequester((body) async {
+          requests++;
+          if (exitDuringFetch) await releaseAudio.future;
+          return {
+            'urls': [
+              for (final id in body['trackIds'] as List)
+                {
+                  'trackId': id,
+                  'url': 'https://fixture.invalid/$id-v$requests.mp3',
+                  'expiresAt': (id == 42 && requests == 1
+                          ? laterClipExpiry
+                          : now.add(const Duration(hours: 1)))
+                      .toIso8601String(),
+                },
+            ],
+          };
+        });
+        final engine = PlaybackEngine(
+            resolver: DirectEngineAudioSourceResolver(
+                signedAudioUrlService: signer, now: () => signingClock),
+            voiceFactory: () {
+              final voice = FakeVoice('v${voices.length}');
+              voices.add(voice);
+              return voice;
+            });
+        final owner = PlaybackState(engine, signedAudioUrlService: signer);
+        Future<void> pumpUntil(bool Function() condition) async {
+          for (var i = 0; i < 100 && !condition(); i++) {
+            await Future<void>.delayed(const Duration(milliseconds: 4));
+            await tester.pump(const Duration(milliseconds: 10));
+          }
+          expect(condition(), isTrue);
+        }
+
+        try {
+          await tester.pumpWidget(MultiProvider(
+            providers: [
+              Provider<ApiClient>.value(value: api),
+              ChangeNotifierProvider<PlaybackState>.value(value: owner),
+            ],
+            child: const MaterialApp(
+                home: DesktopMixEditorScreen(planId: 'plan-1')),
+          ));
+          final play = find.byKey(const ValueKey('mix-play'));
+          await pumpUntil(() => play.evaluate().isNotEmpty);
+          await tester.tap(play);
+          if (exitDuringFetch) {
+            await pumpUntil(() => requests > 0);
+            final preparingGeneration = owner.transportCommandGeneration;
+            final editor = tester.state<DesktopMixEditorScreenState>(
+                find.byType(DesktopMixEditorScreen));
+            expect(await editor.confirmExit(), isTrue);
+            await tester.pumpWidget(const SizedBox.shrink());
+            releaseAudio.complete();
+            await Future<void>.delayed(const Duration(milliseconds: 60));
+            expect(owner.snapshot.playing, isFalse);
+            expect(owner.transportCommandGeneration,
+                greaterThan(preparingGeneration));
+            return;
+          }
+          await pumpUntil(() =>
+              engine.activeClips.isNotEmpty &&
+              find.text('On air').evaluate().isNotEmpty);
+          expect(find.text('On air'), findsOneWidget);
+          expect(engine.activeClips.map((clip) => clip.id),
+              unorderedEquals(['early-1', 'early-2', 'early-3', 'early-4']));
+          expect(owner.snapshot.cues, hasLength(5));
+          await tester.tap(find.byKey(const ValueKey('mix-pause')));
+          await pumpUntil(() => !owner.snapshot.playing);
+          await tester.pump();
+          final ruler = find.byKey(const ValueKey('mix-time-ruler'));
+          await tester.tapAt(tester.getTopLeft(ruler) + const Offset(140, 12));
+          await pumpUntil(() => engine.positionMs == 4000);
+          await tester.pump();
+          // Only the later, not-yet-sounding clip's initial URL expires.
+          signingClock = laterClipExpiry.add(const Duration(seconds: 1));
+          await tester.tap(play);
+          await pumpUntil(() => owner.snapshot.playing);
+          expect(engine.positionMs, greaterThanOrEqualTo(4000));
+          expect(requests, 1, reason: 'resume must not renew a future clip');
+          await tester.pump();
+          await tester.tapAt(tester.getTopLeft(ruler) + const Offset(420, 12));
+          await pumpUntil(
+              () => engine.pool.activeVoices['later']?.isPlaying == true);
+          final lastLaterLoad = voices
+              .expand((voice) => voice.loads)
+              .where((uri) => uri.path.startsWith('/42-v'))
+              .last;
+          expect(lastLaterLoad.path, '/42-v2.mp3');
+          expect(requests, 2);
+        } finally {
+          await tester.pumpWidget(const SizedBox.shrink());
+          owner.dispose();
+          await engine.dispose();
+        }
+      });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+  }
+
+  testWidgets('ruler seeks the loaded arrangement on its global clock',
+      (tester) async {
+    final owner = PerformanceOwner();
+    final fixture = PerformanceFixture(owner);
+    await fixture.mount(tester);
+    final ruler = find.byKey(const ValueKey('mix-time-ruler'));
+    final playhead = find.byKey(const ValueKey('mix-playhead'));
+    expect(playhead, findsNothing);
+    final target = tester.getTopLeft(ruler) + const Offset(140, 12);
+    await tester.tapAt(target);
+    await tester.pumpAndSettle();
+    expect(owner.starts, 0);
+    expect(owner.timelineSeeks, isEmpty);
+
+    await tester.tap(find.byKey(const ValueKey('mix-play')));
+    await tester.pumpAndSettle();
+    expect(playhead, findsOneWidget);
+    await tester.tapAt(target);
+    await tester.pumpAndSettle();
+    expect(owner.timelineSeeks, [4000]);
+    expect(tester.getTopLeft(playhead).dx, target.dx);
+
+    owner.publish(session: 'another-session');
+    await tester.pumpAndSettle();
+    expect(playhead, findsNothing);
+    await tester.tapAt(target);
+    await tester.pumpAndSettle();
+    expect(owner.timelineSeeks, [4000]);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 }

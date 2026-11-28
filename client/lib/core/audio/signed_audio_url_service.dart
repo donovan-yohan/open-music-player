@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import '../api/api_client.dart';
 
 const int defaultSignedAudioTtlSeconds = 5 * 60;
+// Mirrors the /playback/urls endpoint's maxPlaybackURLBatch.
+const int _maxPlaybackUrlBatch = 50;
 
 typedef PlaybackUrlRequester = Future<Map<String, dynamic>> Function(
     Map<String, dynamic> body);
@@ -257,15 +259,62 @@ class SignedAudioUrlService {
   Future<Map<int, SignedAudioDescriptor>> requireDescriptors(
     Iterable<int> trackIds, {
     int? ttlSeconds,
+  }) =>
+      _collectDescriptors(trackIds, ttlSeconds: ttlSeconds);
+
+  /// Missing stored audio may be silent in an authored arrangement, but a
+  /// malformed response or a failed request still fails source resolution.
+  Future<Map<int, SignedAudioDescriptor>> availableDescriptors(
+    Iterable<int> trackIds,
+  ) =>
+      _collectDescriptors(trackIds, allowMissingAudio: true);
+
+  Future<Map<int, SignedAudioDescriptor>> _collectDescriptors(
+    Iterable<int> trackIds, {
+    int? ttlSeconds,
+    bool allowMissingAudio = false,
   }) async {
     final normalizedIds = _normalizeTrackIds(trackIds);
+    if (normalizedIds.isEmpty) {
+      throw const SignedAudioUrlException(
+        code: 'INVALID_TRACK_IDS',
+        message: 'At least one track ID is required for playback URL issuance.',
+      );
+    }
+    Future<Map<int, SignedAudioDescriptor>> collect() async {
+      final descriptors = <int, SignedAudioDescriptor>{};
+      for (var offset = 0;
+          offset < normalizedIds.length;
+          offset += _maxPlaybackUrlBatch) {
+        final batch = normalizedIds.skip(offset).take(_maxPlaybackUrlBatch);
+        descriptors.addAll(await _requireDescriptorBatch(batch, ttlSeconds,
+            allowMissingAudio: allowMissingAudio));
+      }
+      return descriptors;
+    }
+
+    return _api?.inCapturedAuthSession(collect) ?? collect();
+  }
+
+  Future<Map<int, SignedAudioDescriptor>> _requireDescriptorBatch(
+    Iterable<int> trackIds,
+    int? ttlSeconds, {
+    required bool allowMissingAudio,
+  }) async {
     final response = await requestDescriptors(
-      normalizedIds,
+      trackIds,
       ttlSeconds: ttlSeconds,
     );
     final descriptors = response.byTrackId;
+    final missingAudio = <int>{};
 
     for (final unavailable in response.unavailable) {
+      final code = unavailable.code.toLowerCase();
+      if (allowMissingAudio &&
+          (code == 'audio_unavailable' || code == 'artifact_missing')) {
+        missingAudio.add(unavailable.trackId);
+        continue;
+      }
       throw SignedAudioUrlException(
         code: unavailable.code,
         message: unavailable.message,
@@ -273,8 +322,9 @@ class SignedAudioUrlService {
       );
     }
 
-    for (final trackId in normalizedIds) {
+    for (final trackId in trackIds) {
       final descriptor = descriptors[trackId];
+      if (descriptor == null && missingAudio.contains(trackId)) continue;
       if (descriptor == null) {
         throw SignedAudioUrlException(
           code: 'PLAYBACK_URL_MISSING',

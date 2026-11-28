@@ -1385,11 +1385,20 @@ class PlaybackCue {
         timelineStartMs: timelineStart.inMilliseconds,
       );
 
+  DateTime? get _audioSourceExpiresAt {
+    final raw = mediaItem.extras?['expiresAt'];
+    return raw is String ? DateTime.tryParse(raw) : null;
+  }
+
+  bool get audioUnavailable => mediaItem.extras?['audioUnavailable'] == true;
+
   MixClip toMixClip({GainEnvelope envelope = const GainEnvelope.flat()}) =>
       MixClip(
         placement: placement,
         envelope: envelope,
         audioSourceRef: audioUri.toString(),
+        audioSourceExpiresAt: _audioSourceExpiresAt,
+        audioUnavailable: audioUnavailable,
         queueItemId: queueItemId,
         playbackRate: playbackRate,
         pitchMode: pitchMode,

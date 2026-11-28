@@ -185,9 +185,11 @@ class QueueTimelineController {
     bool preserveTimelineEdits = false,
     int? reflowDefaultTransitionsFromIndex,
     MixSession? session,
+    bool Function()? guard,
   }) async {
-    await _enqueueCommand(
-      () => _setQueue(
+    await _enqueueCommand(() async {
+      if (guard != null && !guard()) return;
+      await _setQueue(
         items,
         initialIndex: initialIndex,
         initialPosition: initialPosition,
@@ -195,8 +197,8 @@ class QueueTimelineController {
         preserveTimelineEdits: preserveTimelineEdits,
         reflowDefaultTransitionsFromIndex: reflowDefaultTransitionsFromIndex,
         session: session,
-      ),
-    );
+      );
+    });
   }
 
   Future<void> _setQueue(
@@ -213,10 +215,19 @@ class QueueTimelineController {
     final wasPlaying = _engine.isPlaying;
     final previousCurrentIndex = _currentIndex;
     final previousLocalPositionMs = livePosition.inMilliseconds;
+    final previousGlobalPositionMs = _engine.positionMs;
     final nextQueue = List<MediaItem>.unmodifiable(items);
-    final nextPlayOrder = [for (var i = 0; i < nextQueue.length; i++) i];
-    final nextSessionId =
-        session?.sessionId ?? 'session_${_sessionGeneration + 1}';
+    final nextPlayOrder =
+        preserveTimelineEdits && nextQueue.length == _queue.length
+            ? _playOrder
+            : [for (var i = 0; i < nextQueue.length; i++) i];
+    final nextSessionId = session?.sessionId ??
+        (preserveTimelineEdits
+            ? _sessionId
+            : 'session_${_sessionGeneration + 1}');
+    final preserveGlobalPosition = preserveCurrentTransport &&
+        preserveTimelineEdits &&
+        reflowDefaultTransitionsFromIndex == null;
     final transitionSnapMode =
         session?.transitionSnapMode ?? _session.transitionSnapMode;
     final defaultCrossfadeMs = _configuredDefaultCrossfadeMs ??
@@ -282,11 +293,13 @@ class QueueTimelineController {
       final targetLocal = preserveCurrentTransport
           ? previousLocalPositionMs
           : initialPosition.inMilliseconds;
-      final targetMs = cue == null
-          ? 0
-          : nextTimeline
-              .globalFor(cue, Duration(milliseconds: targetLocal))
-              .inMilliseconds;
+      final targetMs = preserveGlobalPosition
+          ? previousGlobalPositionMs
+          : cue == null
+              ? 0
+              : nextTimeline
+                  .globalFor(cue, Duration(milliseconds: targetLocal))
+                  .inMilliseconds;
       if (wasPlaying) {
         await _engine.replacePreparedMix(nextModel);
       } else {
@@ -340,6 +353,8 @@ class QueueTimelineController {
       await _loadModel(
         seekToCurrent: !preserveActivePlayback,
         localPositionMs: requestedLocalPositionMs,
+        globalPositionMs:
+            preserveGlobalPosition ? previousGlobalPositionMs : null,
         preserveActivePlayback: preserveActivePlayback,
       );
     }
@@ -973,19 +988,22 @@ class QueueTimelineController {
     _publishQueueState();
   }
 
-  Future<void> play() async {
-    await _enqueueCommand(_play);
+  Future<void> play({bool Function()? guard}) async {
+    await _enqueueCommand(() => _play(guard: guard));
   }
 
-  Future<void> _play() async {
-    if (_queue.isEmpty) return;
+  Future<void> _play({bool Function()? guard}) async {
+    bool stillCurrent() => guard?.call() ?? true;
+    if (_queue.isEmpty || !stillCurrent()) return;
     await start();
+    if (!stillCurrent()) return;
     if (_processingState == ProcessingState.completed) {
       await _skipToIndex(_currentIndex ?? 0);
     }
+    if (!stillCurrent()) return;
     _processingState = ProcessingState.ready;
     _publishPlayerState();
-    await _engine.play();
+    await _engine.playGuarded(stillCurrent: stillCurrent);
   }
 
   Future<void> pause() async {
@@ -1054,6 +1072,24 @@ class QueueTimelineController {
 
   Future<void> endTimelineScrub(int globalMs) =>
       _enqueueCommand(() => _engine.endScrub(globalMs));
+
+  Future<void> seekSessionTimeline(PlaybackSnapshot arrangement, int globalMs) {
+    final generation = _sessionGeneration;
+    return _enqueueCommand(() async {
+      // Use the cues that supplied the click's coordinates, not a private
+      // replacement timeline that was still loading at the time of the click.
+      if (_sessionId != arrangement.sessionId ||
+          _sessionGeneration != generation ||
+          !identical(_cueTimeline.cues, arrangement.cues)) {
+        return;
+      }
+      await _engine.seek(globalMs);
+      if (_processingState == ProcessingState.completed) {
+        _processingState = ProcessingState.ready;
+        _publishPlayerState();
+      }
+    });
+  }
 
   Future<void> updateLocalScrub(Duration position) {
     if (_engine.usesNativeBackend) {
@@ -1268,6 +1304,7 @@ class QueueTimelineController {
   Future<void> _loadModel({
     required bool seekToCurrent,
     int localPositionMs = 0,
+    int? globalPositionMs,
     bool preserveActivePlayback = false,
   }) async {
     _session = _session.normalizedForQueue(_queue);
@@ -1285,7 +1322,8 @@ class QueueTimelineController {
       if (seekToCurrent &&
           _currentIndex != null &&
           !(_engine.usesNativeBackend && _engine.isPlaying)) {
-        await _engine.seek(_globalForCurrentLocal(localPositionMs));
+        await _engine
+            .seek(globalPositionMs ?? _globalForCurrentLocal(localPositionMs));
       }
     } finally {
       await Future<void>.delayed(Duration.zero);
@@ -1474,7 +1512,8 @@ class QueueTimelineController {
   void _onGlobalPosition(int globalMs) {
     if (_suppressPositionSync || _nativeCandidatePending) return;
     final previousIndex = _currentIndex;
-    if (!_shouldDeferCurrentIndexSync(globalMs)) {
+    if (!_session.continuationAllowed ||
+        !_shouldDeferCurrentIndexSync(globalMs)) {
       _syncCurrentIndexFromGlobal(globalMs);
     }
     _publishPosition(globalMs);
@@ -1920,7 +1959,8 @@ class QueueTimelineController {
     if (_disposed || _queue.isEmpty) return;
     final clip = _clipForCompletion(event);
     if (clip == null || clip.timelineEndMs >= _engine.durationMs) return;
-    if (event.wasSkipped) {
+    if (event.wasSkipped ||
+        (!_session.continuationAllowed && _loopMode != LoopMode.one)) {
       _syncCurrentIndexFromGlobal(_engine.positionMs);
       _publishPosition(_engine.positionMs);
       _publishQueueState(includeQueue: false);
@@ -1936,6 +1976,16 @@ class QueueTimelineController {
       return;
     }
 
+    final next = _nextQueueIndexAfter(completedIndex);
+    if (next == null && _loopMode != LoopMode.one) {
+      // The last queue row can end before another clip in an authored mix.
+      // Leave transport ready until the arrangement itself actually ends.
+      _syncCurrentIndexFromGlobal(_engine.positionMs);
+      _publishPosition(_engine.positionMs);
+      _publishQueueState(includeQueue: false);
+      return;
+    }
+
     _currentIndex = completedIndex;
     _processingState = ProcessingState.completed;
     _publishPosition(clip.timelineEndMs);
@@ -1947,7 +1997,6 @@ class QueueTimelineController {
       return;
     }
 
-    final next = _nextQueueIndexAfter(completedIndex);
     if (next != null) {
       _currentIndex = next;
       _processingState = ProcessingState.ready;
